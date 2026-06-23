@@ -10,9 +10,11 @@ Run: uv run pytest tests/integration/persistence/test_migrations.py -q
 from __future__ import annotations
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from langbot.pkg.entity.persistence.base import Base
+from langbot.pkg.entity.persistence import mcp as _mcp  # noqa: F401
 from langbot.pkg.persistence.alembic_runner import (
     run_alembic_upgrade,
     run_alembic_stamp,
@@ -148,6 +150,27 @@ class TestSQLiteMigrationUpgrade:
 
         rev2 = await get_alembic_current(sqlite_engine)
         assert rev2 == rev1, f'Expected {rev1}, got {rev2}'
+
+    @pytest.mark.asyncio
+    async def test_mcp_builtin_connector_columns_exist_after_upgrade(self, sqlite_engine):
+        """The MCP table exposes builtin/local-connector metadata after upgrade."""
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_schema(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                columns = {col['name'] for col in inspector.get_columns('mcp_servers')}
+                indexes = inspector.get_indexes('mcp_servers')
+                return columns, indexes
+
+            columns, indexes = await conn.run_sync(inspect_schema)
+
+        assert {'builtin', 'locked', 'managed_by', 'connector_id'}.issubset(columns)
+        assert any('connector_id' in index['name'] for index in indexes)
 
 
 class TestSQLiteMigrationFreshDatabase:

@@ -39,6 +39,7 @@ from ...vector import mgr as vectordb_mgr
 from .. import taskmgr
 from ...telemetry import telemetry as telemetry_module
 from ...survey import manager as survey_module
+from ...local_connectors import service as local_connectors_service
 
 
 @stage.stage_class('BuildAppStage')
@@ -112,6 +113,10 @@ class BuildAppStage(stage.BootingStage):
         persistence_mgr_inst = persistencemgr.PersistenceManager(ap)
         ap.persistence_mgr = persistence_mgr_inst
         await persistence_mgr_inst.initialize()
+
+        local_connectors_service_inst = local_connectors_service.LocalConnectorsService(ap)
+        ap.local_connectors_service = local_connectors_service_inst
+        await local_connectors_service_inst.initialize_builtin_mcp_servers()
 
         # Telemetry manager: attach to app so other components can call via self.ap.telemetry
         telemetry_inst = telemetry_module.TelemetryManager(ap)

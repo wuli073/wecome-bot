@@ -48,6 +48,9 @@ coverage.xml
 .coverage
 src/langbot/web/
 testsdk/
+.playwright-cli/
+.tmp-codex/
+.tmp-pytest/
 
 # Build artifacts
 /dist

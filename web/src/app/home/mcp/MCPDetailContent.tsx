@@ -19,6 +19,8 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
+import type { MCPServer as MCPServerEntity } from '@/app/infra/entities/api';
+import BuiltinConnectorDetail from '@/app/home/mcp/BuiltinConnectorDetail';
 import MCPForm from '@/app/home/mcp/components/mcp-form/MCPForm';
 import type { MCPFormHandle } from '@/app/home/mcp/components/mcp-form/MCPForm';
 import { httpClient, systemInfo } from '@/app/infra/http/HttpClient';
@@ -43,16 +45,20 @@ export default function MCPDetailContent({ id }: { id: string }) {
     useSidebarData();
   const server = mcpServers.find((s) => s.id === id);
   const displayName = (server?.name ?? id).replace(/__/g, '/');
+  const [serverDetail, setServerDetail] = useState<MCPServerEntity | null>(
+    null,
+  );
+  const [serverDetailLoaded, setServerDetailLoaded] = useState(isCreateMode);
 
   // Set breadcrumb entity name
   useEffect(() => {
     if (isCreateMode) {
       setDetailEntityName(t('mcp.createServer'));
     } else {
-      setDetailEntityName(displayName);
+      setDetailEntityName(serverDetail?.name ?? displayName);
     }
     return () => setDetailEntityName(null);
-  }, [displayName, isCreateMode, setDetailEntityName, t]);
+  }, [displayName, isCreateMode, serverDetail?.name, setDetailEntityName, t]);
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
@@ -114,14 +120,36 @@ export default function MCPDetailContent({ id }: { id: string }) {
   useEffect(() => {
     if (!isCreateMode) {
       setDetailRuntimeStatus(null);
-      httpClient.getMCPServer(id).then((res) => {
-        const server = res.server ?? res;
-        setServerEnabled(server.enable ?? true);
-        setDetailRuntimeStatus(server.runtime_info?.status ?? null);
-        setEnableLoaded(true);
-      });
+      setServerDetailLoaded(false);
+      httpClient
+        .getMCPServer(id)
+        .then((res) => {
+          const server = res.server ?? res;
+          setServerDetail(server);
+          setServerEnabled(server.enable ?? true);
+          setDetailRuntimeStatus(server.runtime_info?.status ?? null);
+          setEnableLoaded(true);
+        })
+        .finally(() => setServerDetailLoaded(true));
     }
   }, [id, isCreateMode]);
+
+  if (!isCreateMode && !serverDetailLoaded) {
+    return (
+      <div className="flex h-full items-center justify-center text-muted-foreground">
+        {t('mcp.loading')}
+      </div>
+    );
+  }
+
+  if (!isCreateMode && serverDetail?.builtin && serverDetail.connector_id) {
+    return (
+      <BuiltinConnectorDetail
+        serverName={serverDetail.name}
+        connectorId={serverDetail.connector_id}
+      />
+    );
+  }
 
   const handleEnableToggle = useCallback(
     async (checked: boolean) => {

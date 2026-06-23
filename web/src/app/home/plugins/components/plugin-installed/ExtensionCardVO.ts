@@ -18,6 +18,8 @@ export interface IExtensionCardVO {
   runtimeStatus?: 'connecting' | 'connected' | 'error' | 'disabled';
   tools?: number;
   mode?: 'stdio' | 'sse' | 'http' | 'remote';
+  builtin?: boolean;
+  connectorId?: string | null;
 }
 
 export class ExtensionCardVO implements IExtensionCardVO {
@@ -38,6 +40,8 @@ export class ExtensionCardVO implements IExtensionCardVO {
   runtimeStatus?: 'connecting' | 'connected' | 'error' | 'disabled';
   tools?: number;
   mode?: 'stdio' | 'sse' | 'http' | 'remote';
+  builtin?: boolean;
+  connectorId?: string | null;
 
   constructor(prop: IExtensionCardVO) {
     this.id = prop.id;
@@ -57,5 +61,7 @@ export class ExtensionCardVO implements IExtensionCardVO {
     this.runtimeStatus = prop.runtimeStatus;
     this.tools = prop.tools;
     this.mode = prop.mode;
+    this.builtin = prop.builtin;
+    this.connectorId = prop.connectorId;
   }
 }

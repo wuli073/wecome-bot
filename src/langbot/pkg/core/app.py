@@ -45,6 +45,7 @@ from ..vector import mgr as vectordb_mgr
 from ..telemetry import telemetry as telemetry_module
 from ..survey import manager as survey_module
 from ..skill import manager as skill_mgr
+from ..local_connectors import service as local_connectors_service
 
 
 class Application:
@@ -148,6 +149,7 @@ class Application:
     knowledge_service: knowledge_service.KnowledgeService = None
 
     mcp_service: mcp_service.MCPService = None
+    local_connectors_service: local_connectors_service.LocalConnectorsService = None
 
     apikey_service: apikey_service.ApiKeyService = None
 
@@ -199,6 +201,12 @@ class Application:
                 name='http-api-controller',
                 scopes=[core_entities.LifecycleControlScope.APPLICATION],
             )
+            if self.local_connectors_service is not None:
+                self.task_mgr.create_task(
+                    self.local_connectors_service.restore_configured_connectors(),
+                    name='local-connector-restore',
+                    scopes=[core_entities.LifecycleControlScope.APPLICATION],
+                )
 
             # Telemetry instance heartbeat (startup + daily); respects
             # space.disable_telemetry via TelemetryManager.send().
@@ -319,6 +327,8 @@ class Application:
         return parsed
 
     def dispose(self):
+        if self.local_connectors_service is not None:
+            self.local_connectors_service.dispose()
         if self.plugin_connector is not None:
             self.plugin_connector.dispose()
         if self.box_service is not None:

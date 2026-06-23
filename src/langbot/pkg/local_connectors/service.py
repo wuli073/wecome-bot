@@ -1,0 +1,529 @@
+from __future__ import annotations
+
+import asyncio
+import sys
+import time
+import uuid
+
+import sqlalchemy
+
+from ..core import app
+from ..entity.persistence import mcp as persistence_mcp
+from . import schemas, uac_helper
+from .connectors.wechat import WechatLocalConnector
+from .connectors.wxwork import WxworkLocalConnector
+from .jobs import LocalConnectorJobStore
+from .models import BUILTIN_CONNECTORS, BuiltinConnectorDefinition
+from .process_manager import LocalConnectorProcessManager, PortInUseError
+from .repository import LocalConnectorRepository
+from .runtime_bridge import LocalConnectorRuntimeBridge
+
+
+class LocalConnectorSetupError(RuntimeError):
+    def __init__(self, code: str, message: str, stage: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.stage = stage
+
+
+class LocalConnectorsService:
+    ap: app.Application
+
+    def __init__(self, ap: app.Application) -> None:
+        self.ap = ap
+        self.repository = LocalConnectorRepository()
+        self.job_store = LocalConnectorJobStore(self.repository)
+        self.process_manager = LocalConnectorProcessManager(self.repository)
+        self.runtime_bridge = LocalConnectorRuntimeBridge(ap)
+        self._definitions = {definition.connector_id: definition for definition in BUILTIN_CONNECTORS}
+        self._connectors = {
+            "wechat-local": WechatLocalConnector(self._definitions["wechat-local"]),
+            "wxwork-local": WxworkLocalConnector(self._definitions["wxwork-local"]),
+        }
+
+    def _platform_supported(self) -> bool:
+        return sys.platform.startswith("win")
+
+    def _get_connector(self, connector_id: str):
+        connector = self._connectors.get(connector_id)
+        if connector is None:
+            raise ValueError(f"Unknown connector_id: {connector_id}")
+        return connector
+
+    def _base_state(self, definition: BuiltinConnectorDefinition, existing: dict | None) -> dict:
+        existing = dict(existing or {})
+        status = existing.get("status")
+        if not status:
+            status = (
+                schemas.CONNECTOR_STATUS_NOT_CONFIGURED
+                if self._platform_supported()
+                else schemas.CONNECTOR_STATUS_UNSUPPORTED
+            )
+
+        if not self._platform_supported():
+            status = schemas.CONNECTOR_STATUS_UNSUPPORTED
+
+        state = {
+            "connector_id": definition.connector_id,
+            "name": definition.name,
+            "builtin": True,
+            "locked": True,
+            "managed_by": "local_connectors",
+            "expected_tool_count": definition.tool_count,
+            "status": status,
+            "job_status": existing.get("job_status"),
+            "job_id": existing.get("job_id"),
+            "last_error_code": existing.get("last_error_code"),
+            "last_error_message": existing.get("last_error_message"),
+            "db_dir": existing.get("db_dir"),
+            "keys_file": existing.get("keys_file"),
+            "decrypted_dir": existing.get("decrypted_dir"),
+            "tool_count": existing.get("tool_count", 0),
+            "updated_at": existing.get("updated_at", time.time()),
+        }
+        return state
+
+    def _save_state(self, connector_id: str, **changes) -> dict:
+        definition = self._definitions[connector_id]
+        state = self._base_state(definition, self.repository.load_state(connector_id))
+        state.update(changes)
+        state["updated_at"] = time.time()
+        self.repository.save_state(connector_id, state)
+        return state
+
+    async def initialize_builtin_mcp_servers(self) -> list[str]:
+        result = await self.ap.persistence_mgr.execute_async(sqlalchemy.select(persistence_mcp.MCPServer))
+        servers = list(result.all())
+
+        created_or_claimed: list[str] = []
+        for definition in BUILTIN_CONNECTORS:
+            existing = self._find_existing_server(servers, definition)
+            if existing is None:
+                payload = {
+                    "uuid": str(uuid.uuid4()),
+                    **definition.mcp_payload,
+                }
+                await self.ap.persistence_mgr.execute_async(sqlalchemy.insert(persistence_mcp.MCPServer).values(payload))
+                created_or_claimed.append(definition.connector_id)
+            else:
+                updates = self._build_backfill_values(existing, definition)
+                if updates:
+                    await self.ap.persistence_mgr.execute_async(
+                        sqlalchemy.update(persistence_mcp.MCPServer)
+                        .where(persistence_mcp.MCPServer.uuid == existing.uuid)
+                        .values(updates)
+                    )
+            self._save_state(definition.connector_id)
+
+        return created_or_claimed
+
+    def _find_existing_server(
+        self,
+        servers: list[persistence_mcp.MCPServer],
+        definition: BuiltinConnectorDefinition,
+    ) -> persistence_mcp.MCPServer | None:
+        for server in servers:
+            if getattr(server, "connector_id", None) == definition.connector_id:
+                return server
+        for server in servers:
+            extra_args = getattr(server, "extra_args", {}) or {}
+            if getattr(server, "name", None) == definition.name:
+                return server
+            if extra_args.get("url") == definition.url:
+                return server
+        return None
+
+    def _build_backfill_values(self, server: persistence_mcp.MCPServer, definition: BuiltinConnectorDefinition) -> dict:
+        extra_args = dict(getattr(server, "extra_args", {}) or {})
+        values = {}
+        if getattr(server, "name", None) != definition.name:
+            values["name"] = definition.name
+        if getattr(server, "mode", None) != "remote":
+            values["mode"] = "remote"
+        if extra_args.get("url") != definition.url:
+            values["extra_args"] = {**extra_args, "url": definition.url}
+        if not getattr(server, "builtin", False):
+            values["builtin"] = True
+        if not getattr(server, "locked", False):
+            values["locked"] = True
+        if getattr(server, "managed_by", None) != "local_connectors":
+            values["managed_by"] = "local_connectors"
+        if getattr(server, "connector_id", None) != definition.connector_id:
+            values["connector_id"] = definition.connector_id
+        return values
+
+    def _configured(self, state: dict) -> bool:
+        return bool(state.get("db_dir") or state.get("keys_file") or state.get("decrypted_dir"))
+
+    async def _refresh_runtime_if_enabled(self, connector_id: str, fallback_status: str) -> tuple[str, int]:
+        server = await self.ap.mcp_service.get_mcp_server_by_connector_id(connector_id)
+        if not server or not server.get("enable"):
+            state = self.repository.load_state(connector_id) or {}
+            return fallback_status, state.get("tool_count", 0)
+
+        runtime_info = await self.runtime_bridge.enable_and_refresh(connector_id)
+        return schemas.CONNECTOR_STATUS_CONNECTED, runtime_info.get("tool_count", 0)
+
+    async def list_connectors(self) -> list[dict]:
+        return [await self.get_connector_status(connector_id) for connector_id in self._definitions]
+
+    async def get_connector_status(self, connector_id: str) -> dict:
+        connector = self._get_connector(connector_id)
+        state = self._base_state(self._definitions[connector_id], self.repository.load_state(connector_id))
+        worker_record = self.process_manager.get_process_record(connector_id)
+        worker_owned = self.process_manager.is_running(connector_id)
+
+        if not self._platform_supported():
+            state["status"] = schemas.CONNECTOR_STATUS_UNSUPPORTED
+            state["last_error_code"] = "UNSUPPORTED_PLATFORM"
+        elif not worker_owned and self._configured(state) and state["status"] in {
+            schemas.CONNECTOR_STATUS_CONNECTED,
+            schemas.JOB_STAGE_STARTING_MCP,
+            schemas.JOB_STAGE_TESTING_MCP,
+            schemas.JOB_STAGE_ENABLING_MCP,
+        }:
+            state["status"] = schemas.CONNECTOR_STATUS_STOPPED
+
+        state["worker"] = {
+            "owned": worker_owned,
+            "pid": worker_record.get("pid") if worker_owned and worker_record else None,
+            "port": connector.port,
+            "started_at": worker_record.get("started_at") if worker_owned and worker_record else None,
+        }
+        return state
+
+    async def detect_connector(self, connector_id: str) -> dict:
+        if not self._platform_supported():
+            return self._save_state(
+                connector_id,
+                status=schemas.CONNECTOR_STATUS_UNSUPPORTED,
+                last_error_code="UNSUPPORTED_PLATFORM",
+                last_error_message="Only Windows is supported",
+            )
+
+        connector = self._get_connector(connector_id)
+        try:
+            result = await connector.detect()
+        except FileNotFoundError as exc:
+            return self._save_state(
+                connector_id,
+                status=schemas.CONNECTOR_STATUS_NOT_CONFIGURED,
+                last_error_code="DECRYPT_DIR_NOT_FOUND",
+                last_error_message=str(exc),
+            )
+
+        if result.get("ok"):
+            return self._save_state(
+                connector_id,
+                status=schemas.JOB_STAGE_DETECTING,
+                last_error_code=None,
+                last_error_message=None,
+                db_dir=result.get("db_dir"),
+            )
+
+        status = schemas.CONNECTOR_STATUS_DATA_PATH_NOT_FOUND
+        if result.get("error_code") == "CLIENT_NOT_RUNNING":
+            status = schemas.CONNECTOR_STATUS_CLIENT_NOT_RUNNING
+
+        return self._save_state(
+            connector_id,
+            status=status,
+            last_error_code=result.get("error_code"),
+            last_error_message=result.get("error_message"),
+        )
+
+    async def start_setup(self, connector_id: str) -> dict:
+        if connector_id not in self._definitions:
+            raise ValueError(f"Unknown connector_id: {connector_id}")
+
+        latest = self.job_store.get_latest_for_connector(connector_id)
+        if latest and latest.get("status") == schemas.JOB_STATUS_RUNNING:
+            return {
+                "job_id": latest["job_id"],
+                "status": latest["status"],
+                "stage": latest.get("stage"),
+            }
+
+        job = self.job_store.create_job(connector_id)
+        self._save_state(
+            connector_id,
+            job_status=job["status"],
+            job_id=job["job_id"],
+            last_error_code=None,
+            last_error_message=None,
+        )
+        asyncio.create_task(self._run_setup_job(job))
+        return {"job_id": job["job_id"], "status": job["status"], "stage": job["stage"]}
+
+    async def _run_setup_job(self, job: dict) -> None:
+        connector_id = job["connector_id"]
+        connector = self._get_connector(connector_id)
+        runtime_dir = str(self.repository.connector_runtime_dir(connector_id))
+
+        try:
+            if not self._platform_supported():
+                raise LocalConnectorSetupError(
+                    "UNSUPPORTED_PLATFORM",
+                    "Only Windows is supported",
+                    schemas.JOB_STAGE_DETECTING,
+                )
+
+            self.job_store.update(job, status=schemas.JOB_STATUS_RUNNING, stage=schemas.JOB_STAGE_DETECTING)
+            detect_state = await self.detect_connector(connector_id)
+            if detect_state["status"] == schemas.CONNECTOR_STATUS_CLIENT_NOT_RUNNING:
+                raise LocalConnectorSetupError(
+                    detect_state.get("last_error_code") or "CLIENT_NOT_RUNNING",
+                    detect_state.get("last_error_message") or "Client is not running",
+                    schemas.JOB_STAGE_DETECTING,
+                )
+            if detect_state["status"] == schemas.CONNECTOR_STATUS_DATA_PATH_NOT_FOUND:
+                raise LocalConnectorSetupError(
+                    detect_state.get("last_error_code") or "DATA_PATH_NOT_FOUND",
+                    detect_state.get("last_error_message") or "Data path not found",
+                    schemas.JOB_STAGE_DETECTING,
+                )
+
+            self.job_store.update(job, stage=schemas.JOB_STAGE_EXTRACTING_KEY, progress=20)
+            self._save_state(connector_id, status=schemas.JOB_STAGE_EXTRACTING_KEY)
+            elevated = await uac_helper.run_elevated_extract(
+                connector.resolve_python_executable(),
+                connector.resolve_decrypt_dir() / "connector_cli.py",
+                connector.cli_connector_name,
+                runtime_dir,
+                self.repository.connector_dir(connector_id) / "jobs" / f"{job['job_id']}-extract.json",
+            )
+            if not elevated.get("ok"):
+                raise LocalConnectorSetupError(
+                    elevated.get("error_code") or "KEY_EXTRACTION_FAILED",
+                    elevated.get("error_message") or "Key extraction failed",
+                    schemas.JOB_STAGE_EXTRACTING_KEY,
+                )
+
+            self.job_store.update(job, stage=schemas.JOB_STAGE_DECRYPTING, progress=50)
+            self._save_state(
+                connector_id,
+                status=schemas.JOB_STAGE_DECRYPTING,
+                keys_file=elevated.get("keys_file"),
+            )
+            decrypt_result = await connector.run_cli("decrypt", runtime_dir)
+            if not decrypt_result.get("ok"):
+                raise LocalConnectorSetupError(
+                    decrypt_result.get("error_code") or "DECRYPT_FAILED",
+                    decrypt_result.get("error_message") or "Decrypt failed",
+                    schemas.JOB_STAGE_DECRYPTING,
+                )
+
+            self.job_store.update(job, stage=schemas.JOB_STAGE_STARTING_MCP, progress=70)
+            self._save_state(
+                connector_id,
+                status=schemas.JOB_STAGE_STARTING_MCP,
+                decrypted_dir=decrypt_result.get("decrypted_dir"),
+            )
+            try:
+                await self.process_manager.start(connector, runtime_dir)
+            except PortInUseError as exc:
+                raise LocalConnectorSetupError("PORT_IN_USE", str(exc), schemas.JOB_STAGE_STARTING_MCP) from exc
+
+            self.job_store.update(job, stage=schemas.JOB_STAGE_TESTING_MCP, progress=80)
+            self._save_state(connector_id, status=schemas.JOB_STAGE_TESTING_MCP)
+
+            self.job_store.update(job, stage=schemas.JOB_STAGE_ENABLING_MCP, progress=90)
+            self._save_state(connector_id, status=schemas.JOB_STAGE_ENABLING_MCP)
+            runtime_info = await self.runtime_bridge.enable_and_refresh(connector_id)
+
+            tool_names = {tool["name"] for tool in runtime_info.get("tools", [])}
+            if not set(connector.expected_tool_names).issubset(tool_names):
+                raise LocalConnectorSetupError(
+                    "MCP_HANDSHAKE_FAILED",
+                    "Expected MCP tools were not exposed by the worker",
+                    schemas.JOB_STAGE_TESTING_MCP,
+                )
+
+            self.job_store.update(
+                job,
+                status=schemas.JOB_STATUS_SUCCEEDED,
+                stage=schemas.JOB_STAGE_CONNECTED,
+                progress=100,
+                message="connected",
+            )
+            self._save_state(
+                connector_id,
+                status=schemas.CONNECTOR_STATUS_CONNECTED,
+                job_status=schemas.JOB_STATUS_SUCCEEDED,
+                job_id=job["job_id"],
+                tool_count=runtime_info.get("tool_count", 0),
+                last_error_code=None,
+                last_error_message=None,
+            )
+        except LocalConnectorSetupError as exc:
+            self.job_store.update(
+                job,
+                status=schemas.JOB_STATUS_FAILED,
+                stage=exc.stage,
+                error_code=exc.code,
+                error_message=str(exc),
+            )
+            self._save_state(
+                connector_id,
+                status=self._status_for_error(exc.code, exc.stage),
+                job_status=schemas.JOB_STATUS_FAILED,
+                job_id=job["job_id"],
+                last_error_code=exc.code,
+                last_error_message=str(exc),
+            )
+        except Exception as exc:
+            self.job_store.update(
+                job,
+                status=schemas.JOB_STATUS_FAILED,
+                stage=job.get("stage", schemas.JOB_STAGE_DETECTING),
+                error_code="UNKNOWN_ERROR",
+                error_message=str(exc),
+            )
+            self._save_state(
+                connector_id,
+                status=schemas.CONNECTOR_STATUS_RUNTIME_ERROR,
+                job_status=schemas.JOB_STATUS_FAILED,
+                job_id=job["job_id"],
+                last_error_code="UNKNOWN_ERROR",
+                last_error_message=str(exc),
+            )
+
+    def _status_for_error(self, error_code: str, stage: str) -> str:
+        if error_code == "UNSUPPORTED_PLATFORM":
+            return schemas.CONNECTOR_STATUS_UNSUPPORTED
+        if error_code == "CLIENT_NOT_RUNNING":
+            return schemas.CONNECTOR_STATUS_CLIENT_NOT_RUNNING
+        if error_code == "DATA_PATH_NOT_FOUND":
+            return schemas.CONNECTOR_STATUS_DATA_PATH_NOT_FOUND
+        if error_code == "UAC_CANCELLED":
+            return schemas.CONNECTOR_STATUS_PERMISSION_REQUIRED
+        if error_code == "PORT_IN_USE":
+            return schemas.CONNECTOR_STATUS_PORT_IN_USE
+        if stage == schemas.JOB_STAGE_DECRYPTING:
+            return schemas.CONNECTOR_STATUS_DECRYPT_FAILED
+        if stage == schemas.JOB_STAGE_STARTING_MCP:
+            return schemas.CONNECTOR_STATUS_START_FAILED
+        return schemas.CONNECTOR_STATUS_RUNTIME_ERROR
+
+    async def start_worker(self, connector_id: str) -> dict:
+        connector = self._get_connector(connector_id)
+        state = self._base_state(self._definitions[connector_id], self.repository.load_state(connector_id))
+        if not self._configured(state):
+            return self._save_state(
+                connector_id,
+                status=schemas.CONNECTOR_STATUS_NOT_CONFIGURED,
+                last_error_code="NOT_CONFIGURED",
+                last_error_message="Run setup before starting the worker",
+            )
+
+        runtime_dir = str(self.repository.connector_runtime_dir(connector_id))
+        try:
+            await self.process_manager.start(connector, runtime_dir)
+        except PortInUseError as exc:
+            return self._save_state(
+                connector_id,
+                status=schemas.CONNECTOR_STATUS_PORT_IN_USE,
+                last_error_code="PORT_IN_USE",
+                last_error_message=str(exc),
+            )
+
+        status, tool_count = await self._refresh_runtime_if_enabled(
+            connector_id,
+            fallback_status=schemas.JOB_STAGE_STARTING_MCP,
+        )
+        return self._save_state(
+            connector_id,
+            status=status,
+            tool_count=tool_count,
+            last_error_code=None,
+            last_error_message=None,
+        )
+
+    async def stop_worker(self, connector_id: str) -> dict:
+        connector = self._get_connector(connector_id)
+        await self.process_manager.stop(connector)
+        return self._save_state(connector_id, status=schemas.CONNECTOR_STATUS_STOPPED)
+
+    async def restart_worker(self, connector_id: str) -> dict:
+        connector = self._get_connector(connector_id)
+        runtime_dir = str(self.repository.connector_runtime_dir(connector_id))
+        try:
+            await self.process_manager.restart(connector, runtime_dir)
+        except PortInUseError as exc:
+            return self._save_state(
+                connector_id,
+                status=schemas.CONNECTOR_STATUS_PORT_IN_USE,
+                last_error_code="PORT_IN_USE",
+                last_error_message=str(exc),
+            )
+        status, tool_count = await self._refresh_runtime_if_enabled(
+            connector_id,
+            fallback_status=schemas.JOB_STAGE_STARTING_MCP,
+        )
+        return self._save_state(connector_id, status=status, tool_count=tool_count)
+
+    async def refresh_connector(self, connector_id: str) -> dict:
+        connector = self._get_connector(connector_id)
+        state = self._base_state(self._definitions[connector_id], self.repository.load_state(connector_id))
+        if not self._platform_supported():
+            return self._save_state(
+                connector_id,
+                status=schemas.CONNECTOR_STATUS_UNSUPPORTED,
+                last_error_code="UNSUPPORTED_PLATFORM",
+                last_error_message="Only Windows is supported",
+            )
+        if not self._configured(state):
+            return await self.detect_connector(connector_id)
+
+        runtime_dir = str(self.repository.connector_runtime_dir(connector_id))
+        self._save_state(connector_id, status=schemas.JOB_STAGE_DECRYPTING)
+        decrypt_result = await connector.run_cli("decrypt", runtime_dir)
+        if not decrypt_result.get("ok"):
+            return self._save_state(
+                connector_id,
+                status=schemas.CONNECTOR_STATUS_DECRYPT_FAILED,
+                last_error_code=decrypt_result.get("error_code") or "DECRYPT_FAILED",
+                last_error_message=decrypt_result.get("error_message") or "Decrypt failed",
+            )
+
+        refreshed_state = self._save_state(
+            connector_id,
+            status=schemas.CONNECTOR_STATUS_CONNECTED
+            if self.process_manager.is_running(connector_id)
+            else schemas.CONNECTOR_STATUS_STOPPED,
+            decrypted_dir=decrypt_result.get("decrypted_dir"),
+            last_error_code=None,
+            last_error_message=None,
+        )
+
+        server = await self.ap.mcp_service.get_mcp_server_by_connector_id(connector_id)
+        if server and server.get("enable"):
+            runtime_info = await self.runtime_bridge.enable_and_refresh(connector_id)
+            refreshed_state["tool_count"] = runtime_info.get("tool_count", refreshed_state.get("tool_count", 0))
+            self.repository.save_state(connector_id, refreshed_state)
+
+        return refreshed_state
+
+    def get_job(self, job_id: str) -> dict | None:
+        return self.job_store.get(job_id)
+
+    def get_logs(self, connector_id: str) -> dict:
+        self._get_connector(connector_id)
+        return {"connector_id": connector_id, "logs": self.repository.read_log_tail(connector_id)}
+
+    async def restore_configured_connectors(self) -> None:
+        if not self._platform_supported() or self.ap.tool_mgr is None:
+            return
+
+        for connector_id in self._definitions:
+            state = self._base_state(self._definitions[connector_id], self.repository.load_state(connector_id))
+            if not self._configured(state):
+                continue
+            try:
+                await self.start_worker(connector_id)
+            except Exception as exc:
+                self.ap.logger.warning(f"Failed to restore local connector {connector_id}: {exc}")
+
+    def dispose(self) -> None:
+        for connector in self._connectors.values():
+            self.process_manager.stop_sync(connector)

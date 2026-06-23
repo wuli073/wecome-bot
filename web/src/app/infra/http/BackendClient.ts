@@ -41,6 +41,9 @@ import {
   ApiRespMCPServers,
   ApiRespMCPServer,
   MCPServer,
+  ApiRespLocalConnectors,
+  ApiRespLocalConnector,
+  ApiRespLocalConnectorJob,
   ApiRespModelProviders,
   ApiRespModelProvider,
   ApiRespScannedProviderModels,
@@ -903,6 +906,63 @@ export class BackendClient extends BaseHttpClient {
     source: object,
   ): Promise<AsyncTaskCreatedResp> {
     return this.post('/api/v1/mcp/servers', { source });
+  }
+
+  // ============ Local Connector API ============
+  public getLocalConnectors(): Promise<ApiRespLocalConnectors> {
+    return this.get('/api/v1/local-connectors');
+  }
+
+  public getLocalConnectorStatus(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.get(`/api/v1/local-connectors/${connectorId}/status`);
+  }
+
+  public detectLocalConnector(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/detect`);
+  }
+
+  public setupLocalConnector(
+    connectorId: string,
+  ): Promise<{ job_id: string; status: string; stage: string }> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/setup`);
+  }
+
+  public refreshLocalConnector(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/refresh`);
+  }
+
+  public startLocalConnectorWorker(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/start`);
+  }
+
+  public stopLocalConnectorWorker(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/stop`);
+  }
+
+  public restartLocalConnectorWorker(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/restart`);
+  }
+
+  public getLocalConnectorLogs(
+    connectorId: string,
+  ): Promise<{ connector_id: string; logs: string }> {
+    return this.get(`/api/v1/local-connectors/${connectorId}/logs`);
+  }
+
+  public getLocalConnectorJob(jobId: string): Promise<ApiRespLocalConnectorJob> {
+    return this.get(`/api/v1/local-connectors/jobs/${jobId}`);
   }
 
   // ============ System API ============

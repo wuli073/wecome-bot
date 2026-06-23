@@ -563,56 +563,84 @@ export interface MCPServerRuntimeInfo {
   box_enabled?: boolean;
 }
 
+interface MCPServerCommon<TMode extends 'sse' | 'http' | 'remote' | 'stdio', TExtraArgs> {
+  uuid?: string;
+  name: string;
+  mode: TMode;
+  enable: boolean;
+  extra_args: TExtraArgs;
+  runtime_info?: MCPServerRuntimeInfo;
+  readme?: string;
+  created_at?: string;
+  updated_at?: string;
+  builtin?: boolean;
+  locked?: boolean;
+  managed_by?: string | null;
+  connector_id?: string | null;
+}
+
 export type MCPServer =
-  | {
-      uuid?: string;
-      name: string;
-      mode: 'sse';
-      enable: boolean;
-      extra_args: MCPServerExtraArgsSSE;
-      runtime_info?: MCPServerRuntimeInfo;
-      readme?: string;
-      created_at?: string;
-      updated_at?: string;
-    }
-  | {
-      uuid?: string;
-      name: string;
-      mode: 'http';
-      enable: boolean;
-      extra_args: MCPServerExtraArgsHttp;
-      runtime_info?: MCPServerRuntimeInfo;
-      readme?: string;
-      created_at?: string;
-      updated_at?: string;
-    }
-  | {
-      uuid?: string;
-      name: string;
-      mode: 'remote';
-      enable: boolean;
-      extra_args: MCPServerExtraArgsRemote;
-      runtime_info?: MCPServerRuntimeInfo;
-      readme?: string;
-      created_at?: string;
-      updated_at?: string;
-    }
-  | {
-      uuid?: string;
-      name: string;
-      mode: 'stdio';
-      enable: boolean;
-      extra_args: MCPServerExtraArgsStdio;
-      runtime_info?: MCPServerRuntimeInfo;
-      readme?: string;
-      created_at?: string;
-      updated_at?: string;
-    };
+  | MCPServerCommon<'sse', MCPServerExtraArgsSSE>
+  | MCPServerCommon<'http', MCPServerExtraArgsHttp>
+  | MCPServerCommon<'remote', MCPServerExtraArgsRemote>
+  | MCPServerCommon<'stdio', MCPServerExtraArgsStdio>;
 
 export interface MCPTool {
   name: string;
   description: string;
   parameters?: object;
+}
+
+export interface LocalConnectorWorker {
+  owned: boolean;
+  pid?: number | null;
+  port: number;
+  started_at?: number | null;
+}
+
+export interface LocalConnectorStatus {
+  connector_id: string;
+  name: string;
+  builtin: boolean;
+  locked: boolean;
+  managed_by: string;
+  expected_tool_count: number;
+  status: string;
+  job_status?: string | null;
+  job_id?: string | null;
+  last_error_code?: string | null;
+  last_error_message?: string | null;
+  db_dir?: string | null;
+  keys_file?: string | null;
+  decrypted_dir?: string | null;
+  tool_count: number;
+  updated_at: number;
+  worker: LocalConnectorWorker;
+}
+
+export interface LocalConnectorJob {
+  job_id: string;
+  connector_id: string;
+  status: string;
+  stage: string;
+  progress: number;
+  message: string;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ApiRespLocalConnectors {
+  connectors: LocalConnectorStatus[];
+}
+
+export interface ApiRespLocalConnector {
+  connector: LocalConnectorStatus;
+}
+
+export interface ApiRespLocalConnectorJob {
+  job: LocalConnectorJob | null;
 }
 
 export interface PluginTool {
