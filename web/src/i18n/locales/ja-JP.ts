@@ -1684,6 +1684,7 @@ const jaJP = {
     noMessages: 'メッセージはまだありません',
     loading: 'データベースモードを読み込み中...',
     loadFailed: 'データベースモードの読み込みに失敗しました',
+    refreshing: 'データベースモードを更新しています…',
     operationFailed: '操作に失敗しました',
     emptyTitle: '新しいメッセージはありません',
     emptyDescription:

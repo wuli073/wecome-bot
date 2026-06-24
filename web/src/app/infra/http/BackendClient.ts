@@ -1074,6 +1074,14 @@ export class BackendClient extends BaseHttpClient {
     });
   }
 
+  public async createDatabaseModeEventSession(): Promise<void> {
+    await this.instance.request({
+      method: 'post',
+      url: '/api/v1/database-mode/events/session',
+      withCredentials: true,
+    });
+  }
+
   // ============ System API ============
   public getSystemInfo(): Promise<ApiRespSystemInfo> {
     return this.get('/api/v1/system/info');

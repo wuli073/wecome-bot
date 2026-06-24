@@ -1,13 +1,21 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  startTransition,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   DatabaseModeConversation,
-  DatabaseModeMessage,
   DatabaseModeConversationStats,
+  DatabaseModeMessage,
+  DatabaseModeRealtimeEvent,
   LocalConnectorStatus,
 } from '@/app/infra/entities/api';
-import { httpClient } from '@/app/infra/http/HttpClient';
+import { httpClient } from '@/app/infra/http';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -44,13 +52,62 @@ import {
   WandSparkles,
 } from 'lucide-react';
 
-const CONVERSATION_STATUS_OPTIONS = ['all', 'pending', 'draft_ready', 'failed', 'processed', 'skipped'] as const;
-const MESSAGE_STATUS_OPTIONS = ['all', 'pending', 'draft_ready', 'failed', 'processed', 'skipped'] as const;
+import {
+  useDatabaseModeEvents,
+  type DatabaseModeEventConnectionState,
+} from './hooks/useDatabaseModeEvents';
+import {
+  buildDatabaseModeQuerySignature,
+  formatDatabaseModeDateTime,
+} from './utils';
+
+const CONVERSATION_STATUS_OPTIONS = [
+  'all',
+  'pending',
+  'processing',
+  'draft_ready',
+  'failed',
+  'processed',
+  'skipped',
+] as const;
+const MESSAGE_STATUS_OPTIONS = [
+  'all',
+  'pending',
+  'processing',
+  'draft_ready',
+  'failed',
+  'processed',
+  'skipped',
+] as const;
+const CONVERSATION_PAGE = 1;
+const CONVERSATION_PAGE_SIZE = 100;
+const MESSAGE_PAGE = 1;
+const MESSAGE_PAGE_SIZE = 200;
+const REFRESH_DEBOUNCE_MS = 200;
+const BUSINESS_POLL_INTERVAL_MS = 15_000;
+const CONNECTOR_POLL_INTERVAL_MS = 5_000;
+
+type RefreshIntent = 'connector' | 'conversations' | 'conversation' | 'messages' | 'all';
+type DatabaseModeConversationDetail = {
+  id: number;
+  connector_id: string;
+  source: string;
+  external_conversation_id: string;
+  conversation_name: string;
+  conversation_type: string;
+  last_message_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  stats: DatabaseModeConversationStats;
+  latest_customer: string;
+};
 
 function statusTone(status: string): string {
   switch (status) {
     case 'pending':
       return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/70 dark:bg-amber-950/40 dark:text-amber-300';
+    case 'processing':
+      return 'border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-900/70 dark:bg-violet-950/40 dark:text-violet-300';
     case 'draft_ready':
       return 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900/70 dark:bg-sky-950/40 dark:text-sky-300';
     case 'failed':
@@ -62,6 +119,24 @@ function statusTone(status: string): string {
     default:
       return 'border-muted-foreground/20 bg-muted text-muted-foreground';
   }
+}
+
+function mergeServerMessagesWithDrafts(
+  nextMessages: DatabaseModeMessage[],
+  draftEdits: Record<number, string>,
+) {
+  return nextMessages.map((serverMessage) => {
+    const dirtyDraft = draftEdits[serverMessage.id];
+    if (dirtyDraft == null) {
+      return serverMessage;
+    }
+
+    return {
+      ...serverMessage,
+      draft_text: dirtyDraft,
+      ai_suggested_reply: dirtyDraft,
+    };
+  });
 }
 
 function EmptyState({
@@ -93,13 +168,15 @@ function StatsCards({
 }) {
   const items = [
     ['pending', t('databaseMode.statusPending')],
+    ['processing', t('databaseMode.status.processing')],
     ['draft_ready', t('databaseMode.statusDraftReady')],
     ['failed', t('databaseMode.statusFailed')],
     ['processed', t('databaseMode.statusProcessed')],
     ['skipped', t('databaseMode.statusSkipped')],
   ] as const;
+
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
       {items.map(([key, label]) => (
         <Card key={key}>
           <CardContent className="flex items-center justify-between p-4">
@@ -123,19 +200,8 @@ export default function DatabaseModePage() {
   const { t } = useTranslation();
   const [connector, setConnector] = useState<LocalConnectorStatus | null>(null);
   const [conversations, setConversations] = useState<DatabaseModeConversation[]>([]);
-  const [selectedConversation, setSelectedConversation] = useState<{
-    id: number;
-    connector_id: string;
-    source: string;
-    external_conversation_id: string;
-    conversation_name: string;
-    conversation_type: string;
-    last_message_at?: string | null;
-    created_at?: string | null;
-    updated_at?: string | null;
-    stats: DatabaseModeConversationStats;
-    latest_customer: string;
-  } | null>(null);
+  const [selectedConversation, setSelectedConversation] =
+    useState<DatabaseModeConversationDetail | null>(null);
   const [selectedConversationId, setSelectedConversationId] = useState<number | null>(null);
   const [messages, setMessages] = useState<DatabaseModeMessage[]>([]);
   const [stats, setStats] = useState<DatabaseModeConversationStats | null>(null);
@@ -148,122 +214,288 @@ export default function DatabaseModePage() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [detailsMessage, setDetailsMessage] = useState<DatabaseModeMessage | null>(null);
+  const [lastToastEventId, setLastToastEventId] = useState<string | null>(null);
+
+  const requestVersionRef = useRef(0);
+  const refreshTimerRef = useRef<number | null>(null);
+  const inFlightRef = useRef(false);
+  const rerunRef = useRef(false);
+  const pendingIntentsRef = useRef<Set<RefreshIntent>>(new Set());
+  const messagesViewportRef = useRef<HTMLDivElement | null>(null);
+  const scrollTopRef = useRef(0);
 
   const connectorDetailHref = useMemo(
-    () => `/home/mcp?id=${encodeURIComponent(connector?.name ?? '浼佷笟寰俊')}`,
+    () => `/home/mcp?id=${encodeURIComponent(connector?.name ?? 'WeCom Local Connector')}`,
     [connector?.name],
   );
   const connectorConfigured = useMemo(
-    () => connector?.status !== 'not_configured' && connector?.status !== 'unsupported_platform',
+    () =>
+      connector?.status !== 'not_configured' &&
+      connector?.status !== 'unsupported_platform',
     [connector?.status],
   );
 
-  const loadConnector = useCallback(async () => {
-    const response = await httpClient.getLocalConnectorStatus('wxwork-local');
-    setConnector(response.connector);
-  }, []);
+  const restoreScrollPosition = useEffectEvent(() => {
+    if (messagesViewportRef.current != null) {
+      messagesViewportRef.current.scrollTop = scrollTopRef.current;
+    }
+  });
 
-  const loadConversations = useCallback(async () => {
-    const response = await httpClient.getDatabaseModeConversations({
+  const captureScrollPosition = useEffectEvent(() => {
+    if (messagesViewportRef.current != null) {
+      scrollTopRef.current = messagesViewportRef.current.scrollTop;
+    }
+  });
+
+  const getQuerySignature = useEffectEvent(() =>
+    buildDatabaseModeQuerySignature({
+      selectedConversationId,
+      conversationStatus,
+      messageStatus,
       keyword,
-      status: conversationStatus,
-      page: 1,
-      page_size: 100,
-    });
-    setConversations(response.conversations);
-    if (
-      response.conversations.length > 0 &&
-      !response.conversations.some((item) => item.id === selectedConversationId)
-    ) {
-      setSelectedConversationId(response.conversations[0].id);
-    }
-    if (response.conversations.length === 0) {
-      setSelectedConversationId(null);
-      setSelectedConversation(null);
-      setMessages([]);
-      setStats(null);
-    }
-  }, [conversationStatus, keyword, selectedConversationId]);
+      conversationPage: CONVERSATION_PAGE,
+      conversationPageSize: CONVERSATION_PAGE_SIZE,
+      messagePage: MESSAGE_PAGE,
+      messagePageSize: MESSAGE_PAGE_SIZE,
+    }),
+  );
 
-  const loadMessages = useCallback(
-    async (conversationId: number) => {
-      const [conversationResp, messagesResp] = await Promise.all([
-        httpClient.getDatabaseModeConversation(conversationId),
-        httpClient.getDatabaseModeMessages(conversationId, {
-          status: messageStatus,
-          page: 1,
-          page_size: 200,
-        }),
-      ]);
+  const applyIfCurrent = useEffectEvent(
+    (
+      requestVersion: number,
+      querySignature: string,
+      apply: () => void,
+    ) => {
+      if (
+        requestVersion !== requestVersionRef.current ||
+        querySignature !== getQuerySignature()
+      ) {
+        return;
+      }
+
+      startTransition(() => {
+        apply();
+      });
+    },
+  );
+
+  const loadConnector = useEffectEvent(async () => {
+    const response = await httpClient.getLocalConnectorStatus('wxwork-local');
+    return response.connector;
+  });
+
+  const refreshAll = useEffectEvent(async () => {
+    const requestVersion = ++requestVersionRef.current;
+    const querySignature = getQuerySignature();
+    const currentSelectedConversationId = selectedConversationId;
+
+    captureScrollPosition();
+
+    const [connectorResp, conversationsResp] = await Promise.all([
+      loadConnector(),
+      httpClient.getDatabaseModeConversations({
+        keyword,
+        status: conversationStatus,
+        page: CONVERSATION_PAGE,
+        page_size: CONVERSATION_PAGE_SIZE,
+      }),
+    ]);
+
+    const nextSelectedConversationId =
+      currentSelectedConversationId != null &&
+      conversationsResp.conversations.some(
+        (item) => item.id === currentSelectedConversationId,
+      )
+        ? currentSelectedConversationId
+        : conversationsResp.conversations[0]?.id ?? null;
+
+    applyIfCurrent(requestVersion, querySignature, () => {
+      setConnector(connectorResp);
+      setConversations(conversationsResp.conversations);
+      setSelectedConversationId(nextSelectedConversationId);
+      if (conversationsResp.conversations.length === 0) {
+        setSelectedConversation(null);
+        setMessages([]);
+        setStats(null);
+        setSelectedMessageIds([]);
+      }
+    });
+
+    if (nextSelectedConversationId == null) {
+      applyIfCurrent(requestVersion, querySignature, () => {
+        setLoading(false);
+      });
+      return;
+    }
+
+    const [conversationResp, messagesResp] = await Promise.all([
+      httpClient.getDatabaseModeConversation(nextSelectedConversationId),
+      httpClient.getDatabaseModeMessages(nextSelectedConversationId, {
+        status: messageStatus,
+        page: MESSAGE_PAGE,
+        page_size: MESSAGE_PAGE_SIZE,
+      }),
+    ]);
+
+    applyIfCurrent(requestVersion, querySignature, () => {
       setSelectedConversation(conversationResp.conversation);
-      setMessages(messagesResp.messages);
       setStats(messagesResp.stats);
+      setMessages(
+        mergeServerMessagesWithDrafts(messagesResp.messages, draftEdits),
+      );
       setSelectedMessageIds((current) =>
         current.filter((messageId) =>
           messagesResp.messages.some((message) => message.id === messageId),
         ),
       );
-    },
-    [messageStatus],
-  );
-
-  const reloadAll = useCallback(async () => {
-    setError('');
-    setLoading(true);
-    try {
-      await loadConnector();
-      await loadConversations();
-    } catch (err) {
-      setError((err as { msg?: string }).msg || t('databaseMode.loadFailed'));
-    } finally {
       setLoading(false);
-    }
-  }, [loadConnector, loadConversations, t]);
-
-  useEffect(() => {
-    reloadAll().catch(() => undefined);
-  }, [reloadAll]);
-
-  useEffect(() => {
-    if (!selectedConversationId) {
-      return;
-    }
-    loadMessages(selectedConversationId).catch((err) => {
-      setError((err as { msg?: string }).msg || t('databaseMode.loadFailed'));
     });
-  }, [loadMessages, selectedConversationId, t]);
 
-  useEffect(() => {
-    if (!connector?.monitor?.enabled) {
+    window.requestAnimationFrame(() => {
+      restoreScrollPosition();
+    });
+  });
+
+  const scheduleRefresh = useEffectEvent((intent: RefreshIntent) => {
+    pendingIntentsRef.current.add(intent);
+
+    if (inFlightRef.current) {
+      rerunRef.current = true;
       return;
     }
-    const timer = window.setInterval(() => {
-      loadConnector().catch(() => undefined);
-    }, 5000);
-    return () => window.clearInterval(timer);
-  }, [connector?.monitor?.enabled, loadConnector]);
 
-  const withBusy = useCallback(
-    async (key: string, action: () => Promise<void>) => {
-      setBusyKey(key);
-      try {
-        await action();
-      } catch (err) {
-        toast.error((err as { msg?: string }).msg || t('databaseMode.operationFailed'));
-      } finally {
-        setBusyKey(null);
-      }
-    },
-    [t],
-  );
-
-  const refreshSelection = useCallback(async () => {
-    await loadConversations();
-    await loadConnector();
-    if (selectedConversationId) {
-      await loadMessages(selectedConversationId);
+    if (refreshTimerRef.current != null) {
+      window.clearTimeout(refreshTimerRef.current);
     }
-  }, [loadConversations, loadConnector, loadMessages, selectedConversationId]);
+
+    refreshTimerRef.current = window.setTimeout(async () => {
+      inFlightRef.current = true;
+      pendingIntentsRef.current.clear();
+      try {
+        await refreshAll();
+      } catch (err) {
+        setError((err as { msg?: string }).msg || t('databaseMode.loadFailed'));
+        setLoading(false);
+      } finally {
+        inFlightRef.current = false;
+        if (rerunRef.current) {
+          rerunRef.current = false;
+          scheduleRefresh('all');
+        }
+      }
+    }, REFRESH_DEBOUNCE_MS);
+  });
+
+  const withBusy = useEffectEvent(async (key: string, action: () => Promise<void>) => {
+    setBusyKey(key);
+    try {
+      await action();
+    } catch (err) {
+      toast.error((err as { msg?: string }).msg || t('databaseMode.operationFailed'));
+    } finally {
+      setBusyKey(null);
+    }
+  });
+
+  const handleRealtimeEvent = useEffectEvent((event: DatabaseModeRealtimeEvent) => {
+    switch (event.type) {
+      case 'ready':
+        scheduleRefresh('all');
+        return;
+      case 'database-conversation-updated':
+        scheduleRefresh('conversation');
+        return;
+      case 'database-message-created':
+        if (event.event_id && event.event_id !== lastToastEventId) {
+          setLastToastEventId(event.event_id);
+          toast.message(t('databaseMode.refreshing'));
+        }
+        scheduleRefresh('messages');
+        return;
+      case 'database-message-updated':
+      case 'database-message-deleted':
+        scheduleRefresh('messages');
+        return;
+      case 'database-mode-invalidated':
+      default:
+        scheduleRefresh('all');
+    }
+  });
+
+  const { connectionState } = useDatabaseModeEvents({
+    enabled: connectorConfigured,
+    onConnectRefresh: () => {
+      scheduleRefresh('all');
+    },
+    onEvent: handleRealtimeEvent,
+  });
+
+  useEffect(() => {
+    setLoading(true);
+    setError('');
+    scheduleRefresh('all');
+  }, [conversationStatus, keyword, messageStatus]);
+
+  useEffect(() => {
+    if (selectedConversationId == null) {
+      return;
+    }
+
+    scheduleRefresh('all');
+  }, [selectedConversationId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      loadConnector()
+        .then((nextConnector) => {
+          setConnector(nextConnector);
+        })
+        .catch(() => undefined);
+    }, CONNECTOR_POLL_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (connectionState === 'connected') {
+      return;
+    }
+
+    if (document.visibilityState !== 'visible') {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      scheduleRefresh('all');
+    }, BUSINESS_POLL_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [connectionState]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        scheduleRefresh('all');
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current != null) {
+        window.clearTimeout(refreshTimerRef.current);
+      }
+    };
+  }, []);
 
   const conversationList = (
     <div className="flex h-full flex-col gap-3">
@@ -313,7 +545,7 @@ export default function DatabaseModePage() {
                 {conversation.latest_message_summary || t('databaseMode.noMessages')}
               </p>
               <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-                <span>{conversation.last_message_at || '--'}</span>
+                <span>{formatDatabaseModeDateTime(conversation.last_message_at)}</span>
                 <span>
                   {t('databaseMode.failedShort')}: {conversation.failed_count}
                 </span>
@@ -340,7 +572,7 @@ export default function DatabaseModePage() {
         title={t('databaseMode.loadFailed')}
         description={error}
         action={
-          <Button variant="outline" onClick={() => reloadAll().catch(() => undefined)}>
+          <Button variant="outline" onClick={() => scheduleRefresh('all')}>
             <RefreshCcw className="mr-2 size-4" />
             {t('common.retry')}
           </Button>
@@ -379,7 +611,7 @@ export default function DatabaseModePage() {
               onClick={() =>
                 withBusy('start-monitor', async () => {
                   await httpClient.startLocalConnectorMonitor();
-                  await refreshSelection();
+                  scheduleRefresh('all');
                 })
               }
             >
@@ -399,10 +631,7 @@ export default function DatabaseModePage() {
     );
   }
 
-  if (
-    monitor.running_status === 'warming_up' ||
-    !monitor.warmup_completed
-  ) {
+  if (monitor.running_status === 'warming_up' || !monitor.warmup_completed) {
     return (
       <EmptyState
         title={t('databaseMode.warmupTitle')}
@@ -451,7 +680,7 @@ export default function DatabaseModePage() {
                 <div className="mt-4 h-[calc(100%-2rem)]">{conversationList}</div>
               </SheetContent>
             </Sheet>
-            <Button variant="outline" onClick={() => refreshSelection().catch(() => undefined)}>
+            <Button variant="outline" onClick={() => scheduleRefresh('all')}>
               <RefreshCcw className="mr-2 size-4" />
               {t('common.refresh')}
             </Button>
@@ -476,7 +705,8 @@ export default function DatabaseModePage() {
                   <div>
                     <CardTitle>{selectedConversation.conversation_name}</CardTitle>
                     <CardDescription>
-                      {t('databaseMode.latestCustomer')}: {selectedConversation.latest_customer || '--'}
+                      {t('databaseMode.latestCustomer')}:{' '}
+                      {selectedConversation.latest_customer || '--'}
                     </CardDescription>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
@@ -484,7 +714,9 @@ export default function DatabaseModePage() {
                       {t('databaseMode.totalMessages')}: {selectedConversation.stats.total}
                     </span>
                     <Separator orientation="vertical" className="hidden h-4 lg:block" />
-                    <span>{selectedConversation.last_message_at || '--'}</span>
+                    <span>{formatDatabaseModeDateTime(selectedConversation.last_message_at)}</span>
+                    <Separator orientation="vertical" className="hidden h-4 lg:block" />
+                    <span>{connectionState}</span>
                   </div>
                 </div>
               </CardHeader>
@@ -523,7 +755,7 @@ export default function DatabaseModePage() {
                     onClick={() =>
                       withBusy('batch-process', async () => {
                         await httpClient.batchProcessDatabaseModeMessages(selectedMessageIds);
-                        await refreshSelection();
+                        scheduleRefresh('all');
                       })
                     }
                   >
@@ -536,7 +768,7 @@ export default function DatabaseModePage() {
                     onClick={() =>
                       withBusy('batch-skip', async () => {
                         await httpClient.batchSkipDatabaseModeMessages(selectedMessageIds);
-                        await refreshSelection();
+                        scheduleRefresh('all');
                       })
                     }
                   >
@@ -550,10 +782,10 @@ export default function DatabaseModePage() {
                       if (!window.confirm(t('databaseMode.confirmBatchDelete'))) {
                         return;
                       }
-                      withBusy('batch-delete', async () => {
+                      void withBusy('batch-delete', async () => {
                         await httpClient.batchDeleteDatabaseModeMessages(selectedMessageIds);
-                        await refreshSelection();
-                      }).catch(() => undefined);
+                        scheduleRefresh('all');
+                      });
                     }}
                   >
                     <Trash2 className="mr-2 size-4" />
@@ -563,11 +795,13 @@ export default function DatabaseModePage() {
               </CardContent>
             </Card>
 
-            <ScrollArea className="min-h-0 flex-1 rounded-lg border">
+            <ScrollArea
+              className="min-h-0 flex-1 rounded-lg border"
+              viewportRef={messagesViewportRef}
+            >
               <div className="space-y-4 p-4">
                 {messages.map((message) => {
-                  const draftValue =
-                    draftEdits[message.id] ?? message.draft_text ?? '';
+                  const draftValue = draftEdits[message.id] ?? message.draft_text ?? '';
                   return (
                     <Card key={message.id}>
                       <CardContent className="space-y-4 p-4">
@@ -591,7 +825,8 @@ export default function DatabaseModePage() {
                                 </Badge>
                               </div>
                               <p className="mt-1 text-xs text-muted-foreground">
-                                {selectedConversation.conversation_name} | {message.sent_at}
+                                {selectedConversation.conversation_name} |{' '}
+                                {formatDatabaseModeDateTime(message.sent_at)}
                               </p>
                             </div>
                           </div>
@@ -601,7 +836,7 @@ export default function DatabaseModePage() {
                               onClick={() =>
                                 withBusy(`draft-${message.id}`, async () => {
                                   await httpClient.generateDatabaseModeDraft(message.id);
-                                  await refreshSelection();
+                                  scheduleRefresh('all');
                                 })
                               }
                             >
@@ -619,7 +854,7 @@ export default function DatabaseModePage() {
                               onClick={() =>
                                 withBusy(`process-${message.id}`, async () => {
                                   await httpClient.processDatabaseModeMessage(message.id);
-                                  await refreshSelection();
+                                  scheduleRefresh('all');
                                 })
                               }
                             >
@@ -631,17 +866,14 @@ export default function DatabaseModePage() {
                               onClick={() =>
                                 withBusy(`skip-${message.id}`, async () => {
                                   await httpClient.skipDatabaseModeMessage(message.id);
-                                  await refreshSelection();
+                                  scheduleRefresh('all');
                                 })
                               }
                             >
                               <SkipForward className="mr-2 size-4" />
                               {t('databaseMode.skip')}
                             </Button>
-                            <Button
-                              variant="outline"
-                              onClick={() => setDetailsMessage(message)}
-                            >
+                            <Button variant="outline" onClick={() => setDetailsMessage(message)}>
                               {t('databaseMode.viewDetails')}
                             </Button>
                             <Button
@@ -650,10 +882,10 @@ export default function DatabaseModePage() {
                                 if (!window.confirm(t('databaseMode.confirmDelete'))) {
                                   return;
                                 }
-                                withBusy(`delete-${message.id}`, async () => {
+                                void withBusy(`delete-${message.id}`, async () => {
                                   await httpClient.deleteDatabaseModeMessage(message.id);
-                                  await refreshSelection();
-                                }).catch(() => undefined);
+                                  scheduleRefresh('all');
+                                });
                               }}
                             >
                               <Trash2 className="mr-2 size-4" />
@@ -691,7 +923,12 @@ export default function DatabaseModePage() {
                                     draft_text: draftValue,
                                     draft_source: 'manual',
                                   });
-                                  await refreshSelection();
+                                  setDraftEdits((current) => {
+                                    const next = { ...current };
+                                    delete next[message.id];
+                                    return next;
+                                  });
+                                  scheduleRefresh('all');
                                 })
                               }
                             >
@@ -703,7 +940,9 @@ export default function DatabaseModePage() {
                               {t('databaseMode.aiSuggestedReply')}
                             </p>
                             <div className="min-h-[132px] rounded-lg border bg-background p-3 text-sm text-muted-foreground">
-                              {message.ai_suggested_reply || message.draft_text || t('databaseMode.noDraftYet')}
+                              {message.ai_suggested_reply ||
+                                message.draft_text ||
+                                t('databaseMode.noDraftYet')}
                             </div>
                           </div>
                         </div>
@@ -723,7 +962,10 @@ export default function DatabaseModePage() {
         )}
       </div>
 
-      <Dialog open={!!detailsMessage} onOpenChange={(open) => !open && setDetailsMessage(null)}>
+      <Dialog
+        open={!!detailsMessage}
+        onOpenChange={(open) => !open && setDetailsMessage(null)}
+      >
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>{t('databaseMode.messageDetails')}</DialogTitle>
@@ -737,7 +979,7 @@ export default function DatabaseModePage() {
                 </div>
                 <div>
                   <p className="text-muted-foreground">{t('databaseMode.receivedAt')}</p>
-                  <p>{detailsMessage.observed_at}</p>
+                  <p>{formatDatabaseModeDateTime(detailsMessage.observed_at)}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">{t('databaseMode.messageType')}</p>
@@ -756,7 +998,9 @@ export default function DatabaseModePage() {
               <div>
                 <p className="text-muted-foreground">{t('databaseMode.currentDraft')}</p>
                 <p className="mt-1 whitespace-pre-wrap">
-                  {detailsMessage.draft_text || t('databaseMode.noDraftYet')}
+                  {draftEdits[detailsMessage.id] ??
+                    detailsMessage.draft_text ??
+                    t('databaseMode.noDraftYet')}
                 </p>
               </div>
             </div>

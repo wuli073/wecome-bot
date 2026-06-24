@@ -1694,6 +1694,7 @@ const zhHans = {
     noMessages: '暂无消息',
     loading: '正在加载数据库模式...',
     loadFailed: '数据库模式加载失败',
+    refreshing: '正在刷新数据库模式…',
     operationFailed: '操作失败',
     emptyTitle: '暂无新消息',
     emptyDescription: '当前视图下没有待处理的数据库消息。',

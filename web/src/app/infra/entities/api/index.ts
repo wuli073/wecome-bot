@@ -744,6 +744,22 @@ export interface ApiRespDatabaseModeMessage {
   message: DatabaseModeMessage;
 }
 
+export type DatabaseModeRealtimeEventType =
+  | 'database-message-created'
+  | 'database-message-updated'
+  | 'database-message-deleted'
+  | 'database-conversation-updated'
+  | 'database-mode-invalidated'
+  | 'ready';
+
+export interface DatabaseModeRealtimeEvent {
+  type: DatabaseModeRealtimeEventType;
+  event_id?: string;
+  conversation_id?: number | null;
+  message_id?: number | null;
+  occurred_at?: string | null;
+}
+
 export interface PluginTool {
   name: string;
   description: string;

@@ -1773,6 +1773,7 @@ const enUS = {
     noMessages: 'No messages yet',
     loading: 'Loading database mode...',
     loadFailed: 'Failed to load database mode data',
+    refreshing: 'Refreshing database mode…',
     operationFailed: 'Operation failed',
     emptyTitle: 'No new messages',
     emptyDescription: 'No database messages are waiting in the current view.',
