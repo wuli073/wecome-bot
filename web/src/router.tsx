@@ -22,6 +22,7 @@ import AddExtensionPage from '@/app/home/add-extension/page';
 import MCPPage from '@/app/home/mcp/page';
 import KnowledgePage from '@/app/home/knowledge/page';
 import SkillsPage from '@/app/home/skills/page';
+import DatabaseModePage from '@/app/home/database-mode/page';
 import ErrorPage from '@/components/ErrorPage';
 import BackendUnavailablePage from '@/components/BackendUnavailablePage';
 import PluginPagesPage from '@/app/home/plugin-pages/page';
@@ -150,6 +151,16 @@ export const router = createBrowserRouter([
           <Suspense fallback={<Loading />}>
             <HomeLayout>
               <KnowledgePage />
+            </HomeLayout>
+          </Suspense>
+        ),
+      },
+      {
+        path: '/home/database-mode',
+        element: (
+          <Suspense fallback={<Loading />}>
+            <HomeLayout>
+              <DatabaseModePage />
             </HomeLayout>
           </Suspense>
         ),

@@ -39,6 +39,9 @@ from ...vector import mgr as vectordb_mgr
 from .. import taskmgr
 from ...telemetry import telemetry as telemetry_module
 from ...survey import manager as survey_module
+from ...local_connectors import service as local_connectors_service
+from ...database_mode.events import DatabaseModeEventBus
+from ...database_mode import service as database_mode_service
 
 
 @stage.stage_class('BuildAppStage')
@@ -113,6 +116,10 @@ class BuildAppStage(stage.BootingStage):
         ap.persistence_mgr = persistence_mgr_inst
         await persistence_mgr_inst.initialize()
 
+        local_connectors_service_inst = local_connectors_service.LocalConnectorsService(ap)
+        ap.local_connectors_service = local_connectors_service_inst
+        await local_connectors_service_inst.initialize_builtin_mcp_servers()
+
         # Telemetry manager: attach to app so other components can call via self.ap.telemetry
         telemetry_inst = telemetry_module.TelemetryManager(ap)
         await telemetry_inst.initialize()
@@ -182,6 +189,11 @@ class BuildAppStage(stage.BootingStage):
 
         monitoring_service_inst = monitoring_service.MonitoringService(ap)
         ap.monitoring_service = monitoring_service_inst
+
+        ap.database_mode_event_bus = DatabaseModeEventBus()
+
+        database_mode_service_inst = database_mode_service.DatabaseModeService(ap)
+        ap.database_mode_service = database_mode_service_inst
 
         maintenance_service_inst = maintenance_service.MaintenanceService(ap)
         ap.maintenance_service = maintenance_service_inst

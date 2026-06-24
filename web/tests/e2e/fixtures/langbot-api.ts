@@ -721,6 +721,42 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     return fulfillJson(route, { tasks: [] });
   }
 
+  if (path === '/api/v1/local-connectors/wxwork-local/status') {
+    return fulfillJson(route, {
+      connector: {
+        connector_id: 'wxwork-local',
+        name: 'WeCom Local Connector',
+        description: 'Mocked WeCom connector',
+        managed_by: 'builtin',
+        expected_tool_count: 5,
+        status: 'not_configured',
+        tool_count: 0,
+        updated_at: Date.now(),
+        worker: {
+          owned: false,
+          port: 5681,
+          started_at: null,
+        },
+        monitor: {
+          enabled: false,
+          owned: false,
+          running_status: 'stopped',
+          warmup_completed: false,
+          outbox_pending: 0,
+        },
+      },
+    });
+  }
+
+  if (path === '/api/v1/database-mode/conversations') {
+    return fulfillJson(route, {
+      conversations: [],
+      total: 0,
+      page: 1,
+      page_size: 100,
+    });
+  }
+
   if (
     path === '/api/v1/marketplace/plugins' ||
     path === '/api/v1/marketplace/plugins/search' ||

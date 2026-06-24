@@ -45,6 +45,9 @@ from ..vector import mgr as vectordb_mgr
 from ..telemetry import telemetry as telemetry_module
 from ..survey import manager as survey_module
 from ..skill import manager as skill_mgr
+from ..local_connectors import service as local_connectors_service
+from ..database_mode.events import DatabaseModeEventBus
+from ..database_mode import service as database_mode_service
 
 
 class Application:
@@ -148,6 +151,7 @@ class Application:
     knowledge_service: knowledge_service.KnowledgeService = None
 
     mcp_service: mcp_service.MCPService = None
+    local_connectors_service: local_connectors_service.LocalConnectorsService = None
 
     apikey_service: apikey_service.ApiKeyService = None
 
@@ -158,6 +162,9 @@ class Application:
     survey: survey_module.SurveyManager = None
 
     monitoring_service: monitoring_service.MonitoringService = None
+
+    database_mode_service: database_mode_service.DatabaseModeService = None
+    database_mode_event_bus: DatabaseModeEventBus | None = None
 
     skill_service: skill_service.SkillService = None
 
@@ -199,6 +206,12 @@ class Application:
                 name='http-api-controller',
                 scopes=[core_entities.LifecycleControlScope.APPLICATION],
             )
+            if self.local_connectors_service is not None:
+                self.task_mgr.create_task(
+                    self.local_connectors_service.restore_configured_connectors(),
+                    name='local-connector-restore',
+                    scopes=[core_entities.LifecycleControlScope.APPLICATION],
+                )
 
             # Telemetry instance heartbeat (startup + daily); respects
             # space.disable_telemetry via TelemetryManager.send().
@@ -319,6 +332,10 @@ class Application:
         return parsed
 
     def dispose(self):
+        if self.database_mode_event_bus is not None:
+            self.database_mode_event_bus.close()
+        if self.local_connectors_service is not None:
+            self.local_connectors_service.dispose()
         if self.plugin_connector is not None:
             self.plugin_connector.dispose()
         if self.box_service is not None:

@@ -6,6 +6,7 @@ import {
   Bot,
   Workflow,
   BookMarked,
+  Database,
   Puzzle,
   PlusCircle,
 } from 'lucide-react';
@@ -78,6 +79,19 @@ export const sidebarConfigList = [
       en_US: 'https://link.langbot.app/en/docs/knowledge',
       zh_Hans: 'https://link.langbot.app/zh/docs/knowledge',
       ja_JP: 'https://link.langbot.app/ja/docs/knowledge',
+    },
+    section: 'home',
+  }),
+  new SidebarChildVO({
+    id: 'database-mode',
+    name: t('databaseMode.title'),
+    icon: <Database className="text-blue-500" />,
+    route: '/home/database-mode',
+    description: t('databaseMode.description'),
+    helpLink: {
+      en_US: '',
+      zh_Hans: '',
+      ja_JP: '',
     },
     section: 'home',
   }),

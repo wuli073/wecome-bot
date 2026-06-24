@@ -28,6 +28,11 @@ const appRoutes = [
     heading: 'Knowledge',
     bodyText: 'Select a knowledge base from the sidebar',
   },
+  {
+    path: '/home/database-mode',
+    heading: 'Database Mode',
+    bodyText: 'WeCom connector is not configured',
+  },
 ];
 
 test.describe('authenticated app shell', () => {

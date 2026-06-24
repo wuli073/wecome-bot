@@ -41,6 +41,10 @@ import {
   ApiRespMCPServers,
   ApiRespMCPServer,
   MCPServer,
+  ApiRespLocalConnectors,
+  ApiRespLocalConnector,
+  ApiRespLocalConnectorJob,
+  ApiRespLocalConnectorMonitor,
   ApiRespModelProviders,
   ApiRespModelProvider,
   ApiRespScannedProviderModels,
@@ -53,6 +57,10 @@ import {
   Skill,
   ApiRespSkills,
   ApiRespSkill,
+  ApiRespDatabaseModeConversation,
+  ApiRespDatabaseModeConversations,
+  ApiRespDatabaseModeMessage,
+  ApiRespDatabaseModeMessages,
 } from '@/app/infra/entities/api';
 import { Plugin } from '@/app/infra/entities/plugin';
 import type { PluginLogEntry } from '@/app/infra/entities/plugin';
@@ -903,6 +911,175 @@ export class BackendClient extends BaseHttpClient {
     source: object,
   ): Promise<AsyncTaskCreatedResp> {
     return this.post('/api/v1/mcp/servers', { source });
+  }
+
+  // ============ Local Connector API ============
+  public getLocalConnectors(): Promise<ApiRespLocalConnectors> {
+    return this.get('/api/v1/local-connectors');
+  }
+
+  public getLocalConnectorStatus(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.get(`/api/v1/local-connectors/${connectorId}/status`);
+  }
+
+  public detectLocalConnector(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/detect`);
+  }
+
+  public setupLocalConnector(
+    connectorId: string,
+  ): Promise<{ job_id: string; status: string; stage: string }> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/setup`);
+  }
+
+  public refreshLocalConnector(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/refresh`);
+  }
+
+  public startLocalConnectorWorker(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/start`);
+  }
+
+  public stopLocalConnectorWorker(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/stop`);
+  }
+
+  public restartLocalConnectorWorker(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/restart`);
+  }
+
+  public getLocalConnectorLogs(
+    connectorId: string,
+  ): Promise<{ connector_id: string; logs: string }> {
+    return this.get(`/api/v1/local-connectors/${connectorId}/logs`);
+  }
+
+  public getLocalConnectorJob(jobId: string): Promise<ApiRespLocalConnectorJob> {
+    return this.get(`/api/v1/local-connectors/jobs/${jobId}`);
+  }
+
+  public getLocalConnectorMonitorStatus(): Promise<ApiRespLocalConnectorMonitor> {
+    return this.get('/api/v1/local-connectors/wxwork-local/monitor/status');
+  }
+
+  public startLocalConnectorMonitor(): Promise<ApiRespLocalConnector> {
+    return this.post('/api/v1/local-connectors/wxwork-local/monitor/start');
+  }
+
+  public stopLocalConnectorMonitor(): Promise<ApiRespLocalConnector> {
+    return this.post('/api/v1/local-connectors/wxwork-local/monitor/stop');
+  }
+
+  public restartLocalConnectorMonitor(): Promise<ApiRespLocalConnector> {
+    return this.post('/api/v1/local-connectors/wxwork-local/monitor/restart');
+  }
+
+  // ============ Database Mode API ============
+  public getDatabaseModeConversations(params?: {
+    status?: string;
+    keyword?: string;
+    page?: number;
+    page_size?: number;
+  }): Promise<ApiRespDatabaseModeConversations> {
+    return this.get('/api/v1/database-mode/conversations', params);
+  }
+
+  public getDatabaseModeConversation(
+    conversationId: number,
+  ): Promise<ApiRespDatabaseModeConversation> {
+    return this.get(`/api/v1/database-mode/conversations/${conversationId}`);
+  }
+
+  public getDatabaseModeMessages(
+    conversationId: number,
+    params?: {
+      status?: string;
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<ApiRespDatabaseModeMessages> {
+    return this.get(
+      `/api/v1/database-mode/conversations/${conversationId}/messages`,
+      params,
+    );
+  }
+
+  public generateDatabaseModeDraft(
+    messageId: number,
+  ): Promise<ApiRespDatabaseModeMessage> {
+    return this.post(
+      `/api/v1/database-mode/messages/${messageId}/generate-draft`,
+    );
+  }
+
+  public updateDatabaseModeDraft(
+    messageId: number,
+    payload: {
+      draft_text: string;
+      draft_source?: string;
+    },
+  ): Promise<ApiRespDatabaseModeMessage> {
+    return this.put(`/api/v1/database-mode/messages/${messageId}/draft`, payload);
+  }
+
+  public processDatabaseModeMessage(
+    messageId: number,
+  ): Promise<ApiRespDatabaseModeMessage> {
+    return this.post(`/api/v1/database-mode/messages/${messageId}/process`);
+  }
+
+  public skipDatabaseModeMessage(
+    messageId: number,
+  ): Promise<ApiRespDatabaseModeMessage> {
+    return this.post(`/api/v1/database-mode/messages/${messageId}/skip`);
+  }
+
+  public deleteDatabaseModeMessage(messageId: number): Promise<void> {
+    return this.delete(`/api/v1/database-mode/messages/${messageId}`);
+  }
+
+  public batchProcessDatabaseModeMessages(
+    message_ids: number[],
+  ): Promise<{ messages: unknown[] }> {
+    return this.post('/api/v1/database-mode/messages/batch-process', {
+      message_ids,
+    });
+  }
+
+  public batchSkipDatabaseModeMessages(
+    message_ids: number[],
+  ): Promise<{ messages: unknown[] }> {
+    return this.post('/api/v1/database-mode/messages/batch-skip', {
+      message_ids,
+    });
+  }
+
+  public batchDeleteDatabaseModeMessages(
+    message_ids: number[],
+  ): Promise<{ deleted_ids: number[] }> {
+    return this.post('/api/v1/database-mode/messages/batch-delete', {
+      message_ids,
+    });
+  }
+
+  public async createDatabaseModeEventSession(): Promise<void> {
+    await this.instance.request({
+      method: 'post',
+      url: '/api/v1/database-mode/events/session',
+      withCredentials: true,
+    });
   }
 
   // ============ System API ============

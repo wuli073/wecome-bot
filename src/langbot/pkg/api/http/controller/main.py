@@ -17,6 +17,7 @@ from .groups import platform as groups_platform
 from .groups import pipelines as groups_pipelines
 from .groups import knowledge as groups_knowledge
 from .groups import resources as groups_resources
+from ....local_connectors import routes as local_connector_routes
 from ...mcp.mount import MCPMount
 
 importutil.import_modules_in_pkg(groups)

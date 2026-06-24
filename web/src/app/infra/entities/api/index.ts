@@ -563,56 +563,214 @@ export interface MCPServerRuntimeInfo {
   box_enabled?: boolean;
 }
 
+interface MCPServerCommon<TMode extends 'sse' | 'http' | 'remote' | 'stdio', TExtraArgs> {
+  uuid?: string;
+  name: string;
+  mode: TMode;
+  enable: boolean;
+  extra_args: TExtraArgs;
+  runtime_info?: MCPServerRuntimeInfo;
+  readme?: string;
+  created_at?: string;
+  updated_at?: string;
+  builtin?: boolean;
+  locked?: boolean;
+  managed_by?: string | null;
+  connector_id?: string | null;
+}
+
 export type MCPServer =
-  | {
-      uuid?: string;
-      name: string;
-      mode: 'sse';
-      enable: boolean;
-      extra_args: MCPServerExtraArgsSSE;
-      runtime_info?: MCPServerRuntimeInfo;
-      readme?: string;
-      created_at?: string;
-      updated_at?: string;
-    }
-  | {
-      uuid?: string;
-      name: string;
-      mode: 'http';
-      enable: boolean;
-      extra_args: MCPServerExtraArgsHttp;
-      runtime_info?: MCPServerRuntimeInfo;
-      readme?: string;
-      created_at?: string;
-      updated_at?: string;
-    }
-  | {
-      uuid?: string;
-      name: string;
-      mode: 'remote';
-      enable: boolean;
-      extra_args: MCPServerExtraArgsRemote;
-      runtime_info?: MCPServerRuntimeInfo;
-      readme?: string;
-      created_at?: string;
-      updated_at?: string;
-    }
-  | {
-      uuid?: string;
-      name: string;
-      mode: 'stdio';
-      enable: boolean;
-      extra_args: MCPServerExtraArgsStdio;
-      runtime_info?: MCPServerRuntimeInfo;
-      readme?: string;
-      created_at?: string;
-      updated_at?: string;
-    };
+  | MCPServerCommon<'sse', MCPServerExtraArgsSSE>
+  | MCPServerCommon<'http', MCPServerExtraArgsHttp>
+  | MCPServerCommon<'remote', MCPServerExtraArgsRemote>
+  | MCPServerCommon<'stdio', MCPServerExtraArgsStdio>;
 
 export interface MCPTool {
   name: string;
   description: string;
   parameters?: object;
+}
+
+export interface LocalConnectorWorker {
+  owned: boolean;
+  pid?: number | null;
+  port: number;
+  started_at?: number | null;
+}
+
+export interface LocalConnectorMonitorStatus {
+  enabled: boolean;
+  owned: boolean;
+  pid?: number | null;
+  started_at?: number | null;
+  running_status: string;
+  warmup_completed: boolean;
+  poll_seconds?: number | null;
+  last_scan_at?: string | null;
+  last_change_at?: string | null;
+  last_event_at?: string | null;
+  outbox_pending: number;
+  last_error?: string | null;
+}
+
+export interface LocalConnectorStatus {
+  connector_id: string;
+  name: string;
+  builtin: boolean;
+  locked: boolean;
+  managed_by: string;
+  expected_tool_count: number;
+  status: string;
+  job_status?: string | null;
+  job_id?: string | null;
+  last_error_code?: string | null;
+  last_error_message?: string | null;
+  db_dir?: string | null;
+  keys_file?: string | null;
+  decrypted_dir?: string | null;
+  tool_count: number;
+  updated_at: number;
+  worker: LocalConnectorWorker;
+  monitor?: LocalConnectorMonitorStatus;
+}
+
+export interface LocalConnectorJob {
+  job_id: string;
+  connector_id: string;
+  status: string;
+  stage: string;
+  progress: number;
+  message: string;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ApiRespLocalConnectors {
+  connectors: LocalConnectorStatus[];
+}
+
+export interface ApiRespLocalConnector {
+  connector: LocalConnectorStatus;
+}
+
+export interface ApiRespLocalConnectorJob {
+  job: LocalConnectorJob | null;
+}
+
+export interface ApiRespLocalConnectorMonitor {
+  monitor: LocalConnectorMonitorStatus;
+}
+
+export interface DatabaseModeConversationStats {
+  draft_ready: number;
+  failed: number;
+  pending: number;
+  processed: number;
+  processing: number;
+  skipped: number;
+  total: number;
+}
+
+export interface DatabaseModeConversation {
+  id: number;
+  source: string;
+  conversation_name: string;
+  conversation_type: string;
+  last_message_at?: string | null;
+  pending_count: number;
+  failed_count: number;
+  latest_customer: string;
+  latest_message_summary: string;
+}
+
+export interface DatabaseModeMessage {
+  id: number;
+  event_id: string;
+  message_key: string;
+  conversation_id: number;
+  external_message_id?: string | null;
+  sender_id: string;
+  sender_name: string;
+  content: string;
+  content_preview: string;
+  message_type: string;
+  sent_at: string;
+  observed_at: string;
+  status: string;
+  draft_text?: string | null;
+  draft_source?: string | null;
+  ai_suggested_reply?: string | null;
+  attempt_count: number;
+  last_error?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  processed_at?: string | null;
+}
+
+export interface ApiRespDatabaseModeConversations {
+  conversations: DatabaseModeConversation[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface ApiRespDatabaseModeConversation {
+  conversation: {
+    id: number;
+    connector_id: string;
+    source: string;
+    external_conversation_id: string;
+    conversation_name: string;
+    conversation_type: string;
+    last_message_at?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+    stats: DatabaseModeConversationStats;
+    latest_customer: string;
+  };
+}
+
+export interface ApiRespDatabaseModeMessages {
+  messages: DatabaseModeMessage[];
+  total: number;
+  page: number;
+  page_size: number;
+  stats: DatabaseModeConversationStats;
+}
+
+export interface ApiRespDatabaseModeMessage {
+  message: DatabaseModeMessage;
+}
+
+export type DatabaseModeRealtimeEventType =
+  | 'database-message-created'
+  | 'database-message-updated'
+  | 'database-message-deleted'
+  | 'database-conversation-updated'
+  | 'database-mode-invalidated'
+  | 'ready';
+
+export interface DatabaseModeRealtimeEvent {
+  type: DatabaseModeRealtimeEventType;
+  event_id?: string;
+  conversation_id?: number | null;
+  message_id?: number | null;
+  occurred_at?: string | null;
+  metadata?: {
+    timings?: {
+      file_change_detected_at?: string | null;
+      stability_completed_at?: string | null;
+      decrypt_started_at?: string | null;
+      decrypt_completed_at?: string | null;
+      scan_completed_at?: string | null;
+      outbox_created_at?: string | null;
+      delivery_succeeded_at?: string | null;
+      langbot_ingested_at?: string | null;
+      sse_published_at?: string | null;
+    };
+  };
 }
 
 export interface PluginTool {

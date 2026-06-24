@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import typing
+from contextlib import asynccontextmanager
 
 
 import sqlalchemy.ext.asyncio as sqlalchemy_asyncio
@@ -165,6 +166,11 @@ class PersistenceManager:
             result = await conn.execute(*args, **kwargs)
             await conn.commit()
             return result
+
+    @asynccontextmanager
+    async def transaction(self):
+        async with self.get_db_engine().begin() as conn:
+            yield conn
 
     def get_db_engine(self) -> sqlalchemy_asyncio.AsyncEngine:
         return self.db.get_engine()

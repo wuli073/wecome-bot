@@ -4,6 +4,7 @@ import asyncio
 import argparse
 import sys
 import os
+from typing import TextIO
 
 from langbot.pkg.utils import paths
 
@@ -18,6 +19,17 @@ asciiart = r"""
 ⭐️ Open Source 开源地址: https://github.com/langbot-app/LangBot
 📖 Documentation 文档地址: https://docs.langbot.app
 """
+
+
+def print_text_safe(text: str, stream: TextIO | None = None) -> None:
+    """Print text even when the active console encoding cannot represent it."""
+    target = stream or sys.stdout
+    try:
+        print(text, file=target)
+    except UnicodeEncodeError:
+        encoding = getattr(target, 'encoding', None) or 'utf-8'
+        fallback = text.encode(encoding, errors='replace').decode(encoding, errors='replace')
+        print(fallback, file=target)
 
 
 async def main_entry(loop: asyncio.AbstractEventLoop):
@@ -53,7 +65,7 @@ async def main_entry(loop: asyncio.AbstractEventLoop):
 
         constants.debug_mode = True
 
-    print(asciiart)
+    print_text_safe(asciiart)
 
     # Check dependencies
     from langbot.pkg.core.bootutils import deps
