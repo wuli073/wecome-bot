@@ -163,6 +163,58 @@ async def test_ingest_internal_event_is_idempotent(service_app):
     assert ap.database_mode_event_bus.published_events[0].type == DatabaseModeEventType.MESSAGE_CREATED
 
 
+async def test_ingest_internal_event_does_not_publish_or_persist_partial_writes_when_commit_fails(service_app):
+    service, ap = service_app
+    ap.persistence_mgr.fail_next_commit = True
+
+    with pytest.raises(RuntimeError, match='Simulated commit failure'):
+        await service.ingest_internal_event(_sample_payload())
+
+    local_event_count = (
+        await ap.persistence_mgr.execute_async(
+            sqlalchemy.select(sqlalchemy.func.count()).select_from(persistence_database_mode.LocalConnectorEvent)
+        )
+    ).scalar_one()
+    conversation_count = (
+        await ap.persistence_mgr.execute_async(
+            sqlalchemy.select(sqlalchemy.func.count()).select_from(persistence_database_mode.DatabaseConversation)
+        )
+    ).scalar_one()
+    message_count = (
+        await ap.persistence_mgr.execute_async(
+            sqlalchemy.select(sqlalchemy.func.count()).select_from(persistence_database_mode.DatabaseMessage)
+        )
+    ).scalar_one()
+
+    assert local_event_count == 0
+    assert conversation_count == 0
+    assert message_count == 0
+    assert ap.database_mode_event_bus.published_events == []
+
+
+async def test_ingest_duplicate_message_does_not_persist_event_when_commit_fails(service_app):
+    service, ap = service_app
+    await service.ingest_internal_event(_sample_payload())
+    ap.database_mode_event_bus.published_events.clear()
+
+    duplicate_message_payload = _sample_payload() | {"event_id": "wxwork-local:evt-2"}
+    ap.persistence_mgr.fail_next_commit = True
+
+    with pytest.raises(RuntimeError, match='Simulated commit failure'):
+        await service.ingest_internal_event(duplicate_message_payload)
+
+    local_event_ids = (
+        await ap.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_database_mode.LocalConnectorEvent.event_id).order_by(
+                persistence_database_mode.LocalConnectorEvent.id.asc()
+            )
+        )
+    ).scalars().all()
+
+    assert local_event_ids == ["wxwork-local:evt-1"]
+    assert ap.database_mode_event_bus.published_events == []
+
+
 async def test_generate_draft_publishes_one_updated_event_after_commit(service_app):
     service, ap = service_app
     _, message_id = await _ingest_and_get_message(service)

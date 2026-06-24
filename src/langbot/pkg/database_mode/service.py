@@ -90,100 +90,103 @@ class DatabaseModeService:
         if existing_event is not None:
             return EventIngestResult(accepted=True, duplicate=True, event_id=event_id)
 
-        existing_message = await self._fetch_optional_model(
-            persistence_database_mode.DatabaseMessage,
-            sqlalchemy.select(persistence_database_mode.DatabaseMessage).where(
-                persistence_database_mode.DatabaseMessage.message_key == message_key
-            ),
-        )
-        if existing_message is not None:
-            await self.ap.persistence_mgr.execute_async(
-                sqlalchemy.insert(persistence_database_mode.LocalConnectorEvent).values(
-                    {
-                        'event_id': event_id,
-                        'connector_id': connector_id,
-                        'message_key': message_key,
-                        'status': MESSAGE_STATUS_PROCESSED,
-                        'received_at': observed_at,
-                        'processed_at': self._utcnow(),
-                    }
-                )
-            )
-            return EventIngestResult(accepted=True, duplicate=True, event_id=event_id)
-
-        await self.ap.persistence_mgr.execute_async(
-            sqlalchemy.insert(persistence_database_mode.LocalConnectorEvent).values(
-                {
-                    'event_id': event_id,
-                    'connector_id': connector_id,
-                    'message_key': message_key,
-                    'status': MESSAGE_STATUS_PROCESSING,
-                    'received_at': observed_at,
-                }
-            )
-        )
-
         created_message_id: int | None = None
         conversation_id: int | None = None
-        try:
-            async with self.ap.persistence_mgr.transaction() as conn:
-                conversation = await self._get_or_create_conversation(
-                    connector_id=connector_id,
-                    source=source,
-                    external_conversation_id=external_conversation_id,
-                    conversation_name=conversation_name,
-                    conversation_type=conversation_type,
-                    last_message_at=sent_at,
-                    conn=conn,
-                )
-                conversation_id = int(conversation['id'])
-                insert_result = await conn.execute(
-                    sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+        duplicate_message = False
+        async with self.ap.persistence_mgr.transaction() as conn:
+            existing_message = await self._fetch_optional_model(
+                persistence_database_mode.DatabaseMessage,
+                sqlalchemy.select(persistence_database_mode.DatabaseMessage).where(
+                    persistence_database_mode.DatabaseMessage.message_key == message_key
+                ),
+                conn=conn,
+            )
+            if existing_message is not None:
+                duplicate_message = True
+                await conn.execute(
+                    sqlalchemy.insert(persistence_database_mode.LocalConnectorEvent).values(
                         {
                             'event_id': event_id,
+                            'connector_id': connector_id,
                             'message_key': message_key,
-                            'conversation_id': conversation_id,
-                            'external_message_id': external_message_id,
-                            'sender_id': sender_id,
-                            'sender_name': sender_name,
-                            'content': content,
-                            'message_type': message_type,
-                            'sent_at': sent_at,
-                            'observed_at': observed_at,
-                            'status': MESSAGE_STATUS_PENDING,
-                            'draft_text': None,
-                            'draft_source': None,
-                            'attempt_count': 0,
-                            'last_error': None,
+                            'status': MESSAGE_STATUS_PROCESSED,
+                            'received_at': observed_at,
+                            'processed_at': self._utcnow(),
                         }
                     )
                 )
-                inserted_primary_key = getattr(insert_result, 'inserted_primary_key', None) or ()
-                if inserted_primary_key:
-                    created_message_id = int(inserted_primary_key[0])
-            await self.ap.persistence_mgr.execute_async(
-                sqlalchemy.update(persistence_database_mode.LocalConnectorEvent)
-                .where(persistence_database_mode.LocalConnectorEvent.event_id == event_id)
-                .values(
-                    {
-                        'status': MESSAGE_STATUS_PROCESSED,
-                        'processed_at': self._utcnow(),
-                        'last_error': None,
-                    }
+            else:
+                await conn.execute(
+                    sqlalchemy.insert(persistence_database_mode.LocalConnectorEvent).values(
+                        {
+                            'event_id': event_id,
+                            'connector_id': connector_id,
+                            'message_key': message_key,
+                            'status': MESSAGE_STATUS_PROCESSING,
+                            'received_at': observed_at,
+                        }
+                    )
                 )
-            )
-        except Exception as exc:
-            await self.ap.persistence_mgr.execute_async(
-                sqlalchemy.update(persistence_database_mode.LocalConnectorEvent)
-                .where(persistence_database_mode.LocalConnectorEvent.event_id == event_id)
-                .values(
-                    {
-                        'status': MESSAGE_STATUS_FAILED,
-                        'last_error': str(exc),
-                    }
-                )
-            )
-            raise
+                try:
+                    conversation = await self._get_or_create_conversation(
+                        connector_id=connector_id,
+                        source=source,
+                        external_conversation_id=external_conversation_id,
+                        conversation_name=conversation_name,
+                        conversation_type=conversation_type,
+                        last_message_at=sent_at,
+                        conn=conn,
+                    )
+                    conversation_id = int(conversation['id'])
+                    insert_result = await conn.execute(
+                        sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                            {
+                                'event_id': event_id,
+                                'message_key': message_key,
+                                'conversation_id': conversation_id,
+                                'external_message_id': external_message_id,
+                                'sender_id': sender_id,
+                                'sender_name': sender_name,
+                                'content': content,
+                                'message_type': message_type,
+                                'sent_at': sent_at,
+                                'observed_at': observed_at,
+                                'status': MESSAGE_STATUS_PENDING,
+                                'draft_text': None,
+                                'draft_source': None,
+                                'attempt_count': 0,
+                                'last_error': None,
+                            }
+                        )
+                    )
+                    inserted_primary_key = getattr(insert_result, 'inserted_primary_key', None) or ()
+                    if inserted_primary_key:
+                        created_message_id = int(inserted_primary_key[0])
+                    await conn.execute(
+                        sqlalchemy.update(persistence_database_mode.LocalConnectorEvent)
+                        .where(persistence_database_mode.LocalConnectorEvent.event_id == event_id)
+                        .values(
+                            {
+                                'status': MESSAGE_STATUS_PROCESSED,
+                                'processed_at': self._utcnow(),
+                                'last_error': None,
+                            }
+                        )
+                    )
+                except Exception as exc:
+                    await conn.execute(
+                        sqlalchemy.update(persistence_database_mode.LocalConnectorEvent)
+                        .where(persistence_database_mode.LocalConnectorEvent.event_id == event_id)
+                        .values(
+                            {
+                                'status': MESSAGE_STATUS_FAILED,
+                                'last_error': str(exc),
+                            }
+                        )
+                    )
+                    raise
+        if duplicate_message:
+            return EventIngestResult(accepted=True, duplicate=True, event_id=event_id)
 
         if created_message_id is None:
             created_message = await self._fetch_required_model(
