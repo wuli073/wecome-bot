@@ -46,6 +46,7 @@ from ..telemetry import telemetry as telemetry_module
 from ..survey import manager as survey_module
 from ..skill import manager as skill_mgr
 from ..local_connectors import service as local_connectors_service
+from ..database_mode.events import DatabaseModeEventBus
 from ..database_mode import service as database_mode_service
 
 
@@ -163,6 +164,7 @@ class Application:
     monitoring_service: monitoring_service.MonitoringService = None
 
     database_mode_service: database_mode_service.DatabaseModeService = None
+    database_mode_event_bus: DatabaseModeEventBus | None = None
 
     skill_service: skill_service.SkillService = None
 
@@ -330,6 +332,8 @@ class Application:
         return parsed
 
     def dispose(self):
+        if self.database_mode_event_bus is not None:
+            self.database_mode_event_bus.close()
         if self.local_connectors_service is not None:
             self.local_connectors_service.dispose()
         if self.plugin_connector is not None:
