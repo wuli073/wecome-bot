@@ -180,6 +180,7 @@ async def test_serialize_sse_event_emits_event_and_json_payload():
         message_id=2,
         occurred_at='2026-06-24T10:00:00+00:00',
         event_id='evt-1',
+        metadata={'timings': {'langbot_ingested_at': '2026-06-24T10:00:00.100000+00:00'}},
     )
 
     payload = serialize_sse_event(event)
@@ -187,5 +188,6 @@ async def test_serialize_sse_event_emits_event_and_json_payload():
     assert payload == (
         'event: database-message-created\n'
         'data: {"type": "database-message-created", "conversation_id": 1, "message_id": 2, '
-        '"occurred_at": "2026-06-24T10:00:00+00:00", "event_id": "evt-1"}\n\n'
+        '"occurred_at": "2026-06-24T10:00:00+00:00", "event_id": "evt-1", '
+        '"metadata": {"timings": {"langbot_ingested_at": "2026-06-24T10:00:00.100000+00:00"}}}\n\n'
     )

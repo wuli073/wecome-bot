@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import uuid
+from urllib.parse import urlparse
 
 import jwt
 import quart
@@ -21,6 +22,8 @@ DATABASE_MODE_SSE_COOKIE_PATH = '/api/v1/database-mode/events'
 DATABASE_MODE_SSE_SESSION_VERSION = 1
 DATABASE_MODE_SSE_SESSION_PURPOSE = 'database-mode-sse'
 DATABASE_MODE_SSE_HEARTBEAT_INTERVAL_SECONDS = 15
+DATABASE_MODE_SSE_CORS_ALLOWED_METHODS = 'POST, GET, OPTIONS'
+DATABASE_MODE_SSE_CORS_ALLOWED_HEADERS = 'Authorization, Content-Type'
 
 
 def _get_int_arg(name: str, default: int) -> int:
@@ -31,6 +34,38 @@ def _get_int_arg(name: str, default: int) -> int:
 @group.group_class('database_mode', '/api/v1/database-mode')
 class DatabaseModeRouterGroup(group.RouterGroup):
     async def initialize(self) -> None:
+        @self.quart_app.before_request
+        async def validate_database_mode_sse_origin():
+            if not self._is_sse_request():
+                return None
+
+            origin = self._get_request_origin_header()
+            if origin is None or self._is_allowed_sse_origin(origin):
+                return None
+
+            response = quart.Response('Origin not allowed', status=403)
+            response.vary.add('Origin')
+            setattr(response, '_QUART_CORS_APPLIED', True)
+            return response
+
+        @self.quart_app.after_request
+        async def apply_database_mode_sse_cors(response: quart.Response):
+            if not self._is_sse_request():
+                return response
+
+            response.vary.add('Origin')
+
+            origin = self._get_request_origin_header()
+            if origin is not None and self._is_allowed_sse_origin(origin):
+                response.headers['Access-Control-Allow-Origin'] = origin
+                response.headers['Access-Control-Allow-Credentials'] = 'true'
+                if quart.request.method == 'OPTIONS':
+                    response.headers['Access-Control-Allow-Methods'] = DATABASE_MODE_SSE_CORS_ALLOWED_METHODS
+                    response.headers['Access-Control-Allow-Headers'] = DATABASE_MODE_SSE_CORS_ALLOWED_HEADERS
+
+            setattr(response, '_QUART_CORS_APPLIED', True)
+            return response
+
         @self.route('/events/session', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
         async def create_event_session(user_email: str) -> quart.Response:
             now = datetime.datetime.now(datetime.timezone.utc)
@@ -221,3 +256,33 @@ class DatabaseModeRouterGroup(group.RouterGroup):
             raise ValueError('User not found')
 
         return payload
+
+    def _is_sse_request(self) -> bool:
+        return quart.request.path in {
+            f'{self.path}/events',
+            f'{self.path}/events/session',
+        }
+
+    def _get_request_origin_header(self) -> str | None:
+        origin = quart.request.headers.get('Origin', '').strip()
+        return origin or None
+
+    def _get_public_request_origin(self) -> str:
+        forwarded_proto = quart.request.headers.get('X-Forwarded-Proto', '').split(',')[0].strip()
+        forwarded_host = quart.request.headers.get('X-Forwarded-Host', '').split(',')[0].strip()
+
+        scheme = forwarded_proto or quart.request.scheme
+        host = forwarded_host or quart.request.host
+        return f'{scheme}://{host}'
+
+    def _is_allowed_sse_origin(self, origin: str) -> bool:
+        parsed_origin = urlparse(origin)
+        parsed_request_origin = urlparse(self._get_public_request_origin())
+
+        if parsed_origin.scheme not in {'http', 'https'} or not parsed_origin.hostname:
+            return False
+
+        return (
+            parsed_origin.scheme == parsed_request_origin.scheme
+            and parsed_origin.hostname == parsed_request_origin.hostname
+        )

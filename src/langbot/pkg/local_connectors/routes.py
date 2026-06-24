@@ -82,6 +82,7 @@ class LocalConnectorsRouterGroup(group.RouterGroup):
                     "accepted": result.accepted,
                     "duplicate": result.duplicate,
                     "event_id": result.event_id,
+                    "timings": result.timings,
                 }
             )
 

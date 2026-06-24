@@ -232,3 +232,88 @@ async def test_stream_works_without_last_event_id():
         response = await connection.as_response()
 
     assert response.status_code == 200
+
+
+async def test_sse_preflight_returns_credentialed_cors_headers_for_allowed_origin():
+    client, _ap, scheme = await _make_client()
+    origin = "http://127.0.0.1:3000"
+
+    response = await client.options(
+        "/api/v1/database-mode/events/session",
+        headers={
+            "Origin": origin,
+            "Host": "127.0.0.1:5300",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Authorization, Content-Type",
+        },
+        scheme=scheme,
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Access-Control-Allow-Origin"] == origin
+    assert response.headers["Access-Control-Allow-Credentials"] == "true"
+    assert response.headers["Access-Control-Allow-Methods"] == "POST, GET, OPTIONS"
+    assert response.headers["Access-Control-Allow-Headers"] == "Authorization, Content-Type"
+    assert response.headers["Vary"] == "Origin"
+
+
+async def test_sse_handshake_returns_precise_origin_and_cookie_for_allowed_origin():
+    client, _ap, scheme = await _make_client()
+    origin = "http://127.0.0.1:3000"
+
+    response = await client.post(
+        "/api/v1/database-mode/events/session",
+        headers={
+            "Origin": origin,
+            "Host": "127.0.0.1:5300",
+            "Authorization": "Bearer valid-user-token",
+        },
+        scheme=scheme,
+    )
+
+    assert response.status_code == 204
+    assert response.headers["Access-Control-Allow-Origin"] == origin
+    assert response.headers["Access-Control-Allow-Credentials"] == "true"
+    assert response.headers["Vary"] == "Origin"
+    assert response.headers.get("Set-Cookie") is not None
+    assert response.headers["Access-Control-Allow-Origin"] != "*"
+
+
+async def test_sse_handshake_rejects_disallowed_origin():
+    client, _ap, scheme = await _make_client()
+
+    response = await client.post(
+        "/api/v1/database-mode/events/session",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Host": "127.0.0.1:5300",
+            "Authorization": "Bearer valid-user-token",
+        },
+        scheme=scheme,
+    )
+
+    assert response.status_code == 403
+    assert response.headers.get("Access-Control-Allow-Origin") is None
+    assert response.headers.get("Access-Control-Allow-Credentials") is None
+    assert response.headers["Vary"] == "Origin"
+
+
+async def test_sse_stream_error_response_still_includes_credentialed_cors_headers():
+    client, _ap, scheme = await _make_client()
+    origin = "http://127.0.0.1:3000"
+
+    response = await client.get(
+        "/api/v1/database-mode/events",
+        headers={
+            "Origin": origin,
+            "Host": "127.0.0.1:5300",
+        },
+        scheme=scheme,
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 401
+    assert payload["msg"] == "Missing SSE session cookie"
+    assert response.headers["Access-Control-Allow-Origin"] == origin
+    assert response.headers["Access-Control-Allow-Credentials"] == "true"
+    assert response.headers["Vary"] == "Origin"

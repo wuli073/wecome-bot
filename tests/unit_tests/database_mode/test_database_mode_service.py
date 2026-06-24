@@ -173,6 +173,23 @@ async def test_ingest_internal_event_is_idempotent(service_app):
     assert ap.database_mode_event_bus.published_events[0].type == DatabaseModeEventType.MESSAGE_CREATED
 
 
+async def test_ingest_internal_event_publishes_latency_timestamps(service_app):
+    service, ap = service_app
+    payload = _sample_payload()
+    payload["timings"] = {
+        "langbot_ingested_at": "2026-06-24T10:00:00.100000+00:00",
+        "delivery_succeeded_at": "2026-06-24T10:00:00.050000+00:00",
+    }
+
+    await service.ingest_internal_event(payload)
+
+    event = ap.database_mode_event_bus.published_events[0]
+    assert event.occurred_at is not None
+    assert event.metadata["timings"]["langbot_ingested_at"] == "2026-06-24T10:00:00.100000+00:00"
+    assert event.metadata["timings"]["delivery_succeeded_at"] == "2026-06-24T10:00:00.050000+00:00"
+    assert event.metadata["timings"]["sse_published_at"]
+
+
 async def test_ingest_internal_event_does_not_publish_or_persist_partial_writes_when_commit_fails(service_app):
     service, ap = service_app
     ap.persistence_mgr.fail_next_commit = True

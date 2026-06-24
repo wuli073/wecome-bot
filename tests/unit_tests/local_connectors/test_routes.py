@@ -80,7 +80,12 @@ async def test_internal_event_route_accepts_valid_payload():
     client, ap = await _make_client(
         allow_loopback=True,
         valid_token=True,
-        ingest_result=EventIngestResult(accepted=True, duplicate=True, event_id="evt-2"),
+        ingest_result=EventIngestResult(
+            accepted=True,
+            duplicate=True,
+            event_id="evt-2",
+            timings={"langbot_ingested_at": "2026-06-24T10:00:00.100000+00:00"},
+        ),
     )
     event_payload = {
         "connector_id": "wxwork-local",
@@ -100,6 +105,7 @@ async def test_internal_event_route_accepts_valid_payload():
         "accepted": True,
         "duplicate": True,
         "event_id": "evt-2",
+        "timings": {"langbot_ingested_at": "2026-06-24T10:00:00.100000+00:00"},
     }
     ap.database_mode_service.ingest_internal_event.assert_awaited_once_with(event_payload)
 

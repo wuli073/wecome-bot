@@ -758,6 +758,19 @@ export interface DatabaseModeRealtimeEvent {
   conversation_id?: number | null;
   message_id?: number | null;
   occurred_at?: string | null;
+  metadata?: {
+    timings?: {
+      file_change_detected_at?: string | null;
+      stability_completed_at?: string | null;
+      decrypt_started_at?: string | null;
+      decrypt_completed_at?: string | null;
+      scan_completed_at?: string | null;
+      outbox_created_at?: string | null;
+      delivery_succeeded_at?: string | null;
+      langbot_ingested_at?: string | null;
+      sse_published_at?: string | null;
+    };
+  };
 }
 
 export interface PluginTool {

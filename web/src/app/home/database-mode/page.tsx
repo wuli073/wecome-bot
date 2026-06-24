@@ -1,5 +1,6 @@
 import {
   startTransition,
+  useCallback,
   useEffect,
   useEffectEvent,
   useMemo,
@@ -54,7 +55,6 @@ import {
 
 import {
   useDatabaseModeEvents,
-  type DatabaseModeEventConnectionState,
 } from './hooks/useDatabaseModeEvents';
 import {
   buildDatabaseModeQuerySignature,
@@ -87,7 +87,6 @@ const REFRESH_DEBOUNCE_MS = 200;
 const BUSINESS_POLL_INTERVAL_MS = 15_000;
 const CONNECTOR_POLL_INTERVAL_MS = 5_000;
 
-type RefreshIntent = 'connector' | 'conversations' | 'conversation' | 'messages' | 'all';
 type DatabaseModeConversationDetail = {
   id: number;
   connector_id: string;
@@ -101,6 +100,54 @@ type DatabaseModeConversationDetail = {
   stats: DatabaseModeConversationStats;
   latest_customer: string;
 };
+
+type RefreshIntent = 'conversations' | 'conversation' | 'messages' | 'all';
+type RefreshIntents = {
+  conversations: boolean;
+  conversation: boolean;
+  messages: boolean;
+  all: boolean;
+};
+type DatabaseModeQueryContext = {
+  selectedConversationId: number | null;
+  conversationStatus: string;
+  messageStatus: string;
+  keyword: string;
+  conversationPage: number;
+  conversationPageSize: number;
+  messagePage: number;
+  messagePageSize: number;
+};
+
+function emptyRefreshIntents(): RefreshIntents {
+  return {
+    conversations: false,
+    conversation: false,
+    messages: false,
+    all: false,
+  };
+}
+
+function hasPendingRefreshIntents(intents: RefreshIntents): boolean {
+  return (
+    intents.all ||
+    intents.conversations ||
+    intents.conversation ||
+    intents.messages
+  );
+}
+
+function markRefreshIntent(intents: RefreshIntents, intent: RefreshIntent) {
+  if (intent === 'all') {
+    intents.all = true;
+    intents.conversations = true;
+    intents.conversation = true;
+    intents.messages = true;
+    return;
+  }
+
+  intents[intent] = true;
+}
 
 function statusTone(status: string): string {
   switch (status) {
@@ -149,7 +196,7 @@ function EmptyState({
   action?: React.ReactNode;
 }) {
   return (
-    <Card className="mx-auto max-w-2xl">
+    <Card className="mx-auto w-full min-w-0 max-w-2xl">
       <CardHeader>
         <CardTitle>{title}</CardTitle>
         <CardDescription>{description}</CardDescription>
@@ -215,14 +262,43 @@ export default function DatabaseModePage() {
   const [error, setError] = useState('');
   const [detailsMessage, setDetailsMessage] = useState<DatabaseModeMessage | null>(null);
   const [lastToastEventId, setLastToastEventId] = useState<string | null>(null);
+  const [isPageVisible, setIsPageVisible] = useState(
+    () => document.visibilityState === 'visible',
+  );
 
   const requestVersionRef = useRef(0);
   const refreshTimerRef = useRef<number | null>(null);
-  const inFlightRef = useRef(false);
-  const rerunRef = useRef(false);
-  const pendingIntentsRef = useRef<Set<RefreshIntent>>(new Set());
+  const fallbackPollTimerRef = useRef<number | null>(null);
+  const refreshRunningRef = useRef(false);
+  const rerunRequestedRef = useRef(false);
+  const pendingIntentsRef = useRef<RefreshIntents>(emptyRefreshIntents());
+  const mountedRef = useRef(false);
+  const hasLoadedOnceRef = useRef(false);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
   const scrollTopRef = useRef(0);
+  const draftEditsRef = useRef(draftEdits);
+  const queryContextRef = useRef<DatabaseModeQueryContext>({
+    selectedConversationId,
+    conversationStatus,
+    messageStatus,
+    keyword,
+    conversationPage: CONVERSATION_PAGE,
+    conversationPageSize: CONVERSATION_PAGE_SIZE,
+    messagePage: MESSAGE_PAGE,
+    messagePageSize: MESSAGE_PAGE_SIZE,
+  });
+
+  draftEditsRef.current = draftEdits;
+  queryContextRef.current = {
+    selectedConversationId,
+    conversationStatus,
+    messageStatus,
+    keyword,
+    conversationPage: CONVERSATION_PAGE,
+    conversationPageSize: CONVERSATION_PAGE_SIZE,
+    messagePage: MESSAGE_PAGE,
+    messagePageSize: MESSAGE_PAGE_SIZE,
+  };
 
   const connectorDetailHref = useMemo(
     () => `/home/mcp?id=${encodeURIComponent(connector?.name ?? 'WeCom Local Connector')}`,
@@ -248,16 +324,14 @@ export default function DatabaseModePage() {
   });
 
   const getQuerySignature = useEffectEvent(() =>
-    buildDatabaseModeQuerySignature({
-      selectedConversationId,
-      conversationStatus,
-      messageStatus,
-      keyword,
-      conversationPage: CONVERSATION_PAGE,
-      conversationPageSize: CONVERSATION_PAGE_SIZE,
-      messagePage: MESSAGE_PAGE,
-      messagePageSize: MESSAGE_PAGE_SIZE,
-    }),
+    buildDatabaseModeQuerySignature(queryContextRef.current),
+  );
+
+  const isRequestCurrent = useEffectEvent(
+    (requestVersion: number, querySignature: string) =>
+      mountedRef.current &&
+      requestVersion === requestVersionRef.current &&
+      querySignature === getQuerySignature(),
   );
 
   const applyIfCurrent = useEffectEvent(
@@ -266,124 +340,313 @@ export default function DatabaseModePage() {
       querySignature: string,
       apply: () => void,
     ) => {
-      if (
-        requestVersion !== requestVersionRef.current ||
-        querySignature !== getQuerySignature()
-      ) {
-        return;
+      if (!isRequestCurrent(requestVersion, querySignature)) {
+        return false;
       }
 
       startTransition(() => {
         apply();
       });
+      return true;
     },
   );
 
-  const loadConnector = useEffectEvent(async () => {
+  const loadConnector = useCallback(async () => {
     const response = await httpClient.getLocalConnectorStatus('wxwork-local');
     return response.connector;
-  });
+  }, []);
 
-  const refreshAll = useEffectEvent(async () => {
-    const requestVersion = ++requestVersionRef.current;
-    const querySignature = getQuerySignature();
-    const currentSelectedConversationId = selectedConversationId;
+  const refreshConversations = useCallback(
+    async (context: DatabaseModeQueryContext) => {
+      const response = await httpClient.getDatabaseModeConversations({
+        keyword: context.keyword,
+        status: context.conversationStatus,
+        page: context.conversationPage,
+        page_size: context.conversationPageSize,
+      });
 
-    captureScrollPosition();
+      const nextSelectedConversationId =
+        context.selectedConversationId != null &&
+        response.conversations.some(
+          (item) => item.id === context.selectedConversationId,
+        )
+          ? context.selectedConversationId
+          : response.conversations[0]?.id ?? null;
 
-    const [connectorResp, conversationsResp] = await Promise.all([
-      loadConnector(),
-      httpClient.getDatabaseModeConversations({
-        keyword,
-        status: conversationStatus,
-        page: CONVERSATION_PAGE,
-        page_size: CONVERSATION_PAGE_SIZE,
+      return {
+        conversations: response.conversations,
+        nextSelectedConversationId,
+      };
+    },
+    [],
+  );
+
+  const refreshCurrentConversation = useCallback(
+    async (conversationId: number) =>
+      httpClient.getDatabaseModeConversation(conversationId),
+    [],
+  );
+
+  const refreshCurrentMessages = useCallback(
+    async (conversationId: number, context: DatabaseModeQueryContext) =>
+      httpClient.getDatabaseModeMessages(conversationId, {
+        status: context.messageStatus,
+        page: context.messagePage,
+        page_size: context.messagePageSize,
       }),
-    ]);
+    [],
+  );
 
-    const nextSelectedConversationId =
-      currentSelectedConversationId != null &&
-      conversationsResp.conversations.some(
-        (item) => item.id === currentSelectedConversationId,
-      )
-        ? currentSelectedConversationId
-        : conversationsResp.conversations[0]?.id ?? null;
+  const refreshAll = useCallback(
+    async (
+      requestVersion: number,
+      querySignature: string,
+      context: DatabaseModeQueryContext,
+    ) => {
+      captureScrollPosition();
 
-    applyIfCurrent(requestVersion, querySignature, () => {
-      setConnector(connectorResp);
-      setConversations(conversationsResp.conversations);
-      setSelectedConversationId(nextSelectedConversationId);
-      if (conversationsResp.conversations.length === 0) {
-        setSelectedConversation(null);
-        setMessages([]);
-        setStats(null);
-        setSelectedMessageIds([]);
+      const [connectorResp, conversationsResp] = await Promise.all([
+        loadConnector(),
+        refreshConversations(context),
+      ]);
+
+      let conversationResp: Awaited<ReturnType<typeof refreshCurrentConversation>> | null = null;
+      let messagesResp: Awaited<ReturnType<typeof refreshCurrentMessages>> | null = null;
+
+      if (conversationsResp.nextSelectedConversationId != null) {
+        [conversationResp, messagesResp] = await Promise.all([
+          refreshCurrentConversation(conversationsResp.nextSelectedConversationId),
+          refreshCurrentMessages(
+            conversationsResp.nextSelectedConversationId,
+            context,
+          ),
+        ]);
       }
-    });
 
-    if (nextSelectedConversationId == null) {
-      applyIfCurrent(requestVersion, querySignature, () => {
+      const didApply = applyIfCurrent(requestVersion, querySignature, () => {
+        setConnector(connectorResp);
+        setConversations(conversationsResp.conversations);
+
+        if (conversationsResp.nextSelectedConversationId !== context.selectedConversationId) {
+          setSelectedConversationId(conversationsResp.nextSelectedConversationId);
+        }
+
+        if (
+          conversationsResp.nextSelectedConversationId == null ||
+          conversationResp == null ||
+          messagesResp == null
+        ) {
+          setSelectedConversation(null);
+          setMessages([]);
+          setStats(null);
+          setSelectedMessageIds([]);
+          setLoading(false);
+          return;
+        }
+
+        setSelectedConversation(conversationResp.conversation);
+        setStats(messagesResp.stats);
+        setMessages(
+          mergeServerMessagesWithDrafts(
+            messagesResp.messages,
+            draftEditsRef.current,
+          ),
+        );
+        setSelectedMessageIds((current) =>
+          current.filter((messageId) =>
+            messagesResp.messages.some((message) => message.id === messageId),
+          ),
+        );
         setLoading(false);
       });
+
+      if (didApply && messagesResp != null) {
+        window.requestAnimationFrame(() => {
+          restoreScrollPosition();
+        });
+      }
+
+      if (didApply) {
+        hasLoadedOnceRef.current = true;
+      }
+    },
+    [
+      applyIfCurrent,
+      captureScrollPosition,
+      loadConnector,
+      refreshConversations,
+      refreshCurrentConversation,
+      refreshCurrentMessages,
+      restoreScrollPosition,
+    ],
+  );
+
+  const consumeRefreshIntents = useCallback(() => {
+    const intents = pendingIntentsRef.current;
+    pendingIntentsRef.current = emptyRefreshIntents();
+    return intents.all
+      ? {
+          conversations: true,
+          conversation: true,
+          messages: true,
+          all: true,
+        }
+      : intents;
+  }, []);
+
+  const executeRefresh = useCallback(
+    async (intents: RefreshIntents) => {
+      const context = { ...queryContextRef.current };
+      const requestVersion = ++requestVersionRef.current;
+      const querySignature = buildDatabaseModeQuerySignature(context);
+
+      if (intents.all || intents.conversations) {
+        await refreshAll(requestVersion, querySignature, context);
+        return;
+      }
+
+      if (context.selectedConversationId == null) {
+        const didApply = applyIfCurrent(requestVersion, querySignature, () => {
+          setSelectedConversation(null);
+          setMessages([]);
+          setStats(null);
+          setSelectedMessageIds([]);
+          setLoading(false);
+        });
+        if (didApply) {
+          hasLoadedOnceRef.current = true;
+        }
+        return;
+      }
+
+      captureScrollPosition();
+
+      const [conversationResp, messagesResp] = await Promise.all([
+        intents.conversation
+          ? refreshCurrentConversation(context.selectedConversationId)
+          : Promise.resolve(null),
+        intents.messages
+          ? refreshCurrentMessages(context.selectedConversationId, context)
+          : Promise.resolve(null),
+      ]);
+
+      const didApply = applyIfCurrent(requestVersion, querySignature, () => {
+        if (conversationResp != null) {
+          setSelectedConversation(conversationResp.conversation);
+        }
+
+        if (messagesResp != null) {
+          setStats(messagesResp.stats);
+          setMessages(
+            mergeServerMessagesWithDrafts(
+              messagesResp.messages,
+              draftEditsRef.current,
+            ),
+          );
+          setSelectedMessageIds((current) =>
+            current.filter((messageId) =>
+              messagesResp.messages.some((message) => message.id === messageId),
+            ),
+          );
+        }
+
+        setLoading(false);
+      });
+
+      if (didApply && messagesResp != null) {
+        window.requestAnimationFrame(() => {
+          restoreScrollPosition();
+        });
+      }
+
+      if (didApply) {
+        hasLoadedOnceRef.current = true;
+      }
+    },
+    [
+      applyIfCurrent,
+      captureScrollPosition,
+      refreshAll,
+      refreshCurrentConversation,
+      refreshCurrentMessages,
+      restoreScrollPosition,
+    ],
+  );
+
+  const runRefreshCycle = useEffectEvent(async () => {
+    if (!mountedRef.current || refreshRunningRef.current) {
       return;
     }
 
-    const [conversationResp, messagesResp] = await Promise.all([
-      httpClient.getDatabaseModeConversation(nextSelectedConversationId),
-      httpClient.getDatabaseModeMessages(nextSelectedConversationId, {
-        status: messageStatus,
-        page: MESSAGE_PAGE,
-        page_size: MESSAGE_PAGE_SIZE,
-      }),
-    ]);
+    refreshRunningRef.current = true;
+    let shouldScheduleAnotherCycle = false;
 
-    applyIfCurrent(requestVersion, querySignature, () => {
-      setSelectedConversation(conversationResp.conversation);
-      setStats(messagesResp.stats);
-      setMessages(
-        mergeServerMessagesWithDrafts(messagesResp.messages, draftEdits),
-      );
-      setSelectedMessageIds((current) =>
-        current.filter((messageId) =>
-          messagesResp.messages.some((message) => message.id === messageId),
-        ),
-      );
-      setLoading(false);
-    });
+    try {
+      let runCount = 0;
 
-    window.requestAnimationFrame(() => {
-      restoreScrollPosition();
-    });
-  });
+      do {
+        rerunRequestedRef.current = false;
+        const intents = consumeRefreshIntents();
+        if (!hasPendingRefreshIntents(intents)) {
+          break;
+        }
 
-  const scheduleRefresh = useEffectEvent((intent: RefreshIntent) => {
-    pendingIntentsRef.current.add(intent);
+        await executeRefresh(intents);
+        runCount += 1;
 
-    if (inFlightRef.current) {
-      rerunRef.current = true;
-      return;
-    }
-
-    if (refreshTimerRef.current != null) {
-      window.clearTimeout(refreshTimerRef.current);
-    }
-
-    refreshTimerRef.current = window.setTimeout(async () => {
-      inFlightRef.current = true;
-      pendingIntentsRef.current.clear();
-      try {
-        await refreshAll();
-      } catch (err) {
+        if (rerunRequestedRef.current && runCount >= 2) {
+          rerunRequestedRef.current = false;
+          shouldScheduleAnotherCycle = true;
+          break;
+        }
+      } while (rerunRequestedRef.current);
+    } catch (err) {
+      if (mountedRef.current) {
         setError((err as { msg?: string }).msg || t('databaseMode.loadFailed'));
         setLoading(false);
-      } finally {
-        inFlightRef.current = false;
-        if (rerunRef.current) {
-          rerunRef.current = false;
-          scheduleRefresh('all');
+      }
+    } finally {
+      refreshRunningRef.current = false;
+
+      if (shouldScheduleAnotherCycle && mountedRef.current) {
+        markRefreshIntent(pendingIntentsRef.current, 'all');
+        if (refreshTimerRef.current == null) {
+          refreshTimerRef.current = window.setTimeout(() => {
+            refreshTimerRef.current = null;
+            void runRefreshCycle();
+          }, REFRESH_DEBOUNCE_MS);
         }
       }
-    }, REFRESH_DEBOUNCE_MS);
+    }
+  });
+
+  const scheduleRefresh = useCallback(
+    (intent: RefreshIntent) => {
+      if (!mountedRef.current) {
+        return;
+      }
+
+      markRefreshIntent(pendingIntentsRef.current, intent);
+
+      if (refreshRunningRef.current) {
+        rerunRequestedRef.current = true;
+        return;
+      }
+
+      if (refreshTimerRef.current != null) {
+        window.clearTimeout(refreshTimerRef.current);
+      }
+
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null;
+        void runRefreshCycle();
+      }, REFRESH_DEBOUNCE_MS);
+    },
+    [runRefreshCycle],
+  );
+
+  const requestRefresh = useEffectEvent((intent: RefreshIntent) => {
+    scheduleRefresh(intent);
   });
 
   const withBusy = useEffectEvent(async (key: string, action: () => Promise<void>) => {
@@ -398,11 +661,24 @@ export default function DatabaseModePage() {
   });
 
   const handleRealtimeEvent = useEffectEvent((event: DatabaseModeRealtimeEvent) => {
+    if (import.meta.env.DEV) {
+      const publishedAt = event.metadata?.timings?.sse_published_at;
+      if (publishedAt) {
+        const latencyMs = Math.max(0, Date.now() - Date.parse(publishedAt));
+        console.debug('[database-mode] sse-event', {
+          type: event.type,
+          eventId: event.event_id,
+          latencyMs,
+        });
+      }
+    }
+
     switch (event.type) {
       case 'ready':
         scheduleRefresh('all');
         return;
       case 'database-conversation-updated':
+        scheduleRefresh('conversations');
         scheduleRefresh('conversation');
         return;
       case 'database-message-created':
@@ -410,10 +686,14 @@ export default function DatabaseModePage() {
           setLastToastEventId(event.event_id);
           toast.message(t('databaseMode.refreshing'));
         }
+        scheduleRefresh('conversations');
+        scheduleRefresh('conversation');
         scheduleRefresh('messages');
         return;
       case 'database-message-updated':
       case 'database-message-deleted':
+        scheduleRefresh('conversations');
+        scheduleRefresh('conversation');
         scheduleRefresh('messages');
         return;
       case 'database-mode-invalidated':
@@ -424,25 +704,36 @@ export default function DatabaseModePage() {
 
   const { connectionState } = useDatabaseModeEvents({
     enabled: connectorConfigured,
-    onConnectRefresh: () => {
-      scheduleRefresh('all');
-    },
     onEvent: handleRealtimeEvent,
   });
 
   useEffect(() => {
-    setLoading(true);
-    setError('');
-    scheduleRefresh('all');
-  }, [conversationStatus, keyword, messageStatus]);
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+      rerunRequestedRef.current = false;
+      pendingIntentsRef.current = emptyRefreshIntents();
+
+      if (refreshTimerRef.current != null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+
+      if (fallbackPollTimerRef.current != null) {
+        window.clearInterval(fallbackPollTimerRef.current);
+        fallbackPollTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
-    if (selectedConversationId == null) {
-      return;
+    setError('');
+    if (!hasLoadedOnceRef.current) {
+      setLoading(true);
     }
-
-    scheduleRefresh('all');
-  }, [selectedConversationId]);
+    requestRefresh('all');
+  }, [conversationStatus, keyword, messageStatus]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -459,41 +750,51 @@ export default function DatabaseModePage() {
   }, []);
 
   useEffect(() => {
-    if (connectionState === 'connected') {
+    if (fallbackPollTimerRef.current != null) {
+      window.clearInterval(fallbackPollTimerRef.current);
+      fallbackPollTimerRef.current = null;
+
+      if (import.meta.env.DEV) {
+        console.debug('[database-mode] fallback-poll-stop');
+      }
+    }
+
+    if (!mountedRef.current || connectionState !== 'disconnected' || !isPageVisible) {
       return;
     }
 
-    if (document.visibilityState !== 'visible') {
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      scheduleRefresh('all');
+    fallbackPollTimerRef.current = window.setInterval(() => {
+      requestRefresh('all');
     }, BUSINESS_POLL_INTERVAL_MS);
 
+    if (import.meta.env.DEV) {
+      console.debug('[database-mode] fallback-poll-start');
+    }
+
     return () => {
-      window.clearInterval(timer);
+      if (fallbackPollTimerRef.current != null) {
+        window.clearInterval(fallbackPollTimerRef.current);
+        fallbackPollTimerRef.current = null;
+
+        if (import.meta.env.DEV) {
+          console.debug('[database-mode] fallback-poll-stop');
+        }
+      }
     };
-  }, [connectionState]);
+  }, [connectionState, isPageVisible]);
 
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        scheduleRefresh('all');
+      const visible = document.visibilityState === 'visible';
+      setIsPageVisible(visible);
+      if (visible) {
+        requestRefresh('all');
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (refreshTimerRef.current != null) {
-        window.clearTimeout(refreshTimerRef.current);
-      }
     };
   }, []);
 
@@ -525,7 +826,15 @@ export default function DatabaseModePage() {
             <button
               key={conversation.id}
               type="button"
-              onClick={() => setSelectedConversationId(conversation.id)}
+              onClick={() => {
+                if (conversation.id === selectedConversationId) {
+                  return;
+                }
+
+                setSelectedConversationId(conversation.id);
+                scheduleRefresh('conversation');
+                scheduleRefresh('messages');
+              }}
               className={`w-full rounded-lg border p-3 text-left transition-colors ${
                 conversation.id === selectedConversationId
                   ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30'

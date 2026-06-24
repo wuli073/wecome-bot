@@ -26,7 +26,6 @@ const EVENT_TYPES: DatabaseModeRealtimeEventType[] = [
 ];
 
 type DatabaseModeListener = {
-  onConnectRefresh: () => void;
   onEvent: (event: DatabaseModeRealtimeEvent) => void;
   onStateChange: (state: DatabaseModeEventConnectionState) => void;
 };
@@ -70,16 +69,7 @@ function cleanupSharedSource() {
 
 function emitEvent(event: DatabaseModeRealtimeEvent) {
   for (const listener of sharedListeners) {
-    if (event.type === 'ready') {
-      listener.onConnectRefresh();
-    }
     listener.onEvent(event);
-  }
-}
-
-function emitConnectRefresh() {
-  for (const listener of sharedListeners) {
-    listener.onConnectRefresh();
   }
 }
 
@@ -122,12 +112,12 @@ async function ensureConnection() {
     withCredentials: true,
   });
   sharedSource = source;
+  let readyHandled = false;
 
   source.onopen = () => {
     sharedRetryCount = 0;
     sharedConnecting = false;
     emitState('connected');
-    emitConnectRefresh();
   };
 
   source.onerror = () => {
@@ -139,6 +129,13 @@ async function ensureConnection() {
     source.addEventListener(type, (event) => {
       try {
         const payload = JSON.parse((event as MessageEvent).data) as DatabaseModeRealtimeEvent;
+        if (payload.type === 'ready') {
+          if (readyHandled) {
+            return;
+          }
+
+          readyHandled = true;
+        }
         emitEvent(payload);
       } catch (_error) {
         // Ignore malformed events and wait for the next reconnect/refresh.
@@ -149,17 +146,14 @@ async function ensureConnection() {
 
 export function useDatabaseModeEvents({
   enabled,
-  onConnectRefresh,
   onEvent,
 }: {
   enabled: boolean;
-  onConnectRefresh: () => void;
   onEvent: (event: DatabaseModeRealtimeEvent) => void;
 }) {
   const [connectionState, setConnectionState] =
     useState<DatabaseModeEventConnectionState>(sharedState);
 
-  const connectRefreshHandler = useEffectEvent(onConnectRefresh);
   const eventHandler = useEffectEvent(onEvent);
   const stateChangeHandler = useEffectEvent(
     (state: DatabaseModeEventConnectionState) => {
@@ -174,7 +168,6 @@ export function useDatabaseModeEvents({
     }
 
     const listener: DatabaseModeListener = {
-      onConnectRefresh: () => connectRefreshHandler(),
       onEvent: (event) => eventHandler(event),
       onStateChange: (state) => stateChangeHandler(state),
     };

@@ -35,6 +35,7 @@ class EventIngestResult:
     accepted: bool
     duplicate: bool
     event_id: str
+    timings: dict | None = None
 
 
 class DatabaseModeService:
@@ -54,6 +55,7 @@ class DatabaseModeService:
             raise ValueError('event_id and message_key are required')
 
         source = str(payload.get('source') or 'wxwork').strip() or 'wxwork'
+        timings = payload.get('timings') if isinstance(payload.get('timings'), dict) else {}
         conversation_payload = payload.get('conversation') or {}
         message_payload = payload.get('message') or {}
 
@@ -192,12 +194,24 @@ class DatabaseModeService:
             created_message_id = int(created_message.id)
             conversation_id = int(created_message.conversation_id)
 
-        await self._publish_event(
+        published_timings = {
+            key: str(value)
+            for key, value in timings.items()
+            if key and value
+        }
+        published_timings.setdefault('langbot_ingested_at', self._to_iso(self._utcnow()))
+        published_timings = await self._publish_event(
             DatabaseModeEventType.MESSAGE_CREATED,
             conversation_id=conversation_id,
             message_id=created_message_id,
+            metadata={'timings': published_timings},
         )
-        return EventIngestResult(accepted=True, duplicate=False, event_id=event_id)
+        return EventIngestResult(
+            accepted=True,
+            duplicate=False,
+            event_id=event_id,
+            timings=published_timings.get('timings') if isinstance(published_timings, dict) else None,
+        )
 
     async def list_conversations(
         self,
@@ -738,17 +752,26 @@ class DatabaseModeService:
         *,
         conversation_id: int | None = None,
         message_id: int | None = None,
-    ) -> None:
+        metadata: dict | None = None,
+    ) -> dict | None:
         if getattr(self.ap, 'database_mode_event_bus', None) is None:
-            return
+            return metadata
+        published_metadata = dict(metadata or {})
+        timings = published_metadata.get('timings')
+        if isinstance(timings, dict):
+            timings = dict(timings)
+            timings['sse_published_at'] = self._to_iso(self._utcnow())
+            published_metadata['timings'] = timings
         await self.ap.database_mode_event_bus.publish(
             DatabaseModeEvent(
                 type=event_type,
                 conversation_id=conversation_id,
                 message_id=message_id,
                 occurred_at=self._to_iso(self._utcnow()),
+                metadata=published_metadata or None,
             )
         )
+        return published_metadata or None
 
     @staticmethod
     def _string_or_none(value: object) -> str | None:

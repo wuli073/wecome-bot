@@ -27,6 +27,7 @@ class DatabaseModeEvent:
     message_id: int | None = None
     occurred_at: str | None = None
     event_id: str = dataclasses.field(default_factory=lambda: str(uuid.uuid4()))
+    metadata: dict | None = None
 
 
 @dataclasses.dataclass(slots=True)
