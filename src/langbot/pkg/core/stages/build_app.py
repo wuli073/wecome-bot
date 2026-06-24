@@ -40,6 +40,7 @@ from .. import taskmgr
 from ...telemetry import telemetry as telemetry_module
 from ...survey import manager as survey_module
 from ...local_connectors import service as local_connectors_service
+from ...database_mode.events import DatabaseModeEventBus
 from ...database_mode import service as database_mode_service
 
 
@@ -118,6 +119,7 @@ class BuildAppStage(stage.BootingStage):
         local_connectors_service_inst = local_connectors_service.LocalConnectorsService(ap)
         ap.local_connectors_service = local_connectors_service_inst
         await local_connectors_service_inst.initialize_builtin_mcp_servers()
+        await local_connectors_service_inst.restore_configured_connectors()
 
         # Telemetry manager: attach to app so other components can call via self.ap.telemetry
         telemetry_inst = telemetry_module.TelemetryManager(ap)
@@ -146,8 +148,9 @@ class BuildAppStage(stage.BootingStage):
         ap.box_service = box_service_inst
 
         llm_tool_mgr_inst = llm_tool_mgr.ToolManager(ap)
-        await llm_tool_mgr_inst.initialize()
         ap.tool_mgr = llm_tool_mgr_inst
+        await llm_tool_mgr_inst.initialize()
+        await local_connectors_service_inst.restore_configured_connectors()
 
         im_mgr_inst = im_mgr.PlatformManager(ap=ap)
         await im_mgr_inst.initialize()
@@ -188,6 +191,12 @@ class BuildAppStage(stage.BootingStage):
 
         monitoring_service_inst = monitoring_service.MonitoringService(ap)
         ap.monitoring_service = monitoring_service_inst
+
+        ap.database_mode_event_bus = DatabaseModeEventBus()
+        ap.logger.info(
+            f'database_mode_event_bus_created event_bus_instance_id={ap.database_mode_event_bus.instance_id} '
+            f'subscriber_count={ap.database_mode_event_bus.subscriber_count}'
+        )
 
         database_mode_service_inst = database_mode_service.DatabaseModeService(ap)
         ap.database_mode_service = database_mode_service_inst

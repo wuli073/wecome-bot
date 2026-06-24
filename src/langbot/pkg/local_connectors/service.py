@@ -15,7 +15,7 @@ from .connectors.wechat import WechatLocalConnector
 from .connectors.wxwork import WxworkLocalConnector
 from .jobs import LocalConnectorJobStore
 from .models import BUILTIN_CONNECTORS, BuiltinConnectorDefinition
-from .process_manager import LocalConnectorProcessManager, PortInUseError
+from .process_manager import LocalConnectorProcessManager, PortInUseError, ProcessReadyTimeoutError
 from .repository import LocalConnectorRepository
 from .runtime_bridge import LocalConnectorRuntimeBridge
 
@@ -41,6 +41,7 @@ class LocalConnectorsService:
             "wechat-local": WechatLocalConnector(self._definitions["wechat-local"]),
             "wxwork-local": WxworkLocalConnector(self._definitions["wxwork-local"]),
         }
+        self._connector_operation_locks: dict[str, asyncio.Lock] = {}
 
     def _platform_supported(self) -> bool:
         return sys.platform.startswith("win")
@@ -92,6 +93,137 @@ class LocalConnectorsService:
         state["updated_at"] = time.time()
         self.repository.save_state(connector_id, state)
         return state
+
+    def _get_operation_lock(self, connector_id: str) -> asyncio.Lock:
+        lock = self._connector_operation_locks.get(connector_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._connector_operation_locks[connector_id] = lock
+        return lock
+
+    def _log_connector_stage(
+        self,
+        stage: str,
+        *,
+        connector_id: str,
+        role: str,
+        started_monotonic: float,
+        pid: int | None = None,
+        port: int | None = None,
+    ) -> None:
+        logger = getattr(self.ap, "logger", None)
+        if logger is None:
+            return
+        elapsed_ms = int((time.monotonic() - started_monotonic) * 1000)
+        logger.info(
+            "local_connector_stage "
+            f"stage={stage} connector_id={connector_id} role={role} pid={pid} port={port} elapsed_ms={elapsed_ms}"
+        )
+
+    async def _ensure_worker_process_ready(self, connector_id: str, *, started_monotonic: float) -> dict:
+        connector = self._get_connector(connector_id)
+        runtime_dir = str(self.repository.connector_runtime_dir(connector_id))
+        self._save_state(
+            connector_id,
+            status=schemas.JOB_STAGE_STARTING_MCP,
+            last_error_code=None,
+            last_error_message=None,
+        )
+        record = await self.process_manager.start(connector, runtime_dir, role=schemas.PROCESS_ROLE_MCP)
+        self._log_connector_stage(
+            "worker_spawned",
+            connector_id=connector_id,
+            role=schemas.PROCESS_ROLE_MCP,
+            started_monotonic=started_monotonic,
+            pid=record.get("controller_pid") or record.get("pid"),
+            port=connector.port,
+        )
+        self._log_connector_stage(
+            "tcp_ready",
+            connector_id=connector_id,
+            role=schemas.PROCESS_ROLE_MCP,
+            started_monotonic=started_monotonic,
+            pid=record.get("pid"),
+            port=connector.port,
+        )
+        runtime_info = await self.runtime_bridge.wait_for_mcp_protocol_ready(
+            self._definitions[connector_id].url,
+            expected_tool_names=connector.expected_tool_names,
+        )
+        self._save_state(
+            connector_id,
+            status=schemas.CONNECTOR_STATUS_CONNECTED,
+            tool_count=runtime_info.get("tool_count", 0),
+            last_error_code=None,
+            last_error_message=None,
+        )
+        self._log_connector_stage(
+            "mcp_protocol_ready",
+            connector_id=connector_id,
+            role=schemas.PROCESS_ROLE_MCP,
+            started_monotonic=started_monotonic,
+            pid=record.get("pid"),
+            port=connector.port,
+        )
+        return runtime_info
+
+    async def _ensure_builtin_session_ready(self, connector_id: str, *, started_monotonic: float) -> dict | None:
+        if getattr(self.ap, "tool_mgr", None) is None:
+            return None
+
+        connector = self._get_connector(connector_id)
+        runtime_info = await self.runtime_bridge.ensure_session_ready(
+            connector_id,
+            expected_tool_names=connector.expected_tool_names,
+        )
+        if runtime_info is None:
+            return None
+
+        self._save_state(
+            connector_id,
+            status=schemas.CONNECTOR_STATUS_CONNECTED,
+            tool_count=runtime_info.get("tool_count", 0),
+            last_error_code=None,
+            last_error_message=None,
+        )
+        self._log_connector_stage(
+            "mcp_session_ready",
+            connector_id=connector_id,
+            role=schemas.PROCESS_ROLE_MCP,
+            started_monotonic=started_monotonic,
+            pid=self.process_manager.get_process_record(connector_id, role=schemas.PROCESS_ROLE_MCP).get("pid")
+            if self.process_manager.get_process_record(connector_id, role=schemas.PROCESS_ROLE_MCP)
+            else None,
+            port=connector.port,
+        )
+        return runtime_info
+
+    async def _wait_for_monitor_ready(self, connector_id: str) -> None:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            runtime_info = self.repository.read_monitor_runtime_info(connector_id)
+            if runtime_info.get("running_status"):
+                return
+            await asyncio.sleep(0.2)
+
+    async def _restore_connector(self, connector_id: str, *, allow_session_restore: bool) -> None:
+        connector = self._get_connector(connector_id)
+        started_monotonic = time.monotonic()
+        self._log_connector_stage(
+            "restore_started",
+            connector_id=connector_id,
+            role=schemas.PROCESS_ROLE_MCP,
+            started_monotonic=started_monotonic,
+            port=connector.port,
+        )
+        async with self._get_operation_lock(connector_id):
+            await self._ensure_worker_process_ready(connector_id, started_monotonic=started_monotonic)
+            if allow_session_restore:
+                await self._ensure_builtin_session_ready(connector_id, started_monotonic=started_monotonic)
+
+            state = self._base_state(self._definitions[connector_id], self.repository.load_state(connector_id))
+            if connector_id == "wxwork-local" and state.get("monitor_enabled"):
+                await self.start_monitor(connector_id, enable_on_success=True)
 
     async def initialize_builtin_mcp_servers(self) -> list[str]:
         result = await self.ap.persistence_mgr.execute_async(sqlalchemy.select(persistence_mcp.MCPServer))
@@ -312,7 +444,7 @@ class LocalConnectorsService:
             self._save_state(connector_id, status=schemas.JOB_STAGE_EXTRACTING_KEY)
             elevated = await uac_helper.run_elevated_extract(
                 connector.resolve_python_executable(),
-                connector.resolve_decrypt_dir() / "connector_cli.py",
+                connector.resolve_entrypoint("connector_cli.py"),
                 connector.cli_connector_name,
                 runtime_dir,
                 self.repository.connector_dir(connector_id) / "jobs" / f"{job['job_id']}-extract.json",
@@ -345,16 +477,33 @@ class LocalConnectorsService:
                 decrypted_dir=decrypt_result.get("decrypted_dir"),
             )
             try:
-                await self.process_manager.start(connector, runtime_dir, role=schemas.PROCESS_ROLE_MCP)
+                started_monotonic = time.monotonic()
+                await self._ensure_worker_process_ready(connector_id, started_monotonic=started_monotonic)
             except PortInUseError as exc:
                 raise LocalConnectorSetupError("PORT_IN_USE", str(exc), schemas.JOB_STAGE_STARTING_MCP) from exc
+            except ProcessReadyTimeoutError as exc:
+                raise LocalConnectorSetupError(
+                    "MCP_TCP_NOT_READY",
+                    str(exc),
+                    schemas.JOB_STAGE_STARTING_MCP,
+                ) from exc
+            except TimeoutError as exc:
+                raise LocalConnectorSetupError(
+                    "MCP_PROTOCOL_NOT_READY",
+                    str(exc),
+                    schemas.JOB_STAGE_TESTING_MCP,
+                ) from exc
 
             self.job_store.update(job, stage=schemas.JOB_STAGE_TESTING_MCP, progress=80)
             self._save_state(connector_id, status=schemas.JOB_STAGE_TESTING_MCP)
 
             self.job_store.update(job, stage=schemas.JOB_STAGE_ENABLING_MCP, progress=90)
             self._save_state(connector_id, status=schemas.JOB_STAGE_ENABLING_MCP)
-            runtime_info = await self.runtime_bridge.enable_and_refresh(connector_id)
+            runtime_info = await self._ensure_builtin_session_ready(
+                connector_id,
+                started_monotonic=started_monotonic,
+            )
+            runtime_info = runtime_info or {"tool_count": 0, "tools": []}
 
             tool_names = {tool["name"] for tool in runtime_info.get("tools", [])}
             if not set(connector.expected_tool_names).issubset(tool_names):
@@ -427,6 +576,8 @@ class LocalConnectorsService:
             return schemas.CONNECTOR_STATUS_PERMISSION_REQUIRED
         if error_code == "PORT_IN_USE":
             return schemas.CONNECTOR_STATUS_PORT_IN_USE
+        if error_code in {"MCP_TCP_NOT_READY", "MCP_PROTOCOL_NOT_READY"}:
+            return schemas.CONNECTOR_STATUS_RUNTIME_ERROR
         if stage == schemas.JOB_STAGE_DECRYPTING:
             return schemas.CONNECTOR_STATUS_DECRYPT_FAILED
         if stage == schemas.JOB_STAGE_STARTING_MCP:
@@ -434,7 +585,6 @@ class LocalConnectorsService:
         return schemas.CONNECTOR_STATUS_RUNTIME_ERROR
 
     async def start_worker(self, connector_id: str) -> dict:
-        connector = self._get_connector(connector_id)
         state = self._base_state(self._definitions[connector_id], self.repository.load_state(connector_id))
         if not self._configured(state):
             return self._save_state(
@@ -444,9 +594,21 @@ class LocalConnectorsService:
                 last_error_message="Run setup before starting the worker",
             )
 
-        runtime_dir = str(self.repository.connector_runtime_dir(connector_id))
         try:
-            await self.process_manager.start(connector, runtime_dir, role=schemas.PROCESS_ROLE_MCP)
+            started_monotonic = time.monotonic()
+            self._log_connector_stage(
+                "restore_started",
+                connector_id=connector_id,
+                role=schemas.PROCESS_ROLE_MCP,
+                started_monotonic=started_monotonic,
+                port=self._get_connector(connector_id).port,
+            )
+            async with self._get_operation_lock(connector_id):
+                await self._ensure_worker_process_ready(connector_id, started_monotonic=started_monotonic)
+                runtime_info = await self._ensure_builtin_session_ready(
+                    connector_id,
+                    started_monotonic=started_monotonic,
+                )
         except PortInUseError as exc:
             return self._save_state(
                 connector_id,
@@ -454,15 +616,19 @@ class LocalConnectorsService:
                 last_error_code="PORT_IN_USE",
                 last_error_message=str(exc),
             )
+        except (ProcessReadyTimeoutError, TimeoutError) as exc:
+            return self._save_state(
+                connector_id,
+                status=schemas.CONNECTOR_STATUS_RUNTIME_ERROR,
+                last_error_code="STARTUP_TIMEOUT",
+                last_error_message=str(exc),
+            )
 
-        status, tool_count = await self._refresh_runtime_if_enabled(
-            connector_id,
-            fallback_status=schemas.JOB_STAGE_STARTING_MCP,
-        )
+        runtime_info = runtime_info or self.repository.load_state(connector_id) or {}
         return self._save_state(
             connector_id,
-            status=status,
-            tool_count=tool_count,
+            status=schemas.CONNECTOR_STATUS_CONNECTED,
+            tool_count=runtime_info.get("tool_count", state.get("tool_count", 0)),
             last_error_code=None,
             last_error_message=None,
         )
@@ -486,11 +652,18 @@ class LocalConnectorsService:
                 last_error_code="PORT_IN_USE",
                 last_error_message=str(exc),
             )
-        status, tool_count = await self._refresh_runtime_if_enabled(
+        started_monotonic = time.monotonic()
+        await self._ensure_worker_process_ready(connector_id, started_monotonic=started_monotonic)
+        runtime_info = await self._ensure_builtin_session_ready(
             connector_id,
-            fallback_status=schemas.JOB_STAGE_STARTING_MCP,
+            started_monotonic=started_monotonic,
         )
-        return self._save_state(connector_id, status=status, tool_count=tool_count)
+        runtime_info = runtime_info or self.repository.load_state(connector_id) or {}
+        return self._save_state(
+            connector_id,
+            status=schemas.CONNECTOR_STATUS_CONNECTED,
+            tool_count=runtime_info.get("tool_count", 0),
+        )
 
     async def refresh_connector(self, connector_id: str) -> dict:
         connector = self._get_connector(connector_id)
@@ -573,6 +746,16 @@ class LocalConnectorsService:
                 last_error_code="NOT_CONFIGURED",
                 last_error_message="Run setup before starting the monitor",
             )
+        started_monotonic = time.monotonic()
+        self._log_connector_stage(
+            "restore_started",
+            connector_id=connector_id,
+            role=schemas.PROCESS_ROLE_MONITOR,
+            started_monotonic=started_monotonic,
+        )
+        await self._ensure_worker_process_ready(connector_id, started_monotonic=started_monotonic)
+        if getattr(self.ap, "tool_mgr", None) is not None:
+            await self._ensure_builtin_session_ready(connector_id, started_monotonic=started_monotonic)
         self.repository.ensure_internal_event_token(connector_id)
         runtime_dir = str(self.repository.connector_runtime_dir(connector_id))
         env_overrides = {
@@ -580,11 +763,26 @@ class LocalConnectorsService:
             "WECOME_INTERNAL_EVENT_TOKEN_FILE": str(self.repository.internal_event_token_file(connector_id)),
             "WECOME_MONITOR_STATE_DB": str(self.repository.monitor_state_db_file(connector_id)),
         }
-        await self.process_manager.start(
+        record = await self.process_manager.start(
             connector,
             runtime_dir,
             role=schemas.PROCESS_ROLE_MONITOR,
             env_overrides=env_overrides,
+        )
+        self._log_connector_stage(
+            "monitor_spawned",
+            connector_id=connector_id,
+            role=schemas.PROCESS_ROLE_MONITOR,
+            started_monotonic=started_monotonic,
+            pid=record.get("pid"),
+        )
+        await self._wait_for_monitor_ready(connector_id)
+        self._log_connector_stage(
+            "monitor_ready",
+            connector_id=connector_id,
+            role=schemas.PROCESS_ROLE_MONITOR,
+            started_monotonic=started_monotonic,
+            pid=record.get("pid"),
         )
         return self._save_state(connector_id, monitor_enabled=enable_on_success)
 
@@ -615,18 +813,43 @@ class LocalConnectorsService:
 
     async def restore_configured_connectors(self) -> None:
         if not self._platform_supported() or self.ap.tool_mgr is None:
-            return
+            allow_session_restore = False
+        else:
+            allow_session_restore = True
 
         for connector_id in self._definitions:
             state = self._base_state(self._definitions[connector_id], self.repository.load_state(connector_id))
             if not self._configured(state):
                 continue
             try:
-                await self.start_worker(connector_id)
-                if connector_id == "wxwork-local" and state.get("monitor_enabled"):
-                    await self.start_monitor(connector_id, enable_on_success=True)
+                if allow_session_restore:
+                    await self.start_worker(connector_id)
+                    if connector_id == "wxwork-local" and state.get("monitor_enabled"):
+                        await self.start_monitor(connector_id, enable_on_success=True)
+                else:
+                    started_monotonic = time.monotonic()
+                    self._log_connector_stage(
+                        "restore_started",
+                        connector_id=connector_id,
+                        role=schemas.PROCESS_ROLE_MCP,
+                        started_monotonic=started_monotonic,
+                        port=self._get_connector(connector_id).port,
+                    )
+                    async with self._get_operation_lock(connector_id):
+                        await self._ensure_worker_process_ready(
+                            connector_id,
+                            started_monotonic=started_monotonic,
+                        )
             except Exception as exc:
-                self.ap.logger.warning(f"Failed to restore local connector {connector_id}: {exc}")
+                self._save_state(
+                    connector_id,
+                    status=schemas.CONNECTOR_STATUS_RUNTIME_ERROR,
+                    last_error_code="RESTORE_FAILED",
+                    last_error_message=str(exc),
+                )
+                logger = getattr(self.ap, "logger", None)
+                if logger is not None:
+                    logger.warning(f"Failed to restore local connector {connector_id}: {exc}")
 
     def dispose(self) -> None:
         for connector in self._connectors.values():

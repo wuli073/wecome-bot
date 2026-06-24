@@ -10,7 +10,7 @@ import pytest
 pytestmark = pytest.mark.asyncio
 
 
-async def test_application_run_schedules_local_connector_restore():
+async def test_application_run_does_not_schedule_redundant_local_connector_restore():
     from langbot.pkg.core.app import Application
 
     app = Application()
@@ -30,4 +30,4 @@ async def test_application_run_schedules_local_connector_restore():
     await app.run()
 
     scheduled = [call.kwargs["name"] for call in app.task_mgr.create_task.call_args_list]
-    assert "local-connector-restore" in scheduled
+    assert "local-connector-restore" not in scheduled

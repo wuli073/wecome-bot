@@ -1,4 +1,4 @@
-import { BaseHttpClient } from './BaseHttpClient';
+import { BaseHttpClient, RequestConfig } from './BaseHttpClient';
 import {
   ApiRespProviderRequesters,
   ApiRespProviderRequester,
@@ -1071,6 +1071,17 @@ export class BackendClient extends BaseHttpClient {
   ): Promise<{ deleted_ids: number[] }> {
     return this.post('/api/v1/database-mode/messages/batch-delete', {
       message_ids,
+    });
+  }
+
+  public async createDatabaseModeEventSession(
+    config?: RequestConfig,
+  ): Promise<void> {
+    await this.instance.request({
+      method: 'post',
+      url: '/api/v1/database-mode/events/session',
+      withCredentials: true,
+      ...config,
     });
   }
 

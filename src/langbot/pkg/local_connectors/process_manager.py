@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import time
 
 import psutil
 
@@ -13,12 +14,25 @@ class PortInUseError(RuntimeError):
     pass
 
 
+class ProcessReadyTimeoutError(RuntimeError):
+    pass
+
+
 class LocalConnectorProcessManager:
     def __init__(self, repository: LocalConnectorRepository) -> None:
         self.repository = repository
+        self._start_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def get_process_record(self, connector_id: str, role: str = "mcp") -> dict | None:
         return self.repository.load_process(connector_id, role=role)
+
+    def _get_start_lock(self, connector_id: str, role: str) -> asyncio.Lock:
+        key = (connector_id, role)
+        lock = self._start_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._start_locks[key] = lock
+        return lock
 
     @staticmethod
     def _cmdline_contains(process: psutil.Process, expected_part: str) -> bool:
@@ -119,8 +133,14 @@ class LocalConnectorProcessManager:
                 return True
             current = parent
 
-    async def _wait_for_listener_process(self, port: int, controller_pid: int) -> psutil.Process | None:
-        for _ in range(50):
+    async def _wait_for_listener_process(
+        self,
+        port: int,
+        controller_pid: int,
+        timeout_seconds: float,
+    ) -> psutil.Process | None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
             listener_pid = self._find_listener_pid(port)
             if listener_pid is not None:
                 try:
@@ -141,8 +161,10 @@ class LocalConnectorProcessManager:
         *,
         expected_script: str,
         expected_python: str,
+        timeout_seconds: float,
     ) -> psutil.Process | None:
-        for _ in range(50):
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
             try:
                 controller_process = psutil.Process(controller_pid)
                 children = controller_process.children(recursive=True)
@@ -158,6 +180,9 @@ class LocalConnectorProcessManager:
                     return child_process
             await asyncio.sleep(0.1)
         return None
+
+    def _record_startup_log(self, connector_id: str, role: str, message: str) -> None:
+        self.repository.append_log_line(connector_id, message, role=role)
 
     def _terminate_process(self, pid: int | None) -> None:
         if not pid:
@@ -200,57 +225,110 @@ class LocalConnectorProcessManager:
         if listener_pid is not None and listener_pid != owned_pid:
             raise PortInUseError(f"Port {port} is already in use")
 
-    async def start(self, connector, runtime_dir: str, role: str = "mcp", env_overrides: dict | None = None) -> dict:
-        existing = self.get_process_record(connector.connector_id, role=role)
-        if self._is_owned_process(existing):
-            return existing
+    async def start(
+        self,
+        connector,
+        runtime_dir: str,
+        role: str = "mcp",
+        env_overrides: dict | None = None,
+        ready_timeout_seconds: float = 30.0,
+    ) -> dict:
+        async with self._get_start_lock(connector.connector_id, role):
+            existing = self.get_process_record(connector.connector_id, role=role)
+            if self._is_owned_process(existing):
+                return existing
 
-        self.repository.save_process(connector.connector_id, None, role=role)
-        role_port = connector.port_for_role(role)
-        if role_port is not None:
-            self.ensure_port_available(role_port)
+            self.repository.save_process(connector.connector_id, None, role=role)
+            role_port = connector.port_for_role(role)
+            if role_port is not None:
+                self.ensure_port_available(role_port)
 
-        log_handle = open(self.repository.log_file(connector.connector_id, role=role), "a", encoding="utf-8")
-        try:
-            env = connector.build_start_env(runtime_dir, role=role)
-            if env_overrides:
-                env.update(env_overrides)
-            process = await asyncio.create_subprocess_exec(
-                *connector.build_start_command(role=role, runtime_dir=runtime_dir),
-                cwd=str(connector.resolve_decrypt_dir()),
-                env=env,
-                stdout=log_handle,
-                stderr=asyncio.subprocess.STDOUT,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            start_monotonic = time.monotonic()
+            command = connector.build_start_command(role=role, runtime_dir=runtime_dir)
+            self._record_startup_log(
+                connector.connector_id,
+                role,
+                f"[process-manager] spawning role={role} port={role_port} command={command!r}",
             )
-        finally:
-            log_handle.close()
+            log_handle = open(self.repository.log_file(connector.connector_id, role=role), "a", encoding="utf-8")
+            try:
+                env = connector.build_start_env(runtime_dir, role=role)
+                if env_overrides:
+                    env.update(env_overrides)
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    cwd=str(connector.resolve_decrypt_dir()),
+                    env=env,
+                    stdout=log_handle,
+                    stderr=asyncio.subprocess.STDOUT,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            finally:
+                log_handle.close()
 
-        ps_process = psutil.Process(process.pid)
-        listener_process = None
-        identity = connector.build_command_identity(runtime_dir, role=role)
-        if role_port is not None:
-            listener_process = await self._wait_for_listener_process(role_port, process.pid)
-        else:
-            listener_process = await self._wait_for_child_process(
-                process.pid,
-                expected_script=os.path.normcase(identity.get("script_path", "")),
-                expected_python=os.path.normcase(identity.get("python_executable", "")),
+            ps_process = psutil.Process(process.pid)
+            identity = connector.build_command_identity(runtime_dir, role=role)
+
+            try:
+                if role_port is not None:
+                    listener_process = await self._wait_for_listener_process(
+                        role_port,
+                        process.pid,
+                        ready_timeout_seconds,
+                    )
+                else:
+                    listener_process = await self._wait_for_child_process(
+                        process.pid,
+                        expected_script=os.path.normcase(identity.get("script_path", "")),
+                        expected_python=os.path.normcase(identity.get("python_executable", "")),
+                        timeout_seconds=ready_timeout_seconds,
+                    )
+            except Exception:
+                self._terminate_process_tree(process.pid)
+                raise
+
+            if listener_process is None:
+                self._record_startup_log(
+                    connector.connector_id,
+                    role,
+                    f"[process-manager] timed out waiting for role={role} pid={process.pid} port={role_port}",
+                )
+                self._terminate_process_tree(process.pid)
+                raise ProcessReadyTimeoutError(
+                    f"Timed out waiting for {connector.connector_id}/{role} to become ready"
+                )
+
+            controller_created_at = ps_process.create_time()
+            record = {
+                "connector_id": connector.connector_id,
+                "role": role,
+                "pid": listener_process.pid,
+                "port": role_port,
+                "created_at": listener_process.create_time(),
+                "started_at": controller_created_at,
+                "controller_pid": process.pid,
+                "controller_created_at": controller_created_at,
+                "command": command,
+                **identity,
+            }
+            self.repository.save_process(connector.connector_id, record, role=role)
+
+            elapsed_ms = int((time.monotonic() - start_monotonic) * 1000)
+            self._record_startup_log(
+                connector.connector_id,
+                role,
+                f"[process-manager] ready role={role} controller_pid={process.pid} pid={listener_process.pid} "
+                f"port={role_port} elapsed_ms={elapsed_ms}",
             )
-        record = {
-            "connector_id": connector.connector_id,
-            "role": role,
-            "pid": listener_process.pid if listener_process is not None else process.pid,
-            "port": role_port,
-            "created_at": listener_process.create_time() if listener_process is not None else ps_process.create_time(),
-            "started_at": ps_process.create_time(),
-            "controller_pid": process.pid,
-            "controller_created_at": ps_process.create_time(),
-            "command": connector.build_start_command(role=role, runtime_dir=runtime_dir),
-            **identity,
-        }
-        self.repository.save_process(connector.connector_id, record, role=role)
-        return record
+            return {
+                **record,
+                "_startup": {
+                    "controller_pid": process.pid,
+                    "listener_pid": listener_process.pid,
+                    "tcp_ready_elapsed_ms": elapsed_ms,
+                    "spawn_elapsed_ms": 0,
+                },
+            }
 
     def stop_sync(self, connector, role: str = "mcp") -> None:
         record = self.get_process_record(connector.connector_id, role=role)

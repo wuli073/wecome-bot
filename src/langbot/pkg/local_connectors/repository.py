@@ -30,7 +30,12 @@ class LocalConnectorRepository:
         return self.connector_dir(connector_id) / "state.json"
 
     def process_file(self, connector_id: str, role: str = "mcp") -> Path:
+        # Legacy process ownership used a shared process.json. The role-scoped
+        # files are the only source of truth for current worker ownership.
         return self.connector_dir(connector_id) / f"process.{role}.json"
+
+    def legacy_process_file(self, connector_id: str) -> Path:
+        return self.connector_dir(connector_id) / "process.json"
 
     def latest_job_file(self, connector_id: str) -> Path:
         return self.connector_dir(connector_id) / "jobs" / "latest.json"
@@ -105,6 +110,12 @@ class LocalConnectorRepository:
             return ""
         content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
         return "\n".join(content[-lines:])
+
+    def append_log_line(self, connector_id: str, message: str, role: str = "mcp") -> None:
+        log_file = self.log_file(connector_id, role=role)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8", errors="replace") as handle:
+            handle.write(f"{message}\n")
 
     def ensure_internal_event_token(self, connector_id: str) -> str:
         path = self.internal_event_token_file(connector_id)

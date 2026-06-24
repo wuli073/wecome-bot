@@ -18,8 +18,8 @@ def test_process_manager_is_running_checks_pid_create_time_and_command(monkeypat
         {
             "pid": 1234,
             "created_at": 10.0,
-            "script_path": r"C:\repo\wechat-decrypt\mcp_http_server.py",
-            "python_executable": r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+            "script_path": r"C:\repo\bot\vendor\wechat_decrypt\mcp_http_server.py",
+            "python_executable": r"C:\repo\bot\python.exe",
         },
     )
 
@@ -29,12 +29,12 @@ def test_process_manager_is_running_checks_pid_create_time_and_command(monkeypat
 
         def cmdline(self):
             return [
-                r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
-                r"C:\repo\wechat-decrypt\mcp_http_server.py",
+                r"C:\repo\bot\python.exe",
+                r"C:\repo\bot\vendor\wechat_decrypt\mcp_http_server.py",
             ]
 
         def exe(self):
-            return r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe"
+            return r"C:\repo\bot\python.exe"
 
     monkeypatch.setattr(
         "langbot.pkg.local_connectors.process_manager.psutil.Process",
@@ -71,16 +71,16 @@ async def test_process_manager_start_records_listener_child_pid(monkeypatch, tmp
         port=5680,
         port_for_role=lambda role: 5680 if role == "mcp" else None,
         build_start_command=lambda role="mcp", runtime_dir=None: [
-            r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+            r"C:\repo\bot\python.exe",
             "-X",
             "utf8",
-            r"C:\repo\wechat-decrypt\mcp_http_server.py",
+            r"C:\repo\bot\vendor\wechat_decrypt\mcp_http_server.py",
         ],
         resolve_decrypt_dir=lambda: tmp_path,
         build_start_env=lambda _runtime_dir, role="mcp": {},
         build_command_identity=lambda runtime_dir, role="mcp": {
-            "script_path": r"C:\repo\wechat-decrypt\mcp_http_server.py",
-            "python_executable": r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+            "script_path": r"C:\repo\bot\vendor\wechat_decrypt\mcp_http_server.py",
+            "python_executable": r"C:\repo\bot\python.exe",
             "app_dir": runtime_dir,
         },
     )
@@ -130,6 +130,75 @@ async def test_process_manager_start_records_listener_child_pid(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+async def test_process_manager_start_waits_long_enough_for_delayed_listener(monkeypatch, tmp_path):
+    from langbot.pkg.local_connectors.process_manager import LocalConnectorProcessManager
+    from langbot.pkg.local_connectors.repository import LocalConnectorRepository
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    repository = LocalConnectorRepository()
+    manager = LocalConnectorProcessManager(repository)
+
+    connector = SimpleNamespace(
+        connector_id="wechat-local",
+        port=5680,
+        port_for_role=lambda role: 5680 if role == "mcp" else None,
+        build_start_command=lambda role="mcp", runtime_dir=None: [
+            r"C:\repo\bot\python.exe",
+            "-X",
+            "utf8",
+            r"C:\repo\bot\vendor\wechat_decrypt\mcp_http_server.py",
+        ],
+        resolve_decrypt_dir=lambda: tmp_path,
+        build_start_env=lambda _runtime_dir, role="mcp": {},
+        build_command_identity=lambda runtime_dir, role="mcp": {
+            "script_path": r"C:\repo\bot\vendor\wechat_decrypt\mcp_http_server.py",
+            "python_executable": r"C:\repo\bot\python.exe",
+            "app_dir": runtime_dir,
+        },
+    )
+
+    class FakeAsyncProcess:
+        pid = 2000
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return FakeAsyncProcess()
+
+    class FakeControllerProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def create_time(self):
+            return 11.0
+
+    class FakeListenerParent:
+        pid = 2000
+
+    class FakeListenerProcess:
+        pid = 3000
+
+        def create_time(self):
+            return 12.0
+
+        def parent(self):
+            return FakeListenerParent()
+
+    monkeypatch.setattr(
+        "langbot.pkg.local_connectors.process_manager.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "langbot.pkg.local_connectors.process_manager.psutil.Process",
+        lambda pid: FakeControllerProcess(pid) if pid == 2000 else FakeListenerProcess(),
+    )
+    listener_pids = iter([None] * 149 + [3000])
+    monkeypatch.setattr(manager, "_find_listener_pid", lambda _port: next(listener_pids))
+
+    record = await manager.start(connector, str(tmp_path / "runtime"))
+
+    assert record["pid"] == 3000
+
+
+@pytest.mark.asyncio
 async def test_process_manager_start_supports_monitor_role_without_listener_port(monkeypatch, tmp_path):
     from langbot.pkg.local_connectors.process_manager import LocalConnectorProcessManager
     from langbot.pkg.local_connectors.repository import LocalConnectorRepository
@@ -143,18 +212,18 @@ async def test_process_manager_start_supports_monitor_role_without_listener_port
         port=5681,
         port_for_role=lambda role: None if role == "monitor" else 5681,
         build_start_command=lambda role="mcp", runtime_dir=None: [
-            r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+            r"C:\repo\bot\python.exe",
             "-X",
             "utf8",
-            r"C:\repo\wechat-decrypt\wxwork_message_monitor.py",
+            r"C:\repo\bot\vendor\wechat_decrypt\wxwork_message_monitor.py",
             "--runtime-dir",
             runtime_dir,
         ],
         resolve_decrypt_dir=lambda: tmp_path,
         build_start_env=lambda _runtime_dir, role="mcp": {"ROLE": role},
         build_command_identity=lambda runtime_dir, role="mcp": {
-            "script_path": r"C:\repo\wechat-decrypt\wxwork_message_monitor.py",
-            "python_executable": r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+            "script_path": r"C:\repo\bot\vendor\wechat_decrypt\wxwork_message_monitor.py",
+            "python_executable": r"C:\repo\bot\python.exe",
             "app_dir": runtime_dir,
         },
     )
@@ -213,8 +282,8 @@ def test_process_manager_is_running_accepts_listener_record_via_controller_ident
             "created_at": 12.0,
             "controller_pid": 2000,
             "controller_created_at": 11.0,
-            "script_path": r"C:\repo\wechat-decrypt\mcp_http_server.py",
-            "python_executable": r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+            "script_path": r"C:\repo\bot\vendor\wechat_decrypt\mcp_http_server.py",
+            "python_executable": r"C:\repo\bot\python.exe",
         },
     )
 
@@ -223,10 +292,10 @@ def test_process_manager_is_running_accepts_listener_record_via_controller_ident
             return 12.0
 
         def cmdline(self):
-            return [r"C:\Users\33031\AppData\Local\Programs\Python\Python312\python.exe", "-X", "utf8", r"C:\repo\wechat-decrypt\mcp_http_server.py"]
+            return [r"C:\Python312\python.exe", "-X", "utf8", r"C:\repo\bot\vendor\wechat_decrypt\mcp_http_server.py"]
 
         def exe(self):
-            return r"C:\Users\33031\AppData\Local\Programs\Python\Python312\python.exe"
+            return r"C:\Python312\python.exe"
 
     class FakeControllerProcess:
         def create_time(self):
@@ -234,14 +303,14 @@ def test_process_manager_is_running_accepts_listener_record_via_controller_ident
 
         def cmdline(self):
             return [
-                r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+                r"C:\repo\bot\python.exe",
                 "-X",
                 "utf8",
-                r"C:\repo\wechat-decrypt\mcp_http_server.py",
+                r"C:\repo\bot\vendor\wechat_decrypt\mcp_http_server.py",
             ]
 
         def exe(self):
-            return r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe"
+            return r"C:\repo\bot\python.exe"
 
     monkeypatch.setattr(
         "langbot.pkg.local_connectors.process_manager.psutil.Process",
@@ -265,8 +334,8 @@ def test_process_manager_stop_terminates_controller_then_listener(monkeypatch, t
             "created_at": 12.0,
             "controller_pid": 2000,
             "controller_created_at": 11.0,
-            "script_path": r"C:\repo\wechat-decrypt\mcp_http_server.py",
-            "python_executable": r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+            "script_path": r"C:\repo\bot\vendor\wechat_decrypt\mcp_http_server.py",
+            "python_executable": r"C:\repo\bot\python.exe",
         },
     )
 
@@ -275,10 +344,10 @@ def test_process_manager_stop_terminates_controller_then_listener(monkeypatch, t
             return 12.0
 
         def cmdline(self):
-            return [r"C:\Users\33031\AppData\Local\Programs\Python\Python312\python.exe", "-X", "utf8", r"C:\repo\wechat-decrypt\mcp_http_server.py"]
+            return [r"C:\Python312\python.exe", "-X", "utf8", r"C:\repo\bot\vendor\wechat_decrypt\mcp_http_server.py"]
 
         def exe(self):
-            return r"C:\Users\33031\AppData\Local\Programs\Python\Python312\python.exe"
+            return r"C:\Python312\python.exe"
 
     class FakeControllerProcess:
         def create_time(self):
@@ -286,14 +355,14 @@ def test_process_manager_stop_terminates_controller_then_listener(monkeypatch, t
 
         def cmdline(self):
             return [
-                r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+                r"C:\repo\bot\python.exe",
                 "-X",
                 "utf8",
-                r"C:\repo\wechat-decrypt\mcp_http_server.py",
+                r"C:\repo\bot\vendor\wechat_decrypt\mcp_http_server.py",
             ]
 
         def exe(self):
-            return r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe"
+            return r"C:\repo\bot\python.exe"
 
     listener = Mock()
     listener.terminate = Mock()
@@ -341,8 +410,8 @@ def test_process_manager_stop_monitor_terminates_controller_process_tree(monkeyp
             "created_at": 22.0,
             "controller_pid": 4100,
             "controller_created_at": 21.0,
-            "script_path": r"C:\repo\wechat-decrypt\wxwork_message_monitor.py",
-            "python_executable": r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+            "script_path": r"C:\repo\bot\vendor\wechat_decrypt\wxwork_message_monitor.py",
+            "python_executable": r"C:\repo\bot\python.exe",
         },
         role="monitor",
     )
@@ -353,14 +422,14 @@ def test_process_manager_stop_monitor_terminates_controller_process_tree(monkeyp
 
         def cmdline(self):
             return [
-                r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+                r"C:\repo\bot\python.exe",
                 "-X",
                 "utf8",
-                r"C:\repo\wechat-decrypt\wxwork_message_monitor.py",
+                r"C:\repo\bot\vendor\wechat_decrypt\wxwork_message_monitor.py",
             ]
 
         def exe(self):
-            return r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe"
+            return r"C:\repo\bot\python.exe"
 
     controller = Mock()
     controller.pid = 4100
@@ -390,3 +459,21 @@ def test_process_manager_stop_monitor_terminates_controller_process_tree(monkeyp
     child.terminate.assert_called_once()
     controller.terminate.assert_called_once()
     assert repository.load_process("wxwork-local", role="monitor") is None
+
+
+def test_process_manager_ignores_legacy_process_json(monkeypatch, tmp_path):
+    from langbot.pkg.local_connectors.process_manager import LocalConnectorProcessManager
+    from langbot.pkg.local_connectors.repository import LocalConnectorRepository
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    repository = LocalConnectorRepository()
+    manager = LocalConnectorProcessManager(repository)
+
+    legacy_file = repository.connector_dir("wechat-local") / "process.json"
+    legacy_file.write_text(
+        '{"pid": 9999, "script_path": "C:\\\\legacy\\\\worker.py", "python_executable": "C:\\\\legacy\\\\python.exe"}',
+        encoding="utf-8",
+    )
+
+    assert repository.load_process("wechat-local") is None
+    assert manager.is_running("wechat-local") is False

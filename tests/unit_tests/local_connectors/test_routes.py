@@ -104,6 +104,38 @@ async def test_internal_event_route_accepts_valid_payload():
     ap.database_mode_service.ingest_internal_event.assert_awaited_once_with(event_payload)
 
 
+async def test_internal_event_route_includes_timings_when_present():
+    client, _ap = await _make_client(
+        allow_loopback=True,
+        valid_token=True,
+        ingest_result=EventIngestResult(
+            accepted=True,
+            duplicate=False,
+            event_id="evt-3",
+            timings={"langbot_ingested_at": "2026-06-24T12:00:00+00:00"},
+        ),
+    )
+
+    response = await client.post(
+        "/api/v1/local-connectors/internal/events",
+        headers={"X-Wecome-Connector-Token": "token"},
+        json={
+            "connector_id": "wxwork-local",
+            "event_id": "evt-3",
+            "message_key": "wxwork:key-3",
+        },
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload["data"] == {
+        "accepted": True,
+        "duplicate": False,
+        "event_id": "evt-3",
+        "timings": {"langbot_ingested_at": "2026-06-24T12:00:00+00:00"},
+    }
+
+
 async def test_internal_event_route_rejects_payloads_over_limit():
     client, _ap = await _make_client(allow_loopback=True, valid_token=True)
 

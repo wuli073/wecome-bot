@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   DatabaseModeConversation,
-  DatabaseModeMessage,
   DatabaseModeConversationStats,
+  DatabaseModeMessage,
+  DatabaseModeRealtimeEvent,
   LocalConnectorStatus,
 } from '@/app/infra/entities/api';
-import { httpClient } from '@/app/infra/http/HttpClient';
+import { httpClient } from '@/app/infra/http';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -43,14 +44,23 @@ import {
   Trash2,
   WandSparkles,
 } from 'lucide-react';
+import { useDatabaseModeEvents } from './hooks/useDatabaseModeEvents';
+import { formatDatabaseModeDateTime } from './utils';
 
-const CONVERSATION_STATUS_OPTIONS = ['all', 'pending', 'draft_ready', 'failed', 'processed', 'skipped'] as const;
-const MESSAGE_STATUS_OPTIONS = ['all', 'pending', 'draft_ready', 'failed', 'processed', 'skipped'] as const;
+const CONVERSATION_STATUS_OPTIONS = ['all', 'pending', 'processing', 'draft_ready', 'failed', 'processed', 'skipped'] as const;
+const MESSAGE_STATUS_OPTIONS = ['all', 'pending', 'processing', 'draft_ready', 'failed', 'processed', 'skipped'] as const;
+const REFRESH_DEBOUNCE_MS = 200;
+const FALLBACK_POLL_INTERVAL_MS = 15_000;
+
+let pageBootstrapActive = false;
+let pageBootstrapReleaseTimer: number | null = null;
 
 function statusTone(status: string): string {
   switch (status) {
     case 'pending':
       return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/70 dark:bg-amber-950/40 dark:text-amber-300';
+    case 'processing':
+      return 'border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-900/70 dark:bg-violet-950/40 dark:text-violet-300';
     case 'draft_ready':
       return 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900/70 dark:bg-sky-950/40 dark:text-sky-300';
     case 'failed':
@@ -93,13 +103,14 @@ function StatsCards({
 }) {
   const items = [
     ['pending', t('databaseMode.statusPending')],
+    ['processing', t('databaseMode.status.processing')],
     ['draft_ready', t('databaseMode.statusDraftReady')],
     ['failed', t('databaseMode.statusFailed')],
     ['processed', t('databaseMode.statusProcessed')],
     ['skipped', t('databaseMode.statusSkipped')],
   ] as const;
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
       {items.map(([key, label]) => (
         <Card key={key}>
           <CardContent className="flex items-center justify-between p-4">
@@ -148,6 +159,16 @@ export default function DatabaseModePage() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [detailsMessage, setDetailsMessage] = useState<DatabaseModeMessage | null>(null);
+  const [isPageVisible, setIsPageVisible] = useState(() => document.visibilityState === 'visible');
+
+  const refreshTimerRef = useRef<number | null>(null);
+  const refreshInFlightRef = useRef(false);
+  const rerunRequestedRef = useRef(false);
+  const refreshSelectionRef = useRef<() => Promise<void>>(async () => undefined);
+  const lastRealtimeEventIdRef = useRef<string | null>(null);
+  const skippedFilterEffectRunsRef = useRef(import.meta.env.DEV ? 2 : 1);
+  const tRef = useRef(t);
+  tRef.current = t;
 
   const connectorDetailHref = useMemo(
     () => `/home/mcp?id=${encodeURIComponent(connector?.name ?? '浼佷笟寰俊')}`,
@@ -157,6 +178,7 @@ export default function DatabaseModePage() {
     () => connector?.status !== 'not_configured' && connector?.status !== 'unsupported_platform',
     [connector?.status],
   );
+  const monitor = connector?.monitor;
 
   const loadConnector = useCallback(async () => {
     const response = await httpClient.getLocalConnectorStatus('wxwork-local');
@@ -171,19 +193,23 @@ export default function DatabaseModePage() {
       page_size: 100,
     });
     setConversations(response.conversations);
-    if (
-      response.conversations.length > 0 &&
-      !response.conversations.some((item) => item.id === selectedConversationId)
-    ) {
-      setSelectedConversationId(response.conversations[0].id);
-    }
+    setSelectedConversationId((current) => {
+      if (response.conversations.length === 0) {
+        return null;
+      }
+
+      if (current != null && response.conversations.some((item) => item.id === current)) {
+        return current;
+      }
+
+      return response.conversations[0].id;
+    });
     if (response.conversations.length === 0) {
-      setSelectedConversationId(null);
       setSelectedConversation(null);
       setMessages([]);
       setStats(null);
     }
-  }, [conversationStatus, keyword, selectedConversationId]);
+  }, [conversationStatus, keyword]);
 
   const loadMessages = useCallback(
     async (conversationId: number) => {
@@ -214,24 +240,57 @@ export default function DatabaseModePage() {
       await loadConnector();
       await loadConversations();
     } catch (err) {
-      setError((err as { msg?: string }).msg || t('databaseMode.loadFailed'));
+      setError((err as { msg?: string }).msg || tRef.current('databaseMode.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [loadConnector, loadConversations, t]);
+  }, [loadConnector, loadConversations]);
 
   useEffect(() => {
-    reloadAll().catch(() => undefined);
+    if (pageBootstrapReleaseTimer != null) {
+      window.clearTimeout(pageBootstrapReleaseTimer);
+      pageBootstrapReleaseTimer = null;
+    }
+
+    if (!pageBootstrapActive) {
+      pageBootstrapActive = true;
+      reloadAll().catch(() => undefined);
+    }
+
+    return () => {
+      pageBootstrapReleaseTimer = window.setTimeout(() => {
+        pageBootstrapActive = false;
+        pageBootstrapReleaseTimer = null;
+      }, 100);
+    };
   }, [reloadAll]);
+
+  useEffect(() => {
+    if (skippedFilterEffectRunsRef.current > 0) {
+      skippedFilterEffectRunsRef.current -= 1;
+      return;
+    }
+
+    reloadAll().catch(() => undefined);
+  }, [conversationStatus, keyword, reloadAll]);
 
   useEffect(() => {
     if (!selectedConversationId) {
       return;
     }
     loadMessages(selectedConversationId).catch((err) => {
-      setError((err as { msg?: string }).msg || t('databaseMode.loadFailed'));
+      setError((err as { msg?: string }).msg || tRef.current('databaseMode.loadFailed'));
     });
-  }, [loadMessages, selectedConversationId, t]);
+  }, [loadMessages, selectedConversationId]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      setIsPageVisible(document.visibilityState === 'visible');
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
 
   useEffect(() => {
     if (!connector?.monitor?.enabled) {
@@ -249,21 +308,102 @@ export default function DatabaseModePage() {
       try {
         await action();
       } catch (err) {
-        toast.error((err as { msg?: string }).msg || t('databaseMode.operationFailed'));
+        toast.error((err as { msg?: string }).msg || tRef.current('databaseMode.operationFailed'));
       } finally {
         setBusyKey(null);
       }
     },
-    [t],
+    [],
   );
 
   const refreshSelection = useCallback(async () => {
     await loadConversations();
-    await loadConnector();
     if (selectedConversationId) {
       await loadMessages(selectedConversationId);
     }
-  }, [loadConversations, loadConnector, loadMessages, selectedConversationId]);
+  }, [loadConversations, loadMessages, selectedConversationId]);
+  refreshSelectionRef.current = refreshSelection;
+
+  const runRefresh = useCallback(async () => {
+    if (refreshInFlightRef.current) {
+      rerunRequestedRef.current = true;
+      return;
+    }
+
+    refreshInFlightRef.current = true;
+    try {
+      do {
+        rerunRequestedRef.current = false;
+        await refreshSelectionRef.current();
+      } while (rerunRequestedRef.current);
+    } catch (err) {
+      setError((err as { msg?: string }).msg || tRef.current('databaseMode.loadFailed'));
+    } finally {
+      refreshInFlightRef.current = false;
+    }
+  }, []);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshInFlightRef.current) {
+      rerunRequestedRef.current = true;
+      return;
+    }
+
+    if (refreshTimerRef.current != null) {
+      window.clearTimeout(refreshTimerRef.current);
+    }
+
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void runRefresh();
+    }, REFRESH_DEBOUNCE_MS);
+  }, [runRefresh]);
+
+  useEffect(() => () => {
+    if (refreshTimerRef.current != null) {
+      window.clearTimeout(refreshTimerRef.current);
+    }
+  }, []);
+
+  const realtimeEnabled = Boolean(
+    connectorConfigured &&
+    monitor?.enabled &&
+    monitor?.owned &&
+    monitor.running_status === 'running' &&
+    monitor.warmup_completed,
+  );
+  const { connectionState } = useDatabaseModeEvents({
+    enabled: realtimeEnabled,
+    onEvent: (event: DatabaseModeRealtimeEvent) => {
+      if (event.type === 'ready') {
+        scheduleRefresh();
+        return;
+      }
+
+      if (event.type === 'database-message-created' && event.event_id) {
+        if (lastRealtimeEventIdRef.current === event.event_id) {
+          return;
+        }
+        lastRealtimeEventIdRef.current = event.event_id;
+      }
+
+      scheduleRefresh();
+    },
+  });
+
+  useEffect(() => {
+    const shouldRunFallback =
+      connectionState === 'disconnected' || connectionState === 'retrying';
+    if (!realtimeEnabled || !shouldRunFallback || !isPageVisible) {
+      return;
+    }
+
+    scheduleRefresh();
+    const timer = window.setInterval(() => {
+      scheduleRefresh();
+    }, FALLBACK_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [connectionState, isPageVisible, realtimeEnabled, scheduleRefresh]);
 
   const conversationList = (
     <div className="flex h-full flex-col gap-3">
@@ -313,7 +453,7 @@ export default function DatabaseModePage() {
                 {conversation.latest_message_summary || t('databaseMode.noMessages')}
               </p>
               <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-                <span>{conversation.last_message_at || '--'}</span>
+                <span>{formatDatabaseModeDateTime(conversation.last_message_at)}</span>
                 <span>
                   {t('databaseMode.failedShort')}: {conversation.failed_count}
                 </span>
@@ -366,8 +506,6 @@ export default function DatabaseModePage() {
     );
   }
 
-  const monitor = connector?.monitor;
-
   if (!monitor?.enabled || !monitor.owned) {
     return (
       <EmptyState
@@ -379,7 +517,7 @@ export default function DatabaseModePage() {
               onClick={() =>
                 withBusy('start-monitor', async () => {
                   await httpClient.startLocalConnectorMonitor();
-                  await refreshSelection();
+                  scheduleRefresh();
                 })
               }
             >
@@ -451,7 +589,7 @@ export default function DatabaseModePage() {
                 <div className="mt-4 h-[calc(100%-2rem)]">{conversationList}</div>
               </SheetContent>
             </Sheet>
-            <Button variant="outline" onClick={() => refreshSelection().catch(() => undefined)}>
+            <Button variant="outline" onClick={() => scheduleRefresh()}>
               <RefreshCcw className="mr-2 size-4" />
               {t('common.refresh')}
             </Button>
@@ -484,7 +622,9 @@ export default function DatabaseModePage() {
                       {t('databaseMode.totalMessages')}: {selectedConversation.stats.total}
                     </span>
                     <Separator orientation="vertical" className="hidden h-4 lg:block" />
-                    <span>{selectedConversation.last_message_at || '--'}</span>
+                    <span>{formatDatabaseModeDateTime(selectedConversation.last_message_at)}</span>
+                    <Separator orientation="vertical" className="hidden h-4 lg:block" />
+                    <span>{connectionState}</span>
                   </div>
                 </div>
               </CardHeader>
@@ -523,7 +663,7 @@ export default function DatabaseModePage() {
                     onClick={() =>
                       withBusy('batch-process', async () => {
                         await httpClient.batchProcessDatabaseModeMessages(selectedMessageIds);
-                        await refreshSelection();
+                        scheduleRefresh();
                       })
                     }
                   >
@@ -536,7 +676,7 @@ export default function DatabaseModePage() {
                     onClick={() =>
                       withBusy('batch-skip', async () => {
                         await httpClient.batchSkipDatabaseModeMessages(selectedMessageIds);
-                        await refreshSelection();
+                        scheduleRefresh();
                       })
                     }
                   >
@@ -552,7 +692,7 @@ export default function DatabaseModePage() {
                       }
                       withBusy('batch-delete', async () => {
                         await httpClient.batchDeleteDatabaseModeMessages(selectedMessageIds);
-                        await refreshSelection();
+                        scheduleRefresh();
                       }).catch(() => undefined);
                     }}
                   >
@@ -591,7 +731,7 @@ export default function DatabaseModePage() {
                                 </Badge>
                               </div>
                               <p className="mt-1 text-xs text-muted-foreground">
-                                {selectedConversation.conversation_name} | {message.sent_at}
+                                {selectedConversation.conversation_name} | {formatDatabaseModeDateTime(message.sent_at)}
                               </p>
                             </div>
                           </div>
@@ -601,7 +741,7 @@ export default function DatabaseModePage() {
                               onClick={() =>
                                 withBusy(`draft-${message.id}`, async () => {
                                   await httpClient.generateDatabaseModeDraft(message.id);
-                                  await refreshSelection();
+                                  scheduleRefresh();
                                 })
                               }
                             >
@@ -619,7 +759,7 @@ export default function DatabaseModePage() {
                               onClick={() =>
                                 withBusy(`process-${message.id}`, async () => {
                                   await httpClient.processDatabaseModeMessage(message.id);
-                                  await refreshSelection();
+                                  scheduleRefresh();
                                 })
                               }
                             >
@@ -631,7 +771,7 @@ export default function DatabaseModePage() {
                               onClick={() =>
                                 withBusy(`skip-${message.id}`, async () => {
                                   await httpClient.skipDatabaseModeMessage(message.id);
-                                  await refreshSelection();
+                                  scheduleRefresh();
                                 })
                               }
                             >
@@ -652,7 +792,7 @@ export default function DatabaseModePage() {
                                 }
                                 withBusy(`delete-${message.id}`, async () => {
                                   await httpClient.deleteDatabaseModeMessage(message.id);
-                                  await refreshSelection();
+                                  scheduleRefresh();
                                 }).catch(() => undefined);
                               }}
                             >
@@ -691,7 +831,7 @@ export default function DatabaseModePage() {
                                     draft_text: draftValue,
                                     draft_source: 'manual',
                                   });
-                                  await refreshSelection();
+                                  scheduleRefresh();
                                 })
                               }
                             >
@@ -737,7 +877,7 @@ export default function DatabaseModePage() {
                 </div>
                 <div>
                   <p className="text-muted-foreground">{t('databaseMode.receivedAt')}</p>
-                  <p>{detailsMessage.observed_at}</p>
+                  <p>{formatDatabaseModeDateTime(detailsMessage.observed_at)}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">{t('databaseMode.messageType')}</p>
@@ -756,7 +896,7 @@ export default function DatabaseModePage() {
               <div>
                 <p className="text-muted-foreground">{t('databaseMode.currentDraft')}</p>
                 <p className="mt-1 whitespace-pre-wrap">
-                  {detailsMessage.draft_text || t('databaseMode.noDraftYet')}
+                  {draftEdits[detailsMessage.id] || detailsMessage.draft_text || t('databaseMode.noDraftYet')}
                 </p>
               </div>
             </div>

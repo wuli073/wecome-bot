@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from ..models import BuiltinConnectorDefinition
+from ..bundled_runtime import resolve_wechat_decrypt_entrypoint, resolve_wechat_decrypt_root
 
 
 class BaseLocalConnector:
@@ -43,31 +44,23 @@ class BaseLocalConnector:
         return None
 
     def resolve_decrypt_dir(self) -> Path:
-        env_path = os.environ.get("WECOME_WECHAT_DECRYPT_DIR")
-        candidates = []
-        if env_path:
-            candidates.append(Path(env_path))
-        candidates.append(Path.cwd().parent / "wechat-decrypt")
-        candidates.append(Path.home() / "Desktop" / "wechat-decrypt")
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate.resolve()
-        raise FileNotFoundError("wechat-decrypt directory not found; set WECOME_WECHAT_DECRYPT_DIR")
+        return resolve_wechat_decrypt_root()
+
+    def resolve_entrypoint(self, name: str) -> Path:
+        return resolve_wechat_decrypt_entrypoint(name)
 
     def resolve_python_executable(self) -> str:
-        decrypt_dir = self.resolve_decrypt_dir()
-        windows_venv = decrypt_dir / ".venv" / "Scripts" / "python.exe"
-        if windows_venv.exists():
-            return str(windows_venv)
         return sys.executable
 
     async def run_cli(self, action: str, runtime_dir: str) -> dict:
         decrypt_dir = self.resolve_decrypt_dir()
+        cli_entrypoint = self.resolve_entrypoint("connector_cli.py")
         process = await asyncio.create_subprocess_exec(
             self.resolve_python_executable(),
+            "-u",
             "-X",
             "utf8",
-            str(decrypt_dir / "connector_cli.py"),
+            str(cli_entrypoint),
             self.cli_connector_name,
             action,
             "--runtime-dir",
@@ -91,11 +84,13 @@ class BaseLocalConnector:
 
     async def detect(self) -> dict:
         decrypt_dir = self.resolve_decrypt_dir()
+        cli_entrypoint = self.resolve_entrypoint("connector_cli.py")
         process = await asyncio.create_subprocess_exec(
             self.resolve_python_executable(),
+            "-u",
             "-X",
             "utf8",
-            str(decrypt_dir / "connector_cli.py"),
+            str(cli_entrypoint),
             self.cli_connector_name,
             "detect",
             "--json",
@@ -116,15 +111,16 @@ class BaseLocalConnector:
             }
 
     def build_start_command(self, role: str = "mcp", runtime_dir: str | None = None) -> list[str]:
-        decrypt_dir = self.resolve_decrypt_dir()
         script_name = self.server_script if role == "mcp" else self.monitor_script
         if not script_name:
             raise ValueError(f"Role {role} is not supported by connector {self.connector_id}")
+        entrypoint = self.resolve_entrypoint(script_name)
         return [
             self.resolve_python_executable(),
+            "-u",
             "-X",
             "utf8",
-            str(decrypt_dir / script_name),
+            str(entrypoint),
         ]
 
     def build_start_env(self, runtime_dir: str, role: str = "mcp") -> dict[str, str]:
@@ -132,15 +128,16 @@ class BaseLocalConnector:
         env["WECHAT_DECRYPT_APP_DIR"] = str(Path(runtime_dir) / "config")
         env["WECHAT_DECRYPT_NONINTERACTIVE"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUNBUFFERED"] = "1"
         return env
 
     def build_command_identity(self, runtime_dir: str, role: str = "mcp") -> dict[str, str]:
-        decrypt_dir = self.resolve_decrypt_dir()
         script_name = self.server_script if role == "mcp" else self.monitor_script
         if not script_name:
             raise ValueError(f"Role {role} is not supported by connector {self.connector_id}")
+        entrypoint = self.resolve_entrypoint(script_name)
         return {
-            "script_path": str((decrypt_dir / script_name).resolve()),
+            "script_path": str(entrypoint.resolve()),
             "python_executable": str(Path(self.resolve_python_executable()).resolve()),
             "app_dir": str((Path(runtime_dir) / "config").resolve()),
         }

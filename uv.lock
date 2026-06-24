@@ -2085,6 +2085,7 @@ dependencies = [
     { name = "urllib3" },
     { name = "uv" },
     { name = "websockets" },
+    { name = "zstandard" },
 ]
 
 [package.dev-dependencies]
@@ -2173,6 +2174,7 @@ requires-dist = [
     { name = "urllib3", specifier = ">=2.7.0" },
     { name = "uv", specifier = ">=0.11.15" },
     { name = "websockets", specifier = ">=15.0.1" },
+    { name = "zstandard", specifier = ">=0.25.0" },
 ]
 
 [package.metadata.requires-dev]

@@ -77,13 +77,14 @@ class LocalConnectorsRouterGroup(group.RouterGroup):
                 result = await self.ap.database_mode_service.ingest_internal_event(payload)
             except ValueError as exc:
                 return self.http_status(400, -1, str(exc))
-            return self.success(
-                data={
-                    "accepted": result.accepted,
-                    "duplicate": result.duplicate,
-                    "event_id": result.event_id,
-                }
-            )
+            response_data = {
+                "accepted": result.accepted,
+                "duplicate": result.duplicate,
+                "event_id": result.event_id,
+            }
+            if result.timings is not None:
+                response_data["timings"] = result.timings
+            return self.success(data=response_data)
 
         @self.route("/jobs/<job_id>", methods=["GET"], auth_type=group.AuthType.USER_TOKEN)
         async def _(job_id: str) -> str:
