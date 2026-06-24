@@ -95,6 +95,38 @@ async def test_overflow_delivers_invalidated_promptly_for_larger_queues():
     assert subscriber.queue.empty()
 
 
+async def test_invalidated_marker_stays_terminal_until_drained():
+    bus = DatabaseModeEventBus(queue_maxsize=2)
+    subscriber = bus.subscribe()
+
+    await bus.publish(
+        DatabaseModeEvent(type=DatabaseModeEventType.MESSAGE_CREATED, conversation_id=1, message_id=1)
+    )
+    await bus.publish(
+        DatabaseModeEvent(type=DatabaseModeEventType.MESSAGE_UPDATED, conversation_id=1, message_id=2)
+    )
+    await bus.publish(
+        DatabaseModeEvent(type=DatabaseModeEventType.MESSAGE_DELETED, conversation_id=1, message_id=3)
+    )
+
+    assert subscriber.queue.qsize() == 1
+    assert subscriber.queue._queue[0].type == DatabaseModeEventType.INVALIDATED
+
+    await bus.publish(
+        DatabaseModeEvent(type=DatabaseModeEventType.MESSAGE_CREATED, conversation_id=1, message_id=4)
+    )
+    await bus.publish(
+        DatabaseModeEvent(type=DatabaseModeEventType.MESSAGE_UPDATED, conversation_id=1, message_id=5)
+    )
+    await bus.publish(
+        DatabaseModeEvent(type=DatabaseModeEventType.MESSAGE_DELETED, conversation_id=1, message_id=6)
+    )
+
+    assert subscriber.queue.qsize() == 1
+    assert subscriber.queue.get_nowait().type == DatabaseModeEventType.INVALIDATED
+    assert subscriber.queue.empty()
+
+
 async def test_unsubscribe_stops_future_delivery():
     bus = DatabaseModeEventBus(queue_maxsize=2)
     subscriber = bus.subscribe()

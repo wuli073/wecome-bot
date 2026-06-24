@@ -56,6 +56,9 @@ class DatabaseModeEventBus:
             self._publish_to_subscriber(subscriber, event)
 
     def _publish_to_subscriber(self, subscriber: DatabaseModeSubscriber, event: DatabaseModeEvent) -> None:
+        if self._queue_has_invalidated_marker(subscriber):
+            return
+
         try:
             subscriber.queue.put_nowait(event)
             return
@@ -74,6 +77,14 @@ class DatabaseModeEventBus:
                 break
 
         subscriber.queue.put_nowait(invalidated)
+
+    @staticmethod
+    def _queue_has_invalidated_marker(subscriber: DatabaseModeSubscriber) -> bool:
+        queued_items = getattr(subscriber.queue, '_queue', ())
+        return any(
+            isinstance(item, DatabaseModeEvent) and item.type == DatabaseModeEventType.INVALIDATED
+            for item in queued_items
+        )
 
     def close(self) -> None:
         for subscriber in list(self._subscribers.values()):
