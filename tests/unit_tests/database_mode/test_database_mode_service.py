@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import datetime
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy.ext.asyncio import create_async_engine
+import sqlalchemy
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncTransaction, create_async_engine
 
+from langbot.pkg.database_mode.events import DatabaseModeEventBus, DatabaseModeEventType
 from langbot.pkg.database_mode.service import (
     DatabaseModeService,
     MESSAGE_STATUS_DRAFT_READY,
@@ -20,9 +23,46 @@ from langbot.pkg.entity.persistence import database_mode as persistence_database
 pytestmark = pytest.mark.asyncio
 
 
+class RecordingEventBus(DatabaseModeEventBus):
+    def __init__(self) -> None:
+        super().__init__()
+        self.published_events = []
+
+    async def publish(self, event) -> None:
+        self.published_events.append(event)
+        await super().publish(event)
+
+
+class _TransactionContext:
+    def __init__(self, manager: 'MiniPersistenceManager') -> None:
+        self._manager = manager
+        self._conn: AsyncConnection | None = None
+        self._tx: AsyncTransaction | None = None
+
+    async def __aenter__(self) -> AsyncConnection:
+        self._conn = await self._manager.engine.connect()
+        self._tx = await self._conn.begin()
+        return self._conn
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        try:
+            if exc_type is not None:
+                await self._tx.rollback()
+                return
+            if self._manager.fail_next_commit:
+                self._manager.fail_next_commit = False
+                await self._tx.rollback()
+                raise RuntimeError('Simulated commit failure')
+            await self._tx.commit()
+        finally:
+            if self._conn is not None:
+                await self._conn.close()
+
+
 class MiniPersistenceManager:
     def __init__(self) -> None:
         self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        self.fail_next_commit = False
 
     async def initialize(self) -> None:
         async with self.engine.begin() as conn:
@@ -33,11 +73,19 @@ class MiniPersistenceManager:
     async def dispose(self) -> None:
         await self.engine.dispose()
 
-    async def execute_async(self, *args, **kwargs):
-        async with self.engine.connect() as conn:
-            result = await conn.execute(*args, **kwargs)
-            await conn.commit()
+    async def execute_async(self, *args, conn: AsyncConnection | None = None, **kwargs):
+        if conn is not None:
+            return await conn.execute(*args, **kwargs)
+
+        async with self.engine.connect() as standalone_conn:
+            result = await standalone_conn.execute(*args, **kwargs)
+            await standalone_conn.commit()
             return result
+
+    @asynccontextmanager
+    async def transaction(self):
+        async with _TransactionContext(self) as conn:
+            yield conn
 
     def serialize_model(self, model, data, masked_columns=None):
         masked_columns = masked_columns or []
@@ -50,14 +98,20 @@ class MiniPersistenceManager:
         }
 
 
-async def _create_service():
+@pytest.fixture
+async def service_app():
     persistence_mgr = MiniPersistenceManager()
     await persistence_mgr.initialize()
     ap = SimpleNamespace(
         persistence_mgr=persistence_mgr,
         model_mgr=SimpleNamespace(llm_models=[]),
+        database_mode_event_bus=RecordingEventBus(),
     )
-    return DatabaseModeService(ap), ap
+    service = DatabaseModeService(ap)
+    try:
+        yield service, ap
+    finally:
+        await ap.persistence_mgr.dispose()
 
 
 def _sample_payload() -> dict:
@@ -83,91 +137,197 @@ def _sample_payload() -> dict:
     }
 
 
-async def test_ingest_internal_event_is_idempotent():
-    service, ap = await _create_service()
-    try:
-        first = await service.ingest_internal_event(_sample_payload())
-        second = await service.ingest_internal_event(_sample_payload())
-        conversations = await service.list_conversations()
-        messages = await service.list_messages(conversations["conversations"][0]["id"])
-
-        assert first.accepted is True
-        assert first.duplicate is False
-        assert second.accepted is True
-        assert second.duplicate is True
-        assert conversations["total"] == 1
-        assert messages["total"] == 1
-        assert messages["messages"][0]["status"] == MESSAGE_STATUS_PENDING
-    finally:
-        await ap.persistence_mgr.dispose()
+async def _ingest_and_get_message(service: DatabaseModeService):
+    await service.ingest_internal_event(_sample_payload())
+    conversations = await service.list_conversations()
+    messages = await service.list_messages(conversations["conversations"][0]["id"])
+    return conversations["conversations"][0]["id"], messages["messages"][0]["id"]
 
 
-async def test_generate_draft_updates_message_status_and_content():
-    service, ap = await _create_service()
-    try:
-        await service.ingest_internal_event(_sample_payload())
-        conversations = await service.list_conversations()
-        messages = await service.list_messages(conversations["conversations"][0]["id"])
-        message_id = messages["messages"][0]["id"]
+async def test_ingest_internal_event_is_idempotent(service_app):
+    service, ap = service_app
 
-        provider = SimpleNamespace(
-            invoke_llm=AsyncMock(return_value=SimpleNamespace(content="Thanks, we will follow up shortly."))
-        )
-        ap.model_mgr.llm_models = [SimpleNamespace(provider=provider)]
+    first = await service.ingest_internal_event(_sample_payload())
+    second = await service.ingest_internal_event(_sample_payload())
+    conversations = await service.list_conversations()
+    messages = await service.list_messages(conversations["conversations"][0]["id"])
 
-        updated = await service.generate_draft(message_id)
-
-        assert updated["status"] == MESSAGE_STATUS_DRAFT_READY
-        assert updated["draft_text"] == "Thanks, we will follow up shortly."
-        assert updated["draft_source"] == "ai"
-    finally:
-        await ap.persistence_mgr.dispose()
+    assert first.accepted is True
+    assert first.duplicate is False
+    assert second.accepted is True
+    assert second.duplicate is True
+    assert conversations["total"] == 1
+    assert messages["total"] == 1
+    assert messages["messages"][0]["status"] == MESSAGE_STATUS_PENDING
+    assert len(ap.database_mode_event_bus.published_events) == 1
+    assert ap.database_mode_event_bus.published_events[0].type == DatabaseModeEventType.MESSAGE_CREATED
 
 
-async def test_list_conversations_returns_searchable_summary_fields():
-    service, ap = await _create_service()
-    try:
-        await service.ingest_internal_event(_sample_payload())
+async def test_generate_draft_publishes_one_updated_event_after_commit(service_app):
+    service, ap = service_app
+    _, message_id = await _ingest_and_get_message(service)
 
-        result = await service.list_conversations(keyword="pricing")
+    provider = SimpleNamespace(
+        invoke_llm=AsyncMock(return_value=SimpleNamespace(content="Thanks, we will follow up shortly."))
+    )
+    ap.model_mgr.llm_models = [SimpleNamespace(provider=provider)]
+    ap.database_mode_event_bus.published_events.clear()
 
-        assert result["total"] == 1
-        conversation = result["conversations"][0]
-        assert conversation["connector_id"] == "wxwork-local"
-        assert conversation["external_conversation_id"] == "S:100_200"
-        assert conversation["latest_customer"] == "Customer A"
-        assert conversation["latest_message_summary"] == "Need pricing details"
-    finally:
-        await ap.persistence_mgr.dispose()
+    updated = await service.generate_draft(message_id)
 
-
-async def test_process_skip_and_delete_message_update_state():
-    service, ap = await _create_service()
-    try:
-        await service.ingest_internal_event(_sample_payload())
-        conversations = await service.list_conversations()
-        conversation_id = conversations["conversations"][0]["id"]
-        messages = await service.list_messages(conversation_id)
-        message_id = messages["messages"][0]["id"]
-
-        processed = await service.process_message(message_id)
-        assert processed["status"] == MESSAGE_STATUS_PROCESSED
-        assert processed["attempt_count"] == 1
-
-        skipped = await service.skip_message(message_id)
-        assert skipped["status"] == MESSAGE_STATUS_SKIPPED
-
-        await service.delete_message(message_id)
-        remaining = await service.list_messages(conversation_id)
-        assert remaining["total"] == 0
-    finally:
-        await ap.persistence_mgr.dispose()
+    assert updated["status"] == MESSAGE_STATUS_DRAFT_READY
+    assert updated["draft_text"] == "Thanks, we will follow up shortly."
+    assert updated["draft_source"] == "ai"
+    assert len(ap.database_mode_event_bus.published_events) == 1
+    event = ap.database_mode_event_bus.published_events[0]
+    assert event.type == DatabaseModeEventType.MESSAGE_UPDATED
+    assert event.message_id == message_id
 
 
-async def test_batch_operations_require_message_ids():
-    service, ap = await _create_service()
-    try:
-        with pytest.raises(ValueError, match="message_ids is required"):
-            await service.batch_process([])
-    finally:
-        await ap.persistence_mgr.dispose()
+async def test_generate_draft_does_not_publish_when_commit_fails(service_app):
+    service, ap = service_app
+    _, message_id = await _ingest_and_get_message(service)
+
+    provider = SimpleNamespace(
+        invoke_llm=AsyncMock(return_value=SimpleNamespace(content="Thanks, we will follow up shortly."))
+    )
+    ap.model_mgr.llm_models = [SimpleNamespace(provider=provider)]
+    ap.database_mode_event_bus.published_events.clear()
+    ap.persistence_mgr.fail_next_commit = True
+
+    with pytest.raises(RuntimeError, match='Simulated commit failure'):
+        await service.generate_draft(message_id)
+
+    current = await service.get_message(message_id)
+    assert current["status"] == MESSAGE_STATUS_PENDING
+    assert ap.database_mode_event_bus.published_events == []
+
+
+async def test_list_conversations_returns_searchable_summary_fields(service_app):
+    service, _ = service_app
+    await service.ingest_internal_event(_sample_payload())
+
+    result = await service.list_conversations(keyword="pricing")
+
+    assert result["total"] == 1
+    conversation = result["conversations"][0]
+    assert conversation["connector_id"] == "wxwork-local"
+    assert conversation["external_conversation_id"] == "S:100_200"
+    assert conversation["latest_customer"] == "Customer A"
+    assert conversation["latest_message_summary"] == "Need pricing details"
+    assert conversation["last_message_at"].endswith("+00:00")
+
+
+async def test_get_message_serializes_datetimes_with_timezone_offset(service_app):
+    service, _ = service_app
+    _, message_id = await _ingest_and_get_message(service)
+
+    message = await service.get_message(message_id)
+
+    assert message["sent_at"].endswith("+00:00")
+    assert message["observed_at"].endswith("+00:00")
+    assert message["created_at"].endswith("+00:00")
+    assert message["updated_at"].endswith("+00:00")
+
+
+async def test_delete_message_publishes_deleted_event(service_app):
+    service, ap = service_app
+    conversation_id, message_id = await _ingest_and_get_message(service)
+    ap.database_mode_event_bus.published_events.clear()
+
+    await service.delete_message(message_id)
+
+    remaining = await service.list_messages(conversation_id)
+    assert remaining["total"] == 0
+    assert len(ap.database_mode_event_bus.published_events) == 1
+    event = ap.database_mode_event_bus.published_events[0]
+    assert event.type == DatabaseModeEventType.MESSAGE_DELETED
+    assert event.message_id == message_id
+
+
+async def test_process_and_skip_publish_updated_event(service_app):
+    service, ap = service_app
+    _, message_id = await _ingest_and_get_message(service)
+    ap.database_mode_event_bus.published_events.clear()
+
+    processed = await service.process_message(message_id)
+    skipped = await service.skip_message(message_id)
+
+    assert processed["status"] == MESSAGE_STATUS_PROCESSED
+    assert processed["attempt_count"] == 1
+    assert skipped["status"] == MESSAGE_STATUS_SKIPPED
+    assert [event.type for event in ap.database_mode_event_bus.published_events] == [
+        DatabaseModeEventType.MESSAGE_UPDATED,
+        DatabaseModeEventType.MESSAGE_UPDATED,
+    ]
+    assert [event.message_id for event in ap.database_mode_event_bus.published_events] == [message_id, message_id]
+
+
+async def test_batch_delete_publishes_one_invalidated_event(service_app):
+    service, ap = service_app
+    await service.ingest_internal_event(_sample_payload())
+    second_payload = _sample_payload() | {"event_id": "wxwork-local:evt-2", "message_key": "wxwork:key-2"}
+    second_payload["message"] = dict(second_payload["message"], external_message_id="102", content="Need a refund")
+    await service.ingest_internal_event(second_payload)
+    conversations = await service.list_conversations()
+    messages = await service.list_messages(conversations["conversations"][0]["id"])
+    message_ids = [message["id"] for message in messages["messages"]]
+    ap.database_mode_event_bus.published_events.clear()
+
+    result = await service.batch_delete(message_ids)
+
+    assert result == {"deleted_ids": message_ids}
+    assert len(ap.database_mode_event_bus.published_events) == 1
+    event = ap.database_mode_event_bus.published_events[0]
+    assert event.type == DatabaseModeEventType.INVALIDATED
+    assert event.conversation_id is None
+    assert event.message_id is None
+
+
+async def test_batch_process_publishes_one_invalidated_event(service_app):
+    service, ap = service_app
+    await service.ingest_internal_event(_sample_payload())
+    second_payload = _sample_payload() | {"event_id": "wxwork-local:evt-2", "message_key": "wxwork:key-2"}
+    second_payload["message"] = dict(second_payload["message"], external_message_id="102", content="Need a refund")
+    await service.ingest_internal_event(second_payload)
+    conversations = await service.list_conversations()
+    messages = await service.list_messages(conversations["conversations"][0]["id"])
+    message_ids = [message["id"] for message in messages["messages"]]
+    ap.database_mode_event_bus.published_events.clear()
+
+    result = await service.batch_process(message_ids)
+
+    assert [message["status"] for message in result["messages"]] == [
+        MESSAGE_STATUS_PROCESSED,
+        MESSAGE_STATUS_PROCESSED,
+    ]
+    assert len(ap.database_mode_event_bus.published_events) == 1
+    assert ap.database_mode_event_bus.published_events[0].type == DatabaseModeEventType.INVALIDATED
+
+
+async def test_batch_skip_publishes_one_invalidated_event(service_app):
+    service, ap = service_app
+    await service.ingest_internal_event(_sample_payload())
+    second_payload = _sample_payload() | {"event_id": "wxwork-local:evt-2", "message_key": "wxwork:key-2"}
+    second_payload["message"] = dict(second_payload["message"], external_message_id="102", content="Need a refund")
+    await service.ingest_internal_event(second_payload)
+    conversations = await service.list_conversations()
+    messages = await service.list_messages(conversations["conversations"][0]["id"])
+    message_ids = [message["id"] for message in messages["messages"]]
+    ap.database_mode_event_bus.published_events.clear()
+
+    result = await service.batch_skip(message_ids)
+
+    assert [message["status"] for message in result["messages"]] == [
+        MESSAGE_STATUS_SKIPPED,
+        MESSAGE_STATUS_SKIPPED,
+    ]
+    assert len(ap.database_mode_event_bus.published_events) == 1
+    assert ap.database_mode_event_bus.published_events[0].type == DatabaseModeEventType.INVALIDATED
+
+
+async def test_batch_operations_require_message_ids(service_app):
+    service, _ = service_app
+
+    with pytest.raises(ValueError, match="message_ids is required"):
+        await service.batch_process([])
