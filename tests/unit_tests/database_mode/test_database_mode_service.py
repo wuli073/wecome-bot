@@ -144,6 +144,16 @@ async def _ingest_and_get_message(service: DatabaseModeService):
     return conversations["conversations"][0]["id"], messages["messages"][0]["id"]
 
 
+async def _ingest_two_messages(service: DatabaseModeService):
+    await service.ingest_internal_event(_sample_payload())
+    second_payload = _sample_payload() | {"event_id": "wxwork-local:evt-2", "message_key": "wxwork:key-2"}
+    second_payload["message"] = dict(second_payload["message"], external_message_id="102", content="Need a refund")
+    await service.ingest_internal_event(second_payload)
+    conversations = await service.list_conversations()
+    messages = await service.list_messages(conversations["conversations"][0]["id"])
+    return conversations["conversations"][0]["id"], [message["id"] for message in messages["messages"]]
+
+
 async def test_ingest_internal_event_is_idempotent(service_app):
     service, ap = service_app
 
@@ -236,6 +246,22 @@ async def test_generate_draft_publishes_one_updated_event_after_commit(service_a
     assert event.message_id == message_id
 
 
+async def test_update_draft_publishes_one_updated_event_after_commit(service_app):
+    service, ap = service_app
+    _, message_id = await _ingest_and_get_message(service)
+    ap.database_mode_event_bus.published_events.clear()
+
+    updated = await service.update_draft(message_id, "Handled manually.", draft_source="manual")
+
+    assert updated["status"] == MESSAGE_STATUS_DRAFT_READY
+    assert updated["draft_text"] == "Handled manually."
+    assert updated["draft_source"] == "manual"
+    assert len(ap.database_mode_event_bus.published_events) == 1
+    event = ap.database_mode_event_bus.published_events[0]
+    assert event.type == DatabaseModeEventType.MESSAGE_UPDATED
+    assert event.message_id == message_id
+
+
 async def test_generate_draft_does_not_publish_when_commit_fails(service_app):
     service, ap = service_app
     _, message_id = await _ingest_and_get_message(service)
@@ -253,6 +279,57 @@ async def test_generate_draft_does_not_publish_when_commit_fails(service_app):
     current = await service.get_message(message_id)
     assert current["status"] == MESSAGE_STATUS_PENDING
     assert ap.database_mode_event_bus.published_events == []
+
+
+@pytest.mark.parametrize(
+    "operation_name",
+    ["update_draft", "process_message", "skip_message", "delete_message", "batch_process"],
+)
+async def test_write_methods_do_not_publish_when_commit_fails(service_app, operation_name):
+    service, ap = service_app
+    conversation_id, message_id = await _ingest_and_get_message(service)
+    batch_message_ids: list[int] | None = None
+    if operation_name == "batch_process":
+        conversation_id, batch_message_ids = await _ingest_two_messages(service)
+
+    ap.database_mode_event_bus.published_events.clear()
+    ap.persistence_mgr.fail_next_commit = True
+
+    with pytest.raises(RuntimeError, match='Simulated commit failure'):
+        if operation_name == "update_draft":
+            await service.update_draft(message_id, "Handled manually.", draft_source="manual")
+        elif operation_name == "process_message":
+            await service.process_message(message_id)
+        elif operation_name == "skip_message":
+            await service.skip_message(message_id)
+        elif operation_name == "delete_message":
+            await service.delete_message(message_id)
+        elif operation_name == "batch_process":
+            await service.batch_process(batch_message_ids)
+        else:
+            raise AssertionError(f"Unexpected operation {operation_name}")
+
+    assert ap.database_mode_event_bus.published_events == []
+
+    if operation_name == "update_draft":
+        current = await service.get_message(message_id)
+        assert current["status"] == MESSAGE_STATUS_PENDING
+        assert current["draft_text"] is None
+        assert current["draft_source"] is None
+    elif operation_name in {"process_message", "skip_message"}:
+        current = await service.get_message(message_id)
+        assert current["status"] == MESSAGE_STATUS_PENDING
+    elif operation_name == "delete_message":
+        remaining = await service.list_messages(conversation_id)
+        assert remaining["total"] == 1
+        assert remaining["messages"][0]["id"] == message_id
+    elif operation_name == "batch_process":
+        remaining = await service.list_messages(conversation_id)
+        assert [message["id"] for message in remaining["messages"]] == batch_message_ids
+        assert [message["status"] for message in remaining["messages"]] == [
+            MESSAGE_STATUS_PENDING,
+            MESSAGE_STATUS_PENDING,
+        ]
 
 
 async def test_list_conversations_returns_searchable_summary_fields(service_app):
@@ -317,13 +394,7 @@ async def test_process_and_skip_publish_updated_event(service_app):
 
 async def test_batch_delete_publishes_one_invalidated_event(service_app):
     service, ap = service_app
-    await service.ingest_internal_event(_sample_payload())
-    second_payload = _sample_payload() | {"event_id": "wxwork-local:evt-2", "message_key": "wxwork:key-2"}
-    second_payload["message"] = dict(second_payload["message"], external_message_id="102", content="Need a refund")
-    await service.ingest_internal_event(second_payload)
-    conversations = await service.list_conversations()
-    messages = await service.list_messages(conversations["conversations"][0]["id"])
-    message_ids = [message["id"] for message in messages["messages"]]
+    _, message_ids = await _ingest_two_messages(service)
     ap.database_mode_event_bus.published_events.clear()
 
     result = await service.batch_delete(message_ids)
@@ -338,13 +409,7 @@ async def test_batch_delete_publishes_one_invalidated_event(service_app):
 
 async def test_batch_process_publishes_one_invalidated_event(service_app):
     service, ap = service_app
-    await service.ingest_internal_event(_sample_payload())
-    second_payload = _sample_payload() | {"event_id": "wxwork-local:evt-2", "message_key": "wxwork:key-2"}
-    second_payload["message"] = dict(second_payload["message"], external_message_id="102", content="Need a refund")
-    await service.ingest_internal_event(second_payload)
-    conversations = await service.list_conversations()
-    messages = await service.list_messages(conversations["conversations"][0]["id"])
-    message_ids = [message["id"] for message in messages["messages"]]
+    _, message_ids = await _ingest_two_messages(service)
     ap.database_mode_event_bus.published_events.clear()
 
     result = await service.batch_process(message_ids)
@@ -359,13 +424,7 @@ async def test_batch_process_publishes_one_invalidated_event(service_app):
 
 async def test_batch_skip_publishes_one_invalidated_event(service_app):
     service, ap = service_app
-    await service.ingest_internal_event(_sample_payload())
-    second_payload = _sample_payload() | {"event_id": "wxwork-local:evt-2", "message_key": "wxwork:key-2"}
-    second_payload["message"] = dict(second_payload["message"], external_message_id="102", content="Need a refund")
-    await service.ingest_internal_event(second_payload)
-    conversations = await service.list_conversations()
-    messages = await service.list_messages(conversations["conversations"][0]["id"])
-    message_ids = [message["id"] for message in messages["messages"]]
+    _, message_ids = await _ingest_two_messages(service)
     ap.database_mode_event_bus.published_events.clear()
 
     result = await service.batch_skip(message_ids)

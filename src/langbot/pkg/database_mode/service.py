@@ -173,17 +173,10 @@ class DatabaseModeService:
                             }
                         )
                     )
-                except Exception as exc:
-                    await conn.execute(
-                        sqlalchemy.update(persistence_database_mode.LocalConnectorEvent)
-                        .where(persistence_database_mode.LocalConnectorEvent.event_id == event_id)
-                        .values(
-                            {
-                                'status': MESSAGE_STATUS_FAILED,
-                                'last_error': str(exc),
-                            }
-                        )
-                    )
+                except Exception:
+                    # Keep ingest atomic: on any failure, the transaction rolls back the
+                    # LocalConnectorEvent insert along with the conversation/message writes.
+                    # Do not record a failed ingest outside the transaction in this path.
                     raise
         if duplicate_message:
             return EventIngestResult(accepted=True, duplicate=True, event_id=event_id)
