@@ -46,6 +46,7 @@ from ..telemetry import telemetry as telemetry_module
 from ..survey import manager as survey_module
 from ..skill import manager as skill_mgr
 from ..local_connectors import service as local_connectors_service
+from ..database_mode import service as database_mode_service
 
 
 class Application:
@@ -160,6 +161,8 @@ class Application:
     survey: survey_module.SurveyManager = None
 
     monitoring_service: monitoring_service.MonitoringService = None
+
+    database_mode_service: database_mode_service.DatabaseModeService = None
 
     skill_service: skill_service.SkillService = None
 

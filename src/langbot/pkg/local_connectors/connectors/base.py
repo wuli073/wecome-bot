@@ -26,12 +26,21 @@ class BaseLocalConnector:
         raise NotImplementedError
 
     @property
+    def monitor_script(self) -> str | None:
+        return None
+
+    @property
     def cli_connector_name(self) -> str:
         raise NotImplementedError
 
     @property
     def port(self) -> int:
         raise NotImplementedError
+
+    def port_for_role(self, role: str) -> int | None:
+        if role == "mcp":
+            return self.port
+        return None
 
     def resolve_decrypt_dir(self) -> Path:
         env_path = os.environ.get("WECOME_WECHAT_DECRYPT_DIR")
@@ -106,26 +115,32 @@ class BaseLocalConnector:
                 "error_message": stdout.decode("utf-8", errors="replace"),
             }
 
-    def build_start_command(self) -> list[str]:
+    def build_start_command(self, role: str = "mcp", runtime_dir: str | None = None) -> list[str]:
         decrypt_dir = self.resolve_decrypt_dir()
+        script_name = self.server_script if role == "mcp" else self.monitor_script
+        if not script_name:
+            raise ValueError(f"Role {role} is not supported by connector {self.connector_id}")
         return [
             self.resolve_python_executable(),
             "-X",
             "utf8",
-            str(decrypt_dir / self.server_script),
+            str(decrypt_dir / script_name),
         ]
 
-    def build_start_env(self, runtime_dir: str) -> dict[str, str]:
+    def build_start_env(self, runtime_dir: str, role: str = "mcp") -> dict[str, str]:
         env = os.environ.copy()
         env["WECHAT_DECRYPT_APP_DIR"] = str(Path(runtime_dir) / "config")
         env["WECHAT_DECRYPT_NONINTERACTIVE"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
         return env
 
-    def build_command_identity(self, runtime_dir: str) -> dict[str, str]:
+    def build_command_identity(self, runtime_dir: str, role: str = "mcp") -> dict[str, str]:
         decrypt_dir = self.resolve_decrypt_dir()
+        script_name = self.server_script if role == "mcp" else self.monitor_script
+        if not script_name:
+            raise ValueError(f"Role {role} is not supported by connector {self.connector_id}")
         return {
-            "script_path": str((decrypt_dir / self.server_script).resolve()),
+            "script_path": str((decrypt_dir / script_name).resolve()),
             "python_executable": str(Path(self.resolve_python_executable()).resolve()),
             "app_dir": str((Path(runtime_dir) / "config").resolve()),
         }

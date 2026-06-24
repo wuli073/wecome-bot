@@ -598,6 +598,21 @@ export interface LocalConnectorWorker {
   started_at?: number | null;
 }
 
+export interface LocalConnectorMonitorStatus {
+  enabled: boolean;
+  owned: boolean;
+  pid?: number | null;
+  started_at?: number | null;
+  running_status: string;
+  warmup_completed: boolean;
+  poll_seconds?: number | null;
+  last_scan_at?: string | null;
+  last_change_at?: string | null;
+  last_event_at?: string | null;
+  outbox_pending: number;
+  last_error?: string | null;
+}
+
 export interface LocalConnectorStatus {
   connector_id: string;
   name: string;
@@ -616,6 +631,7 @@ export interface LocalConnectorStatus {
   tool_count: number;
   updated_at: number;
   worker: LocalConnectorWorker;
+  monitor?: LocalConnectorMonitorStatus;
 }
 
 export interface LocalConnectorJob {
@@ -641,6 +657,91 @@ export interface ApiRespLocalConnector {
 
 export interface ApiRespLocalConnectorJob {
   job: LocalConnectorJob | null;
+}
+
+export interface ApiRespLocalConnectorMonitor {
+  monitor: LocalConnectorMonitorStatus;
+}
+
+export interface DatabaseModeConversationStats {
+  draft_ready: number;
+  failed: number;
+  pending: number;
+  processed: number;
+  processing: number;
+  skipped: number;
+  total: number;
+}
+
+export interface DatabaseModeConversation {
+  id: number;
+  source: string;
+  conversation_name: string;
+  conversation_type: string;
+  last_message_at?: string | null;
+  pending_count: number;
+  failed_count: number;
+  latest_customer: string;
+  latest_message_summary: string;
+}
+
+export interface DatabaseModeMessage {
+  id: number;
+  event_id: string;
+  message_key: string;
+  conversation_id: number;
+  external_message_id?: string | null;
+  sender_id: string;
+  sender_name: string;
+  content: string;
+  content_preview: string;
+  message_type: string;
+  sent_at: string;
+  observed_at: string;
+  status: string;
+  draft_text?: string | null;
+  draft_source?: string | null;
+  ai_suggested_reply?: string | null;
+  attempt_count: number;
+  last_error?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  processed_at?: string | null;
+}
+
+export interface ApiRespDatabaseModeConversations {
+  conversations: DatabaseModeConversation[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface ApiRespDatabaseModeConversation {
+  conversation: {
+    id: number;
+    connector_id: string;
+    source: string;
+    external_conversation_id: string;
+    conversation_name: string;
+    conversation_type: string;
+    last_message_at?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+    stats: DatabaseModeConversationStats;
+    latest_customer: string;
+  };
+}
+
+export interface ApiRespDatabaseModeMessages {
+  messages: DatabaseModeMessage[];
+  total: number;
+  page: number;
+  page_size: number;
+  stats: DatabaseModeConversationStats;
+}
+
+export interface ApiRespDatabaseModeMessage {
+  message: DatabaseModeMessage;
 }
 
 export interface PluginTool {

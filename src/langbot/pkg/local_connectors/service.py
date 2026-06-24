@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import sys
 import time
 import uuid
@@ -79,6 +80,7 @@ class LocalConnectorsService:
             "keys_file": existing.get("keys_file"),
             "decrypted_dir": existing.get("decrypted_dir"),
             "tool_count": existing.get("tool_count", 0),
+            "monitor_enabled": bool(existing.get("monitor_enabled", False)),
             "updated_at": existing.get("updated_at", time.time()),
         }
         return state
@@ -170,8 +172,11 @@ class LocalConnectorsService:
     async def get_connector_status(self, connector_id: str) -> dict:
         connector = self._get_connector(connector_id)
         state = self._base_state(self._definitions[connector_id], self.repository.load_state(connector_id))
-        worker_record = self.process_manager.get_process_record(connector_id)
-        worker_owned = self.process_manager.is_running(connector_id)
+        worker_record = self.process_manager.get_process_record(connector_id, role=schemas.PROCESS_ROLE_MCP)
+        worker_owned = self.process_manager.is_running(connector_id, role=schemas.PROCESS_ROLE_MCP)
+        monitor_record = self.process_manager.get_process_record(connector_id, role=schemas.PROCESS_ROLE_MONITOR)
+        monitor_owned = self.process_manager.is_running(connector_id, role=schemas.PROCESS_ROLE_MONITOR)
+        monitor_runtime = self.repository.read_monitor_runtime_info(connector_id) if connector_id == "wxwork-local" else {}
 
         if not self._platform_supported():
             state["status"] = schemas.CONNECTOR_STATUS_UNSUPPORTED
@@ -189,6 +194,26 @@ class LocalConnectorsService:
             "pid": worker_record.get("pid") if worker_owned and worker_record else None,
             "port": connector.port,
             "started_at": worker_record.get("started_at") if worker_owned and worker_record else None,
+        }
+        monitor_running_status = self._resolve_monitor_running_status(
+            enabled=bool(state.get("monitor_enabled")),
+            owned=monitor_owned,
+            runtime_status=monitor_runtime.get("running_status"),
+            last_error=monitor_runtime.get("last_error"),
+        )
+        state["monitor"] = {
+            "enabled": bool(state.get("monitor_enabled")),
+            "owned": monitor_owned,
+            "pid": monitor_record.get("pid") if monitor_owned and monitor_record else None,
+            "started_at": monitor_record.get("started_at") if monitor_owned and monitor_record else None,
+            "warmup_completed": self._to_bool(monitor_runtime.get("warmup_completed")),
+            "running_status": monitor_running_status,
+            "poll_seconds": self._to_int(monitor_runtime.get("poll_seconds")),
+            "last_scan_at": monitor_runtime.get("last_scan_at"),
+            "last_change_at": monitor_runtime.get("last_change_at"),
+            "last_event_at": monitor_runtime.get("last_event_at"),
+            "outbox_pending": self._to_int(monitor_runtime.get("outbox_pending"), default=0),
+            "last_error": monitor_runtime.get("last_error"),
         }
         return state
 
@@ -320,7 +345,7 @@ class LocalConnectorsService:
                 decrypted_dir=decrypt_result.get("decrypted_dir"),
             )
             try:
-                await self.process_manager.start(connector, runtime_dir)
+                await self.process_manager.start(connector, runtime_dir, role=schemas.PROCESS_ROLE_MCP)
             except PortInUseError as exc:
                 raise LocalConnectorSetupError("PORT_IN_USE", str(exc), schemas.JOB_STAGE_STARTING_MCP) from exc
 
@@ -352,9 +377,12 @@ class LocalConnectorsService:
                 job_status=schemas.JOB_STATUS_SUCCEEDED,
                 job_id=job["job_id"],
                 tool_count=runtime_info.get("tool_count", 0),
+                monitor_enabled=state_monitor_enabled(connector_id, self.repository),
                 last_error_code=None,
                 last_error_message=None,
             )
+            if connector_id == "wxwork-local":
+                await self.start_monitor(connector_id, enable_on_success=True)
         except LocalConnectorSetupError as exc:
             self.job_store.update(
                 job,
@@ -418,7 +446,7 @@ class LocalConnectorsService:
 
         runtime_dir = str(self.repository.connector_runtime_dir(connector_id))
         try:
-            await self.process_manager.start(connector, runtime_dir)
+            await self.process_manager.start(connector, runtime_dir, role=schemas.PROCESS_ROLE_MCP)
         except PortInUseError as exc:
             return self._save_state(
                 connector_id,
@@ -441,14 +469,16 @@ class LocalConnectorsService:
 
     async def stop_worker(self, connector_id: str) -> dict:
         connector = self._get_connector(connector_id)
-        await self.process_manager.stop(connector)
+        if connector_id == "wxwork-local":
+            await self.stop_monitor(connector_id, disable=True)
+        await self.process_manager.stop(connector, role=schemas.PROCESS_ROLE_MCP)
         return self._save_state(connector_id, status=schemas.CONNECTOR_STATUS_STOPPED)
 
     async def restart_worker(self, connector_id: str) -> dict:
         connector = self._get_connector(connector_id)
         runtime_dir = str(self.repository.connector_runtime_dir(connector_id))
         try:
-            await self.process_manager.restart(connector, runtime_dir)
+            await self.process_manager.restart(connector, runtime_dir, role=schemas.PROCESS_ROLE_MCP)
         except PortInUseError as exc:
             return self._save_state(
                 connector_id,
@@ -511,6 +541,78 @@ class LocalConnectorsService:
         self._get_connector(connector_id)
         return {"connector_id": connector_id, "logs": self.repository.read_log_tail(connector_id)}
 
+    def get_internal_event_token(self, connector_id: str) -> str:
+        if connector_id != "wxwork-local":
+            raise ValueError("Only wxwork-local supports internal events")
+        return self.repository.ensure_internal_event_token(connector_id)
+
+    def validate_internal_event_token(self, connector_id: str, token: str) -> bool:
+        expected = self.repository.load_internal_event_token(connector_id)
+        if not expected or not token:
+            return False
+        return hmac.compare_digest(expected, token)
+
+    def is_loopback_request(self, remote_addr: str | None) -> bool:
+        return remote_addr in {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+
+    async def get_monitor_status(self, connector_id: str) -> dict:
+        if connector_id != "wxwork-local":
+            raise ValueError("Monitor is only supported for wxwork-local")
+        status = await self.get_connector_status(connector_id)
+        return status["monitor"]
+
+    async def start_monitor(self, connector_id: str, enable_on_success: bool = True) -> dict:
+        if connector_id != "wxwork-local":
+            raise ValueError("Monitor is only supported for wxwork-local")
+        connector = self._get_connector(connector_id)
+        state = self._base_state(self._definitions[connector_id], self.repository.load_state(connector_id))
+        if not self._configured(state):
+            return self._save_state(
+                connector_id,
+                status=schemas.CONNECTOR_STATUS_NOT_CONFIGURED,
+                last_error_code="NOT_CONFIGURED",
+                last_error_message="Run setup before starting the monitor",
+            )
+        self.repository.ensure_internal_event_token(connector_id)
+        runtime_dir = str(self.repository.connector_runtime_dir(connector_id))
+        env_overrides = {
+            "WECOME_LANGBOT_INTERNAL_EVENT_URL": self._internal_event_url(),
+            "WECOME_INTERNAL_EVENT_TOKEN_FILE": str(self.repository.internal_event_token_file(connector_id)),
+            "WECOME_MONITOR_STATE_DB": str(self.repository.monitor_state_db_file(connector_id)),
+        }
+        await self.process_manager.start(
+            connector,
+            runtime_dir,
+            role=schemas.PROCESS_ROLE_MONITOR,
+            env_overrides=env_overrides,
+        )
+        return self._save_state(connector_id, monitor_enabled=enable_on_success)
+
+    async def stop_monitor(self, connector_id: str, disable: bool = True) -> dict:
+        if connector_id != "wxwork-local":
+            raise ValueError("Monitor is only supported for wxwork-local")
+        connector = self._get_connector(connector_id)
+        await self.process_manager.stop(connector, role=schemas.PROCESS_ROLE_MONITOR)
+        return self._save_state(connector_id, monitor_enabled=not disable)
+
+    async def restart_monitor(self, connector_id: str) -> dict:
+        if connector_id != "wxwork-local":
+            raise ValueError("Monitor is only supported for wxwork-local")
+        connector = self._get_connector(connector_id)
+        runtime_dir = str(self.repository.connector_runtime_dir(connector_id))
+        env_overrides = {
+            "WECOME_LANGBOT_INTERNAL_EVENT_URL": self._internal_event_url(),
+            "WECOME_INTERNAL_EVENT_TOKEN_FILE": str(self.repository.internal_event_token_file(connector_id)),
+            "WECOME_MONITOR_STATE_DB": str(self.repository.monitor_state_db_file(connector_id)),
+        }
+        await self.process_manager.restart(
+            connector,
+            runtime_dir,
+            role=schemas.PROCESS_ROLE_MONITOR,
+            env_overrides=env_overrides,
+        )
+        return self._save_state(connector_id, monitor_enabled=True)
+
     async def restore_configured_connectors(self) -> None:
         if not self._platform_supported() or self.ap.tool_mgr is None:
             return
@@ -521,9 +623,53 @@ class LocalConnectorsService:
                 continue
             try:
                 await self.start_worker(connector_id)
+                if connector_id == "wxwork-local" and state.get("monitor_enabled"):
+                    await self.start_monitor(connector_id, enable_on_success=True)
             except Exception as exc:
                 self.ap.logger.warning(f"Failed to restore local connector {connector_id}: {exc}")
 
     def dispose(self) -> None:
         for connector in self._connectors.values():
-            self.process_manager.stop_sync(connector)
+            self.process_manager.stop_sync(connector, role=schemas.PROCESS_ROLE_MONITOR)
+            self.process_manager.stop_sync(connector, role=schemas.PROCESS_ROLE_MCP)
+
+    def _internal_event_url(self) -> str:
+        port = int(self.ap.instance_config.data["api"]["port"])
+        return f"http://127.0.0.1:{port}/api/v1/local-connectors/internal/events"
+
+    @staticmethod
+    def _to_bool(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() in {"1", "true", "yes"}
+
+    @staticmethod
+    def _to_int(value: object, default: int | None = None) -> int | None:
+        if value is None or value == "":
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _resolve_monitor_running_status(
+        *,
+        enabled: bool,
+        owned: bool,
+        runtime_status: object,
+        last_error: object,
+    ) -> str:
+        normalized_status = str(runtime_status or "").strip().lower()
+        if owned:
+            return normalized_status or "running"
+        if enabled:
+            if normalized_status == "error" and str(last_error or "").strip():
+                return "error"
+            return "starting"
+        return "stopped"
+
+
+def state_monitor_enabled(connector_id: str, repository: LocalConnectorRepository) -> bool:
+    state = repository.load_state(connector_id) or {}
+    return bool(state.get("monitor_enabled", connector_id == "wxwork-local"))

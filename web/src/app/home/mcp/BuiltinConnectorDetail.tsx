@@ -160,6 +160,14 @@ export default function BuiltinConnectorDetail({
     return 'default';
   }, [connector]);
 
+  const monitorTone = useMemo(() => {
+    if (!connector?.monitor?.enabled) return 'default';
+    if (connector.monitor.running_status === 'error') return 'danger';
+    if (!connector.monitor.warmup_completed) return 'warning';
+    if (connector.monitor.owned) return 'success';
+    return 'default';
+  }, [connector]);
+
   const formatConnectorStatus = (value?: string | null) => {
     if (!value) return t('mcp.statusDisconnected');
     const map: Record<string, string> = {
@@ -425,25 +433,120 @@ export default function BuiltinConnectorDetail({
         </Card>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('mcp.localData')}</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-3">
-          <div className="rounded-md border p-3">
-            <div className="text-sm text-muted-foreground">{t('mcp.detectedDatabase')}</div>
-            <div className="mt-1 break-all text-sm">{connector.db_dir || '-'}</div>
-          </div>
-          <div className="rounded-md border p-3">
-            <div className="text-sm text-muted-foreground">{t('mcp.keyFile')}</div>
-            <div className="mt-1 break-all text-sm">{connector.keys_file || '-'}</div>
-          </div>
-          <div className="rounded-md border p-3">
-            <div className="text-sm text-muted-foreground">{t('mcp.decryptedDirectory')}</div>
-            <div className="mt-1 break-all text-sm">{connector.decrypted_dir || '-'}</div>
-          </div>
-        </CardContent>
-      </Card>
+      {connectorId === 'wxwork-local' && connector.monitor && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('databaseMode.monitorPanelTitle')}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusBadge
+                label={
+                  connector.monitor.enabled
+                    ? connector.monitor.warmup_completed
+                      ? connector.monitor.owned
+                        ? t('databaseMode.monitorRunning')
+                        : t('databaseMode.monitorStopped')
+                      : t('databaseMode.warmupTitle')
+                    : t('databaseMode.monitorStoppedTitle')
+                }
+                tone={monitorTone}
+              />
+              {connector.monitor.last_error ? (
+                <Badge variant="outline" className="border-red-200 bg-red-50 text-red-700 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-300">
+                  {t('databaseMode.monitorErrorShort')}
+                </Badge>
+              ) : null}
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-md border p-3">
+                <div className="text-sm text-muted-foreground">{t('databaseMode.monitorRunning')}</div>
+                <div className="mt-1 font-medium">
+                  {connector.monitor.owned ? `PID ${connector.monitor.pid}` : t('databaseMode.monitorStopped')}
+                </div>
+              </div>
+              <div className="rounded-md border p-3">
+                <div className="text-sm text-muted-foreground">{t('databaseMode.warmupTitle')}</div>
+                <div className="mt-1 font-medium">
+                  {connector.monitor.warmup_completed
+                    ? t('databaseMode.warmupCompleted')
+                    : t('databaseMode.warmupPending')}
+                </div>
+              </div>
+              <div className="rounded-md border p-3">
+                <div className="text-sm text-muted-foreground">{t('databaseMode.monitorPollSeconds')}</div>
+                <div className="mt-1 font-medium">{connector.monitor.poll_seconds ?? '--'}</div>
+              </div>
+              <div className="rounded-md border p-3">
+                <div className="text-sm text-muted-foreground">{t('databaseMode.monitorOutboxPending')}</div>
+                <div className="mt-1 font-medium">{connector.monitor.outbox_pending}</div>
+              </div>
+              <div className="rounded-md border p-3">
+                <div className="text-sm text-muted-foreground">{t('databaseMode.monitorLastScan')}</div>
+                <div className="mt-1 text-sm">{connector.monitor.last_scan_at || '--'}</div>
+              </div>
+              <div className="rounded-md border p-3">
+                <div className="text-sm text-muted-foreground">{t('databaseMode.monitorLastChange')}</div>
+                <div className="mt-1 text-sm">{connector.monitor.last_change_at || '--'}</div>
+              </div>
+              <div className="rounded-md border p-3">
+                <div className="text-sm text-muted-foreground">{t('databaseMode.monitorLastEvent')}</div>
+                <div className="mt-1 text-sm">{connector.monitor.last_event_at || '--'}</div>
+              </div>
+              <div className="rounded-md border p-3">
+                <div className="text-sm text-muted-foreground">{t('databaseMode.monitorErrorLabel')}</div>
+                <div className="mt-1 text-sm">{connector.monitor.last_error || '--'}</div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                disabled={isBusy || !connector.keys_file || connector.monitor.owned}
+                onClick={() =>
+                  withAction(
+                    'start-monitor',
+                    () => httpClient.startLocalConnectorMonitor(),
+                    t('mcp.saveSuccess'),
+                  )
+                }
+              >
+                <Database className="mr-2 size-4" />
+                {t('databaseMode.startMonitor')}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={isBusy || !connector.monitor.owned}
+                onClick={() =>
+                  withAction(
+                    'stop-monitor',
+                    () => httpClient.stopLocalConnectorMonitor(),
+                    t('mcp.saveSuccess'),
+                  )
+                }
+              >
+                <Database className="mr-2 size-4" />
+                {t('databaseMode.stopMonitor')}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={isBusy || !connector.keys_file}
+                onClick={() =>
+                  withAction(
+                    'restart-monitor',
+                    () => httpClient.restartLocalConnectorMonitor(),
+                    t('mcp.saveSuccess'),
+                  )
+                }
+              >
+                <RefreshCcw className="mr-2 size-4" />
+                {t('databaseMode.restartMonitor')}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {showLogs && (
         <Card>

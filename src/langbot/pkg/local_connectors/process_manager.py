@@ -17,8 +17,8 @@ class LocalConnectorProcessManager:
     def __init__(self, repository: LocalConnectorRepository) -> None:
         self.repository = repository
 
-    def get_process_record(self, connector_id: str) -> dict | None:
-        return self.repository.load_process(connector_id)
+    def get_process_record(self, connector_id: str, role: str = "mcp") -> dict | None:
+        return self.repository.load_process(connector_id, role=role)
 
     @staticmethod
     def _cmdline_contains(process: psutil.Process, expected_part: str) -> bool:
@@ -96,8 +96,8 @@ class LocalConnectorProcessManager:
             return False
         return self._process_matches_record(process, record)
 
-    def is_running(self, connector_id: str) -> bool:
-        return self._is_owned_process(self.get_process_record(connector_id))
+    def is_running(self, connector_id: str, role: str = "mcp") -> bool:
+        return self._is_owned_process(self.get_process_record(connector_id, role=role))
 
     def _find_listener_pid(self, port: int) -> int | None:
         for conn in psutil.net_connections(kind="tcp"):
@@ -135,6 +135,30 @@ class LocalConnectorProcessManager:
             await asyncio.sleep(0.1)
         return None
 
+    async def _wait_for_child_process(
+        self,
+        controller_pid: int,
+        *,
+        expected_script: str,
+        expected_python: str,
+    ) -> psutil.Process | None:
+        for _ in range(50):
+            try:
+                controller_process = psutil.Process(controller_pid)
+                children = controller_process.children(recursive=True)
+            except psutil.Error:
+                return None
+            for child_process in children:
+                if self._process_matches_identity(
+                    child_process,
+                    expected_script=expected_script,
+                    expected_python=expected_python,
+                    require_python_match=False,
+                ):
+                    return child_process
+            await asyncio.sleep(0.1)
+        return None
+
     def _terminate_process(self, pid: int | None) -> None:
         if not pid:
             return
@@ -156,25 +180,45 @@ class LocalConnectorProcessManager:
         except psutil.Error:
             return
 
+    def _terminate_process_tree(self, pid: int | None) -> None:
+        if not pid:
+            return
+        try:
+            process = psutil.Process(int(pid))
+        except (TypeError, ValueError, psutil.Error):
+            return
+        try:
+            children = process.children(recursive=True)
+        except psutil.Error:
+            children = []
+        for child in reversed(children):
+            self._terminate_process(child.pid)
+        self._terminate_process(process.pid)
+
     def ensure_port_available(self, port: int, owned_pid: int | None = None) -> None:
         listener_pid = self._find_listener_pid(port)
         if listener_pid is not None and listener_pid != owned_pid:
             raise PortInUseError(f"Port {port} is already in use")
 
-    async def start(self, connector, runtime_dir: str) -> dict:
-        existing = self.get_process_record(connector.connector_id)
+    async def start(self, connector, runtime_dir: str, role: str = "mcp", env_overrides: dict | None = None) -> dict:
+        existing = self.get_process_record(connector.connector_id, role=role)
         if self._is_owned_process(existing):
             return existing
 
-        self.repository.save_process(connector.connector_id, None)
-        self.ensure_port_available(connector.port)
+        self.repository.save_process(connector.connector_id, None, role=role)
+        role_port = connector.port_for_role(role)
+        if role_port is not None:
+            self.ensure_port_available(role_port)
 
-        log_handle = open(self.repository.log_file(connector.connector_id), "a", encoding="utf-8")
+        log_handle = open(self.repository.log_file(connector.connector_id, role=role), "a", encoding="utf-8")
         try:
+            env = connector.build_start_env(runtime_dir, role=role)
+            if env_overrides:
+                env.update(env_overrides)
             process = await asyncio.create_subprocess_exec(
-                *connector.build_start_command(),
+                *connector.build_start_command(role=role, runtime_dir=runtime_dir),
                 cwd=str(connector.resolve_decrypt_dir()),
-                env=connector.build_start_env(runtime_dir),
+                env=env,
                 stdout=log_handle,
                 stderr=asyncio.subprocess.STDOUT,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -183,35 +227,50 @@ class LocalConnectorProcessManager:
             log_handle.close()
 
         ps_process = psutil.Process(process.pid)
-        listener_process = await self._wait_for_listener_process(connector.port, process.pid)
-        identity = connector.build_command_identity(runtime_dir)
+        listener_process = None
+        identity = connector.build_command_identity(runtime_dir, role=role)
+        if role_port is not None:
+            listener_process = await self._wait_for_listener_process(role_port, process.pid)
+        else:
+            listener_process = await self._wait_for_child_process(
+                process.pid,
+                expected_script=os.path.normcase(identity.get("script_path", "")),
+                expected_python=os.path.normcase(identity.get("python_executable", "")),
+            )
         record = {
             "connector_id": connector.connector_id,
+            "role": role,
             "pid": listener_process.pid if listener_process is not None else process.pid,
-            "port": connector.port,
+            "port": role_port,
             "created_at": listener_process.create_time() if listener_process is not None else ps_process.create_time(),
             "started_at": ps_process.create_time(),
             "controller_pid": process.pid,
             "controller_created_at": ps_process.create_time(),
-            "command": connector.build_start_command(),
+            "command": connector.build_start_command(role=role, runtime_dir=runtime_dir),
             **identity,
         }
-        self.repository.save_process(connector.connector_id, record)
+        self.repository.save_process(connector.connector_id, record, role=role)
         return record
 
-    def stop_sync(self, connector) -> None:
-        record = self.get_process_record(connector.connector_id)
+    def stop_sync(self, connector, role: str = "mcp") -> None:
+        record = self.get_process_record(connector.connector_id, role=role)
         if not self._is_owned_process(record):
-            self.repository.save_process(connector.connector_id, None)
+            self.repository.save_process(connector.connector_id, None, role=role)
             return
-        self._terminate_process(record.get("controller_pid"))
+        self._terminate_process_tree(record.get("controller_pid"))
         if record.get("pid") != record.get("controller_pid"):
             self._terminate_process(record.get("pid"))
-        self.repository.save_process(connector.connector_id, None)
+        self.repository.save_process(connector.connector_id, None, role=role)
 
-    async def stop(self, connector) -> None:
-        self.stop_sync(connector)
+    async def stop(self, connector, role: str = "mcp") -> None:
+        self.stop_sync(connector, role=role)
 
-    async def restart(self, connector, runtime_dir: str) -> dict:
-        await self.stop(connector)
-        return await self.start(connector, runtime_dir)
+    async def restart(
+        self,
+        connector,
+        runtime_dir: str,
+        role: str = "mcp",
+        env_overrides: dict | None = None,
+    ) -> dict:
+        await self.stop(connector, role=role)
+        return await self.start(connector, runtime_dir, role=role, env_overrides=env_overrides)

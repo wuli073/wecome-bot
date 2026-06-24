@@ -107,6 +107,68 @@ class TestLocalConnectorsStatus:
         assert status["status"] == schemas.CONNECTOR_STATUS_STOPPED
         assert status["worker"]["owned"] is False
 
+    async def test_get_connector_status_reports_stopped_when_monitor_disabled_and_runtime_state_is_stale(
+        self, monkeypatch, tmp_path
+    ):
+        from langbot.pkg.local_connectors.service import LocalConnectorsService
+
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        ap = SimpleNamespace()
+        service = LocalConnectorsService(ap)
+        monkeypatch.setattr(service, "_platform_supported", lambda: True)
+        service.repository.save_state(
+            "wxwork-local",
+            {
+                "connector_id": "wxwork-local",
+                "name": "WXWork",
+                "status": "connected",
+                "db_dir": r"C:\wxwork\db_storage",
+                "keys_file": r"C:\wxwork\wxwork_keys.json",
+                "decrypted_dir": r"C:\wxwork\decrypted",
+                "monitor_enabled": False,
+            },
+        )
+        service.repository.read_monitor_runtime_info = Mock(
+            return_value={"running_status": "running", "warmup_completed": "true"}
+        )
+
+        status = await service.get_connector_status("wxwork-local")
+
+        assert status["monitor"]["enabled"] is False
+        assert status["monitor"]["owned"] is False
+        assert status["monitor"]["running_status"] == "stopped"
+
+    async def test_get_connector_status_reports_starting_when_monitor_enabled_but_process_not_owned(
+        self, monkeypatch, tmp_path
+    ):
+        from langbot.pkg.local_connectors.service import LocalConnectorsService
+
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        ap = SimpleNamespace()
+        service = LocalConnectorsService(ap)
+        monkeypatch.setattr(service, "_platform_supported", lambda: True)
+        service.repository.save_state(
+            "wxwork-local",
+            {
+                "connector_id": "wxwork-local",
+                "name": "WXWork",
+                "status": "connected",
+                "db_dir": r"C:\wxwork\db_storage",
+                "keys_file": r"C:\wxwork\wxwork_keys.json",
+                "decrypted_dir": r"C:\wxwork\decrypted",
+                "monitor_enabled": True,
+            },
+        )
+        service.repository.read_monitor_runtime_info = Mock(
+            return_value={"running_status": "running", "warmup_completed": "true"}
+        )
+
+        status = await service.get_connector_status("wxwork-local")
+
+        assert status["monitor"]["enabled"] is True
+        assert status["monitor"]["owned"] is False
+        assert status["monitor"]["running_status"] == "starting"
+
 
 class TestLocalConnectorsSetupErrors:
     async def test_run_setup_job_marks_client_not_running_failed(self, monkeypatch, tmp_path):
@@ -276,3 +338,58 @@ class TestLocalConnectorsWorkerRuntime:
         await service.restore_configured_connectors()
 
         service.start_worker.assert_awaited_once_with("wechat-local")
+
+    async def test_start_monitor_uses_runtime_metadata_and_enables_state(self, monkeypatch, tmp_path):
+        from langbot.pkg.local_connectors.service import LocalConnectorsService
+
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        ap = SimpleNamespace()
+        ap.instance_config = SimpleNamespace(data={"api": {"port": 5300}})
+        service = LocalConnectorsService(ap)
+        service.process_manager.start = AsyncMock()
+        service.repository.save_state(
+            "wxwork-local",
+            {
+                "connector_id": "wxwork-local",
+                "name": "WXWork",
+                "db_dir": r"C:\wxwork\db_storage",
+                "keys_file": r"C:\wxwork\wxwork_keys.json",
+                "decrypted_dir": r"C:\wxwork\decrypted",
+            },
+        )
+
+        state = await service.start_monitor("wxwork-local")
+
+        service.process_manager.start.assert_awaited_once()
+        _, runtime_dir = service.process_manager.start.await_args.args[:2]
+        assert runtime_dir.endswith("wxwork-local")
+        assert state["monitor_enabled"] is True
+        assert service.repository.load_internal_event_token("wxwork-local")
+
+    async def test_restore_configured_connectors_restarts_enabled_monitor(self, monkeypatch, tmp_path):
+        from langbot.pkg.local_connectors.service import LocalConnectorsService
+
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        ap = SimpleNamespace()
+        ap.tool_mgr = SimpleNamespace()
+        ap.logger = Mock()
+        service = LocalConnectorsService(ap)
+        monkeypatch.setattr(service, "_platform_supported", lambda: True)
+        service.start_worker = AsyncMock()
+        service.start_monitor = AsyncMock()
+        service.repository.save_state(
+            "wxwork-local",
+            {
+                "connector_id": "wxwork-local",
+                "name": "WXWork",
+                "db_dir": r"C:\wxwork\db_storage",
+                "keys_file": r"C:\wxwork\wxwork_keys.json",
+                "decrypted_dir": r"C:\wxwork\decrypted",
+                "monitor_enabled": True,
+            },
+        )
+
+        await service.restore_configured_connectors()
+
+        service.start_worker.assert_awaited_once_with("wxwork-local")
+        service.start_monitor.assert_awaited_once_with("wxwork-local", enable_on_success=True)

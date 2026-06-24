@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -69,10 +69,16 @@ async def test_process_manager_start_records_listener_child_pid(monkeypatch, tmp
     connector = SimpleNamespace(
         connector_id="wechat-local",
         port=5680,
-        build_start_command=lambda: [r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe", "-X", "utf8", r"C:\repo\wechat-decrypt\mcp_http_server.py"],
+        port_for_role=lambda role: 5680 if role == "mcp" else None,
+        build_start_command=lambda role="mcp", runtime_dir=None: [
+            r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+            "-X",
+            "utf8",
+            r"C:\repo\wechat-decrypt\mcp_http_server.py",
+        ],
         resolve_decrypt_dir=lambda: tmp_path,
-        build_start_env=lambda _runtime_dir: {},
-        build_command_identity=lambda runtime_dir: {
+        build_start_env=lambda _runtime_dir, role="mcp": {},
+        build_command_identity=lambda runtime_dir, role="mcp": {
             "script_path": r"C:\repo\wechat-decrypt\mcp_http_server.py",
             "python_executable": r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
             "app_dir": runtime_dir,
@@ -121,6 +127,76 @@ async def test_process_manager_start_records_listener_child_pid(monkeypatch, tmp
     assert record["controller_pid"] == 2000
     assert record["created_at"] == 12.0
     assert record["controller_created_at"] == 11.0
+
+
+@pytest.mark.asyncio
+async def test_process_manager_start_supports_monitor_role_without_listener_port(monkeypatch, tmp_path):
+    from langbot.pkg.local_connectors.process_manager import LocalConnectorProcessManager
+    from langbot.pkg.local_connectors.repository import LocalConnectorRepository
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    repository = LocalConnectorRepository()
+    manager = LocalConnectorProcessManager(repository)
+
+    connector = SimpleNamespace(
+        connector_id="wxwork-local",
+        port=5681,
+        port_for_role=lambda role: None if role == "monitor" else 5681,
+        build_start_command=lambda role="mcp", runtime_dir=None: [
+            r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+            "-X",
+            "utf8",
+            r"C:\repo\wechat-decrypt\wxwork_message_monitor.py",
+            "--runtime-dir",
+            runtime_dir,
+        ],
+        resolve_decrypt_dir=lambda: tmp_path,
+        build_start_env=lambda _runtime_dir, role="mcp": {"ROLE": role},
+        build_command_identity=lambda runtime_dir, role="mcp": {
+            "script_path": r"C:\repo\wechat-decrypt\wxwork_message_monitor.py",
+            "python_executable": r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+            "app_dir": runtime_dir,
+        },
+    )
+
+    class FakeAsyncProcess:
+        pid = 4100
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return FakeAsyncProcess()
+
+    class FakeControllerProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def create_time(self):
+            return 21.0
+
+    class FakeChildProcess:
+        pid = 4200
+
+        def create_time(self):
+            return 22.0
+
+    monkeypatch.setattr(
+        "langbot.pkg.local_connectors.process_manager.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "langbot.pkg.local_connectors.process_manager.psutil.Process",
+        lambda pid: FakeControllerProcess(pid),
+    )
+    wait_for_child = AsyncMock(return_value=FakeChildProcess())
+    monkeypatch.setattr(manager, "_wait_for_child_process", wait_for_child)
+
+    record = await manager.start(connector, str(tmp_path / "runtime"), role="monitor")
+
+    wait_for_child.assert_awaited_once()
+    assert record["pid"] == 4200
+    assert record["controller_pid"] == 4100
+    assert record["port"] is None
+    assert record["role"] == "monitor"
+    assert record["created_at"] == 22.0
 
 
 def test_process_manager_is_running_accepts_listener_record_via_controller_identity(monkeypatch, tmp_path):
@@ -223,6 +299,8 @@ def test_process_manager_stop_terminates_controller_then_listener(monkeypatch, t
     listener.terminate = Mock()
     listener.wait = Mock()
     controller = Mock()
+    controller.pid = 2000
+    controller.children = Mock(return_value=[])
     controller.terminate = Mock()
     controller.wait = Mock()
 
@@ -246,3 +324,69 @@ def test_process_manager_stop_terminates_controller_then_listener(monkeypatch, t
     controller.terminate.assert_called_once()
     listener.terminate.assert_called_once()
     assert repository.load_process("wechat-local") is None
+
+
+def test_process_manager_stop_monitor_terminates_controller_process_tree(monkeypatch, tmp_path):
+    from langbot.pkg.local_connectors.process_manager import LocalConnectorProcessManager
+    from langbot.pkg.local_connectors.repository import LocalConnectorRepository
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    repository = LocalConnectorRepository()
+    manager = LocalConnectorProcessManager(repository)
+    repository.save_process(
+        "wxwork-local",
+        {
+            "pid": 4100,
+            "role": "monitor",
+            "created_at": 22.0,
+            "controller_pid": 4100,
+            "controller_created_at": 21.0,
+            "script_path": r"C:\repo\wechat-decrypt\wxwork_message_monitor.py",
+            "python_executable": r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+        },
+        role="monitor",
+    )
+
+    class FakeMonitorProcess:
+        def create_time(self):
+            return 21.0
+
+        def cmdline(self):
+            return [
+                r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe",
+                "-X",
+                "utf8",
+                r"C:\repo\wechat-decrypt\wxwork_message_monitor.py",
+            ]
+
+        def exe(self):
+            return r"C:\repo\wechat-decrypt\.venv\Scripts\python.exe"
+
+    controller = Mock()
+    controller.pid = 4100
+    child = Mock()
+    controller.children = Mock(return_value=[child])
+    controller.terminate = Mock()
+    controller.wait = Mock()
+    child.pid = 4200
+    child.terminate = Mock()
+    child.wait = Mock()
+
+    def fake_process(pid):
+        if pid == 4100:
+            return controller
+        if pid == 4200:
+            return child
+        return FakeMonitorProcess()
+
+    monkeypatch.setattr(
+        "langbot.pkg.local_connectors.process_manager.psutil.Process",
+        fake_process,
+    )
+    monkeypatch.setattr(manager, "_is_owned_process", lambda _record: True)
+
+    manager.stop_sync(SimpleNamespace(connector_id="wxwork-local"), role="monitor")
+
+    child.terminate.assert_called_once()
+    controller.terminate.assert_called_once()
+    assert repository.load_process("wxwork-local", role="monitor") is None
