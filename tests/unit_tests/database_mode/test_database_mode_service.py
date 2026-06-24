@@ -283,13 +283,13 @@ async def test_generate_draft_does_not_publish_when_commit_fails(service_app):
 
 @pytest.mark.parametrize(
     "operation_name",
-    ["update_draft", "process_message", "skip_message", "delete_message", "batch_process"],
+    ["update_draft", "process_message", "skip_message", "delete_message", "batch_process", "batch_skip", "batch_delete"],
 )
 async def test_write_methods_do_not_publish_when_commit_fails(service_app, operation_name):
     service, ap = service_app
     conversation_id, message_id = await _ingest_and_get_message(service)
     batch_message_ids: list[int] | None = None
-    if operation_name == "batch_process":
+    if operation_name in {"batch_process", "batch_skip", "batch_delete"}:
         conversation_id, batch_message_ids = await _ingest_two_messages(service)
 
     ap.database_mode_event_bus.published_events.clear()
@@ -306,6 +306,10 @@ async def test_write_methods_do_not_publish_when_commit_fails(service_app, opera
             await service.delete_message(message_id)
         elif operation_name == "batch_process":
             await service.batch_process(batch_message_ids)
+        elif operation_name == "batch_skip":
+            await service.batch_skip(batch_message_ids)
+        elif operation_name == "batch_delete":
+            await service.batch_delete(batch_message_ids)
         else:
             raise AssertionError(f"Unexpected operation {operation_name}")
 
@@ -324,6 +328,20 @@ async def test_write_methods_do_not_publish_when_commit_fails(service_app, opera
         assert remaining["total"] == 1
         assert remaining["messages"][0]["id"] == message_id
     elif operation_name == "batch_process":
+        remaining = await service.list_messages(conversation_id)
+        assert [message["id"] for message in remaining["messages"]] == batch_message_ids
+        assert [message["status"] for message in remaining["messages"]] == [
+            MESSAGE_STATUS_PENDING,
+            MESSAGE_STATUS_PENDING,
+        ]
+    elif operation_name == "batch_skip":
+        remaining = await service.list_messages(conversation_id)
+        assert [message["id"] for message in remaining["messages"]] == batch_message_ids
+        assert [message["status"] for message in remaining["messages"]] == [
+            MESSAGE_STATUS_PENDING,
+            MESSAGE_STATUS_PENDING,
+        ]
+    elif operation_name == "batch_delete":
         remaining = await service.list_messages(conversation_id)
         assert [message["id"] for message in remaining["messages"]] == batch_message_ids
         assert [message["status"] for message in remaining["messages"]] == [
