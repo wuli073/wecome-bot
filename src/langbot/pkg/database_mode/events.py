@@ -67,16 +67,12 @@ class DatabaseModeEventBus:
             occurred_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         )
 
-        buffered_events: list[DatabaseModeEvent | object] = []
         while True:
             try:
-                buffered_events.append(subscriber.queue.get_nowait())
+                subscriber.queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
 
-        preserved_count = max(0, subscriber.queue.maxsize - 1)
-        for buffered_event in buffered_events[:preserved_count]:
-            subscriber.queue.put_nowait(buffered_event)
         subscriber.queue.put_nowait(invalidated)
 
     def close(self) -> None:
