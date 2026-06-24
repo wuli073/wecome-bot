@@ -157,6 +157,22 @@ async def test_close_pushes_the_shutdown_sentinel():
     assert subscriber.queue.get_nowait() is DATABASE_MODE_EVENT_SENTINEL
 
 
+async def test_publish_after_close_does_not_replace_shutdown_sentinel():
+    bus = DatabaseModeEventBus(queue_maxsize=1)
+    subscriber = bus.subscribe()
+
+    await bus.publish(
+        DatabaseModeEvent(type=DatabaseModeEventType.MESSAGE_CREATED, conversation_id=1, message_id=1)
+    )
+    bus.close()
+    await bus.publish(
+        DatabaseModeEvent(type=DatabaseModeEventType.MESSAGE_UPDATED, conversation_id=1, message_id=1)
+    )
+
+    assert subscriber.queue.get_nowait() is DATABASE_MODE_EVENT_SENTINEL
+    assert subscriber.queue.empty()
+
+
 async def test_serialize_sse_event_emits_event_and_json_payload():
     event = DatabaseModeEvent(
         type=DatabaseModeEventType.MESSAGE_CREATED,

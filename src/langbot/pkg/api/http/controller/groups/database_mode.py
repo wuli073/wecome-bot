@@ -32,10 +32,11 @@ def _get_int_arg(name: str, default: int) -> int:
 class DatabaseModeRouterGroup(group.RouterGroup):
     async def initialize(self) -> None:
         @self.route('/events/session', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
-        async def create_event_session() -> quart.Response:
+        async def create_event_session(user_email: str) -> quart.Response:
             now = datetime.datetime.now(datetime.timezone.utc)
             expires_at = now + datetime.timedelta(minutes=5)
             payload = {
+                'sub': user_email,
                 'version': DATABASE_MODE_SSE_SESSION_VERSION,
                 'purpose': DATABASE_MODE_SSE_SESSION_PURPOSE,
                 'issued_at': now.isoformat(),
@@ -60,7 +61,7 @@ class DatabaseModeRouterGroup(group.RouterGroup):
         @self.route('/events', methods=['GET'], auth_type=group.AuthType.NONE)
         async def stream_events():
             try:
-                self._verify_sse_session_cookie()
+                await self._verify_sse_session_cookie()
             except Exception as exc:
                 return self.http_status(401, -1, str(exc))
 
@@ -187,7 +188,7 @@ class DatabaseModeRouterGroup(group.RouterGroup):
     def _get_jwt_secret(self) -> str:
         return self.ap.instance_config.data['system']['jwt']['secret']
 
-    def _verify_sse_session_cookie(self) -> dict:
+    async def _verify_sse_session_cookie(self) -> dict:
         token = quart.request.cookies.get(DATABASE_MODE_SSE_COOKIE_NAME, '')
         if not token:
             raise ValueError('Missing SSE session cookie')
@@ -197,6 +198,10 @@ class DatabaseModeRouterGroup(group.RouterGroup):
             raise ValueError('Invalid SSE session version')
         if payload.get('purpose') != DATABASE_MODE_SSE_SESSION_PURPOSE:
             raise ValueError('Invalid SSE session purpose')
+
+        user_email = str(payload.get('sub') or '').strip()
+        if not user_email:
+            raise ValueError('Missing SSE session subject')
 
         expires_at_raw = str(payload.get('expires_at') or '').strip()
         if not expires_at_raw:
@@ -210,5 +215,9 @@ class DatabaseModeRouterGroup(group.RouterGroup):
 
         if not str(payload.get('session_id') or '').strip():
             raise ValueError('Missing SSE session id')
+
+        user = await self.ap.user_service.get_user_by_email(user_email)
+        if not user:
+            raise ValueError('User not found')
 
         return payload

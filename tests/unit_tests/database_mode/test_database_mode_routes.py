@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+import datetime
 from types import SimpleNamespace
 
 import jwt
@@ -23,7 +24,7 @@ def _user_record(email: str = "user@example.com") -> SimpleNamespace:
     return SimpleNamespace(user=email)
 
 
-async def _make_client(*, scheme: str = "http"):
+async def _make_client(*, scheme: str = "http", user_exists: bool = True):
     app = quart.Quart(__name__)
     verified_user_email = "user@example.com"
 
@@ -31,6 +32,8 @@ async def _make_client(*, scheme: str = "http"):
         return verified_user_email
 
     async def get_user_by_email(_email: str):
+        if not user_exists:
+            return None
         return _user_record(verified_user_email)
 
     ap = SimpleNamespace(
@@ -86,6 +89,7 @@ async def test_handshake_returns_204_and_sets_cookie():
     payload = _decode_cookie(cookie_value, ap.instance_config.data["system"]["jwt"]["secret"])
     assert payload["version"] == 1
     assert payload["purpose"] == "database-mode-sse"
+    assert payload["sub"] == "user@example.com"
     assert payload["session_id"]
     assert payload["issued_at"]
     assert payload["expires_at"]
@@ -112,6 +116,61 @@ async def test_stream_rejects_missing_cookie():
 
     assert response.status_code == 401
     assert payload["msg"] == "Missing SSE session cookie"
+
+
+async def test_stream_rejects_expired_cookie():
+    client, ap, scheme = await _make_client()
+    expired_payload = {
+        "sub": "user@example.com",
+        "version": 1,
+        "purpose": "database-mode-sse",
+        "issued_at": (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=10)).isoformat(),
+        "expires_at": (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=5)).isoformat(),
+        "session_id": "expired-session",
+    }
+    expired_cookie = jwt.encode(
+        expired_payload,
+        ap.instance_config.data["system"]["jwt"]["secret"],
+        algorithm="HS256",
+    )
+
+    response = await client.get(
+        "/api/v1/database-mode/events",
+        headers={"Cookie": f"langbot_dbmode_sse={expired_cookie}"},
+        scheme=scheme,
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 401
+    assert payload["msg"] == "SSE session expired"
+
+
+async def test_stream_rejects_cookie_for_deleted_user():
+    client, ap, scheme = await _make_client(user_exists=False)
+    issued_at = datetime.datetime.now(datetime.timezone.utc)
+    payload = {
+        "sub": "user@example.com",
+        "version": 1,
+        "purpose": "database-mode-sse",
+        "issued_at": issued_at.isoformat(),
+        "expires_at": (issued_at + datetime.timedelta(minutes=5)).isoformat(),
+        "session_id": "active-session",
+    }
+    cookie_value = jwt.encode(
+        payload,
+        ap.instance_config.data["system"]["jwt"]["secret"],
+        algorithm="HS256",
+    )
+
+    response = await client.get(
+        "/api/v1/database-mode/events",
+        headers={"Cookie": f"langbot_dbmode_sse={cookie_value}"},
+        scheme=scheme,
+    )
+    data = await response.get_json()
+
+    assert response.status_code == 401
+    assert data["msg"] == "User not found"
 
 
 async def test_stream_ignores_last_event_id_and_emits_ready():

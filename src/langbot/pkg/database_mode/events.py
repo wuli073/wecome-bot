@@ -39,8 +39,16 @@ class DatabaseModeEventBus:
     def __init__(self, queue_maxsize: int = 100) -> None:
         self._queue_maxsize = queue_maxsize
         self._subscribers: dict[str, DatabaseModeSubscriber] = {}
+        self._closed = False
 
     def subscribe(self) -> DatabaseModeSubscriber:
+        if self._closed:
+            subscriber = DatabaseModeSubscriber(
+                subscriber_id=str(uuid.uuid4()),
+                queue=asyncio.Queue(maxsize=self._queue_maxsize),
+            )
+            subscriber.queue.put_nowait(DATABASE_MODE_EVENT_SENTINEL)
+            return subscriber
         subscriber = DatabaseModeSubscriber(
             subscriber_id=str(uuid.uuid4()),
             queue=asyncio.Queue(maxsize=self._queue_maxsize),
@@ -52,10 +60,14 @@ class DatabaseModeEventBus:
         self._subscribers.pop(subscriber_id, None)
 
     async def publish(self, event: DatabaseModeEvent) -> None:
+        if self._closed:
+            return
         for subscriber in list(self._subscribers.values()):
             self._publish_to_subscriber(subscriber, event)
 
     def _publish_to_subscriber(self, subscriber: DatabaseModeSubscriber, event: DatabaseModeEvent) -> None:
+        if self._queue_has_shutdown_sentinel(subscriber):
+            return
         if self._queue_has_invalidated_marker(subscriber):
             return
 
@@ -86,7 +98,15 @@ class DatabaseModeEventBus:
             for item in queued_items
         )
 
+    @staticmethod
+    def _queue_has_shutdown_sentinel(subscriber: DatabaseModeSubscriber) -> bool:
+        queued_items = getattr(subscriber.queue, '_queue', ())
+        return any(item is DATABASE_MODE_EVENT_SENTINEL for item in queued_items)
+
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         for subscriber in list(self._subscribers.values()):
             try:
                 subscriber.queue.put_nowait(DATABASE_MODE_EVENT_SENTINEL)
