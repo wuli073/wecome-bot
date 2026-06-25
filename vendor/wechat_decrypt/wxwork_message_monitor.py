@@ -10,6 +10,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 import connector_runtime
@@ -28,18 +29,29 @@ MONITORED_FILES = (
 )
 
 DEFAULT_POLL_SECONDS = 1
+ACTIVE_POLL_INTERVAL_MS = 500
+FIRST_IDLE_POLL_INTERVAL_MS = 1000
+MAX_IDLE_POLL_INTERVAL_MS = 2000
 DEFAULT_DEBOUNCE_MS = 0
 DEFAULT_SCAN_LIMIT = 2000
 DEFAULT_STABILITY_CHECKS = 2
 DEFAULT_STABILITY_INTERVAL_MS = 250
 DEFAULT_MAX_STABILITY_WAIT_MS = 1000
 DEFAULT_MONITOR_LOOKBACK_SECONDS = 120
+MAX_SOURCE_STALENESS_MS = 2000
+POST_CHANGE_CONFIRMATION_DELAY_MS = 100
+SQLITE_LOCK_RETRY_DELAYS_SECONDS = (0.05, 0.1, 0.2)
 MAX_SEEN_MESSAGES = 10000
 OUTBOX_STATUS_PENDING = "pending"
 OUTBOX_STATUS_DELIVERED = "delivered"
 REFRESH_TARGET_MESSAGE = "message.db"
 REFRESH_TARGET_SESSION = "session.db"
 REFRESH_TARGET_USER = "user.db"
+STALE_REFRESH_TARGETS = (
+    REFRESH_TARGET_MESSAGE,
+    REFRESH_TARGET_SESSION,
+    REFRESH_TARGET_USER,
+)
 TIMING_FIELDS = (
     "file_change_detected_at",
     "stability_completed_at",
@@ -92,6 +104,50 @@ def duration_ms(started_at: str | None, completed_at: str | None) -> int | None:
 
 def hash_prefix(value: str, length: int = 12) -> str:
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()[:length]
+
+
+def is_sqlite_locked_error(exc: sqlite3.Error) -> bool:
+    message = str(exc).strip().lower()
+    return "locked" in message or "busy" in message
+
+
+def run_with_sqlite_retry(operation):
+    for delay_seconds in SQLITE_LOCK_RETRY_DELAYS_SECONDS:
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            if not is_sqlite_locked_error(exc):
+                raise
+            time.sleep(delay_seconds)
+    return operation()
+
+
+def is_source_refresh_stale(
+    last_refresh_completed_at: str | None,
+    *,
+    max_staleness_ms: int = MAX_SOURCE_STALENESS_MS,
+    now_at: str | None = None,
+) -> bool:
+    last_refresh = iso_to_datetime(last_refresh_completed_at)
+    current = iso_to_datetime(now_at or utcnow_iso())
+    if last_refresh is None or current is None:
+        return True
+    elapsed_ms = (current - last_refresh).total_seconds() * 1000
+    return elapsed_ms >= max(0, int(max_staleness_ms))
+
+
+@dataclass
+class AdaptivePollController:
+    current_interval_ms: int = ACTIVE_POLL_INTERVAL_MS
+
+    def record_result(self, *, had_activity: bool, had_error: bool) -> None:
+        if had_activity or had_error:
+            self.current_interval_ms = ACTIVE_POLL_INTERVAL_MS
+            return
+        if self.current_interval_ms <= ACTIVE_POLL_INTERVAL_MS:
+            self.current_interval_ms = FIRST_IDLE_POLL_INTERVAL_MS
+            return
+        self.current_interval_ms = MAX_IDLE_POLL_INTERVAL_MS
 
 
 def build_monitor_cursor(message: dict) -> dict:
@@ -483,7 +539,6 @@ def canonical_message_hash_payload(message: dict) -> dict:
         "conversation_id": message["conversation_id"],
         "message_id": message["message_id"],
         "server_id": message["server_id"],
-        "sequence": message["sequence"],
         "send_time": message["send_time"],
         "sender_id": message["sender_id"],
         "source_rowid": message["source_rowid"],
@@ -592,7 +647,7 @@ def perform_warmup(store: MonitorStateStore, runtime_dir: str, scan_limit: int) 
     decrypt_result = refresh_decrypted_cache(runtime_dir)
     if not decrypt_result.get("ok"):
         raise RuntimeError(decrypt_result.get("error_message") or "Decrypt failed during warmup")
-    messages = wxwork_query.get_messages_for_monitor(limit=scan_limit)
+    messages = run_with_sqlite_retry(lambda: wxwork_query.get_messages_for_monitor(limit=scan_limit))
     for message in messages:
         message_key, event_id = build_message_key(message)
         store.mark_seen_only(event_id, message_key)
@@ -631,7 +686,9 @@ def scan_and_enqueue(
     base_timings: dict[str, str | None] | None = None,
 ) -> dict[str, object]:
     decrypt_started_at = utcnow_iso()
-    decrypt_result = refresh_decrypted_cache(runtime_dir, database_list=refresh_targets)
+    decrypt_result = run_with_sqlite_retry(
+        lambda: refresh_decrypted_cache(runtime_dir, database_list=refresh_targets)
+    )
     if isinstance(decrypt_result, dict):
         decrypt_ok = bool(decrypt_result.get("ok"))
         decrypt_error_message = decrypt_result.get("error_message")
@@ -642,10 +699,12 @@ def scan_and_enqueue(
         raise RuntimeError(str(decrypt_error_message or "Decrypt refresh failed"))
     decrypt_completed_at = utcnow_iso()
     cursor = load_monitor_cursor(store)
-    scanned_messages = wxwork_query.get_messages_for_monitor(
-        limit=scan_limit,
-        after_cursor=cursor,
-        lookback_seconds=DEFAULT_MONITOR_LOOKBACK_SECONDS,
+    scanned_messages = run_with_sqlite_retry(
+        lambda: wxwork_query.get_messages_for_monitor(
+            limit=scan_limit,
+            after_cursor=cursor,
+            lookback_seconds=DEFAULT_MONITOR_LOOKBACK_SECONDS,
+        )
     )
     scan_completed_at = utcnow_iso()
     new_messages = 0
@@ -675,6 +734,43 @@ def scan_and_enqueue(
         "decrypt_started_at": decrypt_started_at,
         "decrypt_completed_at": decrypt_completed_at,
         "scan_completed_at": scan_completed_at,
+    }
+
+
+def run_refresh_cycle(
+    store: MonitorStateStore,
+    runtime_dir: str,
+    scan_limit: int,
+    *,
+    refresh_targets: list[str] | tuple[str, ...] | None = None,
+    base_timings: dict[str, str | None] | None = None,
+    confirmation_delay_ms: int = 0,
+) -> dict[str, object]:
+    result = scan_and_enqueue(
+        store,
+        runtime_dir,
+        scan_limit,
+        refresh_targets=list(refresh_targets) if refresh_targets is not None else None,
+        base_timings=base_timings,
+    )
+    if int(result["new_messages"]) > 0 or confirmation_delay_ms <= 0:
+        return result
+
+    time.sleep(max(0, int(confirmation_delay_ms)) / 1000)
+    confirm_result = scan_and_enqueue(
+        store,
+        runtime_dir,
+        scan_limit,
+        refresh_targets=list(refresh_targets) if refresh_targets is not None else None,
+        base_timings=base_timings,
+    )
+    return {
+        "new_messages": int(result["new_messages"]) + int(confirm_result["new_messages"]),
+        "scanned_messages": int(result["scanned_messages"]) + int(confirm_result["scanned_messages"]),
+        "latest_cursor": confirm_result.get("latest_cursor") or result.get("latest_cursor"),
+        "decrypt_started_at": confirm_result.get("decrypt_started_at") or result.get("decrypt_started_at"),
+        "decrypt_completed_at": confirm_result.get("decrypt_completed_at") or result.get("decrypt_completed_at"),
+        "scan_completed_at": confirm_result.get("scan_completed_at") or result.get("scan_completed_at"),
     }
 
 
@@ -730,6 +826,150 @@ def deliver_outbox(store: MonitorStateStore, push_url: str, token_file: str) -> 
         log_error(f"Outbox delivery failed, retry in {delay}s: {message}")
 
 
+def execute_monitor_iteration(
+    store: MonitorStateStore,
+    *,
+    db_dir: str,
+    runtime_dir: str,
+    scan_limit: int,
+    push_url: str,
+    token_file: str,
+    stability_checks: int,
+    stability_interval_ms: int,
+    max_stability_wait_ms: int,
+    previous_snapshot: dict[str, dict[str, int]],
+    last_processed_snapshot: dict[str, dict[str, int]] | None,
+    immediate_reruns_remaining: int,
+    poll_interval_ms: int,
+) -> dict[str, object]:
+    started_monotonic = monotonic_seconds()
+    rows_scanned = 0
+    new_rows = 0
+    had_error = False
+    next_previous_snapshot = previous_snapshot
+    next_last_processed_snapshot = last_processed_snapshot
+    next_immediate_reruns_remaining = immediate_reruns_remaining
+
+    store.set_state("last_scan_at", utcnow_iso())
+    store.set_state("poll_interval_ms", poll_interval_ms)
+    store.set_state("poll_seconds", max(1, int((poll_interval_ms + 999) / 1000)))
+    log_info(f"poll_started poll_interval_ms={poll_interval_ms}")
+
+    try:
+        current_snapshot = run_with_sqlite_retry(lambda: snapshot_files(db_dir))
+        changed = snapshots_changed(previous_snapshot, current_snapshot)
+        force_stale_refresh = not changed and is_source_refresh_stale(store.get_state("last_refresh_completed_at"))
+        if changed:
+            file_change_detected_at = utcnow_iso()
+            stable_result = wait_for_stable_snapshot(
+                db_dir,
+                current_snapshot,
+                stability_checks=stability_checks,
+                stability_interval_ms=stability_interval_ms,
+                max_stability_wait_ms=max_stability_wait_ms,
+            )
+            stable_snapshot = stable_result["snapshot"]
+            refresh_targets = determine_refresh_targets(previous_snapshot, stable_snapshot)
+            next_previous_snapshot = stable_snapshot
+            store.save_file_snapshots(stable_snapshot)
+            store.set_state("last_change_at", file_change_detected_at)
+
+            if stable_snapshot == last_processed_snapshot:
+                next_immediate_reruns_remaining = 1
+            elif refresh_targets:
+                result = run_refresh_cycle(
+                    store,
+                    runtime_dir,
+                    scan_limit,
+                    refresh_targets=refresh_targets,
+                    base_timings={
+                        "file_change_detected_at": file_change_detected_at,
+                        "stability_completed_at": utcnow_iso(),
+                    },
+                    confirmation_delay_ms=POST_CHANGE_CONFIRMATION_DELAY_MS,
+                )
+                rows_scanned += int(result["scanned_messages"])
+                new_rows += int(result["new_messages"])
+                next_last_processed_snapshot = stable_snapshot
+                store.set_state("last_refresh_completed_at", utcnow_iso())
+                store.set_state("running_status", "running")
+                store.set_state("last_error", "")
+                if int(result["new_messages"]) > 0:
+                    log_info(f"Queued {result['new_messages']} new messages scanned={result['scanned_messages']}")
+                    deliver_outbox(store, push_url, token_file)
+                post_cycle_snapshot = run_with_sqlite_retry(lambda: snapshot_files(db_dir))
+                if next_immediate_reruns_remaining > 0 and snapshots_changed(stable_snapshot, post_cycle_snapshot):
+                    next_immediate_reruns_remaining -= 1
+                    next_previous_snapshot = post_cycle_snapshot
+                    store.save_file_snapshots(post_cycle_snapshot)
+                    elapsed_ms = int((monotonic_seconds() - started_monotonic) * 1000)
+                    log_info(
+                        "poll_completed "
+                        f"poll_interval_ms={poll_interval_ms} rows_scanned={rows_scanned} "
+                        f"new_rows={new_rows} elapsed_ms={elapsed_ms}"
+                    )
+                    return {
+                        "previous_snapshot": next_previous_snapshot,
+                        "last_processed_snapshot": next_last_processed_snapshot,
+                        "immediate_reruns_remaining": next_immediate_reruns_remaining,
+                        "rows_scanned": rows_scanned,
+                        "new_rows": new_rows,
+                        "had_error": False,
+                        "continue_immediately": True,
+                    }
+                next_immediate_reruns_remaining = 1
+        elif force_stale_refresh:
+            staleness_refresh_started_at = utcnow_iso()
+            result = run_refresh_cycle(
+                store,
+                runtime_dir,
+                scan_limit,
+                refresh_targets=STALE_REFRESH_TARGETS,
+                base_timings={
+                    "file_change_detected_at": staleness_refresh_started_at,
+                },
+            )
+            rows_scanned += int(result["scanned_messages"])
+            new_rows += int(result["new_messages"])
+            next_previous_snapshot = current_snapshot
+            next_last_processed_snapshot = current_snapshot
+            store.save_file_snapshots(current_snapshot)
+            store.set_state("last_refresh_completed_at", utcnow_iso())
+            store.set_state("running_status", "running")
+            store.set_state("last_error", "")
+            if int(result["new_messages"]) > 0:
+                log_info(
+                    "Queued "
+                    f"{result['new_messages']} new messages scanned={result['scanned_messages']} refresh_reason=staleness"
+                )
+                deliver_outbox(store, push_url, token_file)
+        deliver_outbox(store, push_url, token_file)
+        store.set_state("running_status", "running")
+        store.set_state("last_error", "")
+    except Exception as exc:
+        had_error = True
+        next_immediate_reruns_remaining = 1
+        store.set_state("running_status", "error")
+        store.set_state("last_error", str(exc))
+        log_error(str(exc))
+
+    elapsed_ms = int((monotonic_seconds() - started_monotonic) * 1000)
+    log_info(
+        "poll_completed "
+        f"poll_interval_ms={poll_interval_ms} rows_scanned={rows_scanned} "
+        f"new_rows={new_rows} elapsed_ms={elapsed_ms}"
+    )
+    return {
+        "previous_snapshot": next_previous_snapshot,
+        "last_processed_snapshot": next_last_processed_snapshot,
+        "immediate_reruns_remaining": next_immediate_reruns_remaining,
+        "rows_scanned": rows_scanned,
+        "new_rows": new_rows,
+        "had_error": had_error,
+        "continue_immediately": False,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     runtime_dir = connector_runtime.resolve_runtime_dir(args.runtime_dir)
@@ -765,70 +1005,41 @@ def main(argv: list[str] | None = None) -> int:
     store.set_state("running_status", "running")
     log_info("WXWork monitor started")
 
+    poll_controller = AdaptivePollController()
     immediate_reruns_remaining = 1
     last_processed_snapshot: dict[str, dict[str, int]] | None = None
+    store.set_state("last_refresh_completed_at", store.get_state("last_refresh_completed_at") or utcnow_iso())
 
     while True:
-        store.set_state("last_scan_at", utcnow_iso())
-        current_snapshot = snapshot_files(db_dir)
-        changed = snapshots_changed(previous_snapshot, current_snapshot)
-        if changed:
-            file_change_detected_at = utcnow_iso()
-            stable_result = wait_for_stable_snapshot(
-                db_dir,
-                current_snapshot,
-                stability_checks=args.stability_checks,
-                stability_interval_ms=args.stability_interval_ms,
-                max_stability_wait_ms=args.max_stability_wait_ms,
+        iteration_result = execute_monitor_iteration(
+            store,
+            db_dir=db_dir,
+            runtime_dir=runtime_dir,
+            scan_limit=args.scan_limit,
+            push_url=push_url,
+            token_file=token_file,
+            stability_checks=args.stability_checks,
+            stability_interval_ms=args.stability_interval_ms,
+            max_stability_wait_ms=args.max_stability_wait_ms,
+            previous_snapshot=previous_snapshot,
+            last_processed_snapshot=last_processed_snapshot,
+            immediate_reruns_remaining=immediate_reruns_remaining,
+            poll_interval_ms=poll_controller.current_interval_ms,
+        )
+        previous_snapshot = iteration_result["previous_snapshot"]
+        last_processed_snapshot = iteration_result["last_processed_snapshot"]
+        immediate_reruns_remaining = int(iteration_result["immediate_reruns_remaining"])
+        if iteration_result["continue_immediately"]:
+            poll_controller.record_result(
+                had_activity=bool(iteration_result["new_rows"]),
+                had_error=bool(iteration_result["had_error"]),
             )
-            stable_snapshot = stable_result["snapshot"]
-            refresh_targets = determine_refresh_targets(previous_snapshot, stable_snapshot)
-            previous_snapshot = stable_snapshot
-            store.save_file_snapshots(stable_snapshot)
-            store.set_state("last_change_at", file_change_detected_at)
-
-            if stable_snapshot == last_processed_snapshot:
-                immediate_reruns_remaining = 1
-            elif refresh_targets:
-                try:
-                    result = scan_and_enqueue(
-                        store,
-                        runtime_dir,
-                        args.scan_limit,
-                        refresh_targets=refresh_targets,
-                        base_timings={
-                            "file_change_detected_at": file_change_detected_at,
-                            "stability_completed_at": utcnow_iso(),
-                        },
-                    )
-                    last_processed_snapshot = stable_snapshot
-                    store.set_state("running_status", "running")
-                    store.set_state("last_error", "")
-                    if int(result["new_messages"]) > 0:
-                        log_info(
-                            f"Queued {result['new_messages']} new messages scanned={result['scanned_messages']}"
-                        )
-                        deliver_outbox(store, push_url, token_file)
-                    post_cycle_snapshot = snapshot_files(db_dir)
-                    if (
-                        immediate_reruns_remaining > 0
-                        and snapshots_changed(stable_snapshot, post_cycle_snapshot)
-                    ):
-                        immediate_reruns_remaining -= 1
-                        continue
-                    immediate_reruns_remaining = 1
-                except Exception as exc:
-                    immediate_reruns_remaining = 1
-                    store.set_state("running_status", "error")
-                    store.set_state("last_error", str(exc))
-                    log_error(str(exc))
-        try:
-            deliver_outbox(store, push_url, token_file)
-        except Exception as exc:
-            store.set_state("running_status", "error")
-            store.set_state("last_error", str(exc))
-            log_error(str(exc))
-        time.sleep(max(args.poll_seconds, 1))
+            continue
+        poll_controller.record_result(
+            had_activity=bool(iteration_result["new_rows"]),
+            had_error=bool(iteration_result["had_error"]),
+        )
+        time.sleep(poll_controller.current_interval_ms / 1000)
 
 
 if __name__ == "__main__":

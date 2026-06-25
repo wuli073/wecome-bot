@@ -283,7 +283,10 @@ class WxworkQueryTests(unittest.TestCase):
             "send_time": 260,
             "sequence": 11,
             "message_id": 11,
-            "source_rowid": 1,
+            "server_id": 0,
+            "sender_id": "300",
+            "conversation_id": "R:project",
+            "source_rowid": 5,
             "source_table": "message_table",
         }
 
@@ -310,10 +313,40 @@ class WxworkQueryTests(unittest.TestCase):
                 "send_time": messages[0]["send_time"],
                 "sequence": messages[0]["sequence"],
                 "message_id": messages[0]["message_id"],
+                "server_id": messages[0]["server_id"],
+                "sender_id": messages[0]["sender_id"],
+                "conversation_id": messages[0]["conversation_id"],
                 "source_rowid": messages[0]["source_rowid"],
                 "source_table": messages[0]["source_table"],
             },
         )
+
+    def test_get_messages_for_monitor_uses_stable_row_identity_for_cursor(self):
+        import wxwork_query
+
+        after_cursor = {
+            "send_time": 300,
+            "sequence": 3,
+            "message_id": 3,
+            "server_id": 0,
+            "sender_id": "200",
+            "conversation_id": "S:100_200",
+            "source_rowid": 3,
+            "source_table": "message_table",
+        }
+
+        with patch.object(wxwork_query, "_load_config", return_value=self._config()):
+            conn = sqlite3.connect(os.path.join(self.fixture_dir, "message.db"))
+            try:
+                conn.execute('UPDATE message_table SET sequence = 99 WHERE message_id = 3')
+                conn.commit()
+            finally:
+                conn.close()
+            messages = wxwork_query.get_messages_for_monitor(limit=10, after_cursor=after_cursor)
+
+        message_ids = [item["message_id"] for item in messages]
+        self.assertNotIn(3, message_ids)
+        self.assertIn(20, message_ids)
 
     def test_mcp_server_registers_five_wxwork_tools(self):
         import mcp_wxwork_server

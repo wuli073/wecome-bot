@@ -96,6 +96,17 @@ def _normalize_requested_dbs(values):
     return requested
 
 
+def _sync_plain_sqlite_sidecars(src_path, out_path):
+    for suffix in ("-wal", "-shm"):
+        src_sidecar = src_path + suffix
+        out_sidecar = out_path + suffix
+        if os.path.exists(src_sidecar):
+            shutil.copy2(src_sidecar, out_sidecar)
+            continue
+        if os.path.exists(out_sidecar):
+            os.remove(out_sidecar)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Decrypt WXWork wxSQLite3 AES-128 databases")
     parser.add_argument("--key", help="16-byte raw key as 32 hex chars")
@@ -143,6 +154,7 @@ def main(argv=None):
         if is_plain_sqlite_page(page1):
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             shutil.copy2(path, out_path)
+            _sync_plain_sqlite_sidecars(path, out_path)
             copied += 1
             print(f"COPY: {rel} (plain SQLite)")
             continue

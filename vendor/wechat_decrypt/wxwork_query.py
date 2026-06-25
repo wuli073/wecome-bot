@@ -685,11 +685,38 @@ def get_messages_for_monitor(limit: int = 2000) -> list[dict[str, Any]]:
 def build_monitor_cursor(message: dict[str, Any]) -> dict[str, Any]:
     return {
         "send_time": int(message["send_time"] or 0),
-        "sequence": int(message["sequence"] or 0),
         "message_id": int(message["message_id"] or 0),
+        "server_id": int(message["server_id"] or 0),
+        "sender_id": str(message["sender_id"] or ""),
+        "conversation_id": str(message["conversation_id"] or ""),
         "source_rowid": int(message["source_rowid"] or 0),
         "source_table": str(message["source_table"] or ""),
+        "sequence": int(message["sequence"] or 0),
     }
+
+
+def _monitor_row_identity(
+    *,
+    source_table: Any,
+    source_rowid: Any,
+    conversation_id: Any,
+    message_id: Any,
+    server_id: Any,
+    send_time: Any,
+    sender_id: Any,
+) -> tuple[Any, ...]:
+    normalized_source_table = str(source_table or "")
+    normalized_source_rowid = int(source_rowid or 0)
+    if normalized_source_table and normalized_source_rowid > 0:
+        return ("row", normalized_source_table, normalized_source_rowid)
+    return (
+        "message",
+        str(conversation_id or ""),
+        int(message_id or 0),
+        int(server_id or 0),
+        int(send_time or 0),
+        str(sender_id or ""),
+    )
 
 
 def get_messages_for_monitor_incremental(
@@ -717,17 +744,34 @@ def get_messages_for_monitor_incremental(
     ):
         if (
             after_cursor is not None
-            and int(raw_row["message_id"] or 0) == int(after_cursor.get("message_id") or 0)
-            and int(raw_row["sequence"] or 0) == int(after_cursor.get("sequence") or 0)
-            and int(raw_row["send_time"] or 0) == int(after_cursor.get("send_time") or 0)
-            and str(raw_row["source_table"] or "") == str(after_cursor.get("source_table") or "")
+            and _monitor_row_identity(
+                source_table=raw_row["source_table"],
+                source_rowid=raw_row["source_rowid"],
+                conversation_id=raw_row["conversation_id"],
+                message_id=raw_row["message_id"],
+                server_id=raw_row["server_id"],
+                send_time=raw_row["send_time"],
+                sender_id=raw_row["sender_id"],
+            )
+            == _monitor_row_identity(
+                source_table=after_cursor.get("source_table"),
+                source_rowid=after_cursor.get("source_rowid"),
+                conversation_id=after_cursor.get("conversation_id"),
+                message_id=after_cursor.get("message_id"),
+                server_id=after_cursor.get("server_id"),
+                send_time=after_cursor.get("send_time"),
+                sender_id=after_cursor.get("sender_id"),
+            )
         ):
             continue
-        dedupe_key = (
-            raw_row["conversation_id"],
-            raw_row["message_id"],
-            raw_row["server_id"],
-            raw_row["sequence"],
+        dedupe_key = _monitor_row_identity(
+            source_table=raw_row["source_table"],
+            source_rowid=raw_row["source_rowid"],
+            conversation_id=raw_row["conversation_id"],
+            message_id=raw_row["message_id"],
+            server_id=raw_row["server_id"],
+            send_time=raw_row["send_time"],
+            sender_id=raw_row["sender_id"],
         )
         if dedupe_key in seen:
             continue

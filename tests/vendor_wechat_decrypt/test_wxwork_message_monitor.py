@@ -45,6 +45,18 @@ def test_build_message_key_is_stable_when_content_changes():
     assert first_event == second_event
 
 
+def test_build_message_key_is_stable_when_sequence_changes_for_same_row():
+    import wxwork_message_monitor as monitor
+
+    first_key, first_event = monitor.build_message_key(_sample_message(sequence=5, source_rowid=12, message_id=101))
+    second_key, second_event = monitor.build_message_key(
+        _sample_message(sequence=99, source_rowid=12, message_id=101)
+    )
+
+    assert first_key == second_key
+    assert first_event == second_event
+
+
 def test_snapshots_changed_detects_size_and_mtime_changes(tmp_path):
     import wxwork_message_monitor as monitor
 
@@ -241,10 +253,10 @@ def test_scan_and_enqueue_passes_incremental_cursor_and_refresh_targets(monkeypa
     assert captured["refresh_targets"] == ["message.db"]
     assert captured["after_cursor"] == {
         "send_time": 300,
-        "sequence": 3,
         "message_id": 30,
         "source_rowid": 3,
         "source_table": "message_table",
+        "sequence": 3,
     }
     assert result["new_messages"] == 1
     assert _read_single_value(db_path, "SELECT COUNT(*) FROM outbox") == 1
@@ -267,3 +279,149 @@ def test_record_seen_and_enqueue_sets_outbox_created_timestamp(tmp_path):
     )
     decoded = json.loads(stored_payload)
     assert decoded["timings"]["outbox_created_at"]
+
+
+def test_adaptive_poll_controller_uses_active_then_idle_backoff():
+    import wxwork_message_monitor as monitor
+
+    controller = monitor.AdaptivePollController()
+
+    assert controller.current_interval_ms == 500
+
+    controller.record_result(had_activity=False, had_error=False)
+    assert controller.current_interval_ms == 1_000
+
+    controller.record_result(had_activity=False, had_error=False)
+    assert controller.current_interval_ms == 2_000
+
+    controller.record_result(had_activity=False, had_error=False)
+    assert controller.current_interval_ms == 2_000
+
+
+def test_adaptive_poll_controller_resets_to_active_after_new_messages():
+    import wxwork_message_monitor as monitor
+
+    controller = monitor.AdaptivePollController()
+    controller.record_result(had_activity=False, had_error=False)
+    controller.record_result(had_activity=False, had_error=False)
+
+    assert controller.current_interval_ms == 2_000
+
+    controller.record_result(had_activity=True, had_error=False)
+
+    assert controller.current_interval_ms == 500
+
+
+def test_run_with_sqlite_retry_uses_short_locked_backoff(monkeypatch):
+    import wxwork_message_monitor as monitor
+
+    attempts = {"count": 0}
+    sleeps: list[float] = []
+
+    def flaky_operation():
+        attempts["count"] += 1
+        if attempts["count"] <= 3:
+            raise sqlite3.OperationalError("database is locked")
+        return "ok"
+
+    monkeypatch.setattr(monitor.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = monitor.run_with_sqlite_retry(flaky_operation)
+
+    assert result == "ok"
+    assert attempts["count"] == 4
+    assert sleeps == [0.05, 0.1, 0.2]
+
+
+def test_is_source_refresh_stale_when_missing_or_expired():
+    import wxwork_message_monitor as monitor
+
+    assert monitor.is_source_refresh_stale(None) is True
+    assert (
+        monitor.is_source_refresh_stale(
+            "2026-06-25T02:00:00",
+            now_at="2026-06-25T02:00:01.999000",
+        )
+        is False
+    )
+    assert (
+        monitor.is_source_refresh_stale(
+            "2026-06-25T02:00:00",
+            now_at="2026-06-25T02:00:02.001000",
+        )
+        is True
+    )
+
+
+def test_run_refresh_cycle_retries_once_after_empty_scan(monkeypatch, tmp_path):
+    import wxwork_message_monitor as monitor
+
+    db_path = tmp_path / "monitor_state.db"
+    store = monitor.MonitorStateStore(str(db_path))
+    calls = {"count": 0}
+    sleeps: list[float] = []
+
+    def fake_scan_and_enqueue(*_args, **_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {
+                "new_messages": 0,
+                "scanned_messages": 3,
+                "latest_cursor": None,
+                "decrypt_started_at": "first-start",
+                "decrypt_completed_at": "first-done",
+                "scan_completed_at": "first-scan",
+            }
+        return {
+            "new_messages": 1,
+            "scanned_messages": 1,
+            "latest_cursor": {"message_id": 1},
+            "decrypt_started_at": "second-start",
+            "decrypt_completed_at": "second-done",
+            "scan_completed_at": "second-scan",
+        }
+
+    monkeypatch.setattr(monitor, "scan_and_enqueue", fake_scan_and_enqueue)
+    monkeypatch.setattr(monitor.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = monitor.run_refresh_cycle(
+        store,
+        str(tmp_path),
+        2_000,
+        refresh_targets=["message.db"],
+        confirmation_delay_ms=100,
+    )
+
+    assert calls["count"] == 2
+    assert sleeps == [0.1]
+    assert result["new_messages"] == 1
+    assert result["scanned_messages"] == 4
+    assert result["latest_cursor"] == {"message_id": 1}
+
+
+def test_scan_and_enqueue_keeps_multiple_same_second_messages(monkeypatch, tmp_path):
+    import wxwork_message_monitor as monitor
+
+    db_path = tmp_path / "monitor_state.db"
+    store = monitor.MonitorStateStore(str(db_path))
+    scanned_messages = [
+        _sample_message(message_id=401, send_time=1_718_000_200, sequence=11, source_rowid=101),
+        _sample_message(message_id=402, send_time=1_718_000_200, sequence=12, source_rowid=102),
+    ]
+
+    monkeypatch.setattr(
+        monitor,
+        "refresh_decrypted_cache",
+        lambda _runtime_dir, database_list=None: {"ok": True},
+    )
+    monkeypatch.setattr(
+        monitor.wxwork_query,
+        "get_messages_for_monitor",
+        lambda **_kwargs: scanned_messages,
+    )
+
+    result = monitor.scan_and_enqueue(store, str(tmp_path), 2_000, refresh_targets=["message.db"])
+
+    assert result["new_messages"] == 2
+    assert _read_single_value(db_path, "SELECT COUNT(*) FROM outbox") == 2
+    assert _read_single_value(db_path, "SELECT COUNT(*) FROM seen_messages") == 2
