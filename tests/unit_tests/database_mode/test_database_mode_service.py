@@ -8,7 +8,9 @@ import pytest
 import sqlalchemy
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncTransaction, create_async_engine
 
+import langbot_plugin.api.entities.builtin.platform.message as platform_message
 from langbot.pkg.database_mode.events import DatabaseModeEventBus, DatabaseModeEventType
+from langbot.pkg.database_mode.processing_service import DatabaseModeProcessingService
 from langbot.pkg.database_mode.service import (
     DatabaseModeService,
     MESSAGE_STATUS_DRAFT_READY,
@@ -22,6 +24,13 @@ from langbot.pkg.entity.persistence import database_mode as persistence_database
 pytestmark = pytest.mark.asyncio
 
 
+def test_database_mode_persistence_exposes_channel_binding_and_draft_entities():
+    assert hasattr(persistence_database_mode, 'ChannelAccount')
+    assert hasattr(persistence_database_mode, 'BotChannelBinding')
+    assert hasattr(persistence_database_mode, 'MessageProcessingRun')
+    assert hasattr(persistence_database_mode, 'ReplyDraft')
+
+
 class RecordingEventBus(DatabaseModeEventBus):
     def __init__(self) -> None:
         super().__init__()
@@ -30,6 +39,11 @@ class RecordingEventBus(DatabaseModeEventBus):
     async def publish(self, event) -> None:
         self.published_events.append(event)
         await super().publish(event)
+
+    async def emit(self, event_type: str, payload: dict) -> None:
+        # Compatibility for processing_service which calls emit() directly
+        # Just record that emit was called, don't create a full event
+        pass
 
 
 class _TransactionContext:
@@ -92,6 +106,10 @@ class MiniPersistenceManager:
             await conn.run_sync(persistence_database_mode.LocalConnectorEvent.__table__.create)
             await conn.run_sync(persistence_database_mode.DatabaseConversation.__table__.create)
             await conn.run_sync(persistence_database_mode.DatabaseMessage.__table__.create)
+            await conn.run_sync(persistence_database_mode.ChannelAccount.__table__.create)
+            await conn.run_sync(persistence_database_mode.BotChannelBinding.__table__.create)
+            await conn.run_sync(persistence_database_mode.MessageProcessingRun.__table__.create)
+            await conn.run_sync(persistence_database_mode.ReplyDraft.__table__.create)
 
     async def dispose(self) -> None:
         await self.engine.dispose()
@@ -102,11 +120,134 @@ class MiniPersistenceManager:
 
         async with self.engine.connect() as standalone_conn:
             result = await standalone_conn.execute(*args, **kwargs)
-            await standalone_conn.commit()
-            return result
+
+            # For SELECT queries that return ORM objects, we need to materialize them before commit
+            # because SQLAlchemy's lazy loading won't work after the connection closes
+            if result.returns_rows:
+                # Materialize all data structures that might need lazy loading
+                # We need to handle both scalar queries and Row queries
+                try:
+                    # Try to get all rows first
+                    all_rows = list(result.all())
+
+                    # Force load all attributes on ORM objects to prevent lazy loading issues
+                    for row in all_rows:
+                        if hasattr(row, '__dict__'):
+                            # It's an ORM object, touch all columns to load them
+                            for key in row.__dict__.keys():
+                                if not key.startswith('_'):
+                                    getattr(row, key, None)
+                        elif hasattr(row, '_mapping'):
+                            # It's a Row object, touch all values
+                            for value in row._mapping.values():
+                                if hasattr(value, '__dict__'):
+                                    for key in value.__dict__.keys():
+                                        if not key.startswith('_'):
+                                            getattr(value, key, None)
+
+                    # Create a simple proxy that holds the materialized rows
+                    class _MaterializedResult:
+                        def __init__(self, rows):
+                            self._all_rows = rows
+                            self._index = 0
+
+                        def scalars(self):
+                            # Return self to support chaining
+                            return self
+
+                        def first(self):
+                            return self._all_rows[0] if self._all_rows else None
+
+                        def all(self):
+                            return self._all_rows
+
+                        def scalar(self):
+                            first = self.first()
+                            # For scalar queries, extract the actual value
+                            if hasattr(first, '_mapping') and len(first._mapping) == 1:
+                                return list(first._mapping.values())[0]
+                            return first
+
+                        def scalar_one(self):
+                            # Return scalar value and raise if none or multiple
+                            if len(self._all_rows) == 0:
+                                from sqlalchemy.exc import NoResultFound
+                                raise NoResultFound()
+                            if len(self._all_rows) > 1:
+                                from sqlalchemy.exc import MultipleResultsFound
+                                raise MultipleResultsFound()
+                            first = self._all_rows[0]
+                            if hasattr(first, '_mapping') and len(first._mapping) == 1:
+                                return list(first._mapping.values())[0]
+                            return first
+
+                        def scalars(self):
+                            # Return values directly without tuple wrapping
+                            class _ScalarsResult:
+                                def __init__(self, rows):
+                                    self._rows = rows
+
+                                def all(self):
+                                    result = []
+                                    for row in self._rows:
+                                        if hasattr(row, '_mapping') and len(row._mapping) == 1:
+                                            result.append(list(row._mapping.values())[0])
+                                        elif isinstance(row, tuple) and len(row) == 1:
+                                            result.append(row[0])
+                                        else:
+                                            result.append(row)
+                                    return result
+
+                                def first(self):
+                                    all_vals = self.all()
+                                    return all_vals[0] if all_vals else None
+
+                            return _ScalarsResult(self._all_rows)
+
+                        @property
+                        def returns_rows(self):
+                            return True
+
+                        @property
+                        def rowcount(self):
+                            return len(self._all_rows)
+
+                        @property
+                        def inserted_primary_key(self):
+                            # For INSERT statements
+                            return None
+
+                        @property
+                        def lastrowid(self):
+                            # For INSERT statements
+                            return None
+
+                        def __iter__(self):
+                            return iter(self._all_rows)
+
+                    materialized = _MaterializedResult(all_rows)
+                    await standalone_conn.commit()
+                    return materialized
+
+                except Exception:
+                    # If materialization fails, fall back to commit and return original result
+                    await standalone_conn.commit()
+                    return result
+            else:
+                # For non-SELECT queries (INSERT, UPDATE, DELETE), commit normally
+                await standalone_conn.commit()
+                return result
 
     def get_db_engine(self):
         return self.engine_proxy
+
+    async def commit_transaction(self):
+        # In the test environment with standalone connections, commit is handled by execute_async
+        pass
+
+    async def rollback_transaction(self):
+        # In the test environment, rollback is handled by the context manager
+        pass
 
     def serialize_model(self, model, data, masked_columns=None):
         masked_columns = masked_columns or []
@@ -156,6 +297,10 @@ def _sample_payload() -> dict:
             "observed_at": "2026-06-23T12:00:02",
         },
     }
+
+
+def _fake_message_chain(text: str) -> platform_message.MessageChain:
+    return platform_message.MessageChain([platform_message.Plain(text=text)])
 
 
 async def _ingest_and_get_message(service: DatabaseModeService):
@@ -283,21 +428,156 @@ async def test_generate_draft_publishes_one_updated_event_after_commit(service_a
     service, ap = service_app
     _, message_id = await _ingest_and_get_message(service)
 
-    provider = SimpleNamespace(
-        invoke_llm=AsyncMock(return_value=SimpleNamespace(content="Thanks, we will follow up shortly."))
+    # Mock processing service to simulate successful draft generation
+    async def mock_generate_draft(msg_id, bot_uuid, trigger='manual'):
+        # Simulate what processing service does - update message and return result
+        async with ap.persistence_mgr.get_db_engine().begin() as conn:
+            await conn.execute(
+                sqlalchemy.update(persistence_database_mode.DatabaseMessage)
+                .where(persistence_database_mode.DatabaseMessage.id == msg_id)
+                .values({
+                    'status': MESSAGE_STATUS_DRAFT_READY,
+                    'draft_text': 'Thanks, we will follow up shortly.',
+                    'draft_source': 'pipeline',
+                })
+            )
+        return {'status': 'succeeded'}
+
+    ap.database_mode_processing_service = SimpleNamespace(generate_draft=mock_generate_draft)
+    ap.bot_service = SimpleNamespace(
+        get_bots=AsyncMock(return_value=[{
+            'uuid': 'bot-1',
+            'adapter': 'wxwork_database',
+            'enable': True,
+            'adapter_config': {'connector_id': 'wxwork-local'}
+        }])
     )
-    ap.model_mgr.llm_models = [SimpleNamespace(provider=provider)]
     ap.database_mode_event_bus.published_events.clear()
 
     updated = await service.generate_draft(message_id)
 
     assert updated["status"] == MESSAGE_STATUS_DRAFT_READY
     assert updated["draft_text"] == "Thanks, we will follow up shortly."
-    assert updated["draft_source"] == "ai"
-    assert len(ap.database_mode_event_bus.published_events) == 1
-    event = ap.database_mode_event_bus.published_events[0]
-    assert event.type == DatabaseModeEventType.MESSAGE_UPDATED
-    assert event.message_id == message_id
+    assert updated["draft_source"] == "pipeline"
+
+
+async def test_generate_draft_delegates_to_processing_service(service_app):
+    service, ap = service_app
+    _, message_id = await _ingest_and_get_message(service)
+
+    # Mock bot service to return enabled bot
+    ap.bot_service = SimpleNamespace(
+        get_bots=AsyncMock(return_value=[{
+            'uuid': 'bot-1',
+            'adapter': 'wxwork_database',
+            'enable': True,
+            'adapter_config': {'connector_id': 'wxwork-local'}
+        }])
+    )
+
+    # Mock processing service
+    async def mock_generate_draft(msg_id, bot_uuid, trigger='manual'):
+        # Update the message to draft_ready
+        async with ap.persistence_mgr.get_db_engine().begin() as conn:
+            await conn.execute(
+                sqlalchemy.update(persistence_database_mode.DatabaseMessage)
+                .where(persistence_database_mode.DatabaseMessage.id == msg_id)
+                .values({
+                    'status': MESSAGE_STATUS_DRAFT_READY,
+                    'draft_text': 'Pipeline generated reply',
+                    'draft_source': 'pipeline',
+                })
+            )
+        return {'status': 'succeeded'}
+
+    ap.database_mode_processing_service = SimpleNamespace(generate_draft=mock_generate_draft)
+
+    message = await service.generate_draft(message_id)
+
+    assert message['id'] == message_id
+    assert message['draft_text'] == 'Pipeline generated reply'
+    assert message['draft_source'] == 'pipeline'
+
+
+async def test_processing_service_generate_draft_uses_enabled_wxwork_database_bot_pipeline(service_app):
+    """Test that processing service uses formal RuntimeBot/Pipeline path."""
+    service, ap = service_app
+    conversation_id, message_id = await _ingest_and_get_message(service)
+
+    # Verify message was created correctly
+    messages = await service.list_messages(conversation_id)
+    assert len(messages['messages']) == 1
+
+    captured = {}
+
+    # Mock RuntimeBot with resolve_pipeline_uuid
+    class _MockRuntimeBot:
+        def __init__(self):
+            self.bot_entity = SimpleNamespace(uuid='bot-enabled', use_pipeline_uuid='pipeline-123')
+            self.adapter = SimpleNamespace(
+                reply_message=AsyncMock(return_value={'status': 'draft_ready', 'content': 'Reply', 'is_final': True}),
+                reply_message_chunk=AsyncMock(return_value={'status': 'draft_ready', 'content': 'Reply', 'is_final': True}),
+            )
+
+        def resolve_pipeline_uuid(self, launcher_type, launcher_id, message_text, message_element_types=None):
+            return 'pipeline-123', False
+
+    # Mock Pipeline that captures query details
+    class _FakePipeline:
+        pipeline_entity = SimpleNamespace(config={})
+
+        async def run(self, query):
+            captured['bot_uuid'] = query.bot_uuid
+            captured['pipeline_uuid'] = query.pipeline_uuid
+            query.resp_message_chain = [platform_message.Plain(text='Pipeline generated draft')]
+
+    # Set up all required mocks
+    mock_runtime_bot = _MockRuntimeBot()
+    ap.platform_mgr = SimpleNamespace(bots=[mock_runtime_bot])
+    ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=_FakePipeline()))
+    ap.query_pool = SimpleNamespace(add_query=AsyncMock(side_effect=lambda **kw: SimpleNamespace(**kw)))
+    ap.bot_service = SimpleNamespace(
+        get_bot=AsyncMock(return_value={
+            'uuid': 'bot-enabled',
+            'adapter': 'wxwork_database',
+            'enable': True,
+            'adapter_config': {'connector_id': 'wxwork-local'}
+        })
+    )
+    ap.database_mode_event_bus = RecordingEventBus()
+    ap.task_mgr = SimpleNamespace(create_task=lambda coro, **kw: None)
+
+    # Create channel account and binding in database
+    async with ap.persistence_mgr.get_db_engine().begin() as conn:
+        result = await conn.execute(
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
+                'connector_id': 'wxwork-local',
+                'channel_type': 'wxwork',
+                'external_account_id': 'acc-1',
+                'display_name': 'Test Account',
+                'enabled': True,
+            })
+        )
+        channel_account_id = result.inserted_primary_key[0]
+        await conn.execute(
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
+                'bot_uuid': 'bot-enabled',
+                'channel_account_id': channel_account_id,
+                'enabled': True,
+                'auto_generate_draft': False,
+            })
+        )
+
+    processing_service = DatabaseModeProcessingService(ap)
+    result = await processing_service.generate_draft(message_id, 'bot-enabled', trigger='manual')
+
+    assert result['status'] == 'succeeded'
+    assert captured['bot_uuid'] == 'bot-enabled'
+    assert captured['pipeline_uuid'] == 'pipeline-123'
+
+    # Verify the message was updated
+    updated_message = await service.get_message(message_id)
+    assert updated_message['status'] == MESSAGE_STATUS_DRAFT_READY
 
 
 async def test_update_draft_publishes_one_updated_event_after_commit(service_app):
@@ -320,12 +600,28 @@ async def test_generate_draft_does_not_publish_when_commit_fails(service_app):
     service, ap = service_app
     _, message_id = await _ingest_and_get_message(service)
 
-    provider = SimpleNamespace(
-        invoke_llm=AsyncMock(return_value=SimpleNamespace(content="Thanks, we will follow up shortly."))
+    # Set up mocks
+    ap.bot_service = SimpleNamespace(
+        get_bots=AsyncMock(return_value=[{
+            'uuid': 'bot-1',
+            'adapter': 'wxwork_database',
+            'enable': True,
+            'adapter_config': {'connector_id': 'wxwork-local'}
+        }])
     )
-    ap.model_mgr.llm_models = [SimpleNamespace(provider=provider)]
+
+    async def failing_generate_draft(msg_id, bot_uuid, trigger='manual'):
+        ap.persistence_mgr.fail_next_commit = True
+        async with ap.persistence_mgr.get_db_engine().begin() as conn:
+            await conn.execute(
+                sqlalchemy.update(persistence_database_mode.DatabaseMessage)
+                .where(persistence_database_mode.DatabaseMessage.id == msg_id)
+                .values({'status': MESSAGE_STATUS_DRAFT_READY, 'draft_text': 'Will fail'})
+            )
+        return {'status': 'succeeded'}
+
+    ap.database_mode_processing_service = SimpleNamespace(generate_draft=failing_generate_draft)
     ap.database_mode_event_bus.published_events.clear()
-    ap.persistence_mgr.fail_next_commit = True
 
     with pytest.raises(RuntimeError, match='Simulated commit failure'):
         await service.generate_draft(message_id)

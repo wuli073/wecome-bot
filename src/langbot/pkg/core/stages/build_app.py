@@ -42,6 +42,7 @@ from ...survey import manager as survey_module
 from ...local_connectors import service as local_connectors_service
 from ...database_mode.events import DatabaseModeEventBus
 from ...database_mode import service as database_mode_service
+from ...database_mode import processing_service as database_mode_processing_service
 
 
 @stage.stage_class('BuildAppStage')
@@ -200,6 +201,7 @@ class BuildAppStage(stage.BootingStage):
 
         database_mode_service_inst = database_mode_service.DatabaseModeService(ap)
         ap.database_mode_service = database_mode_service_inst
+        ap.database_mode_processing_service = database_mode_processing_service.DatabaseModeProcessingService(ap)
 
         maintenance_service_inst = maintenance_service.MaintenanceService(ap)
         ap.maintenance_service = maintenance_service_inst

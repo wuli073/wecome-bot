@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import uuid
 import sqlalchemy
 import typing
@@ -16,6 +17,64 @@ class BotService:
 
     def __init__(self, ap: app.Application) -> None:
         self.ap = ap
+
+    @staticmethod
+    def _utcnow_iso() -> str:
+        return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    @classmethod
+    def _normalize_adapter_config(
+        cls,
+        adapter: str,
+        adapter_config: dict | None,
+        *,
+        enabled: bool,
+        previous_adapter_config: dict | None = None,
+        previous_enabled: bool | None = None,
+    ) -> dict:
+        config = dict(adapter_config or {})
+        if adapter != 'wxwork_database':
+            return config
+
+        config['connector_id'] = 'wxwork-local'
+        config['auto_generate_draft'] = bool(config.get('auto_generate_draft', False))
+
+        previous_processing_since = None
+        if isinstance(previous_adapter_config, dict):
+            previous_processing_since = previous_adapter_config.get('processing_since')
+
+        if enabled and not previous_enabled:
+            config['processing_since'] = cls._utcnow_iso()
+        elif previous_processing_since:
+            config['processing_since'] = previous_processing_since
+
+        return config
+
+    async def _validate_wxwork_database_enable_conflict(
+        self,
+        *,
+        adapter: str,
+        enabled: bool,
+        adapter_config: dict | None,
+        current_bot_uuid: str | None = None,
+    ) -> None:
+        if adapter != 'wxwork_database' or not enabled:
+            return
+
+        connector_id = str((adapter_config or {}).get('connector_id') or 'wxwork-local').strip() or 'wxwork-local'
+        bots = await self.get_bots()
+        for bot in bots:
+            if bot.get('uuid') == current_bot_uuid:
+                continue
+            if bot.get('adapter') != 'wxwork_database':
+                continue
+            if not bool(bot.get('enable', False)):
+                continue
+            existing_connector_id = str((bot.get('adapter_config') or {}).get('connector_id') or '').strip()
+            if existing_connector_id == connector_id:
+                raise ValueError(
+                    f'Only one enabled wxwork_database bot is allowed for connector_id={connector_id}'
+                )
 
     async def get_bots(self, include_secret: bool = True) -> list[dict]:
         """获取所有机器人"""
@@ -97,6 +156,16 @@ class BotService:
                 raise ValueError(f'Maximum number of bots ({max_bots}) reached')
 
         # TODO: 检查配置信息格式
+        bot_data['adapter_config'] = self._normalize_adapter_config(
+            bot_data.get('adapter', ''),
+            bot_data.get('adapter_config'),
+            enabled=bool(bot_data.get('enable', False)),
+        )
+        await self._validate_wxwork_database_enable_conflict(
+            adapter=bot_data.get('adapter', ''),
+            enabled=bool(bot_data.get('enable', False)),
+            adapter_config=bot_data.get('adapter_config'),
+        )
         bot_data['uuid'] = str(uuid.uuid4())
 
         # bind the most recently updated pipeline if any exist
@@ -116,14 +185,34 @@ class BotService:
 
         await self.ap.platform_mgr.load_bot(bot)
 
-        return bot_data['uuid']
+        return bot['uuid']
 
     async def update_bot(self, bot_uuid: str, bot_data: dict) -> None:
         """Update bot"""
         update_data = bot_data.copy()
+        existing_bot = await self.get_bot(bot_uuid)
+        if existing_bot is None:
+            raise Exception('Bot not found')
 
         if 'uuid' in update_data:
             del update_data['uuid']
+
+        effective_adapter = update_data.get('adapter', existing_bot.get('adapter', ''))
+        effective_enable = bool(update_data.get('enable', existing_bot.get('enable', False)))
+        if effective_adapter == 'wxwork_database' or 'adapter_config' in update_data:
+            update_data['adapter_config'] = self._normalize_adapter_config(
+                effective_adapter,
+                update_data.get('adapter_config', existing_bot.get('adapter_config')),
+                enabled=effective_enable,
+                previous_adapter_config=existing_bot.get('adapter_config'),
+                previous_enabled=bool(existing_bot.get('enable', False)),
+            )
+        await self._validate_wxwork_database_enable_conflict(
+            adapter=effective_adapter,
+            enabled=effective_enable,
+            adapter_config=update_data.get('adapter_config', existing_bot.get('adapter_config')),
+            current_bot_uuid=bot_uuid,
+        )
 
         # set use_pipeline_name
         if 'use_pipeline_uuid' in update_data:

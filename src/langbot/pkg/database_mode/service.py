@@ -241,6 +241,10 @@ class DatabaseModeService:
             message_id=created_message_id,
             metadata={'timings': published_timings},
         )
+
+        # Trigger automatic draft generation if enabled
+        await self._maybe_schedule_auto_draft(created_message_id, conversation_id)
+
         return EventIngestResult(
             accepted=True,
             duplicate=False,
@@ -409,58 +413,72 @@ class DatabaseModeService:
         }
 
     async def generate_draft(self, message_id: int) -> dict:
-        message = await self._require_message(message_id)
-        model = self.ap.model_mgr.llm_models[0] if getattr(self.ap.model_mgr, 'llm_models', None) else None
-        if model is None:
-            raise ValueError('No LLM model is available')
+        """Generate draft using unified processing service (delegates to formal pipeline)."""
+        if not hasattr(self.ap, 'database_mode_processing_service') or self.ap.database_mode_processing_service is None:
+            raise ValueError('Database mode processing service is unavailable')
 
-        conversation = await self.get_conversation(int(message.conversation_id))
-        prompt_messages = [
-            provider_message.Message(
-                role='system',
-                content=(
-                    'You are assisting a human operator handling enterprise chat messages. '
-                    'Write a concise, polite reply draft in the same language as the customer message. '
-                    'Do not mention automation.'
-                ),
+        # Find the unique enabled bot for this message's connector
+        message = await self._require_message(message_id)
+        conversation = await self._fetch_required_model(
+            persistence_database_mode.DatabaseConversation,
+            sqlalchemy.select(persistence_database_mode.DatabaseConversation).where(
+                persistence_database_mode.DatabaseConversation.id == message.conversation_id
             ),
-            provider_message.Message(
-                role='user',
-                content=(
-                    f"Conversation: {conversation.get('conversation_name', '')}\n"
-                    f"Sender: {message.sender_name}\n"
-                    f"Customer message:\n{message.content}"
-                ),
-            ),
-        ]
-        result = await model.provider.invoke_llm(
-            query=None,
-            model=model,
-            messages=prompt_messages,
-            funcs=[],
-            extra_args={},
+            error_message='Conversation not found',
         )
-        draft_text = self._message_content_to_text(result.content)
-        async with self._transaction() as conn:
-            await conn.execute(
-                sqlalchemy.update(persistence_database_mode.DatabaseMessage)
-                .where(persistence_database_mode.DatabaseMessage.id == message_id)
-                .values(
-                    {
-                        'status': MESSAGE_STATUS_DRAFT_READY,
-                        'draft_text': draft_text,
-                        'draft_source': 'ai',
-                        'last_error': None,
-                        'updated_at': self._utcnow(),
-                    }
+
+        bot_uuid = await self._find_enabled_bot_for_connector(conversation.connector_id)
+        if bot_uuid is None:
+            raise ValueError(f'No enabled wxwork_database bot found for connector {conversation.connector_id}')
+
+        result = await self.ap.database_mode_processing_service.generate_draft(
+            message_id, bot_uuid, trigger='manual'
+        )
+
+        if result.get('status') == 'succeeded':
+            return await self.get_message(message_id)
+        elif result.get('status') == 'already_succeeded':
+            return await self.get_message(message_id)
+        elif result.get('status') == 'processing':
+            raise ValueError('Message is already being processed')
+        else:
+            raise ValueError('Failed to generate draft')
+
+    async def _find_enabled_bot_for_connector(self, connector_id: str) -> str | None:
+        """Find the unique enabled wxwork_database bot for a connector."""
+        # If bot_service is available, use it (supports both production and test scenarios)
+        if hasattr(self.ap, 'bot_service') and self.ap.bot_service is not None:
+            try:
+                bots = await self.ap.bot_service.get_bots(include_secret=True)
+                for bot in bots:
+                    if (bot.get('adapter') == 'wxwork_database'
+                        and bot.get('enable', False)
+                        and bot.get('adapter_config', {}).get('connector_id') == connector_id):
+                        return bot.get('uuid')
+            except Exception:
+                pass
+
+        # Fallback: direct database query (production path when bot_service not mocked)
+        from ..entity.persistence import bot as persistence_bot
+
+        try:
+            result = await self.ap.persistence_mgr.execute_async(
+                sqlalchemy.select(persistence_bot.Bot.uuid, persistence_bot.Bot.adapter_config)
+                .where(
+                    persistence_bot.Bot.adapter == 'wxwork_database',
+                    persistence_bot.Bot.enable == True,
                 )
             )
-        await self._publish_event(
-            DatabaseModeEventType.MESSAGE_UPDATED,
-            conversation_id=int(message.conversation_id),
-            message_id=message_id,
-        )
-        return await self.get_message(message_id)
+            rows = result.all()
+            for row in rows:
+                config = row.adapter_config if hasattr(row, 'adapter_config') else row[1]
+                if isinstance(config, dict) and config.get('connector_id') == connector_id:
+                    return row.uuid if hasattr(row, 'uuid') else row[0]
+        except Exception:
+            pass
+
+        return None
+
 
     async def update_draft(self, message_id: int, draft_text: str, draft_source: str | None = None) -> dict:
         if not str(draft_text or '').strip():
@@ -833,7 +851,141 @@ class DatabaseModeService:
             event_bus_instance_id=getattr(bus, 'instance_id', None),
             subscriber_count=getattr(bus, 'subscriber_count', None),
         )
-        return published_metadata or None
+        return published_metadata
+
+    async def _maybe_schedule_auto_draft(self, message_id: int, conversation_id: int) -> None:
+        """Schedule automatic draft generation if conditions are met."""
+        try:
+            # Get conversation to find connector_id
+            conversation = await self._fetch_optional_model(
+                persistence_database_mode.DatabaseConversation,
+                sqlalchemy.select(persistence_database_mode.DatabaseConversation).where(
+                    persistence_database_mode.DatabaseConversation.id == conversation_id
+                ),
+            )
+            if conversation is None:
+                return
+
+            # Find enabled bot for this connector
+            bot_uuid = await self._find_enabled_bot_for_connector(conversation.connector_id)
+            if bot_uuid is None:
+                self._log_event(
+                    'auto_draft_skipped_no_bot',
+                    message_id=message_id,
+                    connector_id=conversation.connector_id,
+                )
+                return
+
+            # Get bot and binding details
+            from ..entity.persistence import bot as persistence_bot
+
+            bot = await self._fetch_optional_model(
+                persistence_bot.Bot,
+                sqlalchemy.select(persistence_bot.Bot).where(persistence_bot.Bot.uuid == bot_uuid),
+            )
+            if bot is None or not bot.enable:
+                return
+
+            # Get channel account and binding
+            channel_account_result = await self.ap.persistence_mgr.execute_async(
+                sqlalchemy.select(persistence_database_mode.ChannelAccount.id)
+                .join(
+                    persistence_database_mode.BotChannelBinding,
+                    persistence_database_mode.BotChannelBinding.channel_account_id == persistence_database_mode.ChannelAccount.id,
+                )
+                .where(persistence_database_mode.BotChannelBinding.bot_uuid == bot_uuid)
+            )
+            channel_account_id = channel_account_result.scalar()
+            if channel_account_id is None:
+                return
+
+            binding_result = await self.ap.persistence_mgr.execute_async(
+                sqlalchemy.select(persistence_database_mode.BotChannelBinding)
+                .where(
+                    persistence_database_mode.BotChannelBinding.bot_uuid == bot_uuid,
+                    persistence_database_mode.BotChannelBinding.channel_account_id == channel_account_id,
+                )
+            )
+            binding = binding_result.scalars().first()
+            if binding is None or not binding.enabled or not binding.auto_generate_draft:
+                self._log_event(
+                    'auto_draft_skipped_disabled',
+                    message_id=message_id,
+                    bot_uuid=bot_uuid,
+                    binding_enabled=binding.enabled if binding else None,
+                    auto_generate=binding.auto_generate_draft if binding else None,
+                )
+                return
+
+            # Check processing boundary
+            message = await self._fetch_optional_model(
+                persistence_database_mode.DatabaseMessage,
+                sqlalchemy.select(persistence_database_mode.DatabaseMessage).where(
+                    persistence_database_mode.DatabaseMessage.id == message_id
+                ),
+            )
+            if message is None:
+                return
+
+            if binding.effective_from is not None and message.observed_at < binding.effective_from:
+                self._log_event(
+                    'auto_draft_skipped_boundary',
+                    message_id=message_id,
+                    bot_uuid=bot_uuid,
+                    observed_at=self._to_iso(message.observed_at),
+                    effective_from=self._to_iso(binding.effective_from),
+                )
+                return
+
+            # Schedule the task
+            if not hasattr(self.ap, 'task_mgr') or self.ap.task_mgr is None:
+                self._log_event('auto_draft_skipped_no_task_mgr', message_id=message_id)
+                return
+
+            if not hasattr(self.ap, 'database_mode_processing_service') or self.ap.database_mode_processing_service is None:
+                self._log_event('auto_draft_skipped_no_processing_service', message_id=message_id)
+                return
+
+            async def auto_draft_task():
+                try:
+                    self._log_event(
+                        'auto_draft_started',
+                        message_id=message_id,
+                        bot_uuid=bot_uuid,
+                    )
+                    await self.ap.database_mode_processing_service.generate_draft(
+                        message_id, bot_uuid, trigger='automatic'
+                    )
+                    self._log_event(
+                        'auto_draft_succeeded',
+                        message_id=message_id,
+                        bot_uuid=bot_uuid,
+                    )
+                except Exception as exc:
+                    self._log_event(
+                        'auto_draft_failed',
+                        message_id=message_id,
+                        bot_uuid=bot_uuid,
+                        error=str(exc)[:200],
+                    )
+
+            self.ap.task_mgr.create_task(
+                auto_draft_task(),
+                name=f'auto-draft-{message_id}',
+                kind='database-mode-auto-draft',
+            )
+            self._log_event(
+                'auto_draft_scheduled',
+                message_id=message_id,
+                bot_uuid=bot_uuid,
+            )
+
+        except Exception as exc:
+            self._log_event(
+                'auto_draft_schedule_error',
+                message_id=message_id,
+                error=str(exc)[:200],
+            ) or None
 
     @asynccontextmanager
     async def _transaction(self):
