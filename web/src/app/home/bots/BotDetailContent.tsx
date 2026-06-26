@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
@@ -21,7 +21,7 @@ import {
 } from '@/components/ui/dialog';
 import BotForm from '@/app/home/bots/components/bot-form/BotForm';
 import { BotLogListComponent } from '@/app/home/bots/components/bot-log/view/BotLogListComponent';
-import BotSessionMonitor from '@/app/home/bots/components/bot-session/BotSessionMonitor';
+import BotSessionMonitorRouter from '@/app/home/bots/components/bot-session/BotSessionMonitorRouter';
 import type { BotSessionMonitorHandle } from '@/app/home/bots/components/bot-session/BotSessionMonitor';
 import { httpClient } from '@/app/infra/http/HttpClient';
 import { useSidebarData } from '@/app/home/components/home-sidebar/SidebarDataContext';
@@ -35,6 +35,10 @@ export default function BotDetailContent({ id }: { id: string }) {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const { refreshBots, bots, setDetailEntityName } = useSidebarData();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Get active tab from URL, default to 'config'
+  const tabFromUrl = searchParams.get('tab') || 'config';
 
   // Set breadcrumb entity name
   useEffect(() => {
@@ -47,7 +51,7 @@ export default function BotDetailContent({ id }: { id: string }) {
     return () => setDetailEntityName(null);
   }, [id, isCreateMode, bots, setDetailEntityName, t]);
 
-  const [activeTab, setActiveTab] = useState('config');
+  const [activeTab, setActiveTab] = useState(tabFromUrl);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isRefreshingSessions, setIsRefreshingSessions] = useState(false);
   const sessionMonitorRef = useRef<BotSessionMonitorHandle>(null);
@@ -55,19 +59,32 @@ export default function BotDetailContent({ id }: { id: string }) {
   // Track whether the form has unsaved changes
   const [formDirty, setFormDirty] = useState(false);
 
+  // Bot data
+  const [bot, setBot] = useState<any>(null);
+
   // Enable state managed here so the header switch works
   const [botEnabled, setBotEnabled] = useState(true);
   const [enableLoaded, setEnableLoaded] = useState(false);
 
-  // Fetch bot enable state
+  // Sync activeTab with URL
+  useEffect(() => {
+    setActiveTab(tabFromUrl);
+  }, [tabFromUrl]);
+
+  // Fetch bot data including enable state and adapter
   useEffect(() => {
     if (!isCreateMode) {
       httpClient.getBot(id).then((res) => {
+        setBot(res.bot);
         setBotEnabled(res.bot.enable ?? true);
         setEnableLoaded(true);
       });
     }
   }, [id, isCreateMode]);
+
+  const handleTabChange = (value: string) => {
+    setSearchParams({ id, tab: value });
+  };
 
   const handleEnableToggle = useCallback(
     async (checked: boolean) => {
@@ -94,8 +111,9 @@ export default function BotDetailContent({ id }: { id: string }) {
   );
 
   function handleFormSubmit() {
-    // Re-sync enable state after form save (form may update enable too)
+    // Re-sync bot data after form save (form may update enable too)
     httpClient.getBot(id).then((res) => {
+      setBot(res.bot);
       setBotEnabled(res.bot.enable ?? true);
     });
     refreshBots();
@@ -188,48 +206,50 @@ export default function BotDetailContent({ id }: { id: string }) {
         <Tabs
           key={id}
           value={activeTab}
-          onValueChange={setActiveTab}
+          onValueChange={handleTabChange}
           className="flex flex-1 flex-col min-h-0"
         >
-          <TabsList className="shrink-0">
-            <TabsTrigger value="config" className="gap-1.5">
-              <Settings className="size-3.5" />
-              {t('bots.configuration')}
-            </TabsTrigger>
-            <TabsTrigger value="logs" className="gap-1.5">
-              <FileText className="size-3.5" />
-              {t('bots.logs')}
-            </TabsTrigger>
-            <TabsTrigger value="sessions" className="gap-1.5">
-              <Users className="size-3.5" />
-              {t('bots.sessionMonitor.title')}
-              {activeTab === 'sessions' && (
-                <button
-                  type="button"
-                  className="inline-flex items-center justify-center ml-0.5"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    if (isRefreshingSessions) return;
-                    setIsRefreshingSessions(true);
-                    const minDelay = new Promise((r) => setTimeout(r, 500));
-                    Promise.all([
-                      sessionMonitorRef.current?.refreshSessions(),
-                      minDelay,
-                    ]).finally(() => setIsRefreshingSessions(false));
-                  }}
-                >
-                  <RefreshCw
-                    className={cn(
-                      'size-3 text-muted-foreground hover:text-foreground transition-colors',
-                      isRefreshingSessions && 'animate-spin',
-                    )}
-                  />
-                </button>
-              )}
-            </TabsTrigger>
-          </TabsList>
+          <div className="flex items-center gap-2">
+            <TabsList className="shrink-0">
+              <TabsTrigger value="config" className="gap-1.5">
+                <Settings className="size-3.5" />
+                {t('bots.configuration')}
+              </TabsTrigger>
+              <TabsTrigger value="logs" className="gap-1.5">
+                <FileText className="size-3.5" />
+                {t('bots.logs')}
+              </TabsTrigger>
+              <TabsTrigger value="sessions" className="gap-1.5">
+                <Users className="size-3.5" />
+                {t('bots.sessionMonitor.title')}
+              </TabsTrigger>
+            </TabsList>
+            {activeTab === 'sessions' && (
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="size-9 shrink-0"
+                onClick={() => {
+                  if (isRefreshingSessions) return;
+                  setIsRefreshingSessions(true);
+                  const minDelay = new Promise((r) => setTimeout(r, 500));
+                  Promise.all([
+                    sessionMonitorRef.current?.refreshSessions(),
+                    minDelay,
+                  ]).finally(() => setIsRefreshingSessions(false));
+                }}
+                aria-label={t('common.refresh')}
+              >
+                <RefreshCw
+                  className={cn(
+                    'size-3.5 text-muted-foreground transition-colors',
+                    isRefreshingSessions && 'animate-spin',
+                  )}
+                />
+              </Button>
+            )}
+          </div>
 
           {/* Tab: Configuration */}
           <TabsContent
@@ -289,7 +309,12 @@ export default function BotDetailContent({ id }: { id: string }) {
 
           {/* Tab: Sessions */}
           <TabsContent value="sessions" className="flex-1 min-h-0 mt-4">
-            <BotSessionMonitor ref={sessionMonitorRef} botId={id} />
+            <BotSessionMonitorRouter
+              ref={sessionMonitorRef}
+              botId={id}
+              botAdapter={bot?.adapter || ''}
+              botEnabled={botEnabled}
+            />
           </TabsContent>
         </Tabs>
       </div>

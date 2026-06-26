@@ -966,7 +966,9 @@ export class BackendClient extends BaseHttpClient {
     return this.get(`/api/v1/local-connectors/${connectorId}/logs`);
   }
 
-  public getLocalConnectorJob(jobId: string): Promise<ApiRespLocalConnectorJob> {
+  public getLocalConnectorJob(
+    jobId: string,
+  ): Promise<ApiRespLocalConnectorJob> {
     return this.get(`/api/v1/local-connectors/jobs/${jobId}`);
   }
 
@@ -1031,7 +1033,10 @@ export class BackendClient extends BaseHttpClient {
       draft_source?: string;
     },
   ): Promise<ApiRespDatabaseModeMessage> {
-    return this.put(`/api/v1/database-mode/messages/${messageId}/draft`, payload);
+    return this.put(
+      `/api/v1/database-mode/messages/${messageId}/draft`,
+      payload,
+    );
   }
 
   public processDatabaseModeMessage(
@@ -1601,6 +1606,143 @@ export class BackendClient extends BaseHttpClient {
   }> {
     return this.put(`/api/v1/skills/${skillName}/files/${filePath}`, {
       content,
+    });
+  }
+
+  // ============ Bot-scoped Database Mode API ============
+
+  /**
+   * List conversations for a specific bot
+   */
+  public listBotConversations(
+    botId: string,
+    params?: {
+      status?: string;
+      keyword?: string;
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<import('@/app/infra/entities/api').ApiRespBotConversations> {
+    const query: Record<string, string> = {};
+    if (params?.status) query.status = params.status;
+    if (params?.keyword) query.keyword = params.keyword;
+    if (params?.page) query.page = params.page.toString();
+    if (params?.page_size) query.page_size = params.page_size.toString();
+
+    return this.get(`/api/v1/bots/${botId}/conversations`, query);
+  }
+
+  /**
+   * Get a specific conversation for a bot
+   */
+  public getBotConversation(
+    botId: string,
+    conversationId: string,
+  ): Promise<import('@/app/infra/entities/api').ApiRespBotConversation> {
+    return this.get(`/api/v1/bots/${botId}/conversations/${conversationId}`);
+  }
+
+  /**
+   * List messages in a bot conversation
+   */
+  public listBotMessages(
+    botId: string,
+    conversationId: string,
+    params?: {
+      status?: string;
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<import('@/app/infra/entities/api').ApiRespBotMessages> {
+    const query: Record<string, string> = {};
+    if (params?.status) query.status = params.status;
+    if (params?.page) query.page = params.page.toString();
+    if (params?.page_size) query.page_size = params.page_size.toString();
+
+    return this.get(
+      `/api/v1/bots/${botId}/conversations/${conversationId}/messages`,
+      query,
+    );
+  }
+
+  /**
+   * Generate a draft reply for a message
+   */
+  public generateBotDraft(
+    botId: string,
+    messageId: string,
+  ): Promise<import('@/app/infra/entities/api').ApiRespGenerateDraft> {
+    return this.post(
+      `/api/v1/bots/${botId}/messages/${messageId}/generate-draft`,
+      {},
+    );
+  }
+
+  /**
+   * Update a draft reply
+   */
+  public updateBotDraft(
+    botId: string,
+    draftId: string,
+    content: string,
+  ): Promise<import('@/app/infra/entities/api').ApiRespUpdateDraft> {
+    return this.put(`/api/v1/bots/${botId}/drafts/${draftId}`, { content });
+  }
+
+  /**
+   * Mark a message as processed
+   */
+  public processBotMessage(botId: string, messageId: string): Promise<void> {
+    return this.post(`/api/v1/bots/${botId}/messages/${messageId}/process`, {});
+  }
+
+  /**
+   * Skip a message
+   */
+  public skipBotMessage(botId: string, messageId: string): Promise<void> {
+    return this.post(`/api/v1/bots/${botId}/messages/${messageId}/skip`, {});
+  }
+
+  /**
+   * Delete a message
+   */
+  public deleteBotMessage(botId: string, messageId: string): Promise<void> {
+    return this.delete(`/api/v1/bots/${botId}/messages/${messageId}`);
+  }
+
+  /**
+   * Batch process messages
+   */
+  public batchProcessBotMessages(
+    botId: string,
+    messageIds: string[],
+  ): Promise<import('@/app/infra/entities/api').ApiRespBatchOperation> {
+    return this.post(`/api/v1/bots/${botId}/messages/batch-process`, {
+      message_ids: messageIds,
+    });
+  }
+
+  /**
+   * Batch skip messages
+   */
+  public batchSkipBotMessages(
+    botId: string,
+    messageIds: string[],
+  ): Promise<import('@/app/infra/entities/api').ApiRespBatchOperation> {
+    return this.post(`/api/v1/bots/${botId}/messages/batch-skip`, {
+      message_ids: messageIds,
+    });
+  }
+
+  /**
+   * Batch delete messages
+   */
+  public batchDeleteBotMessages(
+    botId: string,
+    messageIds: string[],
+  ): Promise<import('@/app/infra/entities/api').ApiRespBatchOperation> {
+    return this.post(`/api/v1/bots/${botId}/messages/batch-delete`, {
+      message_ids: messageIds,
     });
   }
 }

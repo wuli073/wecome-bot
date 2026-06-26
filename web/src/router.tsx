@@ -23,6 +23,7 @@ import MCPPage from '@/app/home/mcp/page';
 import KnowledgePage from '@/app/home/knowledge/page';
 import SkillsPage from '@/app/home/skills/page';
 import DatabaseModePage from '@/app/home/database-mode/page';
+import DatabaseModeRedirect from '@/app/home/database-mode/redirect';
 import ErrorPage from '@/components/ErrorPage';
 import BackendUnavailablePage from '@/components/BackendUnavailablePage';
 import PluginPagesPage from '@/app/home/plugin-pages/page';
@@ -160,7 +161,7 @@ export const router = createBrowserRouter([
         element: (
           <Suspense fallback={<Loading />}>
             <HomeLayout>
-              <DatabaseModePage />
+              <DatabaseModeRedirect />
             </HomeLayout>
           </Suspense>
         ),

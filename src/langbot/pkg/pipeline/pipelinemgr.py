@@ -233,6 +233,12 @@ class RuntimePipeline:
         while i < len(self.stage_containers):
             stage_container = self.stage_containers[i]
 
+            self._append_stage_trace(
+                query,
+                stage_index=i,
+                stage_name=stage_container.inst_name,
+                entered=True,
+            )
             query.current_stage_name = stage_container.inst_name  # 标记到 Query 对象里
 
             result = stage_container.inst.process(query, stage_container.inst_name)
@@ -241,6 +247,13 @@ class RuntimePipeline:
                 result = await result
 
             if isinstance(result, pipeline_entities.StageProcessResult):  # 直接返回结果
+                self._append_stage_trace(
+                    query,
+                    stage_index=i,
+                    stage_name=stage_container.inst_name,
+                    result=result,
+                    current_query=query,
+                )
                 self.ap.logger.debug(
                     f'Stage {stage_container.inst_name} processed query {query.query_id} res {result.result_type}'
                 )
@@ -252,9 +265,23 @@ class RuntimePipeline:
                 elif result.result_type == pipeline_entities.ResultType.CONTINUE:
                     query = result.new_query
             elif isinstance(result, typing.AsyncGenerator):  # 生成器
+                self._append_stage_trace(
+                    query,
+                    stage_index=i,
+                    stage_name=stage_container.inst_name,
+                    result_type='AsyncGenerator',
+                    current_query=query,
+                )
                 self.ap.logger.debug(f'Stage {stage_container.inst_name} processed query {query.query_id} gen')
 
                 async for sub_result in result:
+                    self._append_stage_trace(
+                        query,
+                        stage_index=i,
+                        stage_name=stage_container.inst_name,
+                        result=sub_result,
+                        current_query=query,
+                    )
                     self.ap.logger.debug(
                         f'Stage {stage_container.inst_name} processed query {query.query_id} res {sub_result.result_type}'
                     )
@@ -269,6 +296,57 @@ class RuntimePipeline:
                 break
 
             i += 1
+
+    @staticmethod
+    def _append_stage_trace(
+        query: pipeline_query.Query,
+        *,
+        stage_index: int,
+        stage_name: str,
+        entered: bool = False,
+        result: pipeline_entities.StageProcessResult | None = None,
+        result_type: str | None = None,
+        current_query: pipeline_query.Query | None = None,
+        exception: Exception | None = None,
+    ) -> None:
+        if query is None or not isinstance(getattr(query, 'variables', None), dict):
+            return
+
+        trace = query.variables.setdefault('_stage_trace', [])
+        trace_item = {
+            'stage_index': stage_index,
+            'stage_name': stage_name,
+            'entered': bool(entered),
+        }
+
+        active_query = current_query or query
+        if active_query is not None:
+            trace_item['query_id'] = getattr(active_query, 'query_id', None)
+            trace_item['response_component_count'] = RuntimePipeline._response_component_count(active_query)
+
+        if result is not None:
+            trace_item['result_type'] = getattr(result.result_type, 'name', str(result.result_type))
+            trace_item['interrupted'] = result.result_type == pipeline_entities.ResultType.INTERRUPT
+            trace_item['break_pipeline'] = result.result_type == pipeline_entities.ResultType.INTERRUPT
+            trace_item['has_new_query'] = getattr(result, 'new_query', None) is not None
+            trace_item['new_query_id'] = getattr(getattr(result, 'new_query', None), 'query_id', None)
+        elif result_type is not None:
+            trace_item['result_type'] = result_type
+
+        if exception is not None:
+            trace_item['exception_type'] = type(exception).__name__
+
+        trace.append(trace_item)
+
+    @staticmethod
+    def _response_component_count(query: pipeline_query.Query | None) -> int:
+        if query is None:
+            return 0
+        if getattr(query, 'resp_message_chain', None):
+            return len(query.resp_message_chain)
+        if getattr(query, 'resp_messages', None):
+            return len(query.resp_messages)
+        return 0
 
     async def process_query(self, query: pipeline_query.Query):
         """处理请求"""
@@ -362,6 +440,21 @@ class RuntimePipeline:
 
         except Exception as e:
             inst_name = query.current_stage_name if query.current_stage_name else 'unknown'
+            stage_index = next(
+                (
+                    idx
+                    for idx, container in enumerate(self.stage_containers)
+                    if container.inst_name == inst_name
+                ),
+                -1,
+            )
+            self._append_stage_trace(
+                query,
+                stage_index=stage_index,
+                stage_name=inst_name,
+                exception=e,
+                current_query=query,
+            )
             self.ap.logger.error(f'Error processing query {query.query_id} stage={inst_name} : {e}')
             self.ap.logger.error(f'Traceback: {traceback.format_exc()}')
 

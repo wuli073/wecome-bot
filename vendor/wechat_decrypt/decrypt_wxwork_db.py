@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import sys
+import time
 
 from key_utils import get_key_info, strip_key_metadata
 from wxwork_crypto import (
@@ -97,14 +98,39 @@ def _normalize_requested_dbs(values):
 
 
 def _sync_plain_sqlite_sidecars(src_path, out_path):
+    metrics = []
     for suffix in ("-wal", "-shm"):
         src_sidecar = src_path + suffix
         out_sidecar = out_path + suffix
         if os.path.exists(src_sidecar):
+            started = time.monotonic()
             shutil.copy2(src_sidecar, out_sidecar)
+            metrics.append(
+                {
+                    "file": os.path.basename(src_sidecar),
+                    "bytes": os.path.getsize(src_sidecar),
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                    "copied": True,
+                }
+            )
             continue
         if os.path.exists(out_sidecar):
             os.remove(out_sidecar)
+            metrics.append(
+                {
+                    "file": os.path.basename(src_sidecar),
+                    "bytes": 0,
+                    "elapsed_ms": 0,
+                    "copied": False,
+                    "removed": True,
+                }
+            )
+    return metrics
+
+
+def _emit_metric(event: str, **payload):
+    payload["event"] = event
+    print("WXWORK_DECRYPT_METRIC " + json.dumps(payload, sort_keys=True, separators=(",", ":")), flush=True)
 
 
 def main(argv=None):
@@ -148,13 +174,28 @@ def main(argv=None):
         if requested_dbs and normalized_rel not in requested_dbs:
             continue
         out_path = os.path.join(out_dir, rel)
+        db_started = time.monotonic()
+        input_bytes = os.path.getsize(path)
         with open(path, "rb") as f:
             page1 = f.read(4096)
 
         if is_plain_sqlite_page(page1):
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            copy_started = time.monotonic()
             shutil.copy2(path, out_path)
-            _sync_plain_sqlite_sidecars(path, out_path)
+            sidecar_metrics = _sync_plain_sqlite_sidecars(path, out_path)
+            elapsed_ms = int((time.monotonic() - db_started) * 1000)
+            _emit_metric(
+                "database_processed",
+                db=normalized_rel,
+                mode="copy",
+                input_bytes=input_bytes,
+                output_bytes=os.path.getsize(out_path),
+                copied_bytes=input_bytes + sum(item.get("bytes", 0) for item in sidecar_metrics if item.get("copied")),
+                copy_elapsed_ms=int((time.monotonic() - copy_started) * 1000),
+                elapsed_ms=elapsed_ms,
+                sidecars=sidecar_metrics,
+            )
             copied += 1
             print(f"COPY: {rel} (plain SQLite)")
             continue
@@ -185,8 +226,19 @@ def main(argv=None):
             continue
 
         try:
+            decrypt_started = time.monotonic()
             decrypt_wxwork_database(path, out_path, key)
             tables = verify_sqlite_file(out_path)
+            elapsed_ms = int((time.monotonic() - db_started) * 1000)
+            _emit_metric(
+                "database_processed",
+                db=normalized_rel,
+                mode="decrypt",
+                input_bytes=input_bytes,
+                output_bytes=os.path.getsize(out_path),
+                decrypt_elapsed_ms=int((time.monotonic() - decrypt_started) * 1000),
+                elapsed_ms=elapsed_ms,
+            )
             success += 1
             table_preview = ", ".join(tables[:5])
             suffix = f" tables: {table_preview}" if table_preview else " no tables"

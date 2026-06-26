@@ -12,6 +12,7 @@ from langbot_plugin.api.entities.builtin.provider import message as provider_mes
 
 from ..core import app
 from ..entity.persistence import database_mode as persistence_database_mode
+from .conversation_type import normalize_conversation_type
 from .events import DatabaseModeEvent, DatabaseModeEventType
 
 
@@ -89,7 +90,10 @@ class DatabaseModeService:
         conversation_name = (
             str(conversation_payload.get('conversation_name') or '').strip() or sender_name or external_conversation_id
         )
-        conversation_type = str(conversation_payload.get('conversation_type') or 'direct').strip() or 'direct'
+        conversation_type = normalize_conversation_type(
+            conversation_payload.get('conversation_type'),
+            default='direct',
+        )
 
         existing_event = await self._fetch_optional_model(
             persistence_database_mode.LocalConnectorEvent,
@@ -259,6 +263,7 @@ class DatabaseModeService:
         keyword: str = '',
         page: int = 1,
         page_size: int = 20,
+        connector_id: str | None = None,
     ) -> dict:
         page, page_size = self._normalize_page(page, page_size)
         keyword = (keyword or '').strip()
@@ -291,6 +296,11 @@ class DatabaseModeService:
                 == persistence_database_mode.DatabaseConversation.id,
             )
         )
+
+        if connector_id is not None:
+            stmt = stmt.where(
+                persistence_database_mode.DatabaseConversation.connector_id == connector_id,
+            )
 
         if keyword:
             pattern = f'%{keyword}%'
@@ -348,12 +358,16 @@ class DatabaseModeService:
             'page_size': page_size,
         }
 
-    async def get_conversation(self, conversation_id: int) -> dict | None:
+    async def get_conversation(self, conversation_id: int, connector_id: str | None = None) -> dict | None:
+        stmt = sqlalchemy.select(persistence_database_mode.DatabaseConversation).where(
+            persistence_database_mode.DatabaseConversation.id == conversation_id
+        )
+        if connector_id is not None:
+            stmt = stmt.where(persistence_database_mode.DatabaseConversation.connector_id == connector_id)
+
         conversation = await self._fetch_optional_model(
             persistence_database_mode.DatabaseConversation,
-            sqlalchemy.select(persistence_database_mode.DatabaseConversation).where(
-                persistence_database_mode.DatabaseConversation.id == conversation_id
-            ),
+            stmt,
         )
         if conversation is None:
             return None
@@ -376,6 +390,7 @@ class DatabaseModeService:
         status: str | None = None,
         page: int = 1,
         page_size: int = 50,
+        connector_id: str | None = None,
     ) -> dict:
         page, page_size = self._normalize_page(page, page_size, max_page_size=200)
         status = self._normalize_status_filter(status)
@@ -383,6 +398,12 @@ class DatabaseModeService:
         stmt = sqlalchemy.select(persistence_database_mode.DatabaseMessage).where(
             persistence_database_mode.DatabaseMessage.conversation_id == conversation_id
         )
+        if connector_id is not None:
+            stmt = stmt.join(
+                persistence_database_mode.DatabaseConversation,
+                persistence_database_mode.DatabaseMessage.conversation_id
+                == persistence_database_mode.DatabaseConversation.id,
+            ).where(persistence_database_mode.DatabaseConversation.connector_id == connector_id)
         if status:
             stmt = stmt.where(persistence_database_mode.DatabaseMessage.status == status)
 
@@ -409,7 +430,7 @@ class DatabaseModeService:
             'total': total,
             'page': page,
             'page_size': page_size,
-            'stats': await self._get_conversation_stats(conversation_id),
+            'stats': await self._get_conversation_stats(conversation_id, connector_id=connector_id),
         }
 
     async def generate_draft(self, message_id: int) -> dict:
@@ -678,7 +699,7 @@ class DatabaseModeService:
             return None
         return self._serialize_message(row)
 
-    async def _get_conversation_stats(self, conversation_id: int) -> dict:
+    async def _get_conversation_stats(self, conversation_id: int, connector_id: str | None = None) -> dict:
         stmt = (
             sqlalchemy.select(
                 persistence_database_mode.DatabaseMessage.status,
@@ -687,6 +708,12 @@ class DatabaseModeService:
             .where(persistence_database_mode.DatabaseMessage.conversation_id == conversation_id)
             .group_by(persistence_database_mode.DatabaseMessage.status)
         )
+        if connector_id is not None:
+            stmt = stmt.join(
+                persistence_database_mode.DatabaseConversation,
+                persistence_database_mode.DatabaseMessage.conversation_id
+                == persistence_database_mode.DatabaseConversation.id,
+            ).where(persistence_database_mode.DatabaseConversation.connector_id == connector_id)
         rows = (await self.ap.persistence_mgr.execute_async(stmt)).all()
         stats = {status: 0 for status in sorted(MESSAGE_STATUSES)}
         total = 0
@@ -722,20 +749,19 @@ class DatabaseModeService:
 
     async def _fetch_optional_model(self, model, stmt, conn=None):
         result = await self._execute(stmt, conn=conn)
-        try:
-            keys = list(result.keys())
-        except Exception:
-            keys = []
-        if len(keys) == 1 and keys[0] == model.__name__:
-            scalar_result = result.scalars()
-            return scalar_result.first()
         row = result.first()
         if row is None:
             return None
+        if isinstance(row, model):
+            return row
         if hasattr(row, '_mapping'):
             mapped = row._mapping.get(model)
             if mapped is not None:
                 return mapped
+            if len(row._mapping) == 1:
+                only_value = next(iter(row._mapping.values()))
+                if isinstance(only_value, model):
+                    return only_value
         return row
 
     async def _fetch_required_model(self, model, stmt, *, error_message: str, conn=None):
@@ -886,27 +912,31 @@ class DatabaseModeService:
             if bot is None or not bot.enable:
                 return
 
-            # Get channel account and binding
-            channel_account_result = await self.ap.persistence_mgr.execute_async(
-                sqlalchemy.select(persistence_database_mode.ChannelAccount.id)
+            # Get channel account and binding using ORM model helpers so result shape
+            # stays stable across different persistence backends and test doubles.
+            channel_account = await self._fetch_optional_model(
+                persistence_database_mode.ChannelAccount,
+                sqlalchemy.select(persistence_database_mode.ChannelAccount)
                 .join(
                     persistence_database_mode.BotChannelBinding,
-                    persistence_database_mode.BotChannelBinding.channel_account_id == persistence_database_mode.ChannelAccount.id,
+                    persistence_database_mode.BotChannelBinding.channel_account_id
+                    == persistence_database_mode.ChannelAccount.id,
                 )
                 .where(persistence_database_mode.BotChannelBinding.bot_uuid == bot_uuid)
+                .limit(1),
             )
-            channel_account_id = channel_account_result.scalar()
-            if channel_account_id is None:
+            if channel_account is None:
                 return
 
-            binding_result = await self.ap.persistence_mgr.execute_async(
+            binding = await self._fetch_optional_model(
+                persistence_database_mode.BotChannelBinding,
                 sqlalchemy.select(persistence_database_mode.BotChannelBinding)
                 .where(
                     persistence_database_mode.BotChannelBinding.bot_uuid == bot_uuid,
-                    persistence_database_mode.BotChannelBinding.channel_account_id == channel_account_id,
+                    persistence_database_mode.BotChannelBinding.channel_account_id == int(channel_account.id),
                 )
+                .limit(1),
             )
-            binding = binding_result.scalars().first()
             if binding is None or not binding.enabled or not binding.auto_generate_draft:
                 self._log_event(
                     'auto_draft_skipped_disabled',

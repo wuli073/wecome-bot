@@ -9,20 +9,27 @@ Run: uv run pytest tests/integration/persistence/test_migrations.py -q
 
 from __future__ import annotations
 
+import datetime
+import importlib
+
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from langbot.pkg.entity.persistence.base import Base
+from langbot.pkg.entity.persistence import bot as _bot  # noqa: F401
+from langbot.pkg.entity.persistence import database_mode as _database_mode  # noqa: F401
 from langbot.pkg.entity.persistence import mcp as _mcp  # noqa: F401
 from langbot.pkg.persistence.alembic_runner import (
     run_alembic_upgrade,
+    run_alembic_downgrade,
     run_alembic_stamp,
     get_alembic_current,
     _ALEMBIC_DIR,
 )
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from sqlalchemy.dialects import postgresql
 
 
 def _get_script_head() -> str:
@@ -34,6 +41,10 @@ def _get_script_head() -> str:
     cfg = Config()
     cfg.set_main_option('script_location', _ALEMBIC_DIR)
     return ScriptDirectory.from_config(cfg).get_current_head()
+
+
+def _dt(value: str) -> datetime.datetime:
+    return datetime.datetime.fromisoformat(value)
 
 
 pytestmark = pytest.mark.integration
@@ -288,3 +299,222 @@ class TestSQLiteMigrationGetCurrent:
 
         rev = await get_alembic_current(sqlite_engine)
         assert rev == '0001_baseline'
+
+
+class TestBotChannelBindingUniqueMigration:
+    @pytest.mark.asyncio
+    async def test_upgrade_cleans_duplicate_bindings_and_keeps_best_row(self, sqlite_engine):
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            channel_accounts, bot_channel_bindings = await conn.run_sync(
+                lambda sync_conn: (
+                    sa.Table('channel_accounts', sa.MetaData(), autoload_with=sync_conn),
+                    sa.Table('bot_channel_bindings', sa.MetaData(), autoload_with=sync_conn),
+                )
+            )
+            await conn.execute(
+                sa.insert(_bot.Bot).values(
+                    {
+                        'uuid': 'bot-cleanup',
+                        'name': 'Cleanup Bot',
+                        'description': 'desc',
+                        'adapter': 'wxwork_database',
+                        'adapter_config': {'connector_id': 'wxwork-local', 'auto_generate_draft': False},
+                        'enable': True,
+                        'pipeline_routing_rules': [],
+                    }
+                )
+            )
+            channel_account_id = (
+                await conn.execute(
+                    sa.insert(channel_accounts).values(
+                        {
+                            'connector_id': 'wxwork-local',
+                            'channel_type': 'wxwork_database',
+                            'external_account_id': 'wxwork-local',
+                            'display_name': 'WXWork Database',
+                            'enabled': True,
+                            'metadata': {},
+                        }
+                    )
+                )
+            ).inserted_primary_key[0]
+
+            await conn.execute(
+                sa.insert(bot_channel_bindings).values(
+                    [
+                        {
+                            'bot_uuid': 'bot-cleanup',
+                            'channel_account_id': channel_account_id,
+                            'enabled': False,
+                            'effective_from': _dt('2026-06-20T10:00:00'),
+                            'auto_generate_draft': True,
+                            'created_at': _dt('2026-06-20T10:00:00'),
+                            'updated_at': _dt('2026-06-20T11:00:00'),
+                        },
+                        {
+                            'bot_uuid': 'bot-cleanup',
+                            'channel_account_id': channel_account_id,
+                            'enabled': True,
+                            'effective_from': _dt('2026-06-21T10:00:00'),
+                            'auto_generate_draft': True,
+                            'created_at': _dt('2026-06-21T10:00:00'),
+                            'updated_at': _dt('2026-06-21T11:00:00'),
+                        },
+                        {
+                            'bot_uuid': 'bot-cleanup',
+                            'channel_account_id': channel_account_id,
+                            'enabled': True,
+                            'effective_from': _dt('2026-06-19T10:00:00'),
+                            'auto_generate_draft': True,
+                            'created_at': _dt('2026-06-19T10:00:00'),
+                            'updated_at': _dt('2026-06-22T11:00:00'),
+                        },
+                    ]
+                )
+            )
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_bindings(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                binding_indexes = {index['name'] for index in inspector.get_indexes('bot_channel_bindings')}
+                bindings_table = sa.Table('bot_channel_bindings', sa.MetaData(), autoload_with=sync_conn)
+                rows = sync_conn.execute(sa.select(bindings_table).order_by(bindings_table.c.id.asc())).mappings().all()
+                return binding_indexes, rows
+
+            binding_indexes, rows = await conn.run_sync(inspect_bindings)
+
+        assert 'ux_bot_channel_bindings_bot_channel' in binding_indexes
+        assert len(rows) == 1
+        row = rows[0]
+        assert row['bot_uuid'] == 'bot-cleanup'
+        assert row['channel_account_id'] == channel_account_id
+        assert row['enabled'] is True
+        assert row['effective_from'] == _dt('2026-06-21T10:00:00')
+        assert row['auto_generate_draft'] is False
+
+    @pytest.mark.asyncio
+    async def test_upgrade_blocks_duplicate_binding_inserts(self, sqlite_engine):
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            channel_accounts, bot_channel_bindings = await conn.run_sync(
+                lambda sync_conn: (
+                    sa.Table('channel_accounts', sa.MetaData(), autoload_with=sync_conn),
+                    sa.Table('bot_channel_bindings', sa.MetaData(), autoload_with=sync_conn),
+                )
+            )
+            await conn.execute(
+                sa.insert(_bot.Bot).values(
+                    {
+                        'uuid': 'bot-unique',
+                        'name': 'Unique Bot',
+                        'description': 'desc',
+                        'adapter': 'wxwork_database',
+                        'adapter_config': {'connector_id': 'wxwork-local', 'auto_generate_draft': True},
+                        'enable': True,
+                        'pipeline_routing_rules': [],
+                    }
+                )
+            )
+            channel_account_id = (
+                await conn.execute(
+                    sa.insert(channel_accounts).values(
+                        {
+                            'connector_id': 'wxwork-local',
+                            'channel_type': 'wxwork_database',
+                            'external_account_id': 'wxwork-local',
+                            'display_name': 'WXWork Database',
+                            'enabled': True,
+                            'metadata': {},
+                        }
+                    )
+                )
+            ).inserted_primary_key[0]
+            await conn.execute(
+                sa.insert(bot_channel_bindings).values(
+                    {
+                        'bot_uuid': 'bot-unique',
+                        'channel_account_id': channel_account_id,
+                        'enabled': True,
+                        'effective_from': _dt('2026-06-21T10:00:00'),
+                        'auto_generate_draft': True,
+                        'created_at': _dt('2026-06-21T10:00:00'),
+                        'updated_at': _dt('2026-06-21T11:00:00'),
+                    }
+                )
+            )
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        with pytest.raises(sa.exc.IntegrityError):
+            async with sqlite_engine.begin() as conn:
+                bot_channel_bindings = await conn.run_sync(
+                    lambda sync_conn: sa.Table('bot_channel_bindings', sa.MetaData(), autoload_with=sync_conn)
+                )
+                await conn.execute(
+                    sa.insert(bot_channel_bindings).values(
+                        {
+                            'bot_uuid': 'bot-unique',
+                            'channel_account_id': channel_account_id,
+                            'enabled': True,
+                            'effective_from': _dt('2026-06-22T10:00:00'),
+                            'auto_generate_draft': True,
+                            'created_at': _dt('2026-06-22T10:00:00'),
+                            'updated_at': _dt('2026-06-22T11:00:00'),
+                        }
+                    )
+                )
+
+    @pytest.mark.asyncio
+    async def test_sqlite_upgrade_and_downgrade_round_trip(self, sqlite_engine):
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_indexes(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                return {index['name'] for index in inspector.get_indexes('bot_channel_bindings')}
+
+            indexes_after_upgrade = await conn.run_sync(inspect_indexes)
+
+        assert 'ux_bot_channel_bindings_bot_channel' in indexes_after_upgrade
+
+        await run_alembic_downgrade(sqlite_engine, '0009_channel_bot_processing')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_indexes(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                return {index['name'] for index in inspector.get_indexes('bot_channel_bindings')}
+
+            indexes_after_downgrade = await conn.run_sync(inspect_indexes)
+
+        assert 'ux_bot_channel_bindings_bot_channel' not in indexes_after_downgrade
+        rev = await get_alembic_current(sqlite_engine)
+        assert rev == '0009_channel_bot_processing'
+
+    def test_postgresql_unique_index_ddl_uses_unique_index_name(self):
+        migration = importlib.import_module('langbot.pkg.persistence.alembic.versions.0010_bot_channel_bindings_uniq')
+        table = sa.Table(
+            'bot_channel_bindings',
+            sa.MetaData(),
+            sa.Column('bot_uuid', sa.String(255)),
+            sa.Column('channel_account_id', sa.Integer()),
+        )
+        index = sa.Index(
+            migration.UNIQUE_INDEX_NAME,
+            table.c.bot_uuid,
+            table.c.channel_account_id,
+            unique=True,
+        )
+        ddl = str(sa.schema.CreateIndex(index).compile(dialect=postgresql.dialect()))
+        assert 'CREATE UNIQUE INDEX' in ddl
+        assert migration.UNIQUE_INDEX_NAME in ddl
+        assert 'bot_uuid' in ddl
+        assert 'channel_account_id' in ddl

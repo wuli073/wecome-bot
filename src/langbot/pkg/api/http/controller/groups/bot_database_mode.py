@@ -17,24 +17,29 @@ class BotDatabaseModeRouterGroup(group.RouterGroup):
     async def initialize(self) -> None:
         @self.route('/<bot_id>/conversations', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
         async def list_bot_conversations(bot_id: str) -> str:
-            await self._validate_bot_access(bot_id)
+            connector_id_or_response = await self._get_bot_connector_id_or_response(bot_id)
+            if not isinstance(connector_id_or_response, str):
+                return connector_id_or_response
+            connector_id = connector_id_or_response
 
             data = await self.ap.database_mode_service.list_conversations(
                 status=quart.request.args.get('status'),
                 keyword=quart.request.args.get('keyword', ''),
                 page=_get_int_arg('page', 1),
                 page_size=_get_int_arg('page_size', 20),
+                connector_id=connector_id,
             )
             return self.success(data=data)
 
         @self.route('/<bot_id>/conversations/<int:conversation_id>', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
         async def get_bot_conversation(bot_id: str, conversation_id: int) -> str:
-            await self._validate_bot_access(bot_id)
-            await self._validate_conversation_belongs_to_bot(bot_id, conversation_id)
-
-            conversation = await self.ap.database_mode_service.get_conversation(conversation_id)
+            connector_id_or_response = await self._get_bot_connector_id_or_response(bot_id)
+            if not isinstance(connector_id_or_response, str):
+                return connector_id_or_response
+            connector_id = connector_id_or_response
+            conversation = await self.ap.database_mode_service.get_conversation(conversation_id, connector_id=connector_id)
             if conversation is None:
-                return self.http_status(404, -1, 'Conversation not found')
+                return self.http_status(404, -1, 'Conversation does not belong to bot')
             return self.success(data={'conversation': conversation})
 
         @self.route(
@@ -43,14 +48,19 @@ class BotDatabaseModeRouterGroup(group.RouterGroup):
             auth_type=group.AuthType.USER_TOKEN,
         )
         async def list_bot_messages(bot_id: str, conversation_id: int) -> str:
-            await self._validate_bot_access(bot_id)
-            await self._validate_conversation_belongs_to_bot(bot_id, conversation_id)
+            connector_id_or_response = await self._get_bot_connector_id_or_response(bot_id)
+            if not isinstance(connector_id_or_response, str):
+                return connector_id_or_response
+            connector_id = connector_id_or_response
+            if await self._conversation_belongs_to_connector(conversation_id, connector_id) is False:
+                return self.http_status(404, -1, 'Conversation does not belong to bot')
 
             data = await self.ap.database_mode_service.list_messages(
                 conversation_id,
                 status=quart.request.args.get('status'),
                 page=_get_int_arg('page', 1),
                 page_size=_get_int_arg('page_size', 50),
+                connector_id=connector_id,
             )
             return self.success(data=data)
 
@@ -60,21 +70,47 @@ class BotDatabaseModeRouterGroup(group.RouterGroup):
             auth_type=group.AuthType.USER_TOKEN,
         )
         async def generate_bot_draft(bot_id: str, message_id: int) -> str:
-            await self._validate_bot_access(bot_id)
-            await self._validate_message_belongs_to_bot(bot_id, message_id)
+            connector_id_or_response = await self._get_bot_connector_id_or_response(bot_id, allow_disabled=False)
+            if not isinstance(connector_id_or_response, str):
+                return connector_id_or_response
+            connector_id = connector_id_or_response
+            if await self._message_belongs_to_connector(message_id, connector_id) is False:
+                return self.http_status(404, -1, 'Message does not belong to bot')
 
             if not hasattr(self.ap, 'database_mode_processing_service'):
                 return self.http_status(503, -1, 'Processing service unavailable')
 
-            result = await self.ap.database_mode_processing_service.generate_draft(
-                message_id, bot_id, trigger='manual'
-            )
-            return self.success(data=result)
+            try:
+                result = await self.ap.database_mode_processing_service.generate_draft(
+                    message_id,
+                    bot_id,
+                    trigger='manual',
+                )
+
+                return self.success(data=result)
+
+            except Exception as exc:
+                logger = getattr(self.ap, 'logger', None)
+                if logger is not None and hasattr(logger, 'exception'):
+                    logger.exception(
+                        f'database_generate_draft_failed bot_id={bot_id} message_id={message_id}'
+                    )
+
+                return self.http_status(
+                    500,
+                    -2,
+                    f'{type(exc).__name__}: {exc}',
+                )
 
         @self.route('/<bot_id>/drafts/<int:draft_id>', methods=['PUT'], auth_type=group.AuthType.USER_TOKEN)
         async def update_bot_draft(bot_id: str, draft_id: int) -> str:
-            await self._validate_bot_access(bot_id)
-            await self._validate_draft_belongs_to_bot(bot_id, draft_id)
+            connector_id_or_response = await self._get_bot_connector_id_or_response(bot_id)
+            if not isinstance(connector_id_or_response, str):
+                return connector_id_or_response
+            try:
+                await self._validate_draft_belongs_to_bot(bot_id, draft_id)
+            except ValueError as exc:
+                return self.http_status(404, -1, str(exc))
 
             payload = await quart.request.get_json(silent=True) or {}
             draft_content = str(payload.get('content') or '').strip()
@@ -97,63 +133,87 @@ class BotDatabaseModeRouterGroup(group.RouterGroup):
 
         @self.route('/<bot_id>/messages/<int:message_id>/process', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
         async def process_bot_message(bot_id: str, message_id: int) -> str:
-            await self._validate_bot_access(bot_id, allow_disabled=False)
-            await self._validate_message_belongs_to_bot(bot_id, message_id)
+            connector_id_or_response = await self._get_bot_connector_id_or_response(bot_id, allow_disabled=False)
+            if not isinstance(connector_id_or_response, str):
+                return connector_id_or_response
+            connector_id = connector_id_or_response
+            if await self._message_belongs_to_connector(message_id, connector_id) is False:
+                return self.http_status(404, -1, 'Message does not belong to bot')
 
             message = await self.ap.database_mode_service.process_message(message_id)
             return self.success(data={'message': message})
 
         @self.route('/<bot_id>/messages/<int:message_id>/skip', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
         async def skip_bot_message(bot_id: str, message_id: int) -> str:
-            await self._validate_bot_access(bot_id, allow_disabled=False)
-            await self._validate_message_belongs_to_bot(bot_id, message_id)
+            connector_id_or_response = await self._get_bot_connector_id_or_response(bot_id, allow_disabled=False)
+            if not isinstance(connector_id_or_response, str):
+                return connector_id_or_response
+            connector_id = connector_id_or_response
+            if await self._message_belongs_to_connector(message_id, connector_id) is False:
+                return self.http_status(404, -1, 'Message does not belong to bot')
 
             message = await self.ap.database_mode_service.skip_message(message_id)
             return self.success(data={'message': message})
 
         @self.route('/<bot_id>/messages/<int:message_id>', methods=['DELETE'], auth_type=group.AuthType.USER_TOKEN)
         async def delete_bot_message(bot_id: str, message_id: int) -> str:
-            await self._validate_bot_access(bot_id, allow_disabled=True)
-            await self._validate_message_belongs_to_bot(bot_id, message_id)
+            connector_id_or_response = await self._get_bot_connector_id_or_response(bot_id, allow_disabled=True)
+            if not isinstance(connector_id_or_response, str):
+                return connector_id_or_response
+            connector_id = connector_id_or_response
+            if await self._message_belongs_to_connector(message_id, connector_id) is False:
+                return self.http_status(404, -1, 'Message does not belong to bot')
 
             await self.ap.database_mode_service.delete_message(message_id)
             return self.success()
 
         @self.route('/<bot_id>/messages/batch-process', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
         async def batch_process_bot_messages(bot_id: str) -> str:
-            await self._validate_bot_access(bot_id, allow_disabled=False)
+            connector_id_or_response = await self._get_bot_connector_id_or_response(bot_id, allow_disabled=False)
+            if not isinstance(connector_id_or_response, str):
+                return connector_id_or_response
+            connector_id = connector_id_or_response
 
             payload = await quart.request.get_json(silent=True) or {}
             message_ids = payload.get('message_ids') or []
 
             for message_id in message_ids:
-                await self._validate_message_belongs_to_bot(bot_id, message_id)
+                if await self._message_belongs_to_connector(message_id, connector_id) is False:
+                    return self.http_status(404, -1, 'Message does not belong to bot')
 
             data = await self.ap.database_mode_service.batch_process(message_ids)
             return self.success(data=data)
 
         @self.route('/<bot_id>/messages/batch-skip', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
         async def batch_skip_bot_messages(bot_id: str) -> str:
-            await self._validate_bot_access(bot_id, allow_disabled=False)
+            connector_id_or_response = await self._get_bot_connector_id_or_response(bot_id, allow_disabled=False)
+            if not isinstance(connector_id_or_response, str):
+                return connector_id_or_response
+            connector_id = connector_id_or_response
 
             payload = await quart.request.get_json(silent=True) or {}
             message_ids = payload.get('message_ids') or []
 
             for message_id in message_ids:
-                await self._validate_message_belongs_to_bot(bot_id, message_id)
+                if await self._message_belongs_to_connector(message_id, connector_id) is False:
+                    return self.http_status(404, -1, 'Message does not belong to bot')
 
             data = await self.ap.database_mode_service.batch_skip(message_ids)
             return self.success(data=data)
 
         @self.route('/<bot_id>/messages/batch-delete', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
         async def batch_delete_bot_messages(bot_id: str) -> str:
-            await self._validate_bot_access(bot_id, allow_disabled=True)
+            connector_id_or_response = await self._get_bot_connector_id_or_response(bot_id, allow_disabled=True)
+            if not isinstance(connector_id_or_response, str):
+                return connector_id_or_response
+            connector_id = connector_id_or_response
 
             payload = await quart.request.get_json(silent=True) or {}
             message_ids = payload.get('message_ids') or []
 
             for message_id in message_ids:
-                await self._validate_message_belongs_to_bot(bot_id, message_id)
+                if await self._message_belongs_to_connector(message_id, connector_id) is False:
+                    return self.http_status(404, -1, 'Message does not belong to bot')
 
             data = await self.ap.database_mode_service.batch_delete(message_ids)
             return self.success(data=data)
@@ -169,33 +229,70 @@ class BotDatabaseModeRouterGroup(group.RouterGroup):
         if not allow_disabled and not bot.get('enable', False):
             raise ValueError(f'Bot {bot_uuid} is disabled')
 
-    async def _validate_conversation_belongs_to_bot(self, bot_uuid: str, conversation_id: int) -> None:
+    async def _get_bot_connector_id_or_response(self, bot_uuid: str, allow_disabled: bool = True) -> str | quart.Response:
+        try:
+            await self._validate_bot_access(bot_uuid, allow_disabled=allow_disabled)
+            return await self._get_bot_connector_id(bot_uuid)
+        except ValueError as exc:
+            message = str(exc)
+            if 'disabled' in message or 'not a wxwork_database bot' in message:
+                return self.http_status(403, -1, message)
+            return self.http_status(404, -1, message)
+
+    async def _get_bot_connector_id(self, bot_uuid: str) -> str:
         from .....entity.persistence import database_mode as persistence_database_mode
         import sqlalchemy
 
-        # Check channel account binding
         result = await self.ap.persistence_mgr.execute_async(
-            sqlalchemy.select(persistence_database_mode.ChannelAccount.id)
+            sqlalchemy.select(persistence_database_mode.ChannelAccount.connector_id)
             .join(
                 persistence_database_mode.BotChannelBinding,
                 persistence_database_mode.BotChannelBinding.channel_account_id == persistence_database_mode.ChannelAccount.id,
             )
             .where(persistence_database_mode.BotChannelBinding.bot_uuid == bot_uuid)
         )
-        channel_account_id = result.scalar()
-        if channel_account_id is None:
+        connector_id = result.scalar()
+        if connector_id is None:
             raise ValueError(f'Bot {bot_uuid} has no channel account binding')
+        return str(connector_id)
 
-        # Check conversation belongs to this channel account
+    async def _validate_conversation_belongs_to_bot(self, bot_uuid: str, conversation_id: int) -> None:
+        from .....entity.persistence import database_mode as persistence_database_mode
+        import sqlalchemy
+
+        connector_id = await self._get_bot_connector_id(bot_uuid)
+        if not await self._conversation_belongs_to_connector(conversation_id, connector_id):
+            raise ValueError(f'Conversation {conversation_id} does not belong to bot {bot_uuid}')
+
+    async def _conversation_belongs_to_connector(self, conversation_id: int, connector_id: str) -> bool:
+        from .....entity.persistence import database_mode as persistence_database_mode
+        import sqlalchemy
+
         conv_result = await self.ap.persistence_mgr.execute_async(
             sqlalchemy.select(persistence_database_mode.DatabaseConversation.id)
             .where(
                 persistence_database_mode.DatabaseConversation.id == conversation_id,
-                persistence_database_mode.DatabaseConversation.connector_id.like(f'%{channel_account_id}%')
+                persistence_database_mode.DatabaseConversation.connector_id == connector_id,
             )
         )
-        if conv_result.scalar() is None:
-            raise ValueError(f'Conversation {conversation_id} does not belong to bot {bot_uuid}')
+        return conv_result.scalar() is not None
+
+    async def _message_belongs_to_connector(self, message_id: int, connector_id: str) -> bool:
+        from .....entity.persistence import database_mode as persistence_database_mode
+        import sqlalchemy
+
+        result = await self.ap.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_database_mode.DatabaseMessage.id)
+            .join(
+                persistence_database_mode.DatabaseConversation,
+                persistence_database_mode.DatabaseMessage.conversation_id == persistence_database_mode.DatabaseConversation.id,
+            )
+            .where(
+                persistence_database_mode.DatabaseMessage.id == message_id,
+                persistence_database_mode.DatabaseConversation.connector_id == connector_id,
+            )
+        )
+        return result.scalar() is not None
 
     async def _validate_message_belongs_to_bot(self, bot_uuid: str, message_id: int) -> None:
         from .....entity.persistence import database_mode as persistence_database_mode

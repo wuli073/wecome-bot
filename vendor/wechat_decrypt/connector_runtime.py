@@ -361,4 +361,6 @@ def decrypt(connector: str, runtime_dir: str, database_list: list[str] | None = 
         error_code=errors.OK,
         runtime_dir=runtime["runtime_root"],
         decrypted_dir=runtime["decrypted_dir"],
+        stdout=script_result.get("stdout", ""),
+        stderr=script_result.get("stderr", ""),
     )

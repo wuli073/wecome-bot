@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 import langbot_plugin.api.entities.builtin.platform.message as platform_message
 import langbot_plugin.api.entities.builtin.platform.events as platform_events
 import langbot_plugin.api.entities.builtin.provider.session as provider_session
+import langbot_plugin.api.entities.builtin.pipeline.query as pipeline_query
 import langbot_plugin.api.definition.abstract.platform.adapter as abstract_platform_adapter
 
 if typing.TYPE_CHECKING:
@@ -127,18 +128,33 @@ class MessageAggregator:
         adapter: abstract_platform_adapter.AbstractMessagePlatformAdapter,
         pipeline_uuid: typing.Optional[str] = None,
         routed_by_rule: bool = False,
-    ) -> None:
+        process_immediately: bool = False,
+    ) -> pipeline_query.Query | None:
         """Add a message to the aggregation buffer
 
         If aggregation is disabled for the pipeline, the message is sent
         directly to the query pool. Otherwise, it's buffered and will be
         merged with other messages from the same session.
         """
+        if process_immediately:
+            return await self.ap.query_pool.add_query(
+                bot_uuid=bot_uuid,
+                launcher_type=launcher_type,
+                launcher_id=launcher_id,
+                sender_id=sender_id,
+                message_event=message_event,
+                message_chain=message_chain,
+                adapter=adapter,
+                pipeline_uuid=pipeline_uuid,
+                routed_by_rule=routed_by_rule,
+                reserved_for_immediate_processing=True,
+            )
+
         enabled, delay = await self._get_aggregation_config(pipeline_uuid)
 
         if not enabled:
             # Aggregation disabled, send directly to query pool
-            await self.ap.query_pool.add_query(
+            return await self.ap.query_pool.add_query(
                 bot_uuid=bot_uuid,
                 launcher_type=launcher_type,
                 launcher_id=launcher_id,
@@ -149,7 +165,6 @@ class MessageAggregator:
                 pipeline_uuid=pipeline_uuid,
                 routed_by_rule=routed_by_rule,
             )
-            return
 
         session_id = self._get_session_id(bot_uuid, launcher_type, launcher_id)
 
@@ -191,6 +206,8 @@ class MessageAggregator:
 
         if force_flush:
             await self._flush_buffer(session_id)
+
+        return None
 
     async def _delayed_flush(self, session_id: str, delay: float) -> None:
         """Wait for delay then flush the buffer"""

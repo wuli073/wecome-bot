@@ -563,7 +563,10 @@ export interface MCPServerRuntimeInfo {
   box_enabled?: boolean;
 }
 
-interface MCPServerCommon<TMode extends 'sse' | 'http' | 'remote' | 'stdio', TExtraArgs> {
+interface MCPServerCommon<
+  TMode extends 'sse' | 'http' | 'remote' | 'stdio',
+  TExtraArgs,
+> {
   uuid?: string;
   name: string;
   mode: TMode;
@@ -807,3 +810,6 @@ export interface ApiRespSkills {
 export interface ApiRespSkill {
   skill: Skill;
 }
+
+// Re-export Bot-scoped Database Mode API types
+export * from './bot-database';

@@ -10,6 +10,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -120,6 +121,61 @@ def run_with_sqlite_retry(operation):
                 raise
             time.sleep(delay_seconds)
     return operation()
+
+
+def compact_json(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def summarize_snapshot_changes(
+    previous: dict[str, dict[str, int]],
+    current: dict[str, dict[str, int]],
+) -> tuple[list[str], int, int]:
+    changed_files: list[str] = []
+    source_db_count = 0
+    source_bytes = 0
+    for file_name in MONITORED_FILES:
+        snapshot = current.get(file_name) or {"exists": 0, "size": 0, "mtime_ns": 0}
+        if file_name.endswith(".db") and int(snapshot.get("exists", 0)):
+            source_db_count += 1
+        source_bytes += int(snapshot.get("size", 0) or 0)
+        if previous.get(file_name) != current.get(file_name):
+            changed_files.append(file_name)
+    return changed_files, source_db_count, source_bytes
+
+
+def parse_decrypt_metrics(decrypt_result: dict) -> list[dict]:
+    metrics: list[dict] = []
+    for line in str(decrypt_result.get("stdout") or "").splitlines():
+        if not line.startswith("WXWORK_DECRYPT_METRIC "):
+            continue
+        raw = line.removeprefix("WXWORK_DECRYPT_METRIC ").strip()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            metrics.append(parsed)
+    return metrics
+
+
+def decrypt_metrics_summary(decrypt_result: dict) -> dict:
+    metrics = parse_decrypt_metrics(decrypt_result)
+    return {
+        "decrypt_db_count": len(metrics),
+        "decrypt_bytes": sum(int(item.get("output_bytes") or 0) for item in metrics),
+        "copied_bytes": sum(int(item.get("copied_bytes") or 0) for item in metrics),
+        "decrypt_metrics": metrics,
+    }
+
+
+def log_latency_stage(stage: str, **payload) -> None:
+    safe_payload = {
+        "stage": stage,
+        "at": utcnow_iso(),
+        **{key: value for key, value in payload.items() if value is not None},
+    }
+    log_info("latency_stage " + compact_json(safe_payload))
 
 
 def is_source_refresh_stale(
@@ -524,7 +580,7 @@ def wait_for_stable_snapshot(
         current_snapshot = snapshot_files(db_dir)
         if current_snapshot == candidate_snapshot:
             consecutive_matches += 1
-            if current_snapshot != initial_snapshot and consecutive_matches >= required_matches:
+            if consecutive_matches >= required_matches:
                 return {"snapshot": current_snapshot, "stable": True}
         else:
             candidate_snapshot = current_snapshot
@@ -685,6 +741,15 @@ def scan_and_enqueue(
     refresh_targets: list[str] | None = None,
     base_timings: dict[str, str | None] | None = None,
 ) -> dict[str, object]:
+    poll_id = str((base_timings or {}).get("poll_id") or uuid.uuid4())
+    cursor = load_monitor_cursor(store)
+    log_latency_stage(
+        "decrypt_started",
+        poll_id=poll_id,
+        refresh_targets=refresh_targets,
+        cursor_before=cursor,
+        **{key: value for key, value in (base_timings or {}).items() if key != "poll_id"},
+    )
     decrypt_started_at = utcnow_iso()
     decrypt_result = run_with_sqlite_retry(
         lambda: refresh_decrypted_cache(runtime_dir, database_list=refresh_targets)
@@ -698,7 +763,21 @@ def scan_and_enqueue(
     if not decrypt_ok:
         raise RuntimeError(str(decrypt_error_message or "Decrypt refresh failed"))
     decrypt_completed_at = utcnow_iso()
-    cursor = load_monitor_cursor(store)
+    decrypt_summary = decrypt_metrics_summary(decrypt_result if isinstance(decrypt_result, dict) else {})
+    log_latency_stage(
+        "decrypt_completed",
+        poll_id=poll_id,
+        refresh_targets=refresh_targets,
+        elapsed_ms=duration_ms(decrypt_started_at, decrypt_completed_at),
+        **decrypt_summary,
+    )
+    log_latency_stage(
+        "query_started",
+        poll_id=poll_id,
+        cursor_before=cursor,
+        scan_limit=scan_limit,
+        lookback_seconds=DEFAULT_MONITOR_LOOKBACK_SECONDS,
+    )
     scanned_messages = run_with_sqlite_retry(
         lambda: wxwork_query.get_messages_for_monitor(
             limit=scan_limit,
@@ -716,13 +795,32 @@ def scan_and_enqueue(
         for key, value in (base_timings or {}).items():
             if key in timings and value:
                 timings[key] = value
+        payload["poll_id"] = poll_id
         timings["decrypt_started_at"] = decrypt_started_at
         timings["decrypt_completed_at"] = decrypt_completed_at
         timings["scan_completed_at"] = scan_completed_at
         if store.record_seen_and_enqueue(event_id, message_key, payload):
             new_messages += 1
+            log_latency_stage(
+                "new_row_first_visible",
+                poll_id=poll_id,
+                event_id=event_id,
+                message_key_hash=hash_prefix(message_key),
+                rows_scanned=index,
+                new_rows=new_messages,
+                cursor_before=cursor,
+            )
             log_stage(message_key, "outbox_created_at", timings, scanned_count=index, new_count=new_messages)
         latest_cursor = latest_cursor or build_monitor_cursor(message)
+    log_latency_stage(
+        "query_completed",
+        poll_id=poll_id,
+        rows_scanned=len(scanned_messages),
+        new_rows=new_messages,
+        cursor_before=cursor,
+        cursor_after=latest_cursor,
+        elapsed_ms=duration_ms(decrypt_completed_at, scan_completed_at),
+    )
     if new_messages:
         store.set_state("last_event_at", utcnow_iso())
     if latest_cursor is not None:
@@ -734,6 +832,7 @@ def scan_and_enqueue(
         "decrypt_started_at": decrypt_started_at,
         "decrypt_completed_at": decrypt_completed_at,
         "scan_completed_at": scan_completed_at,
+        "poll_id": poll_id,
     }
 
 
@@ -842,6 +941,7 @@ def execute_monitor_iteration(
     immediate_reruns_remaining: int,
     poll_interval_ms: int,
 ) -> dict[str, object]:
+    poll_id = str(uuid.uuid4())
     started_monotonic = monotonic_seconds()
     rows_scanned = 0
     new_rows = 0
@@ -853,7 +953,7 @@ def execute_monitor_iteration(
     store.set_state("last_scan_at", utcnow_iso())
     store.set_state("poll_interval_ms", poll_interval_ms)
     store.set_state("poll_seconds", max(1, int((poll_interval_ms + 999) / 1000)))
-    log_info(f"poll_started poll_interval_ms={poll_interval_ms}")
+    log_info(f"poll_started poll_id={poll_id} poll_interval_ms={poll_interval_ms}")
 
     try:
         current_snapshot = run_with_sqlite_retry(lambda: snapshot_files(db_dir))
@@ -861,6 +961,23 @@ def execute_monitor_iteration(
         force_stale_refresh = not changed and is_source_refresh_stale(store.get_state("last_refresh_completed_at"))
         if changed:
             file_change_detected_at = utcnow_iso()
+            changed_files, source_db_count, source_bytes = summarize_snapshot_changes(previous_snapshot, current_snapshot)
+            log_latency_stage(
+                "source_signature_changed",
+                poll_id=poll_id,
+                poll_interval_ms=poll_interval_ms,
+                scan_reason="signature_changed",
+                changed_files=changed_files,
+                source_db_count=source_db_count,
+                source_bytes=source_bytes,
+            )
+            log_latency_stage(
+                "source_snapshot_copy_started",
+                poll_id=poll_id,
+                poll_interval_ms=poll_interval_ms,
+                scan_reason="signature_changed",
+                changed_files=changed_files,
+            )
             stable_result = wait_for_stable_snapshot(
                 db_dir,
                 current_snapshot,
@@ -870,6 +987,30 @@ def execute_monitor_iteration(
             )
             stable_snapshot = stable_result["snapshot"]
             refresh_targets = determine_refresh_targets(previous_snapshot, stable_snapshot)
+            stable_changed_files, stable_source_db_count, stable_source_bytes = summarize_snapshot_changes(
+                previous_snapshot,
+                stable_snapshot,
+            )
+            log_latency_stage(
+                "source_snapshot_copy_completed",
+                poll_id=poll_id,
+                poll_interval_ms=poll_interval_ms,
+                scan_reason="signature_changed",
+                changed_files=stable_changed_files,
+                source_db_count=stable_source_db_count,
+                source_bytes=stable_source_bytes,
+                stable=stable_result.get("stable"),
+            )
+            log_latency_stage(
+                "wal_shm_sync_started",
+                poll_id=poll_id,
+                changed_files=[name for name in stable_changed_files if name.endswith(("-wal", "-shm"))],
+            )
+            log_latency_stage(
+                "wal_shm_sync_completed",
+                poll_id=poll_id,
+                changed_files=[name for name in stable_changed_files if name.endswith(("-wal", "-shm"))],
+            )
             next_previous_snapshot = stable_snapshot
             store.save_file_snapshots(stable_snapshot)
             store.set_state("last_change_at", file_change_detected_at)
@@ -883,6 +1024,7 @@ def execute_monitor_iteration(
                     scan_limit,
                     refresh_targets=refresh_targets,
                     base_timings={
+                        "poll_id": poll_id,
                         "file_change_detected_at": file_change_detected_at,
                         "stability_completed_at": utcnow_iso(),
                     },
@@ -920,12 +1062,23 @@ def execute_monitor_iteration(
                 next_immediate_reruns_remaining = 1
         elif force_stale_refresh:
             staleness_refresh_started_at = utcnow_iso()
+            changed_files, source_db_count, source_bytes = summarize_snapshot_changes(previous_snapshot, current_snapshot)
+            log_latency_stage(
+                "source_signature_changed",
+                poll_id=poll_id,
+                poll_interval_ms=poll_interval_ms,
+                scan_reason="staleness",
+                changed_files=changed_files,
+                source_db_count=source_db_count,
+                source_bytes=source_bytes,
+            )
             result = run_refresh_cycle(
                 store,
                 runtime_dir,
                 scan_limit,
                 refresh_targets=STALE_REFRESH_TARGETS,
                 base_timings={
+                    "poll_id": poll_id,
                     "file_change_detected_at": staleness_refresh_started_at,
                 },
             )
@@ -956,7 +1109,7 @@ def execute_monitor_iteration(
     elapsed_ms = int((monotonic_seconds() - started_monotonic) * 1000)
     log_info(
         "poll_completed "
-        f"poll_interval_ms={poll_interval_ms} rows_scanned={rows_scanned} "
+        f"poll_id={poll_id} poll_interval_ms={poll_interval_ms} rows_scanned={rows_scanned} "
         f"new_rows={new_rows} elapsed_ms={elapsed_ms}"
     )
     return {

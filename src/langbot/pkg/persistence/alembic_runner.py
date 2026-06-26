@@ -7,6 +7,7 @@ Usage from async code:
 CLI usage (autogenerate):
     python -m langbot.pkg.persistence.alembic_runner autogenerate "add description column"
     python -m langbot.pkg.persistence.alembic_runner upgrade
+    python -m langbot.pkg.persistence.alembic_runner downgrade
     python -m langbot.pkg.persistence.alembic_runner current
 """
 
@@ -15,13 +16,13 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-from alembic.config import Config
 from alembic import command
+from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncEngine
     from sqlalchemy.engine import Connection
+    from sqlalchemy.ext.asyncio import AsyncEngine
 
 
 _ALEMBIC_DIR = os.path.join(os.path.dirname(__file__), 'alembic')
@@ -36,13 +37,19 @@ def _build_config(connection: Connection) -> Config:
 
 
 def _do_upgrade(connection: Connection, revision: str = 'head') -> None:
-    """Synchronous upgrade — runs inside run_sync."""
+    """Synchronous upgrade - runs inside run_sync."""
     cfg = _build_config(connection)
     command.upgrade(cfg, revision)
 
 
+def _do_downgrade(connection: Connection, revision: str = '-1') -> None:
+    """Synchronous downgrade - runs inside run_sync."""
+    cfg = _build_config(connection)
+    command.downgrade(cfg, revision)
+
+
 def _do_stamp(connection: Connection, revision: str = 'head') -> None:
-    """Synchronous stamp — runs inside run_sync."""
+    """Synchronous stamp - runs inside run_sync."""
     cfg = _build_config(connection)
     command.stamp(cfg, revision)
 
@@ -54,7 +61,7 @@ def _do_get_current(connection: Connection) -> str | None:
 
 
 def _do_autogenerate(connection: Connection, message: str = 'auto migration') -> None:
-    """Synchronous autogenerate — runs inside run_sync."""
+    """Synchronous autogenerate - runs inside run_sync."""
     cfg = _build_config(connection)
     command.revision(cfg, message=message, autogenerate=True)
 
@@ -63,6 +70,13 @@ async def run_alembic_upgrade(async_engine: AsyncEngine, revision: str = 'head')
     """Run Alembic upgrade to the given revision."""
     async with async_engine.connect() as conn:
         await conn.run_sync(_do_upgrade, revision)
+        await conn.commit()
+
+
+async def run_alembic_downgrade(async_engine: AsyncEngine, revision: str = '-1') -> None:
+    """Run Alembic downgrade to the given revision."""
+    async with async_engine.connect() as conn:
+        await conn.run_sync(_do_downgrade, revision)
         await conn.commit()
 
 
@@ -87,8 +101,8 @@ async def run_alembic_autogenerate(async_engine: AsyncEngine, message: str = 'au
 
 # CLI entrypoint: python -m langbot.pkg.persistence.alembic_runner <command> [args]
 if __name__ == '__main__':
-    import sys
     import asyncio
+    import sys
 
     def _get_engine():
         """Create engine from data/config.yaml or default SQLite."""
@@ -119,10 +133,11 @@ if __name__ == '__main__':
         if len(sys.argv) < 2:
             print('Usage: python -m langbot.pkg.persistence.alembic_runner <command> [args]')
             print('Commands:')
-            print('  autogenerate "message"  — Generate migration from ORM model diff')
-            print('  upgrade [revision]      — Upgrade database (default: head)')
-            print('  stamp [revision]        — Stamp revision without running (default: head)')
-            print('  current                 — Show current revision')
+            print('  autogenerate "message"  - Generate migration from ORM model diff')
+            print('  upgrade [revision]      - Upgrade database (default: head)')
+            print('  downgrade [revision]    - Downgrade database (default: -1)')
+            print('  stamp [revision]        - Stamp revision without running (default: head)')
+            print('  current                 - Show current revision')
             sys.exit(1)
 
         cmd = sys.argv[1]
@@ -136,6 +151,10 @@ if __name__ == '__main__':
             rev = sys.argv[2] if len(sys.argv) > 2 else 'head'
             asyncio.run(run_alembic_upgrade(engine, rev))
             print(f'Upgraded to: {rev}')
+        elif cmd == 'downgrade':
+            rev = sys.argv[2] if len(sys.argv) > 2 else '-1'
+            asyncio.run(run_alembic_downgrade(engine, rev))
+            print(f'Downgraded to: {rev}')
         elif cmd == 'stamp':
             rev = sys.argv[2] if len(sys.argv) > 2 else 'head'
             asyncio.run(run_alembic_stamp(engine, rev))

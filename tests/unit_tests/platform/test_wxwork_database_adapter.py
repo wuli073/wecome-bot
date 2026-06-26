@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -70,3 +71,81 @@ async def test_wxwork_database_adapter_reply_message_returns_final_draft_payload
     assert result['status'] == 'draft_ready'
     assert result['content'] == 'pipeline draft'
     assert result['is_final'] is True
+
+
+@pytest.mark.asyncio
+async def test_wxwork_database_adapter_captures_non_stream_reply_without_real_send():
+    logger = DummyEventLogger()
+    adapter = WXWorkDatabaseAdapter(config={'connector_id': 'wxwork-local'}, logger=logger)
+    source = SimpleNamespace()
+
+    with adapter.capture_draft_output(run_id=1, query_id=2, message_id=3) as capture:
+        result = await adapter.reply_message(source, _build_message_chain('captured draft'))
+
+    assert result['status'] == 'draft_ready'
+    assert result['content'] == 'captured draft'
+    assert capture.completed is True
+    assert capture.reply_called is True
+    assert capture.reply_chunk_called is False
+    assert capture.chunk_count == 0
+    assert capture.final_received is True
+    assert capture.text == 'captured draft'
+
+
+@pytest.mark.asyncio
+async def test_wxwork_database_adapter_captures_stream_chunks_until_final():
+    logger = DummyEventLogger()
+    adapter = WXWorkDatabaseAdapter(config={'connector_id': 'wxwork-local'}, logger=logger)
+    source = SimpleNamespace()
+
+    with adapter.capture_draft_output(run_id=11, query_id=22, message_id=33) as capture:
+        first = await adapter.reply_message_chunk(
+            source,
+            bot_message={'id': 'resp-1'},
+            message=_build_message_chain('chunk-1'),
+            is_final=False,
+        )
+        second = await adapter.reply_message_chunk(
+            source,
+            bot_message={'id': 'resp-1'},
+            message=_build_message_chain('chunk-2'),
+            is_final=False,
+        )
+        final = await adapter.reply_message_chunk(
+            source,
+            bot_message={'id': 'resp-1'},
+            message=_build_message_chain('chunk-3'),
+            is_final=True,
+        )
+
+    assert first['is_final'] is False
+    assert second['is_final'] is False
+    assert final['is_final'] is True
+    assert capture.reply_called is False
+    assert capture.reply_chunk_called is True
+    assert capture.chunk_count == 3
+    assert capture.final_received is True
+    assert capture.completed is True
+    assert capture.text == 'chunk-1chunk-2chunk-3'
+
+
+@pytest.mark.asyncio
+async def test_wxwork_database_adapter_capture_is_isolated_per_concurrent_task():
+    logger = DummyEventLogger()
+    adapter = WXWorkDatabaseAdapter(config={'connector_id': 'wxwork-local'}, logger=logger)
+    source = SimpleNamespace()
+
+    async def _run_capture(run_id: int, text: str) -> str:
+        with adapter.capture_draft_output(run_id=run_id, query_id=run_id, message_id=run_id) as capture:
+            await asyncio.sleep(0)
+            await adapter.reply_message(source, _build_message_chain(text))
+            await asyncio.sleep(0)
+            return capture.text
+
+    left, right = await asyncio.gather(
+        _run_capture(101, 'left draft'),
+        _run_capture(202, 'right draft'),
+    )
+
+    assert left == 'left draft'
+    assert right == 'right draft'

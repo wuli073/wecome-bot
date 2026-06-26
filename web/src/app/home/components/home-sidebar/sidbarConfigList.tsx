@@ -82,19 +82,6 @@ export const sidebarConfigList = [
     },
     section: 'home',
   }),
-  new SidebarChildVO({
-    id: 'database-mode',
-    name: t('databaseMode.title'),
-    icon: <Database className="text-blue-500" />,
-    route: '/home/database-mode',
-    description: t('databaseMode.description'),
-    helpLink: {
-      en_US: '',
-      zh_Hans: '',
-      ja_JP: '',
-    },
-    section: 'home',
-  }),
   // ── Extensions section ──
   new SidebarChildVO({
     id: 'plugins',

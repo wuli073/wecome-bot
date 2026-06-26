@@ -176,6 +176,29 @@ def test_wait_for_stable_snapshot_requires_two_identical_checks(monkeypatch):
     assert sleeps == [0.25, 0.25, 0.25]
 
 
+def test_wait_for_stable_snapshot_accepts_initial_snapshot_when_already_stable(monkeypatch):
+    import wxwork_message_monitor as monitor
+
+    changed = {name: {"exists": 1, "size": 10, "mtime_ns": 10} for name in monitor.MONITORED_FILES}
+    snapshots = iter([changed, changed])
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(monitor, "snapshot_files", lambda _db_dir: next(snapshots))
+    monkeypatch.setattr(monitor.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = monitor.wait_for_stable_snapshot(
+        "C:\\fake-db",
+        changed,
+        stability_checks=2,
+        stability_interval_ms=250,
+        max_stability_wait_ms=1_000,
+    )
+
+    assert result["snapshot"] == changed
+    assert result["stable"] is True
+    assert sleeps == [0.25, 0.25]
+
+
 def test_wait_for_stable_snapshot_stops_at_max_wait(monkeypatch):
     import wxwork_message_monitor as monitor
 
