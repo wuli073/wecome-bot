@@ -1,24 +1,51 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 
-export default defineConfig({
-  plugins: [react()],
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-    },
-  },
-  server: {
-    port: 3000,
-    proxy: {
-      '/api': {
-        target: 'http://127.0.0.1:5300',
-        changeOrigin: false,
+function resolveApiBaseUrl(mode: string) {
+  const env = loadEnv(mode, process.cwd(), '');
+  const apiBaseUrl = env.VITE_API_BASE_URL?.trim();
+
+  if (!apiBaseUrl) {
+    throw new Error('Missing VITE_API_BASE_URL. Configure it in web/.env.');
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(apiBaseUrl);
+  } catch {
+    throw new Error(`Invalid VITE_API_BASE_URL: ${apiBaseUrl}`);
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error(`VITE_API_BASE_URL must use http or https: ${apiBaseUrl}`);
+  }
+
+  return parsed.origin;
+}
+
+export default defineConfig(({ mode }) => {
+  const apiBaseUrl = resolveApiBaseUrl(mode);
+
+  return {
+    plugins: [react()],
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, './src'),
       },
     },
-  },
-  build: {
-    outDir: 'dist',
-  },
+    server: {
+      port: 3000,
+      strictPort: true,
+      proxy: {
+        '/api': {
+          target: apiBaseUrl,
+          changeOrigin: false,
+        },
+      },
+    },
+    build: {
+      outDir: 'dist',
+    },
+  };
 });

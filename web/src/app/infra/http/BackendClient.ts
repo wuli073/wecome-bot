@@ -1039,6 +1039,12 @@ export class BackendClient extends BaseHttpClient {
     );
   }
 
+  public deleteDatabaseModeDraft(
+    messageId: number,
+  ): Promise<ApiRespDatabaseModeMessage> {
+    return this.delete(`/api/v1/database-mode/messages/${messageId}/draft`);
+  }
+
   public processDatabaseModeMessage(
     messageId: number,
   ): Promise<ApiRespDatabaseModeMessage> {
@@ -1687,6 +1693,16 @@ export class BackendClient extends BaseHttpClient {
     content: string,
   ): Promise<import('@/app/infra/entities/api').ApiRespUpdateDraft> {
     return this.put(`/api/v1/bots/${botId}/drafts/${draftId}`, { content });
+  }
+
+  /**
+   * Delete a persisted draft reply
+   */
+  public deleteBotDraft(
+    botId: string,
+    draftId: string,
+  ): Promise<import('@/app/infra/entities/api').ApiRespUpdateDraft> {
+    return this.delete(`/api/v1/bots/${botId}/drafts/${draftId}`);
   }
 
   /**

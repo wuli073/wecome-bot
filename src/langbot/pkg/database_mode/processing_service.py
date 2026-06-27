@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import logging
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import sqlalchemy
@@ -34,6 +35,22 @@ MESSAGE_STATUS_PENDING = 'pending'
 MESSAGE_STATUS_DRAFT_READY = 'draft_ready'
 MESSAGE_STATUS_PROCESSING = 'processing'
 MESSAGE_STATUS_FAILED = 'failed'
+
+DEFAULT_PROCESSING_RUN_STALE_SECONDS = 300
+DEFAULT_DRAFT_GENERATION_TIMEOUT_SECONDS = 120
+
+STALE_PROCESSING_RUN_ERROR = 'Stale processing run recovered after timeout'
+MISSING_ACTIVE_DRAFT_ERROR = 'Succeeded processing run had no active draft'
+DRAFT_GENERATION_CANCELLED_ERROR = 'Draft generation was cancelled'
+DRAFT_GENERATION_TIMEOUT_ERROR = 'Draft generation timed out'
+
+
+@dataclass
+class ProcessingClaimResult:
+    status: str
+    run_id: int | None = None
+    run: object | None = None
+    draft: object | None = None
 
 
 class DatabaseModeProcessingService:
@@ -107,18 +124,31 @@ class DatabaseModeProcessingService:
         run_id = None
         pipeline_uuid = None
         try:
-            run_id = await self._atomic_claim_processing(message_id, bot_uuid, trigger)
-            if run_id is None:
-                existing_run = await self._get_latest_run(message_id, bot_uuid)
-                if existing_run and existing_run.status == RUN_STATUS_SUCCEEDED:
-                    existing_draft = await self._get_active_draft(message_id, bot_uuid)
-                    if existing_draft:
-                        return {
-                            'status': 'already_succeeded',
-                            'draft': self._serialize_draft(existing_draft),
-                            'run': self._serialize_run(existing_run),
-                        }
-                return {'status': 'processing', 'message': 'Another processing is in progress'}
+            claim_result = await self._atomic_claim_processing(message_id, bot_uuid, trigger)
+            if claim_result.status == 'already_succeeded':
+                return {
+                    'status': 'already_succeeded',
+                    'draft': self._serialize_draft(claim_result.draft),
+                    'run': self._serialize_run(claim_result.run),
+                }
+            if claim_result.status == 'already_processing':
+                return {
+                    'status': 'processing',
+                    'message_id': message_id,
+                    'message': 'Draft generation is already in progress',
+                    'run': self._serialize_run(claim_result.run),
+                }
+            if claim_result.status == 'claim_conflict':
+                return {
+                    'status': 'claim_conflict',
+                    'message_id': message_id,
+                    'message': 'Draft generation claim conflicted with another request',
+                    'run': self._serialize_run(claim_result.run) if claim_result.run is not None else None,
+                }
+            if claim_result.status not in {'claimed', 'stale_recovered'} or claim_result.run_id is None:
+                raise RuntimeError(f'Unexpected processing claim result: {claim_result.status}')
+
+            run_id = claim_result.run_id
 
             await self._safe_publish_message_event(
                 conversation_id=int(message.conversation_id),
@@ -201,22 +231,28 @@ class DatabaseModeProcessingService:
                     message_id=message_id,
                 ) as capture:
                     adapter_capture = capture
-                    final_query = await runtime_bot.process_message_event_now(
-                        message_event,
-                        adapter=runtime_bot.adapter,
-                        pipeline_uuid_override=pipeline_uuid,
-                        routed_by_rule_override=routed_by_rule,
+                    final_query = await asyncio.wait_for(
+                        runtime_bot.process_message_event_now(
+                            message_event,
+                            adapter=runtime_bot.adapter,
+                            pipeline_uuid_override=pipeline_uuid,
+                            routed_by_rule_override=routed_by_rule,
+                        ),
+                        timeout=self._get_draft_generation_timeout_seconds(),
                     )
                     query = final_query
                     if query is None:
                         raise ValueError(f'Pipeline {pipeline_uuid} was skipped before query creation')
                     capture.query_id = getattr(query, 'query_id', None)
             else:
-                final_query = await runtime_bot.process_message_event_now(
-                    message_event,
-                    adapter=runtime_bot.adapter,
-                    pipeline_uuid_override=pipeline_uuid,
-                    routed_by_rule_override=routed_by_rule,
+                final_query = await asyncio.wait_for(
+                    runtime_bot.process_message_event_now(
+                        message_event,
+                        adapter=runtime_bot.adapter,
+                        pipeline_uuid_override=pipeline_uuid,
+                        routed_by_rule_override=routed_by_rule,
+                    ),
+                    timeout=self._get_draft_generation_timeout_seconds(),
                 )
                 query = final_query
                 if query is None:
@@ -286,40 +322,41 @@ class DatabaseModeProcessingService:
                 'run': self._serialize_run(run),
             }
 
-        except Exception as exc:
-            original_exc = exc
+        except asyncio.CancelledError:
             if run_id is not None:
-                try:
-                    async with self._transaction() as conn:
-                        await self._mark_run_failed(
-                            run_id,
-                            str(original_exc),
-                            pipeline_uuid=pipeline_uuid,
-                            conn=conn,
-                        )
-                        await self._update_message_failed(
-                            message_id,
-                            str(original_exc),
-                            conn=conn,
-                        )
-                except Exception:
-                    self._log_exception('Failed to persist database draft failure state')
-
-            try:
-                await self._publish_message_event(
-                    conversation_id=int(message.conversation_id),
-                    message_id=message_id,
-                    metadata={
-                        'processing_status': MESSAGE_STATUS_FAILED,
-                        'bot_uuid': bot_uuid,
-                        'run_id': run_id,
-                        'last_error': self._safe_error_text(str(original_exc)),
-                    },
+                await asyncio.shield(
+                    self._finalize_failed_processing(
+                        run_id=run_id,
+                        message_id=message_id,
+                        conversation_id=int(message.conversation_id),
+                        bot_uuid=bot_uuid,
+                        error_text=DRAFT_GENERATION_CANCELLED_ERROR,
+                        pipeline_uuid=pipeline_uuid,
+                    )
                 )
-            except Exception:
-                self._log_exception('Failed to publish database draft failure event')
-
-            raise original_exc
+            raise
+        except asyncio.TimeoutError:
+            if run_id is not None:
+                await self._finalize_failed_processing(
+                    run_id=run_id,
+                    message_id=message_id,
+                    conversation_id=int(message.conversation_id),
+                    bot_uuid=bot_uuid,
+                    error_text=DRAFT_GENERATION_TIMEOUT_ERROR,
+                    pipeline_uuid=pipeline_uuid,
+                )
+            raise
+        except Exception as exc:
+            if run_id is not None:
+                await self._finalize_failed_processing(
+                    run_id=run_id,
+                    message_id=message_id,
+                    conversation_id=int(message.conversation_id),
+                    bot_uuid=bot_uuid,
+                    error_text=str(exc),
+                    pipeline_uuid=pipeline_uuid,
+                )
+            raise
 
     def _resolve_pipeline_final_query(self, *, original_query, pipeline_result, fallback_query=None):
         # Some direct/unit-tested pipeline implementations return a stage-like
@@ -541,40 +578,118 @@ class DatabaseModeProcessingService:
         trace = query.variables.get('_stage_trace')
         return trace if isinstance(trace, list) else []
 
-    async def _atomic_claim_processing(self, message_id: int, bot_uuid: str, trigger: str) -> int | None:
+    async def _atomic_claim_processing(
+        self,
+        message_id: int,
+        bot_uuid: str,
+        trigger: str,
+    ) -> ProcessingClaimResult:
         try:
             async with self._transaction() as conn:
                 existing_run = await self._get_latest_run(message_id, bot_uuid, conn=conn)
-                if existing_run is not None and existing_run.status in {
-                    RUN_STATUS_PROCESSING,
-                    RUN_STATUS_SUCCEEDED,
-                }:
-                    return None
-
-                attempt_count = 1
                 if existing_run is not None:
-                    attempt_count = int(existing_run.attempt_count or 0) + 1
+                    if existing_run.status == RUN_STATUS_PROCESSING:
+                        if not self._is_processing_run_stale(existing_run):
+                            return ProcessingClaimResult(
+                                status='already_processing',
+                                run=existing_run,
+                                run_id=int(existing_run.id),
+                            )
+                        await self._mark_run_failed(
+                            int(existing_run.id),
+                            STALE_PROCESSING_RUN_ERROR,
+                            pipeline_uuid=getattr(existing_run, 'pipeline_uuid', None),
+                            conn=conn,
+                        )
+                        await self._mark_message_failed_if_processing(
+                            message_id,
+                            STALE_PROCESSING_RUN_ERROR,
+                            conn=conn,
+                        )
+                    elif existing_run.status == RUN_STATUS_SUCCEEDED:
+                        existing_draft = await self._get_active_draft(message_id, bot_uuid, conn=conn)
+                        if existing_draft is not None:
+                            return ProcessingClaimResult(
+                                status='already_succeeded',
+                                run=existing_run,
+                                draft=existing_draft,
+                                run_id=int(existing_run.id),
+                            )
+                        await self._mark_run_failed(
+                            int(existing_run.id),
+                            MISSING_ACTIVE_DRAFT_ERROR,
+                            pipeline_uuid=getattr(existing_run, 'pipeline_uuid', None),
+                            conn=conn,
+                        )
 
-                result = await conn.execute(
-                    sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values({
-                        'message_id': message_id,
-                        'bot_uuid': bot_uuid,
-                        'pipeline_uuid': None,
-                        'trigger': trigger,
-                        'status': RUN_STATUS_PROCESSING,
-                        'attempt_count': attempt_count,
-                        'started_at': self._utcnow(),
-                        'completed_at': None,
-                        'last_error': None,
-                    })
+                attempt_count = int(existing_run.attempt_count or 0) + 1 if existing_run is not None else 1
+                run_id = await self._insert_processing_run(
+                    message_id=message_id,
+                    bot_uuid=bot_uuid,
+                    trigger=trigger,
+                    attempt_count=attempt_count,
+                    conn=conn,
                 )
                 await self._update_message_processing(message_id, attempt_count=attempt_count, conn=conn)
-                inserted_primary_key = getattr(result, 'inserted_primary_key', None) or ()
-                if inserted_primary_key:
-                    return int(inserted_primary_key[0])
-                return int(result.lastrowid)
-        except IntegrityError:
-            return None
+                return ProcessingClaimResult(
+                    status='stale_recovered'
+                    if existing_run is not None and existing_run.status == RUN_STATUS_PROCESSING
+                    else 'claimed',
+                    run_id=run_id,
+                )
+        except IntegrityError as exc:
+            logger = getattr(self.ap, 'logger', None)
+            if logger is not None and hasattr(logger, 'warning'):
+                logger.warning(
+                    {
+                        'event': 'database_mode_processing_claim_integrity_error',
+                        'message_id': message_id,
+                        'bot_uuid': bot_uuid,
+                        'error': self._safe_error_text(str(exc)),
+                    }
+                )
+            active_run = await self._get_active_processing_run(message_id, bot_uuid)
+            if active_run is None:
+                raise
+            if self._is_processing_run_stale(active_run):
+                return ProcessingClaimResult(
+                    status='claim_conflict',
+                    run=active_run,
+                    run_id=int(active_run.id),
+                )
+            return ProcessingClaimResult(
+                status='already_processing',
+                run=active_run,
+                run_id=int(active_run.id),
+            )
+
+    async def _insert_processing_run(
+        self,
+        *,
+        message_id: int,
+        bot_uuid: str,
+        trigger: str,
+        attempt_count: int,
+        conn=None,
+    ) -> int:
+        result = await self._execute(
+            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values({
+                'message_id': message_id,
+                'bot_uuid': bot_uuid,
+                'pipeline_uuid': None,
+                'trigger': trigger,
+                'status': RUN_STATUS_PROCESSING,
+                'attempt_count': attempt_count,
+                'started_at': self._utcnow(),
+                'completed_at': None,
+                'last_error': None,
+            }),
+            conn=conn,
+        )
+        inserted_primary_key = getattr(result, 'inserted_primary_key', None) or ()
+        if inserted_primary_key:
+            return int(inserted_primary_key[0])
+        return int(result.lastrowid)
 
     async def _update_run_pipeline(self, run_id: int, pipeline_uuid: str, *, conn=None) -> None:
         await self._execute(
@@ -738,6 +853,21 @@ class DatabaseModeProcessingService:
             conn=conn,
         )
 
+    async def _mark_message_failed_if_processing(self, message_id: int, error: str, *, conn=None) -> None:
+        await self._execute(
+            sqlalchemy.update(persistence_database_mode.DatabaseMessage)
+            .where(
+                persistence_database_mode.DatabaseMessage.id == message_id,
+                persistence_database_mode.DatabaseMessage.status == MESSAGE_STATUS_PROCESSING,
+            )
+            .values({
+                'status': MESSAGE_STATUS_FAILED,
+                'last_error': self._safe_error_text(error),
+                'updated_at': self._utcnow(),
+            }),
+            conn=conn,
+        )
+
     async def _get_latest_run(self, message_id: int, bot_uuid: str, *, conn=None):
         return await self._fetch_namespace_one(
             self._select_model_columns(persistence_database_mode.MessageProcessingRun)
@@ -758,6 +888,20 @@ class DatabaseModeProcessingService:
                 persistence_database_mode.ReplyDraft.bot_uuid == bot_uuid,
                 persistence_database_mode.ReplyDraft.status == DRAFT_STATUS_ACTIVE,
             )
+            .limit(1),
+            conn=conn,
+        )
+
+    async def _get_active_processing_run(self, message_id: int, bot_uuid: str, *, conn=None):
+        return await self._fetch_namespace_one(
+            self._select_model_columns(persistence_database_mode.MessageProcessingRun)
+            .where(
+                persistence_database_mode.MessageProcessingRun.message_id == message_id,
+                persistence_database_mode.MessageProcessingRun.bot_uuid == bot_uuid,
+                persistence_database_mode.MessageProcessingRun.status == RUN_STATUS_PROCESSING,
+                persistence_database_mode.MessageProcessingRun.completed_at.is_(None),
+            )
+            .order_by(persistence_database_mode.MessageProcessingRun.id.desc())
             .limit(1),
             conn=conn,
         )
@@ -887,6 +1031,79 @@ class DatabaseModeProcessingService:
         except Exception:
             self._log_exception('Failed to publish database draft event')
 
+    async def _finalize_failed_processing(
+        self,
+        *,
+        run_id: int,
+        message_id: int,
+        conversation_id: int,
+        bot_uuid: str,
+        error_text: str,
+        pipeline_uuid: str | None = None,
+    ) -> None:
+        try:
+            async with self._transaction() as conn:
+                await self._mark_run_failed(
+                    run_id,
+                    error_text,
+                    pipeline_uuid=pipeline_uuid,
+                    conn=conn,
+                )
+                await self._update_message_failed(
+                    message_id,
+                    error_text,
+                    conn=conn,
+                )
+        except Exception:
+            self._log_exception('Failed to persist database draft failure state')
+
+        try:
+            await self._publish_message_event(
+                conversation_id=conversation_id,
+                message_id=message_id,
+                metadata={
+                    'processing_status': MESSAGE_STATUS_FAILED,
+                    'bot_uuid': bot_uuid,
+                    'run_id': run_id,
+                    'last_error': self._safe_error_text(error_text),
+                },
+            )
+        except Exception:
+            self._log_exception('Failed to publish database draft failure event')
+
+    async def reconcile_stale_processing_runs(self) -> None:
+        cutoff = self._processing_run_stale_cutoff()
+        async with self._transaction() as conn:
+            stale_rows = (
+                await self._execute(
+                    self._select_model_columns(persistence_database_mode.MessageProcessingRun)
+                    .where(
+                        persistence_database_mode.MessageProcessingRun.status == RUN_STATUS_PROCESSING,
+                        persistence_database_mode.MessageProcessingRun.completed_at.is_(None),
+                        sqlalchemy.or_(
+                            persistence_database_mode.MessageProcessingRun.started_at.is_(None),
+                            persistence_database_mode.MessageProcessingRun.started_at < cutoff,
+                        ),
+                    ),
+                    conn=conn,
+                )
+            ).mappings().all()
+
+            for row in stale_rows:
+                stale_run = SimpleNamespace(**dict(row))
+                await self._mark_run_failed(
+                    int(stale_run.id),
+                    STALE_PROCESSING_RUN_ERROR,
+                    pipeline_uuid=getattr(stale_run, 'pipeline_uuid', None),
+                    conn=conn,
+                )
+                await self._mark_message_failed_if_processing(
+                    int(stale_run.message_id),
+                    STALE_PROCESSING_RUN_ERROR,
+                    conn=conn,
+                )
+                self._log_stale_processing_recovery(stale_run)
+
     def _log_exception(self, message: str) -> None:
         logger = getattr(self.ap, 'logger', None)
         if logger is None:
@@ -902,6 +1119,70 @@ class DatabaseModeProcessingService:
     @staticmethod
     def _safe_error_text(error: str) -> str:
         return (error or '')[:5000]
+
+    def _database_mode_config(self) -> dict:
+        instance_config = getattr(self.ap, 'instance_config', None)
+        if instance_config is None or not hasattr(instance_config, 'data'):
+            return {}
+        config = instance_config.data.get('database_mode', {})
+        return config if isinstance(config, dict) else {}
+
+    def _get_processing_run_stale_seconds(self) -> int:
+        value = self._database_mode_config().get(
+            'processing_run_stale_seconds',
+            DEFAULT_PROCESSING_RUN_STALE_SECONDS,
+        )
+        try:
+            return max(int(value), 1)
+        except (TypeError, ValueError):
+            return DEFAULT_PROCESSING_RUN_STALE_SECONDS
+
+    def _get_draft_generation_timeout_seconds(self) -> float:
+        value = self._database_mode_config().get(
+            'draft_generation_timeout_seconds',
+            DEFAULT_DRAFT_GENERATION_TIMEOUT_SECONDS,
+        )
+        try:
+            return max(float(value), 0.001)
+        except (TypeError, ValueError):
+            return float(DEFAULT_DRAFT_GENERATION_TIMEOUT_SECONDS)
+
+    def _processing_run_stale_cutoff(self) -> datetime.datetime:
+        return self._utcnow() - datetime.timedelta(seconds=self._get_processing_run_stale_seconds())
+
+    def _is_processing_run_stale(self, run) -> bool:
+        if run is None or getattr(run, 'status', None) != RUN_STATUS_PROCESSING:
+            return False
+        if getattr(run, 'completed_at', None) is not None:
+            return False
+        started_at = getattr(run, 'started_at', None)
+        if started_at is None:
+            return True
+        return started_at < self._processing_run_stale_cutoff()
+
+    def _log_stale_processing_recovery(self, run) -> None:
+        logger = getattr(self.ap, 'logger', None)
+        if logger is None:
+            return
+        log_method = getattr(logger, 'info', None) or getattr(logger, 'warning', None)
+        if not callable(log_method):
+            return
+        started_at = getattr(run, 'started_at', None)
+        age_seconds = None
+        if isinstance(started_at, datetime.datetime):
+            age_seconds = max(int((self._utcnow() - started_at).total_seconds()), 0)
+        payload = {
+            'event': 'database_mode_stale_processing_run_recovered',
+            'run_id': int(run.id),
+            'message_id': int(run.message_id),
+            'bot_uuid': str(run.bot_uuid),
+            'age_seconds': age_seconds,
+            'recovery_reason': STALE_PROCESSING_RUN_ERROR,
+        }
+        try:
+            log_method(payload)
+        except TypeError:
+            log_method(str(payload))
 
     @staticmethod
     def _utcnow() -> datetime.datetime:

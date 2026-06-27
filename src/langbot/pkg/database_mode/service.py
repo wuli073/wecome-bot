@@ -456,14 +456,10 @@ class DatabaseModeService:
             message_id, bot_uuid, trigger='manual'
         )
 
-        if result.get('status') == 'succeeded':
+        if result.get('status') in {'succeeded', 'already_succeeded'}:
             return await self.get_message(message_id)
-        elif result.get('status') == 'already_succeeded':
-            return await self.get_message(message_id)
-        elif result.get('status') == 'processing':
-            raise ValueError('Message is already being processed')
-        else:
-            raise ValueError('Failed to generate draft')
+
+        return result
 
     async def _find_enabled_bot_for_connector(self, connector_id: str) -> str | None:
         """Find the unique enabled wxwork_database bot for a connector."""
@@ -514,6 +510,36 @@ class DatabaseModeService:
                         'status': MESSAGE_STATUS_DRAFT_READY,
                         'draft_text': draft_text,
                         'draft_source': draft_source or 'manual',
+                        'last_error': None,
+                        'updated_at': self._utcnow(),
+                    }
+                )
+            )
+        await self._publish_event(
+            DatabaseModeEventType.MESSAGE_UPDATED,
+            conversation_id=int(message.conversation_id),
+            message_id=message_id,
+        )
+        return await self.get_message(message_id)
+
+    async def delete_draft(self, message_id: int, draft_id: int | None = None) -> dict:
+        message = await self._require_message(message_id)
+        async with self._transaction() as conn:
+            if draft_id is not None:
+                await conn.execute(
+                    sqlalchemy.delete(persistence_database_mode.ReplyDraft).where(
+                        persistence_database_mode.ReplyDraft.id == draft_id
+                    )
+                )
+
+            await conn.execute(
+                sqlalchemy.update(persistence_database_mode.DatabaseMessage)
+                .where(persistence_database_mode.DatabaseMessage.id == message_id)
+                .values(
+                    {
+                        'status': MESSAGE_STATUS_PENDING,
+                        'draft_text': None,
+                        'draft_source': None,
                         'last_error': None,
                         'updated_at': self._utcnow(),
                     }

@@ -17,6 +17,7 @@ from langbot.pkg.database_mode.processing_service import (
     DRAFT_STATUS_SUPERSEDED,
     DatabaseModeProcessingService,
     RUN_STATUS_FAILED,
+    RUN_STATUS_PROCESSING,
 )
 from langbot.pkg.database_mode.service import (
     DatabaseModeService,
@@ -591,19 +592,27 @@ async def _insert_bound_message(
     sender_name: str,
 ) -> int:
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
-        await conn.execute(
-            sqlalchemy.insert(persistence_bot.Bot).values({
-                'uuid': 'bot-enabled',
-                'name': 'Database Bot',
-                'description': '',
-                'adapter': 'wxwork_database',
-                'adapter_config': {'connector_id': 'wxwork-local'},
-                'enable': True,
-                'use_pipeline_name': None,
-                'use_pipeline_uuid': 'pipeline-123',
-                'pipeline_routing_rules': [],
-            })
-        )
+        existing_bot = (
+            await conn.execute(
+                sqlalchemy.select(persistence_bot.Bot.uuid).where(
+                    persistence_bot.Bot.uuid == bot_uuid
+                )
+            )
+        ).first()
+        if existing_bot is None:
+            await conn.execute(
+                sqlalchemy.insert(persistence_bot.Bot).values({
+                    'uuid': bot_uuid,
+                    'name': 'Database Bot',
+                    'description': '',
+                    'adapter': 'wxwork_database',
+                    'adapter_config': {'connector_id': 'wxwork-local'},
+                    'enable': True,
+                    'use_pipeline_name': None,
+                    'use_pipeline_uuid': 'pipeline-123',
+                    'pipeline_routing_rules': [],
+                })
+            )
         channel_account_result = await conn.execute(
             sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
                 'connector_id': 'wxwork-local',
@@ -1154,6 +1163,141 @@ async def test_processing_service_generate_draft_keeps_concurrent_drafts_isolate
 
     assert left_result['draft']['content'] == 'Draft for 301'
     assert right_result['draft']['content'] == 'Draft for 302'
+
+
+async def test_processing_service_generate_draft_returns_active_run_for_recent_processing(raw_processing_app):
+    ap = raw_processing_app
+    processing_service = DatabaseModeProcessingService(ap)
+
+    message_id = await _insert_bound_message(
+        ap,
+        account_suffix='recent-processing',
+        conversation_suffix='705',
+        message_suffix='116',
+        content='Need recent processing status',
+        sender_id='303',
+        sender_name='Customer O',
+    )
+
+    started_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    async with ap.persistence_mgr.get_db_engine().begin() as conn:
+        run_result = await conn.execute(
+            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values({
+                'message_id': message_id,
+                'bot_uuid': 'bot-enabled',
+                'pipeline_uuid': None,
+                'trigger': 'manual',
+                'status': RUN_STATUS_PROCESSING,
+                'attempt_count': 2,
+                'started_at': started_at,
+                'completed_at': None,
+                'last_error': None,
+            })
+        )
+        run_id = run_result.inserted_primary_key[0]
+
+    result = await processing_service.generate_draft(message_id, 'bot-enabled', trigger='manual')
+
+    assert result['status'] == 'processing'
+    assert result['message'] == 'Draft generation is already in progress'
+    assert result['run']['id'] == run_id
+    assert result['run']['status'] == RUN_STATUS_PROCESSING
+    assert result['run']['attempt_count'] == 2
+
+
+async def test_processing_service_generate_draft_recovers_stale_processing_and_retries(raw_processing_app):
+    ap = raw_processing_app
+    ap.instance_config = SimpleNamespace(data={'database_mode': {'processing_run_stale_seconds': 300}})
+    processing_service = DatabaseModeProcessingService(ap)
+    adapter = WXWorkDatabaseAdapter(config={'connector_id': 'wxwork-local'}, logger=DummyEventLogger())
+
+    class _ReplyPipeline:
+        pipeline_entity = SimpleNamespace(config=_runtime_pipeline_config())
+
+        async def run(self, query):
+            await query.adapter.reply_message(
+                message_source=query.message_event,
+                message=platform_message.MessageChain([platform_message.Plain(text='Recovered stale draft')]),
+            )
+
+    await _install_formal_runtime_processing(ap, pipeline=_ReplyPipeline(), adapter=adapter)
+    ap.bot_service = SimpleNamespace(
+        get_bot=AsyncMock(return_value={
+            'uuid': 'bot-enabled',
+            'adapter': 'wxwork_database',
+            'enable': True,
+            'adapter_config': {'connector_id': 'wxwork-local'},
+        })
+    )
+
+    message_id = await _insert_bound_message(
+        ap,
+        account_suffix='stale-processing',
+        conversation_suffix='706',
+        message_suffix='117',
+        content='Need stale recovery',
+        sender_id='304',
+        sender_name='Customer P',
+    )
+
+    stale_started_at = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=15)
+    ).replace(tzinfo=None)
+    async with ap.persistence_mgr.get_db_engine().begin() as conn:
+        stale_run_result = await conn.execute(
+            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values({
+                'message_id': message_id,
+                'bot_uuid': 'bot-enabled',
+                'pipeline_uuid': None,
+                'trigger': 'manual',
+                'status': RUN_STATUS_PROCESSING,
+                'attempt_count': 2,
+                'started_at': stale_started_at,
+                'completed_at': None,
+                'last_error': None,
+            })
+        )
+        stale_run_id = stale_run_result.inserted_primary_key[0]
+        await conn.execute(
+            sqlalchemy.update(persistence_database_mode.DatabaseMessage)
+            .where(persistence_database_mode.DatabaseMessage.id == message_id)
+            .values({'status': MESSAGE_STATUS_PENDING})
+        )
+
+    result = await processing_service.generate_draft(message_id, 'bot-enabled', trigger='manual')
+
+    assert result['status'] == 'succeeded'
+    assert result['draft']['content'] == 'Recovered stale draft'
+    assert result['run']['attempt_count'] == 3
+
+    run_rows = (
+        await ap.persistence_mgr.execute_async(
+            sqlalchemy.select(
+                persistence_database_mode.MessageProcessingRun.id,
+                persistence_database_mode.MessageProcessingRun.status,
+                persistence_database_mode.MessageProcessingRun.attempt_count,
+                persistence_database_mode.MessageProcessingRun.completed_at,
+                persistence_database_mode.MessageProcessingRun.last_error,
+            )
+            .where(
+                persistence_database_mode.MessageProcessingRun.message_id == message_id,
+                persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
+            )
+            .order_by(persistence_database_mode.MessageProcessingRun.id.asc())
+        )
+    ).mappings().all()
+
+    assert len(run_rows) == 2
+    assert dict(run_rows[0]) == {
+        'id': stale_run_id,
+        'status': RUN_STATUS_FAILED,
+        'attempt_count': 2,
+        'completed_at': run_rows[0]['completed_at'],
+        'last_error': 'Stale processing run recovered after timeout',
+    }
+    assert run_rows[0]['completed_at'] is not None
+    assert run_rows[1]['status'] == 'succeeded'
+    assert run_rows[1]['attempt_count'] == 3
 
 
 async def test_processing_service_require_message_returns_object_with_raw_connection_result(raw_processing_app):
@@ -2466,6 +2610,219 @@ async def test_processing_service_generate_draft_fails_with_clear_message_when_p
         )
     ).scalar_one()
     assert draft_count == 0
+
+
+async def test_processing_service_generate_draft_finalizes_failed_state_on_cancelled_error(raw_processing_app):
+    ap = raw_processing_app
+    processing_service = DatabaseModeProcessingService(ap)
+
+    class _CancelledRuntimeBot:
+        def __init__(self):
+            self.bot_entity = SimpleNamespace(uuid='bot-enabled', use_pipeline_uuid='pipeline-123')
+            self.adapter = 'wxwork_database'
+
+        def resolve_pipeline_uuid(self, launcher_type, launcher_id, message_text, message_element_types=None):
+            return 'pipeline-123', False
+
+        async def process_message_event_now(self, event, **kwargs):
+            raise asyncio.CancelledError()
+
+    ap.platform_mgr = SimpleNamespace(bots=[_CancelledRuntimeBot()])
+    ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=SimpleNamespace()))
+    ap.bot_service = SimpleNamespace(
+        get_bot=AsyncMock(return_value={
+            'uuid': 'bot-enabled',
+            'adapter': 'wxwork_database',
+            'enable': True,
+            'adapter_config': {'connector_id': 'wxwork-local'},
+        })
+    )
+
+    message_id = await _insert_bound_message(
+        ap,
+        account_suffix='cancelled-processing',
+        conversation_suffix='707',
+        message_suffix='118',
+        content='Need cancellation handling',
+        sender_id='305',
+        sender_name='Customer Q',
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await processing_service.generate_draft(message_id, 'bot-enabled', trigger='manual')
+
+    run_row = (
+        await ap.persistence_mgr.execute_async(
+            sqlalchemy.select(
+                persistence_database_mode.MessageProcessingRun.status,
+                persistence_database_mode.MessageProcessingRun.completed_at,
+                persistence_database_mode.MessageProcessingRun.last_error,
+            )
+            .where(
+                persistence_database_mode.MessageProcessingRun.message_id == message_id,
+                persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
+            )
+            .order_by(persistence_database_mode.MessageProcessingRun.id.desc())
+            .limit(1)
+        )
+    ).mappings().first()
+    assert run_row['status'] == RUN_STATUS_FAILED
+    assert run_row['completed_at'] is not None
+    assert 'cancel' in (run_row['last_error'] or '').lower()
+
+    message_row = (
+        await ap.persistence_mgr.execute_async(
+            sqlalchemy.select(
+                persistence_database_mode.DatabaseMessage.status,
+                persistence_database_mode.DatabaseMessage.last_error,
+            ).where(persistence_database_mode.DatabaseMessage.id == message_id)
+        )
+    ).mappings().first()
+    assert message_row['status'] == MESSAGE_STATUS_FAILED
+    assert 'cancel' in (message_row['last_error'] or '').lower()
+
+
+async def test_processing_service_generate_draft_times_out_and_marks_run_failed(raw_processing_app):
+    ap = raw_processing_app
+    ap.instance_config = SimpleNamespace(data={'database_mode': {'draft_generation_timeout_seconds': 0.01}})
+    processing_service = DatabaseModeProcessingService(ap)
+
+    class _SlowRuntimeBot:
+        def __init__(self):
+            self.bot_entity = SimpleNamespace(uuid='bot-enabled', use_pipeline_uuid='pipeline-123')
+            self.adapter = 'wxwork_database'
+
+        def resolve_pipeline_uuid(self, launcher_type, launcher_id, message_text, message_element_types=None):
+            return 'pipeline-123', False
+
+        async def process_message_event_now(self, event, **kwargs):
+            await asyncio.sleep(0.05)
+            return None
+
+    ap.platform_mgr = SimpleNamespace(bots=[_SlowRuntimeBot()])
+    ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=SimpleNamespace()))
+    ap.bot_service = SimpleNamespace(
+        get_bot=AsyncMock(return_value={
+            'uuid': 'bot-enabled',
+            'adapter': 'wxwork_database',
+            'enable': True,
+            'adapter_config': {'connector_id': 'wxwork-local'},
+        })
+    )
+
+    message_id = await _insert_bound_message(
+        ap,
+        account_suffix='timeout-processing',
+        conversation_suffix='708',
+        message_suffix='119',
+        content='Need timeout handling',
+        sender_id='306',
+        sender_name='Customer R',
+    )
+
+    with pytest.raises(asyncio.TimeoutError):
+        await processing_service.generate_draft(message_id, 'bot-enabled', trigger='manual')
+
+    run_row = (
+        await ap.persistence_mgr.execute_async(
+            sqlalchemy.select(
+                persistence_database_mode.MessageProcessingRun.status,
+                persistence_database_mode.MessageProcessingRun.completed_at,
+                persistence_database_mode.MessageProcessingRun.last_error,
+            )
+            .where(
+                persistence_database_mode.MessageProcessingRun.message_id == message_id,
+                persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
+            )
+            .order_by(persistence_database_mode.MessageProcessingRun.id.desc())
+            .limit(1)
+        )
+    ).mappings().first()
+    assert run_row['status'] == RUN_STATUS_FAILED
+    assert run_row['completed_at'] is not None
+    assert 'timed out' in (run_row['last_error'] or '').lower()
+
+    message_row = (
+        await ap.persistence_mgr.execute_async(
+            sqlalchemy.select(
+                persistence_database_mode.DatabaseMessage.status,
+                persistence_database_mode.DatabaseMessage.last_error,
+            ).where(persistence_database_mode.DatabaseMessage.id == message_id)
+        )
+    ).mappings().first()
+    assert message_row['status'] == MESSAGE_STATUS_FAILED
+    assert 'timed out' in (message_row['last_error'] or '').lower()
+
+
+async def test_processing_service_reconcile_stale_processing_runs_is_idempotent(raw_processing_app):
+    ap = raw_processing_app
+    ap.instance_config = SimpleNamespace(data={'database_mode': {'processing_run_stale_seconds': 300}})
+    ap.logger = DummySyncLogger()
+    processing_service = DatabaseModeProcessingService(ap)
+
+    message_id = await _insert_bound_message(
+        ap,
+        account_suffix='reconcile-processing',
+        conversation_suffix='709',
+        message_suffix='120',
+        content='Need reconcile handling',
+        sender_id='307',
+        sender_name='Customer S',
+    )
+
+    stale_started_at = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=20)
+    ).replace(tzinfo=None)
+    async with ap.persistence_mgr.get_db_engine().begin() as conn:
+        await conn.execute(
+            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values({
+                'message_id': message_id,
+                'bot_uuid': 'bot-enabled',
+                'pipeline_uuid': None,
+                'trigger': 'automatic',
+                'status': RUN_STATUS_PROCESSING,
+                'attempt_count': 1,
+                'started_at': stale_started_at,
+                'completed_at': None,
+                'last_error': None,
+            })
+        )
+        await conn.execute(
+            sqlalchemy.update(persistence_database_mode.DatabaseMessage)
+            .where(persistence_database_mode.DatabaseMessage.id == message_id)
+            .values({'status': 'processing', 'last_error': None})
+        )
+
+    await processing_service.reconcile_stale_processing_runs()
+    await processing_service.reconcile_stale_processing_runs()
+
+    run_rows = (
+        await ap.persistence_mgr.execute_async(
+            sqlalchemy.select(
+                persistence_database_mode.MessageProcessingRun.status,
+                persistence_database_mode.MessageProcessingRun.completed_at,
+                persistence_database_mode.MessageProcessingRun.last_error,
+            ).where(
+                persistence_database_mode.MessageProcessingRun.message_id == message_id,
+                persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
+            )
+        )
+    ).mappings().all()
+    assert len(run_rows) == 1
+    assert run_rows[0]['status'] == RUN_STATUS_FAILED
+    assert run_rows[0]['completed_at'] is not None
+    assert run_rows[0]['last_error'] == 'Stale processing run recovered after timeout'
+
+    message_row = (
+        await ap.persistence_mgr.execute_async(
+            sqlalchemy.select(
+                persistence_database_mode.DatabaseMessage.status,
+                persistence_database_mode.DatabaseMessage.last_error,
+            ).where(persistence_database_mode.DatabaseMessage.id == message_id)
+        )
+    ).mappings().first()
+    assert message_row['status'] == MESSAGE_STATUS_FAILED
+    assert message_row['last_error'] == 'Stale processing run recovered after timeout'
 
 
 async def test_update_draft_publishes_one_updated_event_after_commit(service_app):

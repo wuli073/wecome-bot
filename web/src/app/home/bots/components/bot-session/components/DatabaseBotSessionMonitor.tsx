@@ -51,6 +51,7 @@ import {
   SkipForward,
   Trash2,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 
 import type { BotSessionMonitorHandle } from '../BotSessionMonitor';
@@ -93,7 +94,15 @@ interface DraftRestoreOptions {
   force?: boolean;
 }
 
+interface ProcessingRecoveryState {
+  conversationId: number;
+  messageId: number;
+  startedAt: number;
+}
+
 const SCROLL_BOTTOM_THRESHOLD = 80;
+const PROCESSING_POLL_INTERVAL_MS = 1_500;
+const PROCESSING_RECOVERY_TIMEOUT_MS = 90_000;
 const STATUS_OPTIONS: MessageStatusFilter[] = [
   'all',
   'pending',
@@ -157,30 +166,7 @@ function canBatchSelectMessage(message: BotMessage) {
 
 function findDefaultActionMessage(messages: BotMessage[]) {
   const sorted = sortMessages(messages);
-  const pendingMessages = sorted.filter(
-    (message) => message.status === 'pending' && canGenerateDraft(message),
-  );
-  if (pendingMessages.length > 0) {
-    return pendingMessages.at(-1) ?? null;
-  }
-
-  const failedMessages = sorted.filter(
-    (message) => message.status === 'failed' && canGenerateDraft(message),
-  );
-  return failedMessages.at(-1) ?? null;
-}
-
-function findConversationDraftMessage(messages: BotMessage[]) {
-  const sorted = sortMessages(messages);
-  return (
-    [...sorted]
-      .reverse()
-      .find(
-        (message) => message.status === 'draft_ready' && message.draft_text,
-      ) ??
-    [...sorted].reverse().find((message) => message.draft_text) ??
-    null
-  );
+  return [...sorted].reverse().find(canSelectActionTarget) ?? null;
 }
 
 function buildDraftState(
@@ -339,6 +325,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
   BotSessionMonitorHandle,
   DatabaseBotSessionMonitorProps
 >(function DatabaseBotSessionMonitor({ botId, botAdapter, botEnabled }, ref) {
+  const { t } = useTranslation();
   const [conversations, setConversations] = useState<BotConversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<
     number | null
@@ -349,8 +336,8 @@ export const DatabaseBotSessionMonitor = forwardRef<
   const [searchKeyword, setSearchKeyword] = useState('');
   const [appliedKeyword, setAppliedKeyword] = useState('');
   const [statusFilter, setStatusFilter] = useState<MessageStatusFilter>('all');
-  const [draftText, setDraftText] = useState('');
-  const [originalDraftText, setOriginalDraftText] = useState('');
+  const [composerText, setComposerText] = useState('');
+  const [persistedDraftText, setPersistedDraftText] = useState('');
   const [currentDraft, setCurrentDraft] = useState<DraftEditorState | null>(
     null,
   );
@@ -361,16 +348,19 @@ export const DatabaseBotSessionMonitor = forwardRef<
   const [selectedMessages, setSelectedMessages] = useState<Set<number>>(
     new Set(),
   );
-  const [explicitSelectedMessageId, setExplicitSelectedMessageId] = useState<
-    number | null
-  >(null);
+  const [selectedMessageId, setSelectedMessageId] = useState<number | null>(
+    null,
+  );
   const [aiPopoverOpen, setAiPopoverOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteDraftDialogOpen, setDeleteDraftDialogOpen] = useState(false);
   const [messageToDelete, setMessageToDelete] = useState<number | null>(null);
   const [batchDeleteDialogOpen, setBatchDeleteDialogOpen] = useState(false);
   const [batchBusyKey, setBatchBusyKey] = useState<
     'process' | 'skip' | 'delete' | null
   >(null);
+  const [processingRecovery, setProcessingRecovery] =
+    useState<ProcessingRecoveryState | null>(null);
 
   const messagesScrollAreaRef = useRef<HTMLDivElement | null>(null);
   const currentDraftRef = useRef<DraftEditorState | null>(null);
@@ -379,6 +369,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
   const autoScrollToBottomRef = useRef(true);
   const previousConversationIdRef = useRef<number | null>(null);
   const previousLastMessageIdRef = useRef<number | null>(null);
+  const processingRecoveryRef = useRef<ProcessingRecoveryState | null>(null);
 
   const dataSource = useMemo(
     () => createDataSource(botAdapter, botId),
@@ -391,15 +382,20 @@ export const DatabaseBotSessionMonitor = forwardRef<
       ) ?? null,
     [conversations, selectedConversationId],
   );
-  const hasUnsavedDraftChanges = draftText !== originalDraftText;
+  const isDirty = composerText !== persistedDraftText;
+  const hasComposerContent = composerText.trim().length > 0;
+  const isClearedLocally =
+    persistedDraftText.trim().length > 0 &&
+    composerText.length === 0 &&
+    isDirty;
 
   useEffect(() => {
     currentDraftRef.current = currentDraft;
   }, [currentDraft]);
 
   useEffect(() => {
-    draftDirtyRef.current = hasUnsavedDraftChanges;
-  }, [hasUnsavedDraftChanges]);
+    draftDirtyRef.current = isDirty;
+  }, [isDirty]);
 
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
@@ -421,49 +417,6 @@ export const DatabaseBotSessionMonitor = forwardRef<
       viewport.scrollTo({ top: viewport.scrollHeight, behavior });
     },
     [getMessagesViewport],
-  );
-
-  const applyConversationDraft = useCallback(
-    (
-      nextMessages: BotMessage[],
-      conversationId: number,
-      options?: LoadMessagesOptions,
-    ) => {
-      const draftMessage = findConversationDraftMessage(nextMessages);
-      const previousDraft = currentDraftRef.current;
-      const preserveDraftText =
-        Boolean(options?.preserveDraftText) &&
-        draftDirtyRef.current &&
-        previousDraft?.conversationId === conversationId;
-
-      if (!draftMessage) {
-        setCurrentDraft(null);
-        if (!preserveDraftText) {
-          setDraftText('');
-          setOriginalDraftText('');
-        }
-        return;
-      }
-
-      const nextDraft = buildDraftState(
-        draftMessage,
-        conversationId,
-        previousDraft,
-      );
-      setCurrentDraft(nextDraft);
-
-      const sameDraft =
-        previousDraft?.conversationId === conversationId &&
-        previousDraft.messageId === nextDraft.messageId;
-      if (preserveDraftText && sameDraft) {
-        return;
-      }
-
-      const nextDraftText = draftMessage.draft_text ?? '';
-      setDraftText(nextDraftText);
-      setOriginalDraftText(nextDraftText);
-    },
-    [],
   );
 
   const loadConversations = useCallback(async () => {
@@ -506,14 +459,13 @@ export const DatabaseBotSessionMonitor = forwardRef<
   }, [appliedKeyword, loadConversations, searchKeyword]);
 
   const loadMessages = useCallback(
-    async (conversationId: number, options?: LoadMessagesOptions) => {
+    async (conversationId: number, _options?: LoadMessagesOptions) => {
       setMessagesLoading(true);
       try {
         const response = await dataSource.listMessages(
           conversationId.toString(),
         );
         setMessages(response.messages);
-        applyConversationDraft(response.messages, conversationId, options);
       } catch (error) {
         console.error('Failed to load messages:', error);
         toast.error('加载消息失败');
@@ -521,7 +473,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
         setMessagesLoading(false);
       }
     },
-    [applyConversationDraft, dataSource],
+    [dataSource],
   );
 
   const refreshConversationData = useCallback(async () => {
@@ -552,35 +504,34 @@ export const DatabaseBotSessionMonitor = forwardRef<
   useEffect(() => {
     if (selectedConversationId === null) {
       setMessages([]);
-      setDraftText('');
-      setOriginalDraftText('');
+      setComposerText('');
+      setPersistedDraftText('');
       setCurrentDraft(null);
       setSelectedMessages(new Set());
-      setExplicitSelectedMessageId(null);
+      setSelectedMessageId(null);
       setAiPopoverOpen(false);
       setIsBatchMode(false);
       return;
     }
 
     setSelectedMessages(new Set());
-    setExplicitSelectedMessageId(null);
+    setSelectedMessageId(null);
     setAiPopoverOpen(false);
     setIsBatchMode(false);
     void loadMessages(selectedConversationId);
   }, [loadMessages, selectedConversationId]);
 
   useEffect(() => {
-    if (!explicitSelectedMessageId) {
+    if (!selectedMessageId) {
       return;
     }
 
     const selectedMessage =
-      messages.find((message) => message.id === explicitSelectedMessageId) ??
-      null;
+      messages.find((message) => message.id === selectedMessageId) ?? null;
     if (!selectedMessage || !canSelectActionTarget(selectedMessage)) {
-      setExplicitSelectedMessageId(null);
+      setSelectedMessageId(null);
     }
-  }, [explicitSelectedMessageId, messages]);
+  }, [messages, selectedMessageId]);
 
   useEffect(() => {
     const viewport = getMessagesViewport();
@@ -663,19 +614,18 @@ export const DatabaseBotSessionMonitor = forwardRef<
     [sortedMessages],
   );
   const explicitSelectedMessage =
-    explicitSelectedMessageId === null
+    selectedMessageId === null
       ? null
-      : (messages.find((message) => message.id === explicitSelectedMessageId) ??
-        null);
-  const activeActionMessage =
-    explicitSelectedMessage && canGenerateDraft(explicitSelectedMessage)
-      ? explicitSelectedMessage
-      : defaultActionMessage;
+      : (messages.find((message) => message.id === selectedMessageId) ?? null);
+  const effectiveTargetMessage =
+    explicitSelectedMessage ?? defaultActionMessage;
   const actionDisabledReason = !botEnabled
-    ? '请先启用机器人'
-    : activeActionMessage
+    ? 'Please enable the bot first.'
+    : effectiveTargetMessage && canGenerateDraft(effectiveTargetMessage)
       ? undefined
-      : '请先选择一条可处理的客户消息';
+      : effectiveTargetMessage
+        ? 'Current target message cannot generate a draft.'
+        : 'Please select a replyable customer message first.';
   const actionableMessages = useMemo(
     () => sortedMessages.filter(canBatchSelectMessage),
     [sortedMessages],
@@ -697,9 +647,65 @@ export const DatabaseBotSessionMonitor = forwardRef<
         previousDraft,
       ),
     );
-    setDraftText(message.draft_text);
-    setOriginalDraftText(message.draft_text);
+    setComposerText(message.draft_text);
+    setPersistedDraftText(message.draft_text);
   }, []);
+
+  const syncComposerWithTargetMessage = useCallback(
+    (
+      targetMessage: BotMessage | null,
+      conversationId: number | null,
+      options?: LoadMessagesOptions,
+    ) => {
+      const previousDraft = currentDraftRef.current;
+      const targetMessageId = targetMessage?.id ?? null;
+      const sameTarget =
+        conversationId !== null &&
+        previousDraft?.conversationId === conversationId &&
+        previousDraft.messageId === targetMessageId;
+      const preserveDraftText =
+        Boolean(options?.preserveDraftText) &&
+        draftDirtyRef.current &&
+        sameTarget;
+
+      if (
+        targetMessage &&
+        targetMessage.draft_text &&
+        conversationId !== null
+      ) {
+        const nextPersistedDraftText = targetMessage.draft_text ?? '';
+        setCurrentDraft(
+          buildDraftState(targetMessage, conversationId, previousDraft),
+        );
+        setPersistedDraftText(nextPersistedDraftText);
+        if (!preserveDraftText) {
+          setComposerText(nextPersistedDraftText);
+        }
+        return;
+      }
+
+      setCurrentDraft(null);
+      setPersistedDraftText('');
+      if (!preserveDraftText) {
+        setComposerText('');
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    syncComposerWithTargetMessage(
+      effectiveTargetMessage,
+      selectedConversationId,
+      {
+        preserveDraftText: true,
+      },
+    );
+  }, [
+    effectiveTargetMessage,
+    selectedConversationId,
+    syncComposerWithTargetMessage,
+  ]);
 
   const restoreDraftFromMessage = useCallback(
     (
@@ -714,14 +720,15 @@ export const DatabaseBotSessionMonitor = forwardRef<
 
       const previousDraft = currentDraftRef.current;
       setCurrentDraft(buildDraftState(message, conversationId, previousDraft));
+      setPersistedDraftText(nextDraftText);
 
       const shouldPreserveUserText =
         !options?.force &&
         draftDirtyRef.current &&
-        previousDraft?.conversationId === conversationId;
+        previousDraft?.conversationId === conversationId &&
+        previousDraft.messageId === message.id;
       if (!shouldPreserveUserText) {
-        setDraftText(nextDraftText);
-        setOriginalDraftText(nextDraftText);
+        setComposerText(nextDraftText);
       }
       return true;
     },
@@ -748,7 +755,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
   const handleGenerateDraftDeterministic = useCallback(
     async (messageId: number) => {
       if (!botEnabled) {
-        toast.error('Please enable the bot first.');
+        toast.error('请先启用机器人');
         return;
       }
 
@@ -775,9 +782,18 @@ export const DatabaseBotSessionMonitor = forwardRef<
             : false;
 
         if (result.status === 'processing') {
-          toast.info('Draft generation is still processing.');
+          const nextRecovery = {
+            conversationId: requestedConversationId,
+            messageId,
+            startedAt: Date.now(),
+          };
+          processingRecoveryRef.current = nextRecovery;
+          setProcessingRecovery(nextRecovery);
+          toast.info('草稿仍在生成中');
         } else if (result.status === 'already_succeeded') {
-          toast.info('A draft already exists for this message.');
+          toast.info('该消息已有草稿');
+        } else if (result.status === 'claim_conflict') {
+          toast.info(result.message ?? '当前请求与其他生成请求发生冲突');
         }
 
         const refreshedMessages = await dataSource.listMessages(
@@ -822,11 +838,10 @@ export const DatabaseBotSessionMonitor = forwardRef<
             refreshedMessageStatus: refreshedTargetMessage?.status ?? null,
             hasRefreshedDraftText: Boolean(refreshedTargetMessage?.draft_text),
           });
-          toast.error(
-            'Draft generation finished but no restorable draft was returned.',
-          );
+          toast.error('草稿生成完成，但没有返回可恢复的草稿内容');
         } else if (
-          result.status === 'succeeded' &&
+          (result.status === 'succeeded' ||
+            result.status === 'already_succeeded') &&
           (restoredFromDirectResponse || restoredFromRefreshedMessage)
         ) {
           toast.success('鑽夌鐢熸垚鎴愬姛');
@@ -835,7 +850,9 @@ export const DatabaseBotSessionMonitor = forwardRef<
         console.error('Failed to generate draft:', error);
         toast.error(error?.message || '鑽夌鐢熸垚澶辫触');
       } finally {
-        setGeneratingDraft(false);
+        if (!processingRecoveryRef.current) {
+          setGeneratingDraft(false);
+        }
       }
     },
     [
@@ -847,13 +864,114 @@ export const DatabaseBotSessionMonitor = forwardRef<
     ],
   );
 
+  useEffect(() => {
+    if (!processingRecovery) {
+      return;
+    }
+
+    let cancelled = false;
+    let timerId: number | null = null;
+
+    const poll = async () => {
+      const activeRecovery = processingRecoveryRef.current;
+      if (!activeRecovery || cancelled) {
+        return;
+      }
+
+      if (
+        selectedConversationIdRef.current !== activeRecovery.conversationId ||
+        (selectedMessageId !== null &&
+          selectedMessageId !== activeRecovery.messageId)
+      ) {
+        processingRecoveryRef.current = null;
+        setProcessingRecovery(null);
+        setGeneratingDraft(false);
+        return;
+      }
+
+      if (
+        Date.now() - activeRecovery.startedAt >=
+        PROCESSING_RECOVERY_TIMEOUT_MS
+      ) {
+        processingRecoveryRef.current = null;
+        setProcessingRecovery(null);
+        setGeneratingDraft(false);
+        toast.error('草稿生成超时，请重试');
+        return;
+      }
+
+      try {
+        const response = await dataSource.listMessages(
+          activeRecovery.conversationId.toString(),
+        );
+        const targetMessage =
+          response.messages.find(
+            (message) => message.id === activeRecovery.messageId,
+          ) ?? null;
+
+        if (
+          selectedConversationIdRef.current === activeRecovery.conversationId
+        ) {
+          setMessages(response.messages);
+        }
+
+        if (
+          targetMessage?.status === 'draft_ready' &&
+          canRestoreDraftFromMessage(targetMessage)
+        ) {
+          if (
+            selectedConversationIdRef.current === activeRecovery.conversationId
+          ) {
+            restoreDraftFromMessage(
+              targetMessage,
+              activeRecovery.conversationId,
+              {
+                force: true,
+              },
+            );
+          }
+          processingRecoveryRef.current = null;
+          setProcessingRecovery(null);
+          setGeneratingDraft(false);
+          return;
+        }
+
+        if (targetMessage?.status === 'failed') {
+          processingRecoveryRef.current = null;
+          setProcessingRecovery(null);
+          setGeneratingDraft(false);
+          toast.error(targetMessage.last_error || '草稿生成失败');
+          return;
+        }
+      } catch (error) {
+        console.error('Failed to poll message recovery state:', error);
+      }
+
+      timerId = window.setTimeout(poll, PROCESSING_POLL_INTERVAL_MS);
+    };
+
+    timerId = window.setTimeout(poll, PROCESSING_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+      }
+    };
+  }, [
+    dataSource,
+    processingRecovery,
+    restoreDraftFromMessage,
+    selectedMessageId,
+  ]);
+
   const handleSaveDraft = useCallback(async () => {
     if (!currentDraft) {
       toast.error('当前没有可保存的草稿');
       return;
     }
 
-    if (!draftText.trim()) {
+    if (!composerText.trim()) {
       toast.error('草稿内容不能为空');
       return;
     }
@@ -862,10 +980,11 @@ export const DatabaseBotSessionMonitor = forwardRef<
     try {
       await dataSource.updateDraft(
         currentDraft.messageId.toString(),
-        draftText,
+        composerText,
         currentDraft.draftId?.toString() ?? null,
       );
-      setOriginalDraftText(draftText);
+      setPersistedDraftText(composerText);
+      draftDirtyRef.current = false;
       setCurrentDraft((previousDraft) =>
         previousDraft
           ? {
@@ -888,10 +1007,42 @@ export const DatabaseBotSessionMonitor = forwardRef<
     } finally {
       setDraftSaving(false);
     }
-  }, [currentDraft, dataSource, draftText, loadMessages]);
+  }, [composerText, currentDraft, dataSource, loadMessages]);
+
+  const handleUndoEdit = useCallback(() => {
+    setComposerText(persistedDraftText);
+  }, [persistedDraftText]);
+
+  const handleClearComposer = useCallback(() => {
+    setComposerText('');
+  }, []);
+
+  const handleDeleteDraft = useCallback(async () => {
+    if (!currentDraft) {
+      return;
+    }
+
+    setDraftSaving(true);
+    try {
+      await dataSource.deleteDraft(
+        currentDraft.messageId.toString(),
+        currentDraft.draftId?.toString() ?? null,
+      );
+      draftDirtyRef.current = false;
+      setPersistedDraftText('');
+      setComposerText('');
+      setCurrentDraft(null);
+      setDeleteDraftDialogOpen(false);
+      await refreshConversationData();
+    } catch (error) {
+      console.error('Failed to delete draft:', error);
+    } finally {
+      setDraftSaving(false);
+    }
+  }, [currentDraft, dataSource, refreshConversationData]);
 
   const handleCopyDraft = useCallback(() => {
-    copyToClipboard(draftText)
+    copyToClipboard(composerText)
       .then(() => {
         setCopied(true);
         window.setTimeout(() => setCopied(false), 2_000);
@@ -900,7 +1051,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
       .catch(() => {
         toast.error('复制草稿失败');
       });
-  }, [draftText]);
+  }, [composerText]);
 
   const handleProcessMessage = useCallback(
     async (messageId: number) => {
@@ -1197,6 +1348,16 @@ export const DatabaseBotSessionMonitor = forwardRef<
                       当前选择 #{explicitSelectedMessage.id}
                     </Badge>
                   ) : null}
+                  {explicitSelectedMessage ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setSelectedMessageId(null)}
+                    >
+                      取消当前选择
+                    </Button>
+                  ) : null}
                   <Button
                     type="button"
                     size="sm"
@@ -1299,16 +1460,10 @@ export const DatabaseBotSessionMonitor = forwardRef<
                   {!messagesLoading
                     ? sortedMessages.map((message) => {
                         const isExplicitSelection =
-                          explicitSelectedMessageId === message.id;
-                        const isDefaultSelection =
-                          !isExplicitSelection &&
-                          !explicitSelectedMessage &&
-                          defaultActionMessage?.id === message.id;
+                          selectedMessageId === message.id;
                         const bubbleStateTone = isExplicitSelection
                           ? 'explicit'
-                          : isDefaultSelection
-                            ? 'default'
-                            : 'muted';
+                          : 'muted';
                         const draftMeta =
                           currentDraft?.messageId === message.id
                             ? currentDraft
@@ -1335,8 +1490,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
                               }
                               onClick={
                                 canSelectActionTarget(message) && !isBatchMode
-                                  ? () =>
-                                      setExplicitSelectedMessageId(message.id)
+                                  ? () => setSelectedMessageId(message.id)
                                   : undefined
                               }
                               stateTone={bubbleStateTone}
@@ -1387,15 +1541,18 @@ export const DatabaseBotSessionMonitor = forwardRef<
                                       setDeleteDialogOpen(true);
                                     }}
                                     onGenerateSmartReply={() =>
-                                      void handleGenerateDraftDeterministic(
-                                        message.id,
-                                      )
+                                      void (async () => {
+                                        setSelectedMessageId(message.id);
+                                        await handleGenerateDraftDeterministic(
+                                          message.id,
+                                        );
+                                      })()
                                     }
                                     onMarkProcessed={() =>
                                       void handleProcessMessage(message.id)
                                     }
                                     onSetCurrentMessage={() =>
-                                      setExplicitSelectedMessageId(message.id)
+                                      setSelectedMessageId(message.id)
                                     }
                                     onSkip={() =>
                                       void handleSkipMessage(message.id)
@@ -1472,36 +1629,65 @@ export const DatabaseBotSessionMonitor = forwardRef<
                     disabledReason={actionDisabledReason}
                     generatingDraft={generatingDraft}
                     onGenerateSmartReply={() => {
-                      if (!activeActionMessage) {
+                      if (!effectiveTargetMessage) {
                         return;
                       }
                       void handleGenerateDraftDeterministic(
-                        activeActionMessage.id,
+                        effectiveTargetMessage.id,
                       );
                     }}
                   />
                 }
+                composerText={composerText}
                 copied={copied}
                 draftMeta={currentDraft}
                 draftSaving={draftSaving}
-                draftText={draftText}
                 generatingDraft={generatingDraft}
-                hasUnsavedChanges={hasUnsavedDraftChanges}
-                onCancel={() => setDraftText(originalDraftText)}
+                hasComposerContent={hasComposerContent}
+                hasPersistedDraft={Boolean(persistedDraftText)}
+                isClearedLocally={isClearedLocally}
+                hasUnsavedChanges={isDirty}
+                onClear={handleClearComposer}
                 onCopy={handleCopyDraft}
-                onDraftTextChange={setDraftText}
+                onComposerTextChange={setComposerText}
                 onRegenerate={() => {
                   if (!currentDraft) {
                     return;
                   }
                   void handleGenerateDraftDeterministic(currentDraft.messageId);
                 }}
+                onRequestDeleteDraft={() => setDeleteDraftDialogOpen(true)}
                 onSave={() => void handleSaveDraft()}
+                onUndoEdit={handleUndoEdit}
               />
             </div>
           </>
         )}
       </div>
+
+      <AlertDialog
+        open={deleteDraftDialogOpen}
+        onOpenChange={setDeleteDraftDialogOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('bots.sessionMonitor.databaseComposer.confirmDeleteTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(
+                'bots.sessionMonitor.databaseComposer.confirmDeleteDescription',
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void handleDeleteDraft()}>
+              {t('bots.sessionMonitor.databaseComposer.deleteDraft')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>

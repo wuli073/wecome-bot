@@ -518,3 +518,146 @@ class TestBotChannelBindingUniqueMigration:
         assert migration.UNIQUE_INDEX_NAME in ddl
         assert 'bot_uuid' in ddl
         assert 'channel_account_id' in ddl
+
+
+class TestMessageProcessingRunUniqueMigration:
+    @pytest.mark.asyncio
+    async def test_upgrade_cleans_duplicate_processing_runs_and_keeps_latest_processing(self, sqlite_engine):
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            message_processing_runs, database_messages = await conn.run_sync(
+                lambda sync_conn: (
+                    sa.Table('message_processing_runs', sa.MetaData(), autoload_with=sync_conn),
+                    sa.Table('database_messages', sa.MetaData(), autoload_with=sync_conn),
+                )
+            )
+
+            await conn.execute(
+                sa.insert(database_messages).values(
+                    {
+                        'id': 99,
+                        'event_id': 'evt-processing-99',
+                        'message_key': 'key-processing-99',
+                        'conversation_id': 1,
+                        'external_message_id': 'ext-99',
+                        'sender_id': 'sender-99',
+                        'sender_name': 'Sender 99',
+                        'content': 'Need processing cleanup',
+                        'message_type': 'text',
+                        'sent_at': _dt('2026-06-26T10:00:00'),
+                        'observed_at': _dt('2026-06-26T10:00:01'),
+                        'status': 'pending',
+                        'attempt_count': 0,
+                        'created_at': _dt('2026-06-26T10:00:00'),
+                        'updated_at': _dt('2026-06-26T10:00:00'),
+                    }
+                )
+            )
+
+            await conn.execute(
+                sa.insert(message_processing_runs).values(
+                    [
+                        {
+                            'id': 501,
+                            'message_id': 99,
+                            'bot_uuid': 'bot-processing',
+                            'pipeline_uuid': None,
+                            'trigger': 'manual',
+                            'status': 'processing',
+                            'attempt_count': 1,
+                            'started_at': _dt('2026-06-26T10:00:00'),
+                            'completed_at': None,
+                            'last_error': None,
+                            'created_at': _dt('2026-06-26T10:00:00'),
+                            'updated_at': _dt('2026-06-26T10:00:00'),
+                        },
+                        {
+                            'id': 502,
+                            'message_id': 99,
+                            'bot_uuid': 'bot-processing',
+                            'pipeline_uuid': None,
+                            'trigger': 'manual',
+                            'status': 'processing',
+                            'attempt_count': 2,
+                            'started_at': _dt('2026-06-26T10:05:00'),
+                            'completed_at': None,
+                            'last_error': None,
+                            'created_at': _dt('2026-06-26T10:05:00'),
+                            'updated_at': _dt('2026-06-26T10:05:00'),
+                        },
+                    ]
+                )
+            )
+
+        await run_alembic_stamp(sqlite_engine, '0009_channel_bot_processing')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_runs(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                indexes = {index['name'] for index in inspector.get_indexes('message_processing_runs')}
+                runs_table = sa.Table('message_processing_runs', sa.MetaData(), autoload_with=sync_conn)
+                rows = sync_conn.execute(
+                    sa.select(runs_table).where(
+                        runs_table.c.message_id == 99,
+                        runs_table.c.bot_uuid == 'bot-processing',
+                    ).order_by(runs_table.c.id.asc())
+                ).mappings().all()
+                return indexes, rows
+
+            indexes, rows = await conn.run_sync(inspect_runs)
+
+        assert 'ux_message_processing_runs_active' in indexes
+        assert len(rows) == 2
+        assert rows[0]['status'] == 'failed'
+        assert rows[0]['completed_at'] is not None
+        assert rows[0]['last_error'] == 'Recovered duplicate processing run before adding unique index'
+        assert rows[1]['status'] == 'processing'
+
+    @pytest.mark.asyncio
+    async def test_upgrade_blocks_second_processing_run_for_same_message_and_bot(self, sqlite_engine):
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0009_channel_bot_processing')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        with pytest.raises(sa.exc.IntegrityError):
+            async with sqlite_engine.begin() as conn:
+                runs_table = await conn.run_sync(
+                    lambda sync_conn: sa.Table('message_processing_runs', sa.MetaData(), autoload_with=sync_conn)
+                )
+                await conn.execute(
+                    sa.insert(runs_table).values(
+                        {
+                            'message_id': 100,
+                            'bot_uuid': 'bot-processing',
+                            'pipeline_uuid': None,
+                            'trigger': 'manual',
+                            'status': 'processing',
+                            'attempt_count': 1,
+                            'started_at': _dt('2026-06-26T11:00:00'),
+                            'completed_at': None,
+                            'last_error': None,
+                            'created_at': _dt('2026-06-26T11:00:00'),
+                            'updated_at': _dt('2026-06-26T11:00:00'),
+                        }
+                    )
+                )
+                await conn.execute(
+                    sa.insert(runs_table).values(
+                        {
+                            'message_id': 100,
+                            'bot_uuid': 'bot-processing',
+                            'pipeline_uuid': None,
+                            'trigger': 'manual',
+                            'status': 'processing',
+                            'attempt_count': 2,
+                            'started_at': _dt('2026-06-26T11:01:00'),
+                            'completed_at': None,
+                            'last_error': None,
+                            'created_at': _dt('2026-06-26T11:01:00'),
+                            'updated_at': _dt('2026-06-26T11:01:00'),
+                        }
+                    )
+                )

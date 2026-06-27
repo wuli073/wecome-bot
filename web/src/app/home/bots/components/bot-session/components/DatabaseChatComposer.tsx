@@ -1,14 +1,29 @@
 import type { ReactNode } from 'react';
 import { useLayoutEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { Check, Copy, Paperclip, RefreshCw, Send } from 'lucide-react';
+import {
+  Check,
+  Copy,
+  MoreHorizontal,
+  Paperclip,
+  RefreshCw,
+  Send,
+  Trash2,
+} from 'lucide-react';
 
 export interface ComposerDraftMeta {
   source: 'pipeline' | 'manual';
@@ -18,51 +33,81 @@ export interface ComposerDraftMeta {
 
 interface DatabaseChatComposerProps {
   aiActions: ReactNode;
+  composerText: string;
   copied: boolean;
   draftMeta: ComposerDraftMeta | null;
   draftSaving: boolean;
-  draftText: string;
   generatingDraft: boolean;
+  hasComposerContent: boolean;
+  hasPersistedDraft: boolean;
+  isClearedLocally: boolean;
   hasUnsavedChanges: boolean;
-  onCancel: () => void;
+  onClear: () => void;
   onCopy: () => void;
-  onDraftTextChange: (value: string) => void;
+  onComposerTextChange: (value: string) => void;
   onRegenerate: () => void;
+  onRequestDeleteDraft: () => void;
   onSave: () => void;
+  onUndoEdit: () => void;
 }
 
 const MIN_TEXTAREA_HEIGHT = 96;
 const MAX_TEXTAREA_HEIGHT = 240;
 
-function formatUpdatedAt(updatedAt?: string) {
+function formatUpdatedAt(
+  t: ReturnType<typeof useTranslation>['t'],
+  updatedAt?: string,
+) {
   if (!updatedAt) {
-    return '更新时间未知';
+    return t('bots.sessionMonitor.databaseComposer.updatedAtUnknown');
   }
 
-  return `更新时间 ${new Date(updatedAt).toLocaleString()}`;
+  return t('bots.sessionMonitor.databaseComposer.updatedAt', {
+    time: new Date(updatedAt).toLocaleString(),
+  });
 }
 
-function formatDraftMeta(draftMeta: ComposerDraftMeta) {
-  const sourceLabel = draftMeta.source === 'pipeline' ? 'Pipeline' : 'Manual';
-  return `草稿 v${draftMeta.version} · ${sourceLabel} · ${formatUpdatedAt(draftMeta.updatedAt)}`;
+function formatDraftMeta(
+  t: ReturnType<typeof useTranslation>['t'],
+  draftMeta: ComposerDraftMeta,
+) {
+  return t('bots.sessionMonitor.databaseComposer.meta', {
+    version: draftMeta.version,
+    source: t(
+      `bots.sessionMonitor.databaseComposer.source.${draftMeta.source}`,
+    ),
+    updatedAt: formatUpdatedAt(t, draftMeta.updatedAt),
+  });
 }
 
 export function DatabaseChatComposer({
   aiActions,
+  composerText,
   copied,
   draftMeta,
   draftSaving,
-  draftText,
   generatingDraft,
+  hasComposerContent,
+  hasPersistedDraft,
+  isClearedLocally,
   hasUnsavedChanges,
-  onCancel,
+  onClear,
   onCopy,
-  onDraftTextChange,
+  onComposerTextChange,
   onRegenerate,
+  onRequestDeleteDraft,
   onSave,
+  onUndoEdit,
 }: DatabaseChatComposerProps) {
+  const { t } = useTranslation();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const showToolbar = generatingDraft || Boolean(draftMeta);
+  const showFullToolbar = hasComposerContent;
+  const showCompactToolbar = !hasComposerContent && isClearedLocally;
+  const toolbarStatusText = draftMeta
+    ? formatDraftMeta(t, draftMeta)
+    : generatingDraft
+      ? t('bots.sessionMonitor.databaseComposer.generating')
+      : t('bots.sessionMonitor.databaseComposer.unsaved');
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -75,29 +120,27 @@ export function DatabaseChatComposer({
     textarea.style.height = `${Math.max(MIN_TEXTAREA_HEIGHT, nextHeight)}px`;
     textarea.style.overflowY =
       textarea.scrollHeight > MAX_TEXTAREA_HEIGHT ? 'auto' : 'hidden';
-  }, [draftText]);
+  }, [composerText]);
 
   return (
     <div className="sticky bottom-0 z-10 border-t bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-      {showToolbar ? (
+      {showFullToolbar ? (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-sm">
-          <span className="text-muted-foreground">
-            {draftMeta ? formatDraftMeta(draftMeta) : '草稿生成中...'}
-          </span>
+          <span className="text-muted-foreground">{toolbarStatusText}</span>
           <div className="flex flex-wrap items-center gap-1">
             <Button
               type="button"
               variant="ghost"
               size="sm"
               onClick={onCopy}
-              disabled={!draftText}
+              disabled={!composerText}
             >
               {copied ? (
                 <Check className="mr-1 size-4" />
               ) : (
                 <Copy className="mr-1 size-4" />
               )}
-              复制
+              {t('bots.sessionMonitor.databaseComposer.copy')}
             </Button>
             <Button
               type="button"
@@ -109,27 +152,75 @@ export function DatabaseChatComposer({
               <RefreshCw
                 className={`mr-1 size-4 ${generatingDraft ? 'animate-spin' : ''}`}
               />
-              重新生成
+              {t('bots.sessionMonitor.databaseComposer.regenerate')}
             </Button>
             <Button
               type="button"
               variant="ghost"
               size="sm"
               onClick={onSave}
-              disabled={!draftMeta || !hasUnsavedChanges || draftSaving}
+              disabled={
+                !draftMeta ||
+                !hasComposerContent ||
+                !hasUnsavedChanges ||
+                draftSaving
+              }
             >
-              保存
+              {t('bots.sessionMonitor.databaseComposer.save')}
             </Button>
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              onClick={onCancel}
+              onClick={onUndoEdit}
               disabled={!hasUnsavedChanges}
             >
-              取消
+              {t('bots.sessionMonitor.databaseComposer.undoEdit')}
             </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onClear}
+              disabled={!composerText}
+            >
+              {t('bots.sessionMonitor.databaseComposer.clear')}
+            </Button>
+            {hasPersistedDraft ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label={t(
+                      'bots.sessionMonitor.databaseComposer.moreActions',
+                    )}
+                  >
+                    <MoreHorizontal className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-40">
+                  <DropdownMenuItem
+                    className="text-destructive focus:text-destructive"
+                    onClick={onRequestDeleteDraft}
+                  >
+                    <Trash2 className="mr-2 size-4" />
+                    {t('bots.sessionMonitor.databaseComposer.deleteDraft')}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
           </div>
+        </div>
+      ) : showCompactToolbar ? (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-sm">
+          <span className="text-muted-foreground">
+            {t('bots.sessionMonitor.databaseComposer.clearedUnsaved')}
+          </span>
+          <Button type="button" variant="ghost" size="sm" onClick={onUndoEdit}>
+            {t('bots.sessionMonitor.databaseComposer.undoEdit')}
+          </Button>
         </div>
       ) : null}
 
@@ -142,21 +233,25 @@ export function DatabaseChatComposer({
                 size="icon"
                 variant="outline"
                 disabled
-                aria-label="附件功能暂未接入"
+                aria-label={t(
+                  'bots.sessionMonitor.databaseComposer.attachmentUnavailable',
+                )}
               >
                 <Paperclip className="size-4" />
               </Button>
             </span>
           </TooltipTrigger>
-          <TooltipContent>附件能力暂未接入</TooltipContent>
+          <TooltipContent>
+            {t('bots.sessionMonitor.databaseComposer.attachmentUnavailable')}
+          </TooltipContent>
         </Tooltip>
 
         <Textarea
           ref={textareaRef}
-          aria-label="Composer draft"
-          value={draftText}
-          onChange={(event) => onDraftTextChange(event.target.value)}
-          placeholder="输入回复内容，或使用智能回复生成草稿"
+          aria-label={t('bots.sessionMonitor.databaseComposer.ariaLabel')}
+          value={composerText}
+          onChange={(event) => onComposerTextChange(event.target.value)}
+          placeholder={t('bots.sessionMonitor.databaseComposer.placeholder')}
           rows={4}
           className="min-h-24 max-h-60 resize-none"
         />
@@ -170,13 +265,17 @@ export function DatabaseChatComposer({
                 type="button"
                 size="icon"
                 disabled
-                aria-label="发送能力暂未接入"
+                aria-label={t(
+                  'bots.sessionMonitor.databaseComposer.sendUnavailable',
+                )}
               >
                 <Send className="size-4" />
               </Button>
             </span>
           </TooltipTrigger>
-          <TooltipContent>发送能力暂未接入</TooltipContent>
+          <TooltipContent>
+            {t('bots.sessionMonitor.databaseComposer.sendUnavailable')}
+          </TooltipContent>
         </Tooltip>
       </div>
     </div>

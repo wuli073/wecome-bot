@@ -202,6 +202,7 @@ class BuildAppStage(stage.BootingStage):
         database_mode_service_inst = database_mode_service.DatabaseModeService(ap)
         ap.database_mode_service = database_mode_service_inst
         ap.database_mode_processing_service = database_mode_processing_service.DatabaseModeProcessingService(ap)
+        await ap.database_mode_processing_service.reconcile_stale_processing_runs()
 
         maintenance_service_inst = maintenance_service.MaintenanceService(ap)
         ap.maintenance_service = maintenance_service_inst

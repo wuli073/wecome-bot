@@ -102,8 +102,12 @@ class BotDatabaseModeRouterGroup(group.RouterGroup):
                     f'{type(exc).__name__}: {exc}',
                 )
 
-        @self.route('/<bot_id>/drafts/<int:draft_id>', methods=['PUT'], auth_type=group.AuthType.USER_TOKEN)
-        async def update_bot_draft(bot_id: str, draft_id: int) -> str:
+        @self.route(
+            '/<bot_id>/drafts/<int:draft_id>',
+            methods=['PUT', 'DELETE'],
+            auth_type=group.AuthType.USER_TOKEN,
+        )
+        async def bot_draft_detail(bot_id: str, draft_id: int) -> str:
             connector_id_or_response = await self._get_bot_connector_id_or_response(bot_id)
             if not isinstance(connector_id_or_response, str):
                 return connector_id_or_response
@@ -112,20 +116,26 @@ class BotDatabaseModeRouterGroup(group.RouterGroup):
             except ValueError as exc:
                 return self.http_status(404, -1, str(exc))
 
+            draft = await self._get_draft(draft_id)
+            if draft is None:
+                return self.http_status(404, -1, 'Draft not found')
+
+            if quart.request.method == 'DELETE':
+                message = await self.ap.database_mode_service.delete_draft(
+                    int(draft.message_id),
+                    draft_id=draft_id,
+                )
+                return self.success(data={'message': message})
+
+            # Update via ReplyDraft (manual edit creates new version)
+            # For now, we update the message's draft_text as compatibility
             payload = await quart.request.get_json(silent=True) or {}
             draft_content = str(payload.get('content') or '').strip()
             if not draft_content:
                 return self.http_status(400, -1, 'Draft content is required')
 
-            # Update via ReplyDraft (manual edit creates new version)
-            # For now, we update the message's draft_text as compatibility
-            draft = await self._get_draft(draft_id)
-            if draft is None:
-                return self.http_status(404, -1, 'Draft not found')
-
-            message_id = int(draft.message_id)
             message = await self.ap.database_mode_service.update_draft(
-                message_id,
+                int(draft.message_id),
                 draft_text=draft_content,
                 draft_source='manual',
             )

@@ -89,6 +89,14 @@ export class DatabaseBotDataSource implements BotSessionDataSource {
     });
   }
 
+  async deleteDraft(messageId: string, draftId?: string | null): Promise<any> {
+    if (draftId) {
+      return backendClient.deleteBotDraft(this.botId, draftId);
+    }
+
+    return backendClient.deleteDatabaseModeDraft(Number(messageId));
+  }
+
   async processMessage(messageId: string): Promise<void> {
     await backendClient.processBotMessage(this.botId, messageId);
   }

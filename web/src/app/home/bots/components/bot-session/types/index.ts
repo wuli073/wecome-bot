@@ -44,10 +44,11 @@ export interface MessagesResponse {
 }
 
 export interface DraftResponse {
-  status: 'succeeded' | 'already_succeeded' | 'processing';
+  status: 'succeeded' | 'already_succeeded' | 'processing' | 'claim_conflict';
   draft?: any;
   run?: any;
   message?: string;
+  message_id?: number;
 }
 
 export interface BatchResponse {
@@ -79,6 +80,7 @@ export interface BotSessionDataSource {
     content: string,
     draftId?: string | null,
   ): Promise<any>;
+  deleteDraft(messageId: string, draftId?: string | null): Promise<any>;
 
   // Message operations
   processMessage(messageId: string): Promise<void>;

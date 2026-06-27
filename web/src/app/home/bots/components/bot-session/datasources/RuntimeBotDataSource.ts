@@ -137,6 +137,10 @@ export class RuntimeBotDataSource implements BotSessionDataSource {
     throw new Error('Draft update not supported for runtime bots');
   }
 
+  async deleteDraft(_messageId: string, _draftId?: string | null): Promise<any> {
+    throw new Error('Draft deletion not supported for runtime bots');
+  }
+
   async processMessage(_messageId: string): Promise<void> {
     throw new Error('Message processing not supported for runtime bots');
   }

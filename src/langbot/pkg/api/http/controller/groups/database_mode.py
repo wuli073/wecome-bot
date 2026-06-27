@@ -257,8 +257,16 @@ class DatabaseModeRouterGroup(group.RouterGroup):
             message = await self.ap.database_mode_service.generate_draft(message_id)
             return self.success(data={'message': message})
 
-        @self.route('/messages/<int:message_id>/draft', methods=['PUT'], auth_type=group.AuthType.USER_TOKEN)
-        async def update_draft(message_id: int) -> str:
+        @self.route(
+            '/messages/<int:message_id>/draft',
+            methods=['PUT', 'DELETE'],
+            auth_type=group.AuthType.USER_TOKEN,
+        )
+        async def draft_detail(message_id: int) -> str:
+            if quart.request.method == 'DELETE':
+                message = await self.ap.database_mode_service.delete_draft(message_id)
+                return self.success(data={'message': message})
+
             payload = await quart.request.get_json(silent=True) or {}
             message = await self.ap.database_mode_service.update_draft(
                 message_id,

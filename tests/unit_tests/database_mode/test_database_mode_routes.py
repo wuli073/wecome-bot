@@ -1083,6 +1083,86 @@ async def test_bot_scoped_generate_draft_returns_200_with_real_processing_servic
     await persistence_mgr.dispose()
 
 
+async def test_bot_scoped_generate_draft_processing_returns_200_with_active_run_payload():
+    _app, client, ap, persistence_mgr = await _make_bot_client_with_processing_service()
+
+    ap.database_mode_processing_service = SimpleNamespace(
+        generate_draft=AsyncMock(return_value={
+            'status': 'processing',
+            'message_id': 1,
+            'message': 'Draft generation is already in progress',
+            'run': {
+                'id': 41,
+                'status': 'processing',
+                'started_at': '2026-06-27T00:00:00+00:00',
+                'attempt_count': 2,
+            },
+        })
+    )
+
+    response = await client.post(
+        "/api/v1/bots/bot-1/messages/1/generate-draft",
+        headers={"Authorization": "Bearer valid-user-token"},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload["data"] == {
+        'status': 'processing',
+        'message_id': 1,
+        'message': 'Draft generation is already in progress',
+        'run': {
+            'id': 41,
+            'status': 'processing',
+            'started_at': '2026-06-27T00:00:00+00:00',
+            'attempt_count': 2,
+        },
+    }
+
+    await persistence_mgr.dispose()
+
+
+async def test_bot_scoped_generate_draft_already_succeeded_returns_200_with_existing_draft():
+    _app, client, ap, persistence_mgr = await _make_bot_client_with_processing_service()
+
+    ap.database_mode_processing_service = SimpleNamespace(
+        generate_draft=AsyncMock(return_value={
+            'status': 'already_succeeded',
+            'draft': {
+                'id': 71,
+                'message_id': 1,
+                'content': 'Existing draft payload',
+                'source': 'pipeline',
+                'version': 2,
+                'status': 'active',
+                'created_at': '2026-06-27T00:00:00+00:00',
+                'updated_at': '2026-06-27T00:00:01+00:00',
+            },
+            'run': {
+                'id': 72,
+                'message_id': 1,
+                'bot_uuid': 'bot-1',
+                'trigger': 'manual',
+                'status': 'succeeded',
+                'attempt_count': 2,
+            },
+        })
+    )
+
+    response = await client.post(
+        "/api/v1/bots/bot-1/messages/1/generate-draft",
+        headers={"Authorization": "Bearer valid-user-token"},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload["data"]["status"] == "already_succeeded"
+    assert payload["data"]["draft"]["content"] == "Existing draft payload"
+    assert payload["data"]["run"]["status"] == "succeeded"
+
+    await persistence_mgr.dispose()
+
+
 async def test_bot_scoped_generate_draft_failure_returns_json_not_html():
     _app, client, ap, persistence_mgr = await _make_bot_client_with_processing_service()
 

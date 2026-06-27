@@ -108,10 +108,11 @@ export interface MessageProcessingRun {
 }
 
 export interface ApiRespGenerateDraft {
-  status: 'succeeded' | 'already_succeeded' | 'processing';
+  status: 'succeeded' | 'already_succeeded' | 'processing' | 'claim_conflict';
   draft?: ReplyDraft;
   run?: MessageProcessingRun;
   message?: string;
+  message_id?: number;
 }
 
 export interface ApiRespUpdateDraft {
