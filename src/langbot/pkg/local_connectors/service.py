@@ -82,6 +82,7 @@ class LocalConnectorsService:
             "decrypted_dir": existing.get("decrypted_dir"),
             "tool_count": existing.get("tool_count", 0),
             "monitor_enabled": bool(existing.get("monitor_enabled", False)),
+            "desktop_automation": dict(existing.get("desktop_automation") or {}),
             "updated_at": existing.get("updated_at", time.time()),
         }
         return state

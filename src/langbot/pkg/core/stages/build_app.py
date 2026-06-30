@@ -43,6 +43,13 @@ from ...local_connectors import service as local_connectors_service
 from ...database_mode.events import DatabaseModeEventBus
 from ...database_mode import service as database_mode_service
 from ...database_mode import processing_service as database_mode_processing_service
+from ...desktop_automation.repository import DesktopAutomationRepository
+from ...desktop_automation.runtime_process import (
+    DesktopRuntimeProcessManager,
+    apply_local_desktop_automation_defaults,
+)
+from ...desktop_automation.client import DesktopRuntimeClient
+from ...desktop_automation.service import DesktopAutomationService
 
 
 @stage.stage_class('BuildAppStage')
@@ -203,6 +210,26 @@ class BuildAppStage(stage.BootingStage):
         ap.database_mode_service = database_mode_service_inst
         ap.database_mode_processing_service = database_mode_processing_service.DatabaseModeProcessingService(ap)
         await ap.database_mode_processing_service.reconcile_stale_processing_runs()
+
+        desktop_automation_config = apply_local_desktop_automation_defaults(
+            ap.instance_config.data.get('desktop_automation', {})
+        )
+        ap.instance_config.data['desktop_automation'] = desktop_automation_config
+        desktop_automation_repository = DesktopAutomationRepository(ap.persistence_mgr)
+        desktop_automation_runtime_process_manager = DesktopRuntimeProcessManager(
+            config=desktop_automation_config,
+        )
+        ap.desktop_automation_service = DesktopAutomationService(
+            ap,
+            repository=desktop_automation_repository,
+            runtime_process_manager=desktop_automation_runtime_process_manager,
+            runtime_client_factory=lambda runtime_info: DesktopRuntimeClient(
+                base_url=f"http://{runtime_info['host']}:{runtime_info['port']}",
+                token=str(runtime_info['token']),
+                expected_protocol_version=str(desktop_automation_config.get('expected_protocol_version') or '1'),
+            ),
+        )
+        await ap.desktop_automation_service.reconcile_stale_runs()
 
         maintenance_service_inst = maintenance_service.MaintenanceService(ap)
         ap.maintenance_service = maintenance_service_inst

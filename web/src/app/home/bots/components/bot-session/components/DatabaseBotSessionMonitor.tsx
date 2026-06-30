@@ -18,6 +18,8 @@ import { MessageContentRenderer } from '@/app/home/monitoring/components/Message
 import type {
   BotConversation,
   BotMessage,
+  DesktopAutomationRun,
+  DesktopRuntimeStatus,
   ReplyDraft,
 } from '@/app/infra/entities/api';
 import { copyToClipboard } from '@/app/utils/clipboard';
@@ -34,6 +36,14 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
@@ -100,9 +110,18 @@ interface ProcessingRecoveryState {
   startedAt: number;
 }
 
+interface DesktopDraftTarget {
+  conversationId: number;
+  messageId: number;
+  draftId: number;
+  conversationName: string;
+}
+
 const SCROLL_BOTTOM_THRESHOLD = 80;
 const PROCESSING_POLL_INTERVAL_MS = 1_500;
 const PROCESSING_RECOVERY_TIMEOUT_MS = 90_000;
+const DESKTOP_RUN_POLL_INTERVAL_MS = 1_500;
+const DESKTOP_RUN_POLL_TIMEOUT_MS = 130_000;
 const STATUS_OPTIONS: MessageStatusFilter[] = [
   'all',
   'pending',
@@ -321,6 +340,58 @@ function statusTextClass(status: BotMessage['status']) {
   }
 }
 
+function isActiveDesktopRunStatus(status?: string | null) {
+  return status === 'queued' || status === 'starting' || status === 'running';
+}
+
+function isTerminalDesktopRunStatus(status?: string | null) {
+  return (
+    status === 'succeeded' ||
+    status === 'succeeded_with_warning' ||
+    status === 'blocked' ||
+    status === 'failed' ||
+    status === 'cancelled' ||
+    status === 'timed_out'
+  );
+}
+
+function createDesktopRunSkeleton(input: {
+  runId: number;
+  botId: string;
+  conversationId: number;
+  messageId: number;
+  draftId: number;
+  status?: string | null;
+  stage?: string | null;
+  errorCode?: string | null;
+}): DesktopAutomationRun {
+  const now = new Date().toISOString();
+  return {
+    id: input.runId,
+    bot_uuid: input.botId,
+    connector_id: '',
+    conversation_id: input.conversationId,
+    message_id: input.messageId,
+    draft_id: input.draftId,
+    action: 'paste_current_wecom_draft',
+    execution_mode: 'paste_only',
+    runtime_task_id: null,
+    status: (input.status as DesktopAutomationRun['status']) ?? 'queued',
+    stage: input.stage ?? 'queued',
+    attempt_count: 1,
+    request_digest: '',
+    draft_content_hash: '',
+    target_snapshot: {},
+    result_evidence: null,
+    last_error_code: input.errorCode ?? null,
+    last_error_message: null,
+    started_at: null,
+    completed_at: null,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
 export const DatabaseBotSessionMonitor = forwardRef<
   BotSessionMonitorHandle,
   DatabaseBotSessionMonitorProps
@@ -361,9 +432,27 @@ export const DatabaseBotSessionMonitor = forwardRef<
   >(null);
   const [processingRecovery, setProcessingRecovery] =
     useState<ProcessingRecoveryState | null>(null);
+  const [desktopRuntimeStatus, setDesktopRuntimeStatus] =
+    useState<DesktopRuntimeStatus | null>(null);
+  const [desktopRuntimeStatusLoading, setDesktopRuntimeStatusLoading] =
+    useState(false);
+  const [desktopConfirmationDialogOpen, setDesktopConfirmationDialogOpen] =
+    useState(false);
+  const [desktopConfirmationSubmitting, setDesktopConfirmationSubmitting] =
+    useState(false);
+  const [desktopConfirmationTarget, setDesktopConfirmationTarget] =
+    useState<DesktopDraftTarget | null>(null);
+  const [desktopRun, setDesktopRun] = useState<DesktopAutomationRun | null>(
+    null,
+  );
+  const [desktopPasteSubmitting, setDesktopPasteSubmitting] = useState(false);
+  const [desktopRunPollingStartedAt, setDesktopRunPollingStartedAt] = useState<
+    number | null
+  >(null);
 
   const messagesScrollAreaRef = useRef<HTMLDivElement | null>(null);
   const currentDraftRef = useRef<DraftEditorState | null>(null);
+  const desktopRunRef = useRef<DesktopAutomationRun | null>(null);
   const draftDirtyRef = useRef(false);
   const selectedConversationIdRef = useRef<number | null>(null);
   const autoScrollToBottomRef = useRef(true);
@@ -392,6 +481,10 @@ export const DatabaseBotSessionMonitor = forwardRef<
   useEffect(() => {
     currentDraftRef.current = currentDraft;
   }, [currentDraft]);
+
+  useEffect(() => {
+    desktopRunRef.current = desktopRun;
+  }, [desktopRun]);
 
   useEffect(() => {
     draftDirtyRef.current = isDirty;
@@ -497,6 +590,23 @@ export const DatabaseBotSessionMonitor = forwardRef<
     [refreshConversationData],
   );
 
+  const loadDesktopRuntimeStatus = useCallback(async () => {
+    setDesktopRuntimeStatusLoading(true);
+    try {
+      const status = await dataSource.getDesktopRuntimeStatus();
+      setDesktopRuntimeStatus(status);
+    } catch (error) {
+      console.error('Failed to load desktop runtime status:', error);
+      setDesktopRuntimeStatus({ status: 'failed' });
+    } finally {
+      setDesktopRuntimeStatusLoading(false);
+    }
+  }, [dataSource]);
+
+  useEffect(() => {
+    void loadDesktopRuntimeStatus();
+  }, [loadDesktopRuntimeStatus]);
+
   useEffect(() => {
     void loadConversations();
   }, [loadConversations]);
@@ -507,6 +617,11 @@ export const DatabaseBotSessionMonitor = forwardRef<
       setComposerText('');
       setPersistedDraftText('');
       setCurrentDraft(null);
+      setDesktopConfirmationDialogOpen(false);
+      setDesktopConfirmationTarget(null);
+      setDesktopRun(null);
+      setDesktopPasteSubmitting(false);
+      setDesktopRunPollingStartedAt(null);
       setSelectedMessages(new Set());
       setSelectedMessageId(null);
       setAiPopoverOpen(false);
@@ -518,6 +633,11 @@ export const DatabaseBotSessionMonitor = forwardRef<
     setSelectedMessageId(null);
     setAiPopoverOpen(false);
     setIsBatchMode(false);
+    setDesktopConfirmationDialogOpen(false);
+    setDesktopConfirmationTarget(null);
+    setDesktopRun(null);
+    setDesktopPasteSubmitting(false);
+    setDesktopRunPollingStartedAt(null);
     void loadMessages(selectedConversationId);
   }, [loadMessages, selectedConversationId]);
 
@@ -588,7 +708,53 @@ export const DatabaseBotSessionMonitor = forwardRef<
         });
       }
     },
-    onMessageUpdated: () => {
+    onMessageUpdated: (event) => {
+      const currentDraftState = currentDraftRef.current;
+      const runId = event.metadata?.desktop_run_id;
+      const draftId = currentDraftState?.draftId;
+      if (
+        currentDraftState &&
+        typeof runId === 'number' &&
+        typeof draftId === 'number' &&
+        event.message_id === currentDraftState.messageId &&
+        event.metadata?.draft_id === draftId
+      ) {
+        setDesktopRun((previousRun) => ({
+          ...(previousRun ??
+            createDesktopRunSkeleton({
+              runId,
+              botId,
+              conversationId: selectedConversationIdRef.current ?? 0,
+              messageId: currentDraftState.messageId,
+              draftId,
+              status: event.metadata?.desktop_status,
+              stage: event.metadata?.desktop_stage,
+              errorCode: event.metadata?.desktop_error_code,
+            })),
+          id: runId,
+          bot_uuid: botId,
+          conversation_id: selectedConversationIdRef.current ?? 0,
+          message_id: currentDraftState.messageId,
+          draft_id: draftId,
+          action: 'paste_current_wecom_draft',
+          execution_mode: 'paste_only',
+          status:
+            (event.metadata
+              ?.desktop_status as DesktopAutomationRun['status']) ??
+            previousRun?.status ??
+            'queued',
+          stage:
+            event.metadata?.desktop_stage ?? previousRun?.stage ?? 'queued',
+          last_error_code:
+            event.metadata?.desktop_error_code ?? previousRun?.last_error_code,
+          updated_at: new Date().toISOString(),
+        }));
+        if (isTerminalDesktopRunStatus(event.metadata?.desktop_status)) {
+          setDesktopRunPollingStartedAt(null);
+        } else {
+          setDesktopRunPollingStartedAt((value) => value ?? Date.now());
+        }
+      }
       void loadConversations();
       if (selectedConversationIdRef.current !== null) {
         void loadMessages(selectedConversationIdRef.current, {
@@ -619,6 +785,183 @@ export const DatabaseBotSessionMonitor = forwardRef<
       : (messages.find((message) => message.id === selectedMessageId) ?? null);
   const effectiveTargetMessage =
     explicitSelectedMessage ?? defaultActionMessage;
+  const desktopRunMatchesCurrentDraft = Boolean(
+    desktopRun &&
+    currentDraft &&
+    desktopRun.message_id === currentDraft.messageId &&
+    desktopRun.draft_id === (currentDraft.draftId ?? -1),
+  );
+  const activeDesktopRun =
+    desktopRunMatchesCurrentDraft &&
+    isActiveDesktopRunStatus(desktopRun?.status)
+      ? desktopRun
+      : null;
+  const desktopRuntimeStartable = Boolean(
+    desktopRuntimeStatus?.runtime_startable ??
+    (desktopRuntimeStatus &&
+      desktopRuntimeStatus.status !== 'unsupported' &&
+      desktopRuntimeStatus.status !== 'disabled' &&
+      desktopRuntimeStatus.status !== 'not_configured' &&
+      desktopRuntimeStatus.status !== 'starting'),
+  );
+  const desktopRuntimeReachable = Boolean(
+    desktopRuntimeStatus?.runtime_reachable ??
+    (desktopRuntimeStatus && desktopRuntimeStatus.status === 'ready'),
+  );
+  const desktopRuntimeAvailable = Boolean(
+    desktopRuntimeReachable || desktopRuntimeStartable,
+  );
+  const canCancelDesktopRun = Boolean(
+    activeDesktopRun &&
+    activeDesktopRun.stage !== 'committing_send' &&
+    activeDesktopRun.stage !== 'completed',
+  );
+  const desktopRunStatusText = (() => {
+    if (!desktopRunMatchesCurrentDraft || !desktopRun) {
+      return null;
+    }
+
+    const stageTextMap: Record<string, string> = {
+      validating_process: t(
+        'bots.sessionMonitor.databaseComposer.stage.validating_process',
+      ),
+      binding_window: t(
+        'bots.sessionMonitor.databaseComposer.stage.binding_window',
+      ),
+      activating_window: t(
+        'bots.sessionMonitor.databaseComposer.stage.activating_window',
+      ),
+      waiting_stability: t(
+        'bots.sessionMonitor.databaseComposer.stage.waiting_stability',
+      ),
+      verifying_foreground: t(
+        'bots.sessionMonitor.databaseComposer.stage.verifying_foreground',
+      ),
+      verifying_conversation: t(
+        'bots.sessionMonitor.databaseComposer.stage.inspecting_session',
+      ),
+      inspecting_session: t(
+        'bots.sessionMonitor.databaseComposer.stage.inspecting_session',
+      ),
+      locating_input: t(
+        'bots.sessionMonitor.databaseComposer.stage.locating_input',
+      ),
+      checking_input: t(
+        'bots.sessionMonitor.databaseComposer.stage.reading_input',
+      ),
+      reading_input: t(
+        'bots.sessionMonitor.databaseComposer.stage.reading_input',
+      ),
+      revalidating_context: t(
+        'bots.sessionMonitor.databaseComposer.stage.revalidating_context',
+      ),
+      pasting_draft: t(
+        'bots.sessionMonitor.databaseComposer.stage.pasting_draft',
+      ),
+      pasted_to_input: t(
+        'bots.sessionMonitor.databaseComposer.stage.pasted_to_input',
+      ),
+    };
+    const errorCode = desktopRun.last_error_code;
+    const errorText = errorCode
+      ? t(`bots.sessionMonitor.databaseComposer.error.${errorCode}`, {
+          defaultValue: errorCode,
+        })
+      : null;
+
+    switch (desktopRun.status) {
+      case 'queued':
+      case 'starting':
+      case 'running':
+        return (
+          stageTextMap[desktopRun.stage ?? ''] ??
+          t('bots.sessionMonitor.databaseComposer.status.running')
+        );
+      case 'succeeded':
+        return t('bots.sessionMonitor.databaseComposer.status.succeeded');
+      case 'blocked':
+        return (
+          errorText ?? t('bots.sessionMonitor.databaseComposer.status.blocked')
+        );
+      case 'failed':
+        return (
+          errorText ?? t('bots.sessionMonitor.databaseComposer.status.failed')
+        );
+      case 'timed_out':
+        return t('bots.sessionMonitor.databaseComposer.status.timed_out');
+      case 'cancelled':
+        return t('bots.sessionMonitor.databaseComposer.status.cancelled');
+      default:
+        return null;
+    }
+  })();
+  const pasteDisabledReason = (() => {
+    if (!botEnabled) {
+      return t('bots.sessionMonitor.databaseComposer.sendDisabled.botDisabled');
+    }
+    if (desktopPasteSubmitting) {
+      return t('bots.sessionMonitor.databaseComposer.sendDisabled.activeRun');
+    }
+    if (draftSaving || generatingDraft) {
+      return t('bots.sessionMonitor.databaseComposer.sendDisabled.busy');
+    }
+    if (activeDesktopRun) {
+      return t('bots.sessionMonitor.databaseComposer.sendDisabled.activeRun');
+    }
+    if (desktopRuntimeStatusLoading || desktopRuntimeStatus === null) {
+      return t(
+        'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeChecking',
+      );
+    }
+    if (desktopRuntimeStatus.status === 'disabled') {
+      return t(
+        'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeDisabled',
+      );
+    }
+    if (desktopRuntimeStatus.status === 'not_configured') {
+      return t(
+        'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeNotConfigured',
+      );
+    }
+    if (desktopRuntimeStatus.status === 'unsupported') {
+      return t(
+        'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeUnsupported',
+      );
+    }
+    if (desktopRuntimeStatus.status === 'failed') {
+      return t(
+        'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeFailed',
+      );
+    }
+    return null;
+  })();
+  const sendDisabledReason = pasteDisabledReason;
+  const desktopRuntimeErrorMessage = (() => {
+    if (desktopRuntimeStatusLoading || desktopRuntimeStatus === null) {
+      return null;
+    }
+    if (!desktopRuntimeAvailable) {
+      switch (desktopRuntimeStatus.status) {
+        case 'not_configured':
+          return t(
+            'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeNotConfigured',
+          );
+        case 'unsupported':
+          return t(
+            'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeUnsupported',
+          );
+        case 'failed':
+          return t(
+            'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeFailed',
+          );
+        default:
+          return t(
+            'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeDisabled',
+          );
+      }
+    }
+    return null;
+  })();
   const actionDisabledReason = !botEnabled
     ? 'Please enable the bot first.'
     : effectiveTargetMessage && canGenerateDraft(effectiveTargetMessage)
@@ -667,6 +1010,19 @@ export const DatabaseBotSessionMonitor = forwardRef<
         Boolean(options?.preserveDraftText) &&
         draftDirtyRef.current &&
         sameTarget;
+      const activeDesktopRun = desktopRunRef.current;
+
+      if (
+        !targetMessage &&
+        conversationId !== null &&
+        previousDraft &&
+        activeDesktopRun?.status === 'succeeded' &&
+        activeDesktopRun.conversation_id === conversationId &&
+        activeDesktopRun.message_id === previousDraft.messageId &&
+        activeDesktopRun.draft_id === (previousDraft.draftId ?? -1)
+      ) {
+        return;
+      }
 
       if (
         targetMessage &&
@@ -706,6 +1062,31 @@ export const DatabaseBotSessionMonitor = forwardRef<
     selectedConversationId,
     syncComposerWithTargetMessage,
   ]);
+
+  useEffect(() => {
+    if (!desktopRun) {
+      return;
+    }
+    if (
+      selectedConversationId !== null &&
+      desktopRun.conversation_id !== selectedConversationId
+    ) {
+      setDesktopRun(null);
+      setDesktopRunPollingStartedAt(null);
+      return;
+    }
+    if (
+      currentDraft &&
+      desktopRun.message_id === currentDraft.messageId &&
+      desktopRun.draft_id === (currentDraft.draftId ?? -1)
+    ) {
+      return;
+    }
+    if (!isActiveDesktopRunStatus(desktopRun.status)) {
+      setDesktopRun(null);
+      setDesktopRunPollingStartedAt(null);
+    }
+  }, [currentDraft, desktopRun, selectedConversationId]);
 
   const restoreDraftFromMessage = useCallback(
     (
@@ -964,6 +1345,217 @@ export const DatabaseBotSessionMonitor = forwardRef<
     restoreDraftFromMessage,
     selectedMessageId,
   ]);
+
+  useEffect(() => {
+    if (
+      !desktopRun ||
+      !desktopRunMatchesCurrentDraft ||
+      !isActiveDesktopRunStatus(desktopRun.status)
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    let timerId: number | null = null;
+    const startedAt = desktopRunPollingStartedAt ?? Date.now();
+
+    const poll = async () => {
+      if (cancelled || Date.now() - startedAt >= DESKTOP_RUN_POLL_TIMEOUT_MS) {
+        return;
+      }
+      try {
+        const nextRun = await dataSource.getDesktopRun(
+          desktopRun.id.toString(),
+        );
+        if (cancelled) {
+          return;
+        }
+        setDesktopRun(nextRun);
+        if (isTerminalDesktopRunStatus(nextRun.status)) {
+          setDesktopRunPollingStartedAt(null);
+          if (
+            nextRun.status === 'succeeded' ||
+            nextRun.status === 'succeeded_with_warning'
+          ) {
+            toast.success(
+              t('bots.sessionMonitor.databaseComposer.paste.success'),
+            );
+          } else if (nextRun.last_error_code) {
+            toast.error(
+              t(
+                `bots.sessionMonitor.databaseComposer.error.${nextRun.last_error_code}`,
+                { defaultValue: nextRun.last_error_code },
+              ),
+            );
+          }
+          await refreshConversationData();
+          return;
+        }
+      } catch (error) {
+        console.error('Failed to poll desktop automation run:', error);
+      }
+      timerId = window.setTimeout(poll, DESKTOP_RUN_POLL_INTERVAL_MS);
+    };
+
+    timerId = window.setTimeout(poll, DESKTOP_RUN_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+      }
+    };
+  }, [
+    dataSource,
+    desktopRun,
+    desktopRunMatchesCurrentDraft,
+    desktopRunPollingStartedAt,
+    refreshConversationData,
+    t,
+  ]);
+
+  const submitDesktopPaste = useCallback(
+    async (target: DesktopDraftTarget, idempotencyKey: string) => {
+      try {
+        setDesktopPasteSubmitting(true);
+        const response = await dataSource.pasteDraft(
+          target.messageId.toString(),
+          target.draftId.toString(),
+          idempotencyKey,
+        );
+        const latestDraft = currentDraftRef.current;
+        if (
+          selectedConversationIdRef.current !== target.conversationId ||
+          !latestDraft ||
+          latestDraft.conversationId !== target.conversationId ||
+          latestDraft.messageId !== target.messageId ||
+          latestDraft.draftId !== target.draftId
+        ) {
+          return;
+        }
+        setDesktopRun(response.run);
+        if (isActiveDesktopRunStatus(response.run.status)) {
+          setDesktopRunPollingStartedAt(Date.now());
+        } else {
+          setDesktopRunPollingStartedAt(null);
+          if (
+            response.run.status === 'succeeded' ||
+            response.run.status === 'succeeded_with_warning'
+          ) {
+            toast.success(
+              t('bots.sessionMonitor.databaseComposer.paste.success'),
+            );
+          }
+        }
+      } catch (error: any) {
+        console.error('Failed to paste desktop draft:', error);
+        toast.error(
+          error?.msg === 'RPA_RUNTIME_NOT_AVAILABLE'
+            ? t(
+                'bots.sessionMonitor.databaseComposer.status.runtimeNotAvailable',
+              )
+            : error?.msg ||
+                t('bots.sessionMonitor.databaseComposer.status.failed'),
+        );
+      } finally {
+        setDesktopPasteSubmitting(false);
+      }
+    },
+    [dataSource, t],
+  );
+
+  const beginDesktopConfirmation = useCallback(() => {
+    if (!currentDraft?.draftId || !selectedConversation) {
+      toast.error(
+        t('bots.sessionMonitor.databaseComposer.sendDisabled.noPersistedDraft'),
+      );
+      return;
+    }
+    setDesktopConfirmationTarget({
+      conversationId: currentDraft.conversationId,
+      messageId: currentDraft.messageId,
+      draftId: currentDraft.draftId,
+      conversationName: selectedConversation.conversation_name,
+    });
+    setDesktopConfirmationDialogOpen(true);
+  }, [currentDraft, selectedConversation, t]);
+
+  const handleDesktopConfirmationApproved = useCallback(async () => {
+    if (!desktopConfirmationTarget || desktopConfirmationSubmitting) {
+      return;
+    }
+    try {
+      setDesktopConfirmationSubmitting(true);
+      const idempotencyKey = crypto.randomUUID();
+      const target = desktopConfirmationTarget;
+      setDesktopConfirmationDialogOpen(false);
+      setDesktopConfirmationTarget(null);
+      await submitDesktopPaste(target, idempotencyKey);
+    } catch (error: any) {
+      console.error('Failed to confirm desktop paste:', error);
+      toast.error(
+        error?.msg ??
+          t('bots.sessionMonitor.databaseComposer.confirmation.confirmError'),
+      );
+    } finally {
+      setDesktopConfirmationSubmitting(false);
+    }
+  }, [
+    desktopConfirmationSubmitting,
+    desktopConfirmationTarget,
+    submitDesktopPaste,
+    t,
+  ]);
+
+  const handleDesktopPaste = useCallback(async () => {
+    if (!currentDraft?.draftId) {
+      toast.error(
+        t('bots.sessionMonitor.databaseComposer.sendDisabled.noPersistedDraft'),
+      );
+      return;
+    }
+    if (!hasComposerContent) {
+      toast.error(
+        t('bots.sessionMonitor.databaseComposer.sendDisabled.emptyDraft'),
+      );
+      return;
+    }
+    if (isDirty) {
+      toast.error(
+        t('bots.sessionMonitor.databaseComposer.sendDisabled.unsavedChanges'),
+      );
+      return;
+    }
+    if (pasteDisabledReason) {
+      toast.error(pasteDisabledReason);
+      return;
+    }
+    beginDesktopConfirmation();
+  }, [
+    beginDesktopConfirmation,
+    currentDraft,
+    hasComposerContent,
+    isDirty,
+    pasteDisabledReason,
+    t,
+  ]);
+
+  const handleCancelDesktopRun = useCallback(async () => {
+    if (!desktopRun) {
+      return;
+    }
+
+    try {
+      const nextRun = await dataSource.cancelDesktopRun(
+        desktopRun.id.toString(),
+      );
+      setDesktopRun(nextRun);
+      setDesktopRunPollingStartedAt(null);
+      await refreshConversationData();
+    } catch (error: any) {
+      console.error('Failed to cancel desktop automation run:', error);
+      toast.error(error?.msg || t('common.cancel'));
+    }
+  }, [dataSource, desktopRun, refreshConversationData, t]);
 
   const handleSaveDraft = useCallback(async () => {
     if (!currentDraft) {
@@ -1621,6 +2213,29 @@ export const DatabaseBotSessionMonitor = forwardRef<
                 </div>
               </ScrollArea>
 
+              <div className="border-t bg-muted/20 px-4 py-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  {desktopRuntimeErrorMessage ? (
+                    <Badge variant="destructive">
+                      {desktopRuntimeErrorMessage}
+                    </Badge>
+                  ) : null}
+                  {desktopRunStatusText ? (
+                    <Badge variant="outline">{desktopRunStatusText}</Badge>
+                  ) : null}
+                  {canCancelDesktopRun ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void handleCancelDesktopRun()}
+                    >
+                      {t('common.cancel')}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+
               <DatabaseChatComposer
                 aiActions={
                   <DatabaseAiActionPopover
@@ -1647,6 +2262,16 @@ export const DatabaseBotSessionMonitor = forwardRef<
                 hasPersistedDraft={Boolean(persistedDraftText)}
                 isClearedLocally={isClearedLocally}
                 hasUnsavedChanges={isDirty}
+                sendButtonLabel={t(
+                  'bots.sessionMonitor.databaseComposer.paste.button',
+                )}
+                sendDisabledReason={sendDisabledReason}
+                sendInProgress={
+                  desktopPasteSubmitting || Boolean(activeDesktopRun)
+                }
+                sendStatusText={null}
+                showCancelSend={false}
+                onCancelSend={() => undefined}
                 onClear={handleClearComposer}
                 onCopy={handleCopyDraft}
                 onComposerTextChange={setComposerText}
@@ -1658,12 +2283,78 @@ export const DatabaseBotSessionMonitor = forwardRef<
                 }}
                 onRequestDeleteDraft={() => setDeleteDraftDialogOpen(true)}
                 onSave={() => void handleSaveDraft()}
+                onSend={() => void handleDesktopPaste()}
                 onUndoEdit={handleUndoEdit}
               />
             </div>
           </>
         )}
       </div>
+
+      <Dialog
+        open={desktopConfirmationDialogOpen}
+        onOpenChange={(open) => {
+          setDesktopConfirmationDialogOpen(open);
+          if (!open) {
+            setDesktopConfirmationTarget(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {t(
+                'bots.sessionMonitor.databaseComposer.confirmation.dialogTitle',
+              )}
+            </DialogTitle>
+            <DialogDescription>
+              {t(
+                'bots.sessionMonitor.databaseComposer.confirmation.description',
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          {desktopConfirmationTarget ? (
+            <div className="space-y-4">
+              <div className="rounded-xl border bg-muted/20 p-4">
+                <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                  {t(
+                    'bots.sessionMonitor.databaseComposer.confirmation.expectedLabel',
+                  )}
+                </div>
+                <div className="mt-2 text-base font-semibold">
+                  {desktopConfirmationTarget.conversationName}
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setDesktopConfirmationDialogOpen(false);
+                setDesktopConfirmationTarget(null);
+              }}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void handleDesktopConfirmationApproved()}
+              disabled={
+                desktopConfirmationSubmitting || !desktopConfirmationTarget
+              }
+            >
+              {desktopConfirmationSubmitting ? (
+                <RefreshCw className="mr-1 size-4 animate-spin" />
+              ) : null}
+              {t('bots.sessionMonitor.databaseComposer.confirmation.approve')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog
         open={deleteDraftDialogOpen}

@@ -163,3 +163,35 @@ class ReplyDraft(Base):
         server_default=sqlalchemy.func.now(),
         onupdate=sqlalchemy.func.now(),
     )
+
+
+class DesktopAutomationRun(Base):
+    __tablename__ = 'desktop_automation_runs'
+
+    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True, autoincrement=True)
+    bot_uuid = sqlalchemy.Column(sqlalchemy.String(255), nullable=False, index=True)
+    connector_id = sqlalchemy.Column(sqlalchemy.String(255), nullable=False, index=True)
+    conversation_id = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, index=True)
+    message_id = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, index=True)
+    draft_id = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, index=True)
+    action = sqlalchemy.Column(sqlalchemy.String(50), nullable=False, index=True)
+    execution_mode = sqlalchemy.Column(sqlalchemy.String(50), nullable=False, index=True)
+    runtime_task_id = sqlalchemy.Column(sqlalchemy.String(255), nullable=True, index=True)
+    status = sqlalchemy.Column(sqlalchemy.String(50), nullable=False, index=True)
+    stage = sqlalchemy.Column(sqlalchemy.String(50), nullable=False, index=True)
+    attempt_count = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, server_default='0', default=0)
+    request_digest = sqlalchemy.Column(sqlalchemy.String(255), nullable=False, index=True)
+    draft_content_hash = sqlalchemy.Column(sqlalchemy.String(255), nullable=False, index=True)
+    target_snapshot = sqlalchemy.Column(sqlalchemy.JSON, nullable=False, server_default='{}', default=dict)
+    result_evidence = sqlalchemy.Column(sqlalchemy.JSON, nullable=True)
+    last_error_code = sqlalchemy.Column(sqlalchemy.String(255), nullable=True, index=True)
+    last_error_message = sqlalchemy.Column(sqlalchemy.Text, nullable=True)
+    started_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
+    completed_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
+    created_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False, server_default=sqlalchemy.func.now())
+    updated_at = sqlalchemy.Column(
+        sqlalchemy.DateTime,
+        nullable=False,
+        server_default=sqlalchemy.func.now(),
+        onupdate=sqlalchemy.func.now(),
+    )

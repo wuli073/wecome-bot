@@ -472,7 +472,126 @@ const jaJP = {
         save: '保存',
         saveError: '草稿の保存に失敗しました',
         saveSuccess: '草稿を保存しました',
+        send: '送信',
+        sending: '送信中',
         sendUnavailable: '送信機能はまだ利用できません',
+        sendRealDisabled:
+          '実送信はまだ開放されていません。「桌面验证（Dry Run）」を使用してください。',
+        paste: {
+          button: 'WeCom 入力欄に貼り付ける',
+          success:
+            '草稿を WeCom 入力欄に貼り付けました。確認して手動で送信してください。',
+        },
+        status: {
+          running: '送信中…',
+          succeeded:
+            '現在の会話は人手確認済みで、ウィンドウ文脈は安定し、入力領域を特定しました',
+          blocked: '安全確認によって停止されました',
+          failed: '送信に失敗しました',
+          timed_out: '送信がタイムアウトしました',
+          cancelled: 'キャンセルしました',
+        },
+        stage: {
+          validating_process: 'WeCom を確認しています',
+          binding_window: 'WeCom ウィンドウを関連付けています',
+          activating_window: 'WeCom ウィンドウを前面化しています',
+          waiting_stability: 'ウィンドウが安定するのを待っています',
+          verifying_foreground: '前面ウィンドウを確認しています',
+          verifying_conversation: '現在の会話を確認しています',
+          inspecting_session: '確認済み会話の文脈を検証しています',
+          locating_input: '入力欄を特定しています',
+          checking_input: '入力欄を確認しています',
+          reading_input: '読み取り不能な入力状態を記録しています',
+          revalidating_context: 'ウィンドウ文脈を再検証しています',
+          pasting_draft: '草稿を貼り付けています',
+          pasted_to_input: '草稿を WeCom 入力欄に貼り付けました',
+          verifying_paste: '貼り付けた草稿を検証しています',
+          committing_send: '送信操作を実行しています',
+          ready_to_send: 'dry-run が ready_to_send に到達しました',
+        },
+        sendDisabled: {
+          botDisabled: '送信する前に Bot を有効化してください',
+          noPersistedDraft: '送信する前に草稿を保存してください',
+          emptyDraft: '草稿内容は空にできません',
+          unsavedChanges: '送信する前に草稿を保存してください',
+          busy: '現在の草稿操作が完了するまで待ってください',
+          activeRun: '別のデスクトップ送信が進行中です',
+          alreadySent: 'この草稿はすでに送信されています',
+          runtimeChecking: 'デスクトップランタイムの状態を確認しています',
+          runtimeDisabled: 'デスクトップ自動化は無効です',
+          runtimeNotConfigured: 'デスクトップランタイムが設定されていません',
+          runtimeUnsupported: 'この環境ではデスクトップ自動化を利用できません',
+          runtimeFailed: 'デスクトップランタイムは現在利用できません',
+          runtimeNotAvailable:
+            'RPA_RUNTIME_NOT_AVAILABLE: Runtime の起動に失敗しました。パッケージ済み Runtime とバックエンドログを確認してください。',
+        },
+        confirmation: {
+          trigger: '現在の会話を確認',
+          ready: 'ワンタイム確認が利用可能です',
+          dialogTitle: '現在の会話を確認',
+          description:
+            '期待する会話名とタイトル領域の画像を見比べて、現在の会話が正しいことを確認してください。',
+          loading: 'タイトル領域の画像を準備しています',
+          expectedLabel: '期待する会話',
+          approve: 'この会話が正しいことを確認する',
+          prepareError: '会話確認の準備に失敗しました',
+          confirmError: '会話確認の送信に失敗しました',
+          success: '会話確認が完了し、dry-run の準備ができました',
+        },
+        dryRun: {
+          trigger: '桌面验证（Dry Run）',
+          realSendUnavailable:
+            '実送信はまだ開放されていません。「桌面验证（Dry Run）」を使用してください。',
+          confirmationRequired: '先に現在の会話を確認してください',
+          confirmationExpired:
+            'ワンタイム会話確認の有効期限が切れました。再確認してください。',
+          consumedNotice:
+            'この会話確認は desktop dry-run に使用されました。再度検証するには現在の会話をもう一度確認してください。',
+          resultTitle: 'Dry Run 結果',
+          resultSummary:
+            '今回完了したのは desktop verification のみで、メッセージは送信していません。',
+          fieldStatus: 'status',
+          fieldStage: 'stage',
+          fieldInspectionBackend: 'inspectionBackend',
+          fieldConversationVerification: 'conversationVerification',
+          fieldInputTargetSource: 'inputTargetSource',
+          fieldInputContentVerification: 'inputContentVerification',
+          fieldHumanConfirmed: 'humanConfirmed',
+          fieldVisualContextStable: 'visualContextStable',
+          fieldSendAuthorized: 'sendAuthorized',
+          fieldNextAllowedOperation: 'nextAllowedOperation',
+          fieldErrorCode: 'errorCode',
+        },
+        error: {
+          CONVERSATION_MISMATCH: '現在の WeCom 会話が対象会話と一致しません',
+          CONVERSATION_UNVERIFIABLE:
+            '現在の WeCom 会話を信頼して検証できません',
+          INPUT_NOT_EMPTY: 'WeCom の入力欄に別の未送信内容があります',
+          INPUT_CONTENT_UNVERIFIABLE: 'WeCom の入力欄内容を検証できません',
+          PASTE_VERIFICATION_FAILED: '貼り付けた草稿の検証に失敗しました',
+          WINDOW_NOT_FOREGROUND: 'WeCom ウィンドウが前面ではありません',
+          WINDOW_IDENTITY_CHANGED: '検証中に WeCom ウィンドウが変化しました',
+          WECOM_PROCESS_NOT_FOUND: 'WeCom プロセスが見つかりません',
+          SEND_FAILED: '送信操作に失敗しました',
+          TASK_CONFLICT: '別の送信タスクが実行中です',
+          DRAFT_ALREADY_SENT: 'この草稿はすでに送信されています',
+          TASK_TIMEOUT: '送信タスクがタイムアウトしました',
+          REGION_PROFILE_MISSING: '先に WeCom 領域を校正してください',
+          REGION_PROFILE_INVALID: '保存済みの WeCom 領域設定が無効です',
+          REGION_PROFILE_STALE:
+            'WeCom ウィンドウのレイアウトが変化しました。再校正してください。',
+          HUMAN_CONFIRMATION_REQUIRED:
+            '続行する前に現在の会話を確認してください',
+          HUMAN_CONFIRMATION_EXPIRED:
+            '会話確認の有効期限が切れました。再確認してください。',
+          HUMAN_CONFIRMATION_TASK_MISMATCH: '会話確認がこの草稿と一致しません',
+          WINDOW_CONTEXT_CHANGED:
+            'WeCom ウィンドウの文脈が変化しました。再確認してください。',
+          CONVERSATION_VISUAL_CHANGED:
+            '会話タイトル領域が変化しました。再確認してください。',
+          INPUT_SAFE_POINT_UNAVAILABLE:
+            '現在の入力領域では安全点を計算できません',
+        },
         source: {
           pipeline: '自動生成',
           manual: '手動編集',

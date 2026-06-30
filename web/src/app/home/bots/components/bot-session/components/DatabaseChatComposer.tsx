@@ -42,12 +42,19 @@ interface DatabaseChatComposerProps {
   hasPersistedDraft: boolean;
   isClearedLocally: boolean;
   hasUnsavedChanges: boolean;
+  sendButtonLabel: string;
+  sendDisabledReason?: string | null;
+  sendInProgress: boolean;
+  sendStatusText?: string | null;
+  showCancelSend: boolean;
+  onCancelSend: () => void;
   onClear: () => void;
   onCopy: () => void;
   onComposerTextChange: (value: string) => void;
   onRegenerate: () => void;
   onRequestDeleteDraft: () => void;
   onSave: () => void;
+  onSend: () => void;
   onUndoEdit: () => void;
 }
 
@@ -91,23 +98,32 @@ export function DatabaseChatComposer({
   hasPersistedDraft,
   isClearedLocally,
   hasUnsavedChanges,
+  sendButtonLabel,
+  sendDisabledReason,
+  sendInProgress,
+  sendStatusText,
+  showCancelSend,
+  onCancelSend,
   onClear,
   onCopy,
   onComposerTextChange,
   onRegenerate,
   onRequestDeleteDraft,
   onSave,
+  onSend,
   onUndoEdit,
 }: DatabaseChatComposerProps) {
   const { t } = useTranslation();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const showFullToolbar = hasComposerContent;
   const showCompactToolbar = !hasComposerContent && isClearedLocally;
-  const toolbarStatusText = draftMeta
-    ? formatDraftMeta(t, draftMeta)
-    : generatingDraft
-      ? t('bots.sessionMonitor.databaseComposer.generating')
-      : t('bots.sessionMonitor.databaseComposer.unsaved');
+  const toolbarStatusText =
+    sendStatusText ??
+    (draftMeta
+      ? formatDraftMeta(t, draftMeta)
+      : generatingDraft
+        ? t('bots.sessionMonitor.databaseComposer.generating')
+        : t('bots.sessionMonitor.databaseComposer.unsaved'));
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -128,6 +144,16 @@ export function DatabaseChatComposer({
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-sm">
           <span className="text-muted-foreground">{toolbarStatusText}</span>
           <div className="flex flex-wrap items-center gap-1">
+            {showCancelSend ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onCancelSend}
+              >
+                {t('common.cancel')}
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="ghost"
@@ -264,17 +290,20 @@ export function DatabaseChatComposer({
               <Button
                 type="button"
                 size="icon"
-                disabled
-                aria-label={t(
-                  'bots.sessionMonitor.databaseComposer.sendUnavailable',
-                )}
+                disabled={sendInProgress}
+                onClick={onSend}
+                aria-label={sendButtonLabel}
               >
-                <Send className="size-4" />
+                {sendInProgress ? (
+                  <RefreshCw className="size-4 animate-spin" />
+                ) : (
+                  <Send className="size-4" />
+                )}
               </Button>
             </span>
           </TooltipTrigger>
           <TooltipContent>
-            {t('bots.sessionMonitor.databaseComposer.sendUnavailable')}
+            {sendDisabledReason ?? sendButtonLabel}
           </TooltipContent>
         </Tooltip>
       </div>

@@ -1,0 +1,22 @@
+﻿appId: app.langbot.desktop-rpa-runtime
+productName: LangBot Desktop RPA Runtime
+files:
+  - out/**
+directories:
+  output: dist
+asar: true
+asarUnpack:
+  - node_modules/@hurdlegroup/robotjs/**
+  - node_modules/active-win/**
+  - node_modules/node-window-manager/**
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

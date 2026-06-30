@@ -661,3 +661,162 @@ class TestMessageProcessingRunUniqueMigration:
                         }
                     )
                 )
+
+
+class TestDesktopAutomationRunUniqueMigration:
+    @pytest.mark.asyncio
+    async def test_upgrade_cleans_duplicate_active_desktop_runs_and_keeps_latest(self, sqlite_engine):
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            desktop_runs = await conn.run_sync(
+                lambda sync_conn: sa.Table('desktop_automation_runs', sa.MetaData(), autoload_with=sync_conn)
+            )
+            await conn.execute(
+                sa.insert(desktop_runs).values(
+                    [
+                        {
+                            'id': 901,
+                            'bot_uuid': 'bot-desktop',
+                            'connector_id': 'wxwork-local',
+                            'conversation_id': 21,
+                            'message_id': 11,
+                            'draft_id': 31,
+                            'action': 'paste_draft',
+                            'execution_mode': 'paste_only',
+                            'runtime_task_id': 'task-901',
+                            'status': 'queued',
+                            'stage': 'queued',
+                            'attempt_count': 1,
+                            'request_digest': 'req-901',
+                            'draft_content_hash': 'hash-901',
+                            'target_snapshot': {'conversation_name': 'Customer A'},
+                            'result_evidence': None,
+                            'last_error_code': None,
+                            'last_error_message': None,
+                            'started_at': None,
+                            'completed_at': None,
+                            'created_at': _dt('2026-06-27T10:00:00'),
+                            'updated_at': _dt('2026-06-27T10:00:00'),
+                        },
+                        {
+                            'id': 902,
+                            'bot_uuid': 'bot-desktop',
+                            'connector_id': 'wxwork-local',
+                            'conversation_id': 21,
+                            'message_id': 11,
+                            'draft_id': 31,
+                            'action': 'paste_draft',
+                            'execution_mode': 'paste_only',
+                            'runtime_task_id': 'task-902',
+                            'status': 'running',
+                            'stage': 'running',
+                            'attempt_count': 1,
+                            'request_digest': 'req-902',
+                            'draft_content_hash': 'hash-902',
+                            'target_snapshot': {'conversation_name': 'Customer A'},
+                            'result_evidence': None,
+                            'last_error_code': None,
+                            'last_error_message': None,
+                            'started_at': _dt('2026-06-27T10:01:00'),
+                            'completed_at': None,
+                            'created_at': _dt('2026-06-27T10:01:00'),
+                            'updated_at': _dt('2026-06-27T10:01:00'),
+                        },
+                    ]
+                )
+            )
+
+        await run_alembic_stamp(sqlite_engine, '0011_processing_run_uniq')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_runs(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                indexes = {index['name'] for index in inspector.get_indexes('desktop_automation_runs')}
+                desktop_runs = sa.Table('desktop_automation_runs', sa.MetaData(), autoload_with=sync_conn)
+                rows = sync_conn.execute(
+                    sa.select(desktop_runs)
+                    .where(
+                        desktop_runs.c.message_id == 11,
+                        desktop_runs.c.draft_id == 31,
+                    )
+                    .order_by(desktop_runs.c.id.asc())
+                ).mappings().all()
+                return indexes, rows
+
+            indexes, rows = await conn.run_sync(inspect_runs)
+
+        assert 'ux_desktop_automation_runs_active' in indexes
+        assert len(rows) == 2
+        assert rows[0]['status'] == 'failed'
+        assert rows[0]['completed_at'] is not None
+        assert rows[0]['last_error_code'] == 'TASK_CONFLICT'
+        assert rows[1]['status'] == 'running'
+
+    @pytest.mark.asyncio
+    async def test_upgrade_blocks_second_active_desktop_run_for_same_message_and_draft(self, sqlite_engine):
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0011_processing_run_uniq')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        with pytest.raises(sa.exc.IntegrityError):
+            async with sqlite_engine.begin() as conn:
+                desktop_runs = await conn.run_sync(
+                    lambda sync_conn: sa.Table('desktop_automation_runs', sa.MetaData(), autoload_with=sync_conn)
+                )
+                await conn.execute(
+                    sa.insert(desktop_runs).values(
+                        {
+                            'message_id': 11,
+                            'draft_id': 31,
+                            'bot_uuid': 'bot-desktop',
+                            'connector_id': 'wxwork-local',
+                            'conversation_id': 21,
+                            'action': 'paste_draft',
+                            'execution_mode': 'paste_only',
+                            'runtime_task_id': 'task-903',
+                            'status': 'queued',
+                            'stage': 'queued',
+                            'attempt_count': 1,
+                            'request_digest': 'req-903',
+                            'draft_content_hash': 'hash-903',
+                            'target_snapshot': {'conversation_name': 'Customer A'},
+                            'result_evidence': None,
+                            'last_error_code': None,
+                            'last_error_message': None,
+                            'started_at': None,
+                            'completed_at': None,
+                            'created_at': _dt('2026-06-27T10:02:00'),
+                            'updated_at': _dt('2026-06-27T10:02:00'),
+                        }
+                    )
+                )
+                await conn.execute(
+                    sa.insert(desktop_runs).values(
+                        {
+                            'message_id': 11,
+                            'draft_id': 31,
+                            'bot_uuid': 'bot-desktop',
+                            'connector_id': 'wxwork-local',
+                            'conversation_id': 21,
+                            'action': 'paste_draft',
+                            'execution_mode': 'paste_only',
+                            'runtime_task_id': 'task-904',
+                            'status': 'starting',
+                            'stage': 'starting',
+                            'attempt_count': 1,
+                            'request_digest': 'req-904',
+                            'draft_content_hash': 'hash-904',
+                            'target_snapshot': {'conversation_name': 'Customer A'},
+                            'result_evidence': None,
+                            'last_error_code': None,
+                            'last_error_message': None,
+                            'started_at': None,
+                            'completed_at': None,
+                            'created_at': _dt('2026-06-27T10:03:00'),
+                            'updated_at': _dt('2026-06-27T10:03:00'),
+                        }
+                    )
+                )

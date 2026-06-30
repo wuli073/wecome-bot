@@ -7,6 +7,8 @@ import type {
   BotConversation,
   BotMessage,
   BotMessageStats,
+  DesktopAutomationRun,
+  DesktopRuntimeStatus,
 } from '@/app/infra/entities/api';
 
 export type SessionMonitorSource = 'runtime' | 'database';
@@ -57,6 +59,19 @@ export interface BatchResponse {
   failed: number;
 }
 
+export interface SendDraftResponse {
+  run: DesktopAutomationRun;
+}
+
+export type PasteDraftResponse = SendDraftResponse;
+
+export interface DesktopSelectionRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 /**
  * Abstract interface for bot session data sources
  */
@@ -81,6 +96,20 @@ export interface BotSessionDataSource {
     draftId?: string | null,
   ): Promise<any>;
   deleteDraft(messageId: string, draftId?: string | null): Promise<any>;
+  pasteDraft(
+    messageId: string,
+    draftId: string,
+    idempotencyKey: string,
+  ): Promise<PasteDraftResponse>;
+  sendDraft?(
+    messageId: string,
+    draftId: string,
+    sendStrategy: 'enter' | 'ctrl_enter' | 'click_send_button',
+    idempotencyKey?: string,
+  ): Promise<SendDraftResponse>;
+  getDesktopRun(runId: string): Promise<DesktopAutomationRun>;
+  cancelDesktopRun(runId: string): Promise<DesktopAutomationRun>;
+  getDesktopRuntimeStatus(): Promise<DesktopRuntimeStatus>;
 
   // Message operations
   processMessage(messageId: string): Promise<void>;

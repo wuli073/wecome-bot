@@ -49,6 +49,7 @@ from ..local_connectors import service as local_connectors_service
 from ..database_mode.events import DatabaseModeEventBus
 from ..database_mode import service as database_mode_service
 from ..database_mode import processing_service as database_mode_processing_service
+from ..desktop_automation import service as desktop_automation_service
 
 
 class Application:
@@ -167,6 +168,7 @@ class Application:
     database_mode_service: database_mode_service.DatabaseModeService = None
     database_mode_processing_service: database_mode_processing_service.DatabaseModeProcessingService = None
     database_mode_event_bus: DatabaseModeEventBus | None = None
+    desktop_automation_service: desktop_automation_service.DesktopAutomationService | None = None
 
     skill_service: skill_service.SkillService = None
 
@@ -333,6 +335,8 @@ class Application:
                 f'subscriber_count={self.database_mode_event_bus.subscriber_count}'
             )
             self.database_mode_event_bus.close()
+        if self.desktop_automation_service is not None:
+            self.desktop_automation_service.close()
         if self.local_connectors_service is not None:
             self.local_connectors_service.dispose()
         if self.plugin_connector is not None:

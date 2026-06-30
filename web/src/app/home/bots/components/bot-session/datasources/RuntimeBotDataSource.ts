@@ -13,8 +13,14 @@ import type {
   MessagesResponse,
   DraftResponse,
   BatchResponse,
+  SendDraftResponse,
 } from '../types';
-import type { BotConversation, BotMessage } from '@/app/infra/entities/api';
+import type {
+  BotConversation,
+  BotMessage,
+  DesktopAutomationRun,
+  DesktopRuntimeStatus,
+} from '@/app/infra/entities/api';
 
 /**
  * RuntimeBotDataSource adapts the existing session API to the BotSessionDataSource interface
@@ -137,8 +143,31 @@ export class RuntimeBotDataSource implements BotSessionDataSource {
     throw new Error('Draft update not supported for runtime bots');
   }
 
-  async deleteDraft(_messageId: string, _draftId?: string | null): Promise<any> {
+  async deleteDraft(
+    _messageId: string,
+    _draftId?: string | null,
+  ): Promise<any> {
     throw new Error('Draft deletion not supported for runtime bots');
+  }
+
+  async pasteDraft(
+    _messageId: string,
+    _draftId: string,
+    _idempotencyKey: string,
+  ): Promise<SendDraftResponse> {
+    throw new Error('Desktop paste not supported for runtime bots');
+  }
+
+  async getDesktopRun(_runId: string): Promise<DesktopAutomationRun> {
+    throw new Error('Desktop send not supported for runtime bots');
+  }
+
+  async cancelDesktopRun(_runId: string): Promise<DesktopAutomationRun> {
+    throw new Error('Desktop send not supported for runtime bots');
+  }
+
+  async getDesktopRuntimeStatus(): Promise<DesktopRuntimeStatus> {
+    return { status: 'unsupported' };
   }
 
   async processMessage(_messageId: string): Promise<void> {

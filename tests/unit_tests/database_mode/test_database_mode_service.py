@@ -257,7 +257,7 @@ class _EngineProxy:
 
 class MiniPersistenceManager:
     def __init__(self) -> None:
-        self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        self.engine = create_async_engine('sqlite+aiosqlite:///:memory:')
         self.engine_proxy = _EngineProxy(self, self.engine)
         self.fail_next_commit = False
 
@@ -272,15 +272,15 @@ class MiniPersistenceManager:
             await conn.run_sync(persistence_database_mode.ReplyDraft.__table__.create)
             await conn.execute(
                 sqlalchemy.text(
-                    "CREATE UNIQUE INDEX ix_message_processing_runs_atomic_claim "
-                    "ON message_processing_runs (message_id, bot_uuid) "
+                    'CREATE UNIQUE INDEX ix_message_processing_runs_atomic_claim '
+                    'ON message_processing_runs (message_id, bot_uuid) '
                     "WHERE status = 'processing'"
                 )
             )
             await conn.execute(
                 sqlalchemy.text(
-                    "CREATE UNIQUE INDEX ix_reply_drafts_active_unique "
-                    "ON reply_drafts (message_id, bot_uuid) "
+                    'CREATE UNIQUE INDEX ix_reply_drafts_active_unique '
+                    'ON reply_drafts (message_id, bot_uuid) '
                     "WHERE status = 'active'"
                 )
             )
@@ -323,11 +323,6 @@ class MiniPersistenceManager:
                     class _MaterializedResult:
                         def __init__(self, rows):
                             self._all_rows = rows
-                            self._index = 0
-
-                        def scalars(self):
-                            # Return self to support chaining
-                            return self
 
                         def first(self):
                             return self._all_rows[0] if self._all_rows else None
@@ -346,9 +341,11 @@ class MiniPersistenceManager:
                             # Return scalar value and raise if none or multiple
                             if len(self._all_rows) == 0:
                                 from sqlalchemy.exc import NoResultFound
+
                                 raise NoResultFound()
                             if len(self._all_rows) > 1:
                                 from sqlalchemy.exc import MultipleResultsFound
+
                                 raise MultipleResultsFound()
                             first = self._all_rows[0]
                             if hasattr(first, '_mapping') and len(first._mapping) == 1:
@@ -450,7 +447,7 @@ class RawConnectionPersistenceManager:
     """Mirror production execute_async semantics for connection-level SELECT results."""
 
     def __init__(self) -> None:
-        self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        self.engine = create_async_engine('sqlite+aiosqlite:///:memory:')
         self.engine_proxy = _EngineProxy(self, self.engine)
         self.fail_next_commit = False
 
@@ -466,15 +463,15 @@ class RawConnectionPersistenceManager:
             await conn.run_sync(persistence_bot.Bot.__table__.create)
             await conn.execute(
                 sqlalchemy.text(
-                    "CREATE UNIQUE INDEX ix_message_processing_runs_atomic_claim "
-                    "ON message_processing_runs (message_id, bot_uuid) "
+                    'CREATE UNIQUE INDEX ix_message_processing_runs_atomic_claim '
+                    'ON message_processing_runs (message_id, bot_uuid) '
                     "WHERE status = 'processing'"
                 )
             )
             await conn.execute(
                 sqlalchemy.text(
-                    "CREATE UNIQUE INDEX ix_reply_drafts_active_unique "
-                    "ON reply_drafts (message_id, bot_uuid) "
+                    'CREATE UNIQUE INDEX ix_reply_drafts_active_unique '
+                    'ON reply_drafts (message_id, bot_uuid) '
                     "WHERE status = 'active'"
                 )
             )
@@ -536,25 +533,25 @@ async def raw_processing_app():
         await ap.persistence_mgr.dispose()
 
 
-def _sample_payload(*, conversation_type: str = "direct") -> dict:
+def _sample_payload(*, conversation_type: str = 'direct') -> dict:
     return {
-        "connector_id": "wxwork-local",
-        "source": "wxwork",
-        "event_id": "wxwork-local:evt-1",
-        "message_key": "wxwork:key-1",
-        "conversation": {
-            "external_conversation_id": "S:100_200",
-            "conversation_name": "Customer A",
-            "conversation_type": conversation_type,
+        'connector_id': 'wxwork-local',
+        'source': 'wxwork',
+        'event_id': 'wxwork-local:evt-1',
+        'message_key': 'wxwork:key-1',
+        'conversation': {
+            'external_conversation_id': 'S:100_200',
+            'conversation_name': 'Customer A',
+            'conversation_type': conversation_type,
         },
-        "message": {
-            "external_message_id": "101",
-            "sender_id": "200",
-            "sender_name": "Customer A",
-            "content": "Need pricing details",
-            "message_type": "text",
-            "sent_at": "2026-06-23T12:00:00",
-            "observed_at": "2026-06-23T12:00:02",
+        'message': {
+            'external_message_id': '101',
+            'sender_id': '200',
+            'sender_name': 'Customer A',
+            'content': 'Need pricing details',
+            'message_type': 'text',
+            'sent_at': '2026-06-23T12:00:00',
+            'observed_at': '2026-06-23T12:00:02',
         },
     }
 
@@ -566,18 +563,18 @@ def _fake_message_chain(text: str) -> platform_message.MessageChain:
 async def _ingest_and_get_message(service: DatabaseModeService):
     await service.ingest_internal_event(_sample_payload())
     conversations = await service.list_conversations()
-    messages = await service.list_messages(conversations["conversations"][0]["id"])
-    return conversations["conversations"][0]["id"], messages["messages"][0]["id"]
+    messages = await service.list_messages(conversations['conversations'][0]['id'])
+    return conversations['conversations'][0]['id'], messages['messages'][0]['id']
 
 
 async def _ingest_two_messages(service: DatabaseModeService):
     await service.ingest_internal_event(_sample_payload())
-    second_payload = _sample_payload() | {"event_id": "wxwork-local:evt-2", "message_key": "wxwork:key-2"}
-    second_payload["message"] = dict(second_payload["message"], external_message_id="102", content="Need a refund")
+    second_payload = _sample_payload() | {'event_id': 'wxwork-local:evt-2', 'message_key': 'wxwork:key-2'}
+    second_payload['message'] = dict(second_payload['message'], external_message_id='102', content='Need a refund')
     await service.ingest_internal_event(second_payload)
     conversations = await service.list_conversations()
-    messages = await service.list_messages(conversations["conversations"][0]["id"])
-    return conversations["conversations"][0]["id"], [message["id"] for message in messages["messages"]]
+    messages = await service.list_messages(conversations['conversations'][0]['id'])
+    return conversations['conversations'][0]['id'], [message['id'] for message in messages['messages']]
 
 
 async def _insert_bound_message(
@@ -593,68 +590,74 @@ async def _insert_bound_message(
 ) -> int:
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         existing_bot = (
-            await conn.execute(
-                sqlalchemy.select(persistence_bot.Bot.uuid).where(
-                    persistence_bot.Bot.uuid == bot_uuid
-                )
-            )
+            await conn.execute(sqlalchemy.select(persistence_bot.Bot.uuid).where(persistence_bot.Bot.uuid == bot_uuid))
         ).first()
         if existing_bot is None:
             await conn.execute(
-                sqlalchemy.insert(persistence_bot.Bot).values({
-                    'uuid': bot_uuid,
-                    'name': 'Database Bot',
-                    'description': '',
-                    'adapter': 'wxwork_database',
-                    'adapter_config': {'connector_id': 'wxwork-local'},
-                    'enable': True,
-                    'use_pipeline_name': None,
-                    'use_pipeline_uuid': 'pipeline-123',
-                    'pipeline_routing_rules': [],
-                })
+                sqlalchemy.insert(persistence_bot.Bot).values(
+                    {
+                        'uuid': bot_uuid,
+                        'name': 'Database Bot',
+                        'description': '',
+                        'adapter': 'wxwork_database',
+                        'adapter_config': {'connector_id': 'wxwork-local'},
+                        'enable': True,
+                        'use_pipeline_name': None,
+                        'use_pipeline_uuid': 'pipeline-123',
+                        'pipeline_routing_rules': [],
+                    }
+                )
             )
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': f'acc-{account_suffix}',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': f'acc-{account_suffix}',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': bot_uuid,
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': bot_uuid,
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': f'S:100_{conversation_suffix}',
-                'conversation_name': f'Customer {conversation_suffix}',
-                'conversation_type': 'direct',
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': f'S:100_{conversation_suffix}',
+                    'conversation_name': f'Customer {conversation_suffix}',
+                    'conversation_type': 'direct',
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': f'wxwork-local:evt-{message_suffix}',
-                'message_key': f'wxwork-local:key-{message_suffix}',
-                'conversation_id': conversation_id,
-                'external_message_id': message_suffix,
-                'sender_id': sender_id,
-                'sender_name': sender_name,
-                'content': content,
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': f'wxwork-local:evt-{message_suffix}',
+                    'message_key': f'wxwork-local:key-{message_suffix}',
+                    'conversation_id': conversation_id,
+                    'external_message_id': message_suffix,
+                    'sender_id': sender_id,
+                    'sender_name': sender_name,
+                    'content': content,
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         return message_result.inserted_primary_key[0]
 
@@ -665,15 +668,15 @@ async def test_ingest_internal_event_is_idempotent(service_app):
     first = await service.ingest_internal_event(_sample_payload())
     second = await service.ingest_internal_event(_sample_payload())
     conversations = await service.list_conversations()
-    messages = await service.list_messages(conversations["conversations"][0]["id"])
+    messages = await service.list_messages(conversations['conversations'][0]['id'])
 
     assert first.accepted is True
     assert first.duplicate is False
     assert second.accepted is True
     assert second.duplicate is True
-    assert conversations["total"] == 1
-    assert messages["total"] == 1
-    assert messages["messages"][0]["status"] == MESSAGE_STATUS_PENDING
+    assert conversations['total'] == 1
+    assert messages['total'] == 1
+    assert messages['messages'][0]['status'] == MESSAGE_STATUS_PENDING
     assert len(ap.database_mode_event_bus.published_events) == 1
     assert ap.database_mode_event_bus.published_events[0].type == DatabaseModeEventType.MESSAGE_CREATED
 
@@ -681,18 +684,18 @@ async def test_ingest_internal_event_is_idempotent(service_app):
 async def test_ingest_internal_event_publishes_latency_timestamps(service_app):
     service, ap = service_app
     payload = _sample_payload()
-    payload["timings"] = {
-        "langbot_ingested_at": "2026-06-24T10:00:00.100000+00:00",
-        "delivery_succeeded_at": "2026-06-24T10:00:00.050000+00:00",
+    payload['timings'] = {
+        'langbot_ingested_at': '2026-06-24T10:00:00.100000+00:00',
+        'delivery_succeeded_at': '2026-06-24T10:00:00.050000+00:00',
     }
 
     await service.ingest_internal_event(payload)
 
     event = ap.database_mode_event_bus.published_events[0]
     assert event.occurred_at is not None
-    assert event.metadata["timings"]["langbot_ingested_at"] == "2026-06-24T10:00:00.100000+00:00"
-    assert event.metadata["timings"]["delivery_succeeded_at"] == "2026-06-24T10:00:00.050000+00:00"
-    assert event.metadata["timings"]["sse_published_at"]
+    assert event.metadata['timings']['langbot_ingested_at'] == '2026-06-24T10:00:00.100000+00:00'
+    assert event.metadata['timings']['delivery_succeeded_at'] == '2026-06-24T10:00:00.050000+00:00'
+    assert event.metadata['timings']['sse_published_at']
 
 
 async def test_ingest_internal_event_does_not_publish_or_persist_partial_writes_when_commit_fails(service_app):
@@ -725,10 +728,10 @@ async def test_ingest_internal_event_does_not_publish_or_persist_partial_writes_
 
 
 @pytest.mark.parametrize(
-    ("raw_conversation_type", "expected_conversation_type"),
+    ('raw_conversation_type', 'expected_conversation_type'),
     [
-        ("单聊", "direct"),
-        ("群组", "group"),
+        ('单聊', 'direct'),
+        ('群组', 'group'),
     ],
 )
 async def test_ingest_internal_event_normalizes_conversation_type_aliases(
@@ -742,14 +745,14 @@ async def test_ingest_internal_event_normalizes_conversation_type_aliases(
 
     conversations = await service.list_conversations()
 
-    assert conversations["conversations"][0]["conversation_type"] == expected_conversation_type
+    assert conversations['conversations'][0]['conversation_type'] == expected_conversation_type
 
 
 async def test_ingest_internal_event_rejects_unknown_conversation_type(service_app):
     service, ap = service_app
 
-    with pytest.raises(ValueError, match="Unsupported conversation type: weird_type"):
-        await service.ingest_internal_event(_sample_payload(conversation_type="weird_type"))
+    with pytest.raises(ValueError, match='Unsupported conversation type: weird_type'):
+        await service.ingest_internal_event(_sample_payload(conversation_type='weird_type'))
 
     conversation_count = (
         await ap.persistence_mgr.execute_async(
@@ -771,21 +774,25 @@ async def test_ingest_duplicate_message_does_not_persist_event_when_commit_fails
     await service.ingest_internal_event(_sample_payload())
     ap.database_mode_event_bus.published_events.clear()
 
-    duplicate_message_payload = _sample_payload() | {"event_id": "wxwork-local:evt-2"}
+    duplicate_message_payload = _sample_payload() | {'event_id': 'wxwork-local:evt-2'}
     ap.persistence_mgr.fail_next_commit = True
 
     with pytest.raises(RuntimeError, match='Simulated commit failure'):
         await service.ingest_internal_event(duplicate_message_payload)
 
     local_event_ids = (
-        await ap.persistence_mgr.execute_async(
-            sqlalchemy.select(persistence_database_mode.LocalConnectorEvent.event_id).order_by(
-                persistence_database_mode.LocalConnectorEvent.id.asc()
+        (
+            await ap.persistence_mgr.execute_async(
+                sqlalchemy.select(persistence_database_mode.LocalConnectorEvent.event_id).order_by(
+                    persistence_database_mode.LocalConnectorEvent.id.asc()
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
-    assert local_event_ids == ["wxwork-local:evt-1"]
+    assert local_event_ids == ['wxwork-local:evt-1']
     assert ap.database_mode_event_bus.published_events == []
 
 
@@ -794,15 +801,13 @@ async def test_ingest_duplicate_message_key_returns_duplicate_and_publishes_inva
     await service.ingest_internal_event(_sample_payload())
     ap.database_mode_event_bus.published_events.clear()
 
-    replay_payload = _sample_payload() | {"event_id": "wxwork-local:evt-2"}
+    replay_payload = _sample_payload() | {'event_id': 'wxwork-local:evt-2'}
 
     result = await service.ingest_internal_event(replay_payload)
 
     assert result.accepted is True
     assert result.duplicate is True
-    assert [event.type for event in ap.database_mode_event_bus.published_events] == [
-        DatabaseModeEventType.INVALIDATED
-    ]
+    assert [event.type for event in ap.database_mode_event_bus.published_events] == [DatabaseModeEventType.INVALIDATED]
 
 
 async def test_generate_draft_publishes_one_updated_event_after_commit(service_app):
@@ -816,30 +821,36 @@ async def test_generate_draft_publishes_one_updated_event_after_commit(service_a
             await conn.execute(
                 sqlalchemy.update(persistence_database_mode.DatabaseMessage)
                 .where(persistence_database_mode.DatabaseMessage.id == msg_id)
-                .values({
-                    'status': MESSAGE_STATUS_DRAFT_READY,
-                    'draft_text': 'Thanks, we will follow up shortly.',
-                    'draft_source': 'pipeline',
-                })
+                .values(
+                    {
+                        'status': MESSAGE_STATUS_DRAFT_READY,
+                        'draft_text': 'Thanks, we will follow up shortly.',
+                        'draft_source': 'pipeline',
+                    }
+                )
             )
         return {'status': 'succeeded'}
 
     ap.database_mode_processing_service = SimpleNamespace(generate_draft=mock_generate_draft)
     ap.bot_service = SimpleNamespace(
-        get_bots=AsyncMock(return_value=[{
-            'uuid': 'bot-1',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'}
-        }])
+        get_bots=AsyncMock(
+            return_value=[
+                {
+                    'uuid': 'bot-1',
+                    'adapter': 'wxwork_database',
+                    'enable': True,
+                    'adapter_config': {'connector_id': 'wxwork-local'},
+                }
+            ]
+        )
     )
     ap.database_mode_event_bus.published_events.clear()
 
     updated = await service.generate_draft(message_id)
 
-    assert updated["status"] == MESSAGE_STATUS_DRAFT_READY
-    assert updated["draft_text"] == "Thanks, we will follow up shortly."
-    assert updated["draft_source"] == "pipeline"
+    assert updated['status'] == MESSAGE_STATUS_DRAFT_READY
+    assert updated['draft_text'] == 'Thanks, we will follow up shortly.'
+    assert updated['draft_source'] == 'pipeline'
 
 
 async def test_generate_draft_delegates_to_processing_service(service_app):
@@ -848,12 +859,16 @@ async def test_generate_draft_delegates_to_processing_service(service_app):
 
     # Mock bot service to return enabled bot
     ap.bot_service = SimpleNamespace(
-        get_bots=AsyncMock(return_value=[{
-            'uuid': 'bot-1',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'}
-        }])
+        get_bots=AsyncMock(
+            return_value=[
+                {
+                    'uuid': 'bot-1',
+                    'adapter': 'wxwork_database',
+                    'enable': True,
+                    'adapter_config': {'connector_id': 'wxwork-local'},
+                }
+            ]
+        )
     )
 
     # Mock processing service
@@ -863,11 +878,13 @@ async def test_generate_draft_delegates_to_processing_service(service_app):
             await conn.execute(
                 sqlalchemy.update(persistence_database_mode.DatabaseMessage)
                 .where(persistence_database_mode.DatabaseMessage.id == msg_id)
-                .values({
-                    'status': MESSAGE_STATUS_DRAFT_READY,
-                    'draft_text': 'Pipeline generated reply',
-                    'draft_source': 'pipeline',
-                })
+                .values(
+                    {
+                        'status': MESSAGE_STATUS_DRAFT_READY,
+                        'draft_text': 'Pipeline generated reply',
+                        'draft_source': 'pipeline',
+                    }
+                )
             )
         return {'status': 'succeeded'}
 
@@ -897,7 +914,9 @@ async def test_processing_service_generate_draft_uses_enabled_wxwork_database_bo
             self.bot_entity = SimpleNamespace(uuid='bot-enabled', use_pipeline_uuid='pipeline-123')
             self.adapter = SimpleNamespace(
                 reply_message=AsyncMock(return_value={'status': 'draft_ready', 'content': 'Reply', 'is_final': True}),
-                reply_message_chunk=AsyncMock(return_value={'status': 'draft_ready', 'content': 'Reply', 'is_final': True}),
+                reply_message_chunk=AsyncMock(
+                    return_value={'status': 'draft_ready', 'content': 'Reply', 'is_final': True}
+                ),
             )
 
         def resolve_pipeline_uuid(self, launcher_type, launcher_id, message_text, message_element_types=None):
@@ -921,12 +940,14 @@ async def test_processing_service_generate_draft_uses_enabled_wxwork_database_bo
     ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=_FakePipeline()))
     ap.query_pool = SimpleNamespace(add_query=AsyncMock(side_effect=lambda **kw: SimpleNamespace(**kw)))
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'}
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
     ap.database_mode_event_bus = RecordingEventBus()
     ap.task_mgr = SimpleNamespace(create_task=lambda coro, **kw: None)
@@ -934,22 +955,26 @@ async def test_processing_service_generate_draft_uses_enabled_wxwork_database_bo
     # Create channel account and binding in database
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-1',
-                'display_name': 'Test Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-1',
+                    'display_name': 'Test Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-enabled',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-enabled',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
 
     processing_service = DatabaseModeProcessingService(ap)
@@ -989,12 +1014,14 @@ async def test_processing_service_generate_draft_reuses_runtime_bot_entry_for_la
 
     await _install_formal_runtime_processing(ap, pipeline=_FormalOnlyPipeline(), adapter=adapter)
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     message_id = await _insert_bound_message(
@@ -1034,12 +1061,14 @@ async def test_processing_service_generate_draft_preserves_capture_inside_async_
 
     await _install_formal_runtime_processing(ap, pipeline=_TaskReplyPipeline(), adapter=adapter)
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     message_id = await _insert_bound_message(
@@ -1084,12 +1113,14 @@ async def test_processing_service_generate_draft_never_calls_real_send_message(r
 
     await _install_formal_runtime_processing(ap, pipeline=_ReplyPipeline(), adapter=adapter)
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     message_id = await _insert_bound_message(
@@ -1129,12 +1160,14 @@ async def test_processing_service_generate_draft_keeps_concurrent_drafts_isolate
 
     await _install_formal_runtime_processing(ap, pipeline=_ConcurrentPipeline(), adapter=adapter)
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     left_message_id = await _insert_bound_message(
@@ -1182,17 +1215,19 @@ async def test_processing_service_generate_draft_returns_active_run_for_recent_p
     started_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         run_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values({
-                'message_id': message_id,
-                'bot_uuid': 'bot-enabled',
-                'pipeline_uuid': None,
-                'trigger': 'manual',
-                'status': RUN_STATUS_PROCESSING,
-                'attempt_count': 2,
-                'started_at': started_at,
-                'completed_at': None,
-                'last_error': None,
-            })
+            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values(
+                {
+                    'message_id': message_id,
+                    'bot_uuid': 'bot-enabled',
+                    'pipeline_uuid': None,
+                    'trigger': 'manual',
+                    'status': RUN_STATUS_PROCESSING,
+                    'attempt_count': 2,
+                    'started_at': started_at,
+                    'completed_at': None,
+                    'last_error': None,
+                }
+            )
         )
         run_id = run_result.inserted_primary_key[0]
 
@@ -1222,12 +1257,14 @@ async def test_processing_service_generate_draft_recovers_stale_processing_and_r
 
     await _install_formal_runtime_processing(ap, pipeline=_ReplyPipeline(), adapter=adapter)
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     message_id = await _insert_bound_message(
@@ -1240,22 +1277,24 @@ async def test_processing_service_generate_draft_recovers_stale_processing_and_r
         sender_name='Customer P',
     )
 
-    stale_started_at = (
-        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=15)
-    ).replace(tzinfo=None)
+    stale_started_at = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=15)).replace(
+        tzinfo=None
+    )
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         stale_run_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values({
-                'message_id': message_id,
-                'bot_uuid': 'bot-enabled',
-                'pipeline_uuid': None,
-                'trigger': 'manual',
-                'status': RUN_STATUS_PROCESSING,
-                'attempt_count': 2,
-                'started_at': stale_started_at,
-                'completed_at': None,
-                'last_error': None,
-            })
+            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values(
+                {
+                    'message_id': message_id,
+                    'bot_uuid': 'bot-enabled',
+                    'pipeline_uuid': None,
+                    'trigger': 'manual',
+                    'status': RUN_STATUS_PROCESSING,
+                    'attempt_count': 2,
+                    'started_at': stale_started_at,
+                    'completed_at': None,
+                    'last_error': None,
+                }
+            )
         )
         stale_run_id = stale_run_result.inserted_primary_key[0]
         await conn.execute(
@@ -1271,21 +1310,25 @@ async def test_processing_service_generate_draft_recovers_stale_processing_and_r
     assert result['run']['attempt_count'] == 3
 
     run_rows = (
-        await ap.persistence_mgr.execute_async(
-            sqlalchemy.select(
-                persistence_database_mode.MessageProcessingRun.id,
-                persistence_database_mode.MessageProcessingRun.status,
-                persistence_database_mode.MessageProcessingRun.attempt_count,
-                persistence_database_mode.MessageProcessingRun.completed_at,
-                persistence_database_mode.MessageProcessingRun.last_error,
+        (
+            await ap.persistence_mgr.execute_async(
+                sqlalchemy.select(
+                    persistence_database_mode.MessageProcessingRun.id,
+                    persistence_database_mode.MessageProcessingRun.status,
+                    persistence_database_mode.MessageProcessingRun.attempt_count,
+                    persistence_database_mode.MessageProcessingRun.completed_at,
+                    persistence_database_mode.MessageProcessingRun.last_error,
+                )
+                .where(
+                    persistence_database_mode.MessageProcessingRun.message_id == message_id,
+                    persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
+                )
+                .order_by(persistence_database_mode.MessageProcessingRun.id.asc())
             )
-            .where(
-                persistence_database_mode.MessageProcessingRun.message_id == message_id,
-                persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
-            )
-            .order_by(persistence_database_mode.MessageProcessingRun.id.asc())
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     assert len(run_rows) == 2
     assert dict(run_rows[0]) == {
@@ -1306,29 +1349,33 @@ async def test_processing_service_require_message_returns_object_with_raw_connec
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_200',
-                'conversation_name': 'Customer A',
-                'conversation_type': 'direct',
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_200',
+                    'conversation_name': 'Customer A',
+                    'conversation_type': 'direct',
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': 'wxwork-local:evt-raw-1',
-                'message_key': 'wxwork-local:key-raw-1',
-                'conversation_id': conversation_id,
-                'external_message_id': '101',
-                'sender_id': '200',
-                'sender_name': 'Customer A',
-                'content': 'Need pricing details',
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': 'wxwork-local:evt-raw-1',
+                    'message_key': 'wxwork-local:key-raw-1',
+                    'conversation_id': conversation_id,
+                    'external_message_id': '101',
+                    'sender_id': '200',
+                    'sender_name': 'Customer A',
+                    'content': 'Need pricing details',
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         message_id = message_result.inserted_primary_key[0]
 
@@ -1349,13 +1396,15 @@ async def test_processing_service_require_conversation_returns_object_with_raw_c
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_200',
-                'conversation_name': 'Customer A',
-                'conversation_type': 'direct',
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_200',
+                    'conversation_name': 'Customer A',
+                    'conversation_type': 'direct',
+                }
+            )
         )
         conversation_id = result.inserted_primary_key[0]
 
@@ -1375,60 +1424,70 @@ async def test_processing_service_helper_queries_return_objects_with_raw_connect
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         await conn.execute(
-            sqlalchemy.insert(persistence_bot.Bot).values({
-                'uuid': 'bot-enabled',
-                'name': 'Database Bot',
-                'description': '',
-                'adapter': 'wxwork_database',
-                'adapter_config': {'connector_id': 'wxwork-local'},
-                'enable': True,
-                'use_pipeline_name': None,
-                'use_pipeline_uuid': 'pipeline-123',
-                'pipeline_routing_rules': [],
-            })
+            sqlalchemy.insert(persistence_bot.Bot).values(
+                {
+                    'uuid': 'bot-enabled',
+                    'name': 'Database Bot',
+                    'description': '',
+                    'adapter': 'wxwork_database',
+                    'adapter_config': {'connector_id': 'wxwork-local'},
+                    'enable': True,
+                    'use_pipeline_name': None,
+                    'use_pipeline_uuid': 'pipeline-123',
+                    'pipeline_routing_rules': [],
+                }
+            )
         )
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-raw-1',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-raw-1',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-raw',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-raw',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
         run_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values({
-                'message_id': 7,
-                'bot_uuid': 'bot-raw',
-                'pipeline_uuid': 'pipeline-123',
-                'trigger': 'manual',
-                'status': 'succeeded',
-                'attempt_count': 1,
-                'started_at': datetime.datetime.now(datetime.timezone.utc),
-                'completed_at': datetime.datetime.now(datetime.timezone.utc),
-                'last_error': None,
-            })
+            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values(
+                {
+                    'message_id': 7,
+                    'bot_uuid': 'bot-raw',
+                    'pipeline_uuid': 'pipeline-123',
+                    'trigger': 'manual',
+                    'status': 'succeeded',
+                    'attempt_count': 1,
+                    'started_at': datetime.datetime.now(datetime.timezone.utc),
+                    'completed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'last_error': None,
+                }
+            )
         )
         run_id = run_result.inserted_primary_key[0]
         draft_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ReplyDraft).values({
-                'processing_run_id': run_id,
-                'message_id': 7,
-                'bot_uuid': 'bot-raw',
-                'content': 'Draft text',
-                'source': 'pipeline',
-                'version': 1,
-                'status': 'active',
-            })
+            sqlalchemy.insert(persistence_database_mode.ReplyDraft).values(
+                {
+                    'processing_run_id': run_id,
+                    'message_id': 7,
+                    'bot_uuid': 'bot-raw',
+                    'content': 'Draft text',
+                    'source': 'pipeline',
+                    'version': 1,
+                    'status': 'active',
+                }
+            )
         )
         draft_id = draft_result.inserted_primary_key[0]
 
@@ -1459,17 +1518,19 @@ async def test_processing_service_require_bot_fallback_returns_object_with_raw_c
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         await conn.execute(
-            sqlalchemy.insert(persistence_bot.Bot).values({
-                'uuid': 'bot-fallback',
-                'name': 'Fallback Bot',
-                'description': 'Bot for fallback lookup',
-                'adapter': 'wxwork_database',
-                'adapter_config': {'connector_id': 'wxwork-local'},
-                'enable': True,
-                'use_pipeline_name': None,
-                'use_pipeline_uuid': 'pipeline-123',
-                'pipeline_routing_rules': [],
-            })
+            sqlalchemy.insert(persistence_bot.Bot).values(
+                {
+                    'uuid': 'bot-fallback',
+                    'name': 'Fallback Bot',
+                    'description': 'Bot for fallback lookup',
+                    'adapter': 'wxwork_database',
+                    'adapter_config': {'connector_id': 'wxwork-local'},
+                    'enable': True,
+                    'use_pipeline_name': None,
+                    'use_pipeline_uuid': 'pipeline-123',
+                    'pipeline_routing_rules': [],
+                }
+            )
         )
 
     bot = await processing_service._require_bot('bot-fallback')
@@ -1509,57 +1570,67 @@ async def test_processing_service_generate_draft_succeeds_with_raw_connection_re
     ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=_FakePipeline()))
     ap.query_pool = SimpleNamespace(add_query=AsyncMock(side_effect=lambda **kw: SimpleNamespace(**kw)))
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-raw-2',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-raw-2',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-enabled',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-enabled',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_200',
-                'conversation_name': 'Customer A',
-                'conversation_type': 'direct',
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_200',
+                    'conversation_name': 'Customer A',
+                    'conversation_type': 'direct',
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': 'wxwork-local:evt-raw-2',
-                'message_key': 'wxwork-local:key-raw-2',
-                'conversation_id': conversation_id,
-                'external_message_id': '102',
-                'sender_id': '200',
-                'sender_name': 'Customer A',
-                'content': 'Need pricing details',
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': 'wxwork-local:evt-raw-2',
+                    'message_key': 'wxwork-local:key-raw-2',
+                    'conversation_id': conversation_id,
+                    'external_message_id': '102',
+                    'sender_id': '200',
+                    'sender_name': 'Customer A',
+                    'content': 'Need pricing details',
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         message_id = message_result.inserted_primary_key[0]
 
@@ -1589,8 +1660,8 @@ async def test_processing_service_generate_draft_succeeds_with_raw_connection_re
     }
 
 
-@pytest.mark.parametrize("conversation_type", ["person", "单聊"])
-@pytest.mark.parametrize("trigger", ["manual", "automatic"])
+@pytest.mark.parametrize('conversation_type', ['person', '单聊'])
+@pytest.mark.parametrize('trigger', ['manual', 'automatic'])
 async def test_processing_service_generate_draft_treats_private_conversation_alias_as_private_chat(
     raw_processing_app,
     conversation_type,
@@ -1612,7 +1683,9 @@ async def test_processing_service_generate_draft_treats_private_conversation_ali
             captured['launcher_type'] = query.launcher_type.value
             captured['message_event_type'] = type(query.message_event).__name__
             captured['stage_trace_before_reply'] = list(query.variables.get('_stage_trace', []))
-            query.resp_message_chain = [platform_message.MessageChain([platform_message.Plain(text='Person conversation draft')])]
+            query.resp_message_chain = [
+                platform_message.MessageChain([platform_message.Plain(text='Person conversation draft')])
+            ]
             query.variables['_output_stage_entered'] = True
             return pipeline_entities.StageProcessResult(
                 result_type=pipeline_entities.ResultType.CONTINUE,
@@ -1642,7 +1715,11 @@ async def test_processing_service_generate_draft_treats_private_conversation_ali
         [
             StageInstContainer(
                 inst_name='GroupRespondRuleCheckStage',
-                inst=(__import__('langbot.pkg.pipeline.resprule.resprule', fromlist=['GroupRespondRuleCheckStage']).GroupRespondRuleCheckStage(ap)),
+                inst=(
+                    __import__(
+                        'langbot.pkg.pipeline.resprule.resprule', fromlist=['GroupRespondRuleCheckStage']
+                    ).GroupRespondRuleCheckStage(ap)
+                ),
             ),
             StageInstContainer(
                 inst_name='OutputOnlyStage',
@@ -1655,57 +1732,67 @@ async def test_processing_service_generate_draft_treats_private_conversation_ali
 
     await _install_formal_runtime_processing(ap, pipeline=runtime_pipeline, adapter=adapter)
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-person-conversation',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-person-conversation',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-enabled',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-enabled',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_person',
-                'conversation_name': 'Customer Person',
-                'conversation_type': conversation_type,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_person',
+                    'conversation_name': 'Customer Person',
+                    'conversation_type': conversation_type,
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': 'wxwork-local:evt-person-conversation',
-                'message_key': 'wxwork-local:key-person-conversation',
-                'conversation_id': conversation_id,
-                'external_message_id': 'person-1',
-                'sender_id': 'person-200',
-                'sender_name': 'Customer Person',
-                'content': 'Need a private follow-up',
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': 'wxwork-local:evt-person-conversation',
+                    'message_key': 'wxwork-local:key-person-conversation',
+                    'conversation_id': conversation_id,
+                    'external_message_id': 'person-1',
+                    'sender_id': 'person-200',
+                    'sender_name': 'Customer Person',
+                    'content': 'Need a private follow-up',
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         message_id = message_result.inserted_primary_key[0]
 
@@ -1741,61 +1828,71 @@ async def test_processing_service_rejects_unknown_conversation_type(raw_processi
     ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=None))
     ap.query_pool = SimpleNamespace(add_query=AsyncMock(side_effect=lambda **kw: SimpleNamespace(**kw)))
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-unknown-conversation',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-unknown-conversation',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-enabled',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-enabled',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_unknown',
-                'conversation_name': 'Customer Unknown',
-                'conversation_type': 'weird_type',
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_unknown',
+                    'conversation_name': 'Customer Unknown',
+                    'conversation_type': 'weird_type',
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': 'wxwork-local:evt-unknown-conversation',
-                'message_key': 'wxwork-local:key-unknown-conversation',
-                'conversation_id': conversation_id,
-                'external_message_id': 'unknown-1',
-                'sender_id': 'unknown-200',
-                'sender_name': 'Customer Unknown',
-                'content': 'Need an answer',
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': 'wxwork-local:evt-unknown-conversation',
+                    'message_key': 'wxwork-local:key-unknown-conversation',
+                    'conversation_id': conversation_id,
+                    'external_message_id': 'unknown-1',
+                    'sender_id': 'unknown-200',
+                    'sender_name': 'Customer Unknown',
+                    'content': 'Need an answer',
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         message_id = message_result.inserted_primary_key[0]
 
-    with pytest.raises(ValueError, match="Unsupported conversation type: weird_type"):
+    with pytest.raises(ValueError, match='Unsupported conversation type: weird_type'):
         await processing_service.generate_draft(message_id, 'bot-enabled', trigger='manual')
 
 
@@ -1826,57 +1923,67 @@ async def test_processing_service_uses_publish_not_emit(raw_processing_app):
     ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=_FakePipeline()))
     ap.query_pool = SimpleNamespace(add_query=AsyncMock(side_effect=lambda **kw: SimpleNamespace(**kw)))
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-raw-emit',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-raw-emit',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-enabled',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-enabled',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_300',
-                'conversation_name': 'Customer B',
-                'conversation_type': 'direct',
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_300',
+                    'conversation_name': 'Customer B',
+                    'conversation_type': 'direct',
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': 'wxwork-local:evt-raw-emit',
-                'message_key': 'wxwork-local:key-raw-emit',
-                'conversation_id': conversation_id,
-                'external_message_id': '103',
-                'sender_id': '201',
-                'sender_name': 'Customer B',
-                'content': 'Need support',
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': 'wxwork-local:evt-raw-emit',
+                    'message_key': 'wxwork-local:key-raw-emit',
+                    'conversation_id': conversation_id,
+                    'external_message_id': '103',
+                    'sender_id': '201',
+                    'sender_name': 'Customer B',
+                    'content': 'Need support',
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         message_id = message_result.inserted_primary_key[0]
 
@@ -1923,57 +2030,67 @@ async def test_processing_service_failure_preserves_original_exception_when_even
     ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=_FailingPipeline()))
     ap.query_pool = SimpleNamespace(add_query=AsyncMock(side_effect=lambda **kw: SimpleNamespace(**kw)))
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-raw-fail',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-raw-fail',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-enabled',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-enabled',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_400',
-                'conversation_name': 'Customer C',
-                'conversation_type': 'direct',
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_400',
+                    'conversation_name': 'Customer C',
+                    'conversation_type': 'direct',
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': 'wxwork-local:evt-raw-fail',
-                'message_key': 'wxwork-local:key-raw-fail',
-                'conversation_id': conversation_id,
-                'external_message_id': '104',
-                'sender_id': '202',
-                'sender_name': 'Customer C',
-                'content': 'Need escalation',
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': 'wxwork-local:evt-raw-fail',
+                    'message_key': 'wxwork-local:key-raw-fail',
+                    'conversation_id': conversation_id,
+                    'external_message_id': '104',
+                    'sender_id': '202',
+                    'sender_name': 'Customer C',
+                    'content': 'Need escalation',
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         message_id = message_result.inserted_primary_key[0]
 
@@ -2006,83 +2123,97 @@ async def test_processing_service_success_transaction_supersedes_old_draft_and_i
     ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=_FakePipeline()))
     ap.query_pool = SimpleNamespace(add_query=AsyncMock(side_effect=lambda **kw: SimpleNamespace(**kw)))
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-raw-success',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-raw-success',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-enabled',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-enabled',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_500',
-                'conversation_name': 'Customer D',
-                'conversation_type': 'direct',
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_500',
+                    'conversation_name': 'Customer D',
+                    'conversation_type': 'direct',
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': 'wxwork-local:evt-raw-success',
-                'message_key': 'wxwork-local:key-raw-success',
-                'conversation_id': conversation_id,
-                'external_message_id': '105',
-                'sender_id': '203',
-                'sender_name': 'Customer D',
-                'content': 'Need quote',
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': 'wxwork-local:evt-raw-success',
+                    'message_key': 'wxwork-local:key-raw-success',
+                    'conversation_id': conversation_id,
+                    'external_message_id': '105',
+                    'sender_id': '203',
+                    'sender_name': 'Customer D',
+                    'content': 'Need quote',
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         message_id = message_result.inserted_primary_key[0]
         previous_run_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values({
-                'message_id': message_id,
-                'bot_uuid': 'bot-enabled',
-                'pipeline_uuid': 'pipeline-old',
-                'trigger': 'manual',
-                'status': RUN_STATUS_FAILED,
-                'attempt_count': 1,
-                'started_at': datetime.datetime.now(datetime.timezone.utc),
-                'completed_at': datetime.datetime.now(datetime.timezone.utc),
-                'last_error': 'old error',
-            })
+            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values(
+                {
+                    'message_id': message_id,
+                    'bot_uuid': 'bot-enabled',
+                    'pipeline_uuid': 'pipeline-old',
+                    'trigger': 'manual',
+                    'status': RUN_STATUS_FAILED,
+                    'attempt_count': 1,
+                    'started_at': datetime.datetime.now(datetime.timezone.utc),
+                    'completed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'last_error': 'old error',
+                }
+            )
         )
         previous_run_id = previous_run_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ReplyDraft).values({
-                'processing_run_id': previous_run_id,
-                'message_id': message_id,
-                'bot_uuid': 'bot-enabled',
-                'content': 'Old active draft',
-                'source': 'manual',
-                'version': 1,
-                'status': DRAFT_STATUS_ACTIVE,
-            })
+            sqlalchemy.insert(persistence_database_mode.ReplyDraft).values(
+                {
+                    'processing_run_id': previous_run_id,
+                    'message_id': message_id,
+                    'bot_uuid': 'bot-enabled',
+                    'content': 'Old active draft',
+                    'source': 'manual',
+                    'version': 1,
+                    'status': DRAFT_STATUS_ACTIVE,
+                }
+            )
         )
 
     result = await processing_service.generate_draft(message_id, 'bot-enabled', trigger='manual')
@@ -2108,7 +2239,9 @@ async def test_processing_service_success_transaction_supersedes_old_draft_and_i
 
     active_count = (
         await ap.persistence_mgr.execute_async(
-            sqlalchemy.select(sqlalchemy.func.count()).select_from(persistence_database_mode.ReplyDraft).where(
+            sqlalchemy.select(sqlalchemy.func.count())
+            .select_from(persistence_database_mode.ReplyDraft)
+            .where(
                 persistence_database_mode.ReplyDraft.message_id == message_id,
                 persistence_database_mode.ReplyDraft.bot_uuid == 'bot-enabled',
                 persistence_database_mode.ReplyDraft.status == DRAFT_STATUS_ACTIVE,
@@ -2138,7 +2271,9 @@ async def test_processing_service_generate_draft_uses_new_query_from_stage_resul
 
         async def run(self, query):
             final_query = SimpleNamespace(
-                resp_message_chain=[platform_message.MessageChain([platform_message.Plain(text='Result from new_query')])],
+                resp_message_chain=[
+                    platform_message.MessageChain([platform_message.Plain(text='Result from new_query')])
+                ],
                 resp_messages=[],
             )
             return SimpleNamespace(new_query=final_query)
@@ -2147,57 +2282,67 @@ async def test_processing_service_generate_draft_uses_new_query_from_stage_resul
     ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=_FakePipeline()))
     ap.query_pool = SimpleNamespace(add_query=AsyncMock(side_effect=lambda **kw: SimpleNamespace(**kw)))
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-raw-new-query',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-raw-new-query',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-enabled',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-enabled',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_610',
-                'conversation_name': 'Customer F',
-                'conversation_type': 'direct',
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_610',
+                    'conversation_name': 'Customer F',
+                    'conversation_type': 'direct',
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': 'wxwork-local:evt-raw-new-query',
-                'message_key': 'wxwork-local:key-raw-new-query',
-                'conversation_id': conversation_id,
-                'external_message_id': '107',
-                'sender_id': '205',
-                'sender_name': 'Customer F',
-                'content': 'Need pricing follow-up',
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': 'wxwork-local:evt-raw-new-query',
+                    'message_key': 'wxwork-local:key-raw-new-query',
+                    'conversation_id': conversation_id,
+                    'external_message_id': '107',
+                    'sender_id': '205',
+                    'sender_name': 'Customer F',
+                    'content': 'Need pricing follow-up',
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         message_id = message_result.inserted_primary_key[0]
 
@@ -2207,7 +2352,9 @@ async def test_processing_service_generate_draft_uses_new_query_from_stage_resul
     assert result['draft']['content'] == 'Result from new_query'
 
 
-async def test_processing_service_generate_draft_uses_adapter_capture_when_pipeline_replies_via_adapter(raw_processing_app):
+async def test_processing_service_generate_draft_uses_adapter_capture_when_pipeline_replies_via_adapter(
+    raw_processing_app,
+):
     ap = raw_processing_app
     processing_service = DatabaseModeProcessingService(ap)
     adapter = WXWorkDatabaseAdapter(config={'connector_id': 'wxwork-local'}, logger=DummyEventLogger())
@@ -2236,57 +2383,67 @@ async def test_processing_service_generate_draft_uses_adapter_capture_when_pipel
     ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=_FakePipeline()))
     ap.query_pool = SimpleNamespace(add_query=AsyncMock(side_effect=lambda **kw: SimpleNamespace(**kw)))
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-raw-adapter-capture',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-raw-adapter-capture',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-enabled',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-enabled',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_620',
-                'conversation_name': 'Customer G',
-                'conversation_type': 'direct',
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_620',
+                    'conversation_name': 'Customer G',
+                    'conversation_type': 'direct',
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': 'wxwork-local:evt-raw-adapter-capture',
-                'message_key': 'wxwork-local:key-raw-adapter-capture',
-                'conversation_id': conversation_id,
-                'external_message_id': '108',
-                'sender_id': '206',
-                'sender_name': 'Customer G',
-                'content': 'Need discount',
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': 'wxwork-local:evt-raw-adapter-capture',
+                    'message_key': 'wxwork-local:key-raw-adapter-capture',
+                    'conversation_id': conversation_id,
+                    'external_message_id': '108',
+                    'sender_id': '206',
+                    'sender_name': 'Customer G',
+                    'content': 'Need discount',
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         message_id = message_result.inserted_primary_key[0]
 
@@ -2296,7 +2453,9 @@ async def test_processing_service_generate_draft_uses_adapter_capture_when_pipel
     assert result['draft']['content'] == 'Adapter captured reply'
 
 
-async def test_processing_service_generate_draft_uses_stream_capture_when_pipeline_replies_in_chunks(raw_processing_app):
+async def test_processing_service_generate_draft_uses_stream_capture_when_pipeline_replies_in_chunks(
+    raw_processing_app,
+):
     ap = raw_processing_app
     processing_service = DatabaseModeProcessingService(ap)
     adapter = WXWorkDatabaseAdapter(config={'connector_id': 'wxwork-local'}, logger=DummyEventLogger())
@@ -2333,57 +2492,67 @@ async def test_processing_service_generate_draft_uses_stream_capture_when_pipeli
     ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=_FakePipeline()))
     ap.query_pool = SimpleNamespace(add_query=AsyncMock(side_effect=lambda **kw: SimpleNamespace(**kw)))
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-raw-stream-capture',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-raw-stream-capture',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-enabled',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-enabled',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_630',
-                'conversation_name': 'Customer H',
-                'conversation_type': 'direct',
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_630',
+                    'conversation_name': 'Customer H',
+                    'conversation_type': 'direct',
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': 'wxwork-local:evt-raw-stream-capture',
-                'message_key': 'wxwork-local:key-raw-stream-capture',
-                'conversation_id': conversation_id,
-                'external_message_id': '109',
-                'sender_id': '207',
-                'sender_name': 'Customer H',
-                'content': 'Need ETA',
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': 'wxwork-local:evt-raw-stream-capture',
+                    'message_key': 'wxwork-local:key-raw-stream-capture',
+                    'conversation_id': conversation_id,
+                    'external_message_id': '109',
+                    'sender_id': '207',
+                    'sender_name': 'Customer H',
+                    'content': 'Need ETA',
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         message_id = message_result.inserted_primary_key[0]
 
@@ -2418,57 +2587,67 @@ async def test_processing_service_failure_transaction_marks_failed_without_creat
     ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=_FailingPipeline()))
     ap.query_pool = SimpleNamespace(add_query=AsyncMock(side_effect=lambda **kw: SimpleNamespace(**kw)))
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-raw-failure',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-raw-failure',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-enabled',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-enabled',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_600',
-                'conversation_name': 'Customer E',
-                'conversation_type': 'direct',
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_600',
+                    'conversation_name': 'Customer E',
+                    'conversation_type': 'direct',
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': 'wxwork-local:evt-raw-failure',
-                'message_key': 'wxwork-local:key-raw-failure',
-                'conversation_id': conversation_id,
-                'external_message_id': '106',
-                'sender_id': '204',
-                'sender_name': 'Customer E',
-                'content': 'Need callback',
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': 'wxwork-local:evt-raw-failure',
+                    'message_key': 'wxwork-local:key-raw-failure',
+                    'conversation_id': conversation_id,
+                    'external_message_id': '106',
+                    'sender_id': '204',
+                    'sender_name': 'Customer E',
+                    'content': 'Need callback',
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         message_id = message_result.inserted_primary_key[0]
 
@@ -2476,32 +2655,40 @@ async def test_processing_service_failure_transaction_marks_failed_without_creat
         await processing_service.generate_draft(message_id, 'bot-enabled', trigger='manual')
 
     run_row = (
-        await ap.persistence_mgr.execute_async(
-            sqlalchemy.select(
-                persistence_database_mode.MessageProcessingRun.status,
-                persistence_database_mode.MessageProcessingRun.last_error,
+        (
+            await ap.persistence_mgr.execute_async(
+                sqlalchemy.select(
+                    persistence_database_mode.MessageProcessingRun.status,
+                    persistence_database_mode.MessageProcessingRun.last_error,
+                )
+                .where(
+                    persistence_database_mode.MessageProcessingRun.message_id == message_id,
+                    persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
+                )
+                .order_by(persistence_database_mode.MessageProcessingRun.id.desc())
+                .limit(1)
             )
-            .where(
-                persistence_database_mode.MessageProcessingRun.message_id == message_id,
-                persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
-            )
-            .order_by(persistence_database_mode.MessageProcessingRun.id.desc())
-            .limit(1)
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     assert dict(run_row) == {
         'status': RUN_STATUS_FAILED,
         'last_error': 'pipeline exploded',
     }
 
     message_row = (
-        await ap.persistence_mgr.execute_async(
-            sqlalchemy.select(
-                persistence_database_mode.DatabaseMessage.status,
-                persistence_database_mode.DatabaseMessage.last_error,
-            ).where(persistence_database_mode.DatabaseMessage.id == message_id)
+        (
+            await ap.persistence_mgr.execute_async(
+                sqlalchemy.select(
+                    persistence_database_mode.DatabaseMessage.status,
+                    persistence_database_mode.DatabaseMessage.last_error,
+                ).where(persistence_database_mode.DatabaseMessage.id == message_id)
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     assert dict(message_row) == {
         'status': MESSAGE_STATUS_FAILED,
         'last_error': 'pipeline exploded',
@@ -2509,7 +2696,9 @@ async def test_processing_service_failure_transaction_marks_failed_without_creat
 
     draft_count = (
         await ap.persistence_mgr.execute_async(
-            sqlalchemy.select(sqlalchemy.func.count()).select_from(persistence_database_mode.ReplyDraft).where(
+            sqlalchemy.select(sqlalchemy.func.count())
+            .select_from(persistence_database_mode.ReplyDraft)
+            .where(
                 persistence_database_mode.ReplyDraft.message_id == message_id,
                 persistence_database_mode.ReplyDraft.bot_uuid == 'bot-enabled',
             )
@@ -2518,7 +2707,9 @@ async def test_processing_service_failure_transaction_marks_failed_without_creat
     assert draft_count == 0
 
 
-async def test_processing_service_generate_draft_fails_with_clear_message_when_pipeline_has_no_text_output(raw_processing_app):
+async def test_processing_service_generate_draft_fails_with_clear_message_when_pipeline_has_no_text_output(
+    raw_processing_app,
+):
     ap = raw_processing_app
     processing_service = DatabaseModeProcessingService(ap)
     adapter = WXWorkDatabaseAdapter(config={'connector_id': 'wxwork-local'}, logger=DummyEventLogger())
@@ -2544,57 +2735,67 @@ async def test_processing_service_generate_draft_fails_with_clear_message_when_p
     ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=_FakePipeline()))
     ap.query_pool = SimpleNamespace(add_query=AsyncMock(side_effect=lambda **kw: SimpleNamespace(**kw)))
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-raw-no-text',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-raw-no-text',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-enabled',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': False,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-enabled',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': False,
+                }
+            )
         )
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_640',
-                'conversation_name': 'Customer I',
-                'conversation_type': 'direct',
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_640',
+                    'conversation_name': 'Customer I',
+                    'conversation_type': 'direct',
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': 'wxwork-local:evt-raw-no-text',
-                'message_key': 'wxwork-local:key-raw-no-text',
-                'conversation_id': conversation_id,
-                'external_message_id': '110',
-                'sender_id': '208',
-                'sender_name': 'Customer I',
-                'content': 'Need update',
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': 'wxwork-local:evt-raw-no-text',
+                    'message_key': 'wxwork-local:key-raw-no-text',
+                    'conversation_id': conversation_id,
+                    'external_message_id': '110',
+                    'sender_id': '208',
+                    'sender_name': 'Customer I',
+                    'content': 'Need update',
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         message_id = message_result.inserted_primary_key[0]
 
@@ -2603,7 +2804,9 @@ async def test_processing_service_generate_draft_fails_with_clear_message_when_p
 
     draft_count = (
         await ap.persistence_mgr.execute_async(
-            sqlalchemy.select(sqlalchemy.func.count()).select_from(persistence_database_mode.ReplyDraft).where(
+            sqlalchemy.select(sqlalchemy.func.count())
+            .select_from(persistence_database_mode.ReplyDraft)
+            .where(
                 persistence_database_mode.ReplyDraft.message_id == message_id,
                 persistence_database_mode.ReplyDraft.bot_uuid == 'bot-enabled',
             )
@@ -2630,12 +2833,14 @@ async def test_processing_service_generate_draft_finalizes_failed_state_on_cance
     ap.platform_mgr = SimpleNamespace(bots=[_CancelledRuntimeBot()])
     ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=SimpleNamespace()))
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     message_id = await _insert_bound_message(
@@ -2652,32 +2857,40 @@ async def test_processing_service_generate_draft_finalizes_failed_state_on_cance
         await processing_service.generate_draft(message_id, 'bot-enabled', trigger='manual')
 
     run_row = (
-        await ap.persistence_mgr.execute_async(
-            sqlalchemy.select(
-                persistence_database_mode.MessageProcessingRun.status,
-                persistence_database_mode.MessageProcessingRun.completed_at,
-                persistence_database_mode.MessageProcessingRun.last_error,
+        (
+            await ap.persistence_mgr.execute_async(
+                sqlalchemy.select(
+                    persistence_database_mode.MessageProcessingRun.status,
+                    persistence_database_mode.MessageProcessingRun.completed_at,
+                    persistence_database_mode.MessageProcessingRun.last_error,
+                )
+                .where(
+                    persistence_database_mode.MessageProcessingRun.message_id == message_id,
+                    persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
+                )
+                .order_by(persistence_database_mode.MessageProcessingRun.id.desc())
+                .limit(1)
             )
-            .where(
-                persistence_database_mode.MessageProcessingRun.message_id == message_id,
-                persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
-            )
-            .order_by(persistence_database_mode.MessageProcessingRun.id.desc())
-            .limit(1)
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     assert run_row['status'] == RUN_STATUS_FAILED
     assert run_row['completed_at'] is not None
     assert 'cancel' in (run_row['last_error'] or '').lower()
 
     message_row = (
-        await ap.persistence_mgr.execute_async(
-            sqlalchemy.select(
-                persistence_database_mode.DatabaseMessage.status,
-                persistence_database_mode.DatabaseMessage.last_error,
-            ).where(persistence_database_mode.DatabaseMessage.id == message_id)
+        (
+            await ap.persistence_mgr.execute_async(
+                sqlalchemy.select(
+                    persistence_database_mode.DatabaseMessage.status,
+                    persistence_database_mode.DatabaseMessage.last_error,
+                ).where(persistence_database_mode.DatabaseMessage.id == message_id)
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     assert message_row['status'] == MESSAGE_STATUS_FAILED
     assert 'cancel' in (message_row['last_error'] or '').lower()
 
@@ -2702,12 +2915,14 @@ async def test_processing_service_generate_draft_times_out_and_marks_run_failed(
     ap.platform_mgr = SimpleNamespace(bots=[_SlowRuntimeBot()])
     ap.pipeline_mgr = SimpleNamespace(get_pipeline_by_uuid=AsyncMock(return_value=SimpleNamespace()))
     ap.bot_service = SimpleNamespace(
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        })
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        )
     )
 
     message_id = await _insert_bound_message(
@@ -2724,32 +2939,40 @@ async def test_processing_service_generate_draft_times_out_and_marks_run_failed(
         await processing_service.generate_draft(message_id, 'bot-enabled', trigger='manual')
 
     run_row = (
-        await ap.persistence_mgr.execute_async(
-            sqlalchemy.select(
-                persistence_database_mode.MessageProcessingRun.status,
-                persistence_database_mode.MessageProcessingRun.completed_at,
-                persistence_database_mode.MessageProcessingRun.last_error,
+        (
+            await ap.persistence_mgr.execute_async(
+                sqlalchemy.select(
+                    persistence_database_mode.MessageProcessingRun.status,
+                    persistence_database_mode.MessageProcessingRun.completed_at,
+                    persistence_database_mode.MessageProcessingRun.last_error,
+                )
+                .where(
+                    persistence_database_mode.MessageProcessingRun.message_id == message_id,
+                    persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
+                )
+                .order_by(persistence_database_mode.MessageProcessingRun.id.desc())
+                .limit(1)
             )
-            .where(
-                persistence_database_mode.MessageProcessingRun.message_id == message_id,
-                persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
-            )
-            .order_by(persistence_database_mode.MessageProcessingRun.id.desc())
-            .limit(1)
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     assert run_row['status'] == RUN_STATUS_FAILED
     assert run_row['completed_at'] is not None
     assert 'timed out' in (run_row['last_error'] or '').lower()
 
     message_row = (
-        await ap.persistence_mgr.execute_async(
-            sqlalchemy.select(
-                persistence_database_mode.DatabaseMessage.status,
-                persistence_database_mode.DatabaseMessage.last_error,
-            ).where(persistence_database_mode.DatabaseMessage.id == message_id)
+        (
+            await ap.persistence_mgr.execute_async(
+                sqlalchemy.select(
+                    persistence_database_mode.DatabaseMessage.status,
+                    persistence_database_mode.DatabaseMessage.last_error,
+                ).where(persistence_database_mode.DatabaseMessage.id == message_id)
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     assert message_row['status'] == MESSAGE_STATUS_FAILED
     assert 'timed out' in (message_row['last_error'] or '').lower()
 
@@ -2770,22 +2993,24 @@ async def test_processing_service_reconcile_stale_processing_runs_is_idempotent(
         sender_name='Customer S',
     )
 
-    stale_started_at = (
-        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=20)
-    ).replace(tzinfo=None)
+    stale_started_at = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=20)).replace(
+        tzinfo=None
+    )
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values({
-                'message_id': message_id,
-                'bot_uuid': 'bot-enabled',
-                'pipeline_uuid': None,
-                'trigger': 'automatic',
-                'status': RUN_STATUS_PROCESSING,
-                'attempt_count': 1,
-                'started_at': stale_started_at,
-                'completed_at': None,
-                'last_error': None,
-            })
+            sqlalchemy.insert(persistence_database_mode.MessageProcessingRun).values(
+                {
+                    'message_id': message_id,
+                    'bot_uuid': 'bot-enabled',
+                    'pipeline_uuid': None,
+                    'trigger': 'automatic',
+                    'status': RUN_STATUS_PROCESSING,
+                    'attempt_count': 1,
+                    'started_at': stale_started_at,
+                    'completed_at': None,
+                    'last_error': None,
+                }
+            )
         )
         await conn.execute(
             sqlalchemy.update(persistence_database_mode.DatabaseMessage)
@@ -2797,30 +3022,38 @@ async def test_processing_service_reconcile_stale_processing_runs_is_idempotent(
     await processing_service.reconcile_stale_processing_runs()
 
     run_rows = (
-        await ap.persistence_mgr.execute_async(
-            sqlalchemy.select(
-                persistence_database_mode.MessageProcessingRun.status,
-                persistence_database_mode.MessageProcessingRun.completed_at,
-                persistence_database_mode.MessageProcessingRun.last_error,
-            ).where(
-                persistence_database_mode.MessageProcessingRun.message_id == message_id,
-                persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
+        (
+            await ap.persistence_mgr.execute_async(
+                sqlalchemy.select(
+                    persistence_database_mode.MessageProcessingRun.status,
+                    persistence_database_mode.MessageProcessingRun.completed_at,
+                    persistence_database_mode.MessageProcessingRun.last_error,
+                ).where(
+                    persistence_database_mode.MessageProcessingRun.message_id == message_id,
+                    persistence_database_mode.MessageProcessingRun.bot_uuid == 'bot-enabled',
+                )
             )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     assert len(run_rows) == 1
     assert run_rows[0]['status'] == RUN_STATUS_FAILED
     assert run_rows[0]['completed_at'] is not None
     assert run_rows[0]['last_error'] == 'Stale processing run recovered after timeout'
 
     message_row = (
-        await ap.persistence_mgr.execute_async(
-            sqlalchemy.select(
-                persistence_database_mode.DatabaseMessage.status,
-                persistence_database_mode.DatabaseMessage.last_error,
-            ).where(persistence_database_mode.DatabaseMessage.id == message_id)
+        (
+            await ap.persistence_mgr.execute_async(
+                sqlalchemy.select(
+                    persistence_database_mode.DatabaseMessage.status,
+                    persistence_database_mode.DatabaseMessage.last_error,
+                ).where(persistence_database_mode.DatabaseMessage.id == message_id)
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     assert message_row['status'] == MESSAGE_STATUS_FAILED
     assert message_row['last_error'] == 'Stale processing run recovered after timeout'
 
@@ -2830,11 +3063,11 @@ async def test_update_draft_publishes_one_updated_event_after_commit(service_app
     _, message_id = await _ingest_and_get_message(service)
     ap.database_mode_event_bus.published_events.clear()
 
-    updated = await service.update_draft(message_id, "Handled manually.", draft_source="manual")
+    updated = await service.update_draft(message_id, 'Handled manually.', draft_source='manual')
 
-    assert updated["status"] == MESSAGE_STATUS_DRAFT_READY
-    assert updated["draft_text"] == "Handled manually."
-    assert updated["draft_source"] == "manual"
+    assert updated['status'] == MESSAGE_STATUS_DRAFT_READY
+    assert updated['draft_text'] == 'Handled manually.'
+    assert updated['draft_source'] == 'manual'
     assert len(ap.database_mode_event_bus.published_events) == 1
     event = ap.database_mode_event_bus.published_events[0]
     assert event.type == DatabaseModeEventType.MESSAGE_UPDATED
@@ -2847,12 +3080,16 @@ async def test_generate_draft_does_not_publish_when_commit_fails(service_app):
 
     # Set up mocks
     ap.bot_service = SimpleNamespace(
-        get_bots=AsyncMock(return_value=[{
-            'uuid': 'bot-1',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'}
-        }])
+        get_bots=AsyncMock(
+            return_value=[
+                {
+                    'uuid': 'bot-1',
+                    'adapter': 'wxwork_database',
+                    'enable': True,
+                    'adapter_config': {'connector_id': 'wxwork-local'},
+                }
+            ]
+        )
     )
 
     async def failing_generate_draft(msg_id, bot_uuid, trigger='manual'):
@@ -2872,74 +3109,82 @@ async def test_generate_draft_does_not_publish_when_commit_fails(service_app):
         await service.generate_draft(message_id)
 
     current = await service.get_message(message_id)
-    assert current["status"] == MESSAGE_STATUS_PENDING
+    assert current['status'] == MESSAGE_STATUS_PENDING
     assert ap.database_mode_event_bus.published_events == []
 
 
 @pytest.mark.parametrize(
-    "operation_name",
-    ["update_draft", "process_message", "skip_message", "delete_message", "batch_process", "batch_skip", "batch_delete"],
+    'operation_name',
+    [
+        'update_draft',
+        'process_message',
+        'skip_message',
+        'delete_message',
+        'batch_process',
+        'batch_skip',
+        'batch_delete',
+    ],
 )
 async def test_write_methods_do_not_publish_when_commit_fails(service_app, operation_name):
     service, ap = service_app
     conversation_id, message_id = await _ingest_and_get_message(service)
     batch_message_ids: list[int] | None = None
-    if operation_name in {"batch_process", "batch_skip", "batch_delete"}:
+    if operation_name in {'batch_process', 'batch_skip', 'batch_delete'}:
         conversation_id, batch_message_ids = await _ingest_two_messages(service)
 
     ap.database_mode_event_bus.published_events.clear()
     ap.persistence_mgr.fail_next_commit = True
 
     with pytest.raises(RuntimeError, match='Simulated commit failure'):
-        if operation_name == "update_draft":
-            await service.update_draft(message_id, "Handled manually.", draft_source="manual")
-        elif operation_name == "process_message":
+        if operation_name == 'update_draft':
+            await service.update_draft(message_id, 'Handled manually.', draft_source='manual')
+        elif operation_name == 'process_message':
             await service.process_message(message_id)
-        elif operation_name == "skip_message":
+        elif operation_name == 'skip_message':
             await service.skip_message(message_id)
-        elif operation_name == "delete_message":
+        elif operation_name == 'delete_message':
             await service.delete_message(message_id)
-        elif operation_name == "batch_process":
+        elif operation_name == 'batch_process':
             await service.batch_process(batch_message_ids)
-        elif operation_name == "batch_skip":
+        elif operation_name == 'batch_skip':
             await service.batch_skip(batch_message_ids)
-        elif operation_name == "batch_delete":
+        elif operation_name == 'batch_delete':
             await service.batch_delete(batch_message_ids)
         else:
-            raise AssertionError(f"Unexpected operation {operation_name}")
+            raise AssertionError(f'Unexpected operation {operation_name}')
 
     assert ap.database_mode_event_bus.published_events == []
 
-    if operation_name == "update_draft":
+    if operation_name == 'update_draft':
         current = await service.get_message(message_id)
-        assert current["status"] == MESSAGE_STATUS_PENDING
-        assert current["draft_text"] is None
-        assert current["draft_source"] is None
-    elif operation_name in {"process_message", "skip_message"}:
+        assert current['status'] == MESSAGE_STATUS_PENDING
+        assert current['draft_text'] is None
+        assert current['draft_source'] is None
+    elif operation_name in {'process_message', 'skip_message'}:
         current = await service.get_message(message_id)
-        assert current["status"] == MESSAGE_STATUS_PENDING
-    elif operation_name == "delete_message":
+        assert current['status'] == MESSAGE_STATUS_PENDING
+    elif operation_name == 'delete_message':
         remaining = await service.list_messages(conversation_id)
-        assert remaining["total"] == 1
-        assert remaining["messages"][0]["id"] == message_id
-    elif operation_name == "batch_process":
+        assert remaining['total'] == 1
+        assert remaining['messages'][0]['id'] == message_id
+    elif operation_name == 'batch_process':
         remaining = await service.list_messages(conversation_id)
-        assert [message["id"] for message in remaining["messages"]] == batch_message_ids
-        assert [message["status"] for message in remaining["messages"]] == [
+        assert [message['id'] for message in remaining['messages']] == batch_message_ids
+        assert [message['status'] for message in remaining['messages']] == [
             MESSAGE_STATUS_PENDING,
             MESSAGE_STATUS_PENDING,
         ]
-    elif operation_name == "batch_skip":
+    elif operation_name == 'batch_skip':
         remaining = await service.list_messages(conversation_id)
-        assert [message["id"] for message in remaining["messages"]] == batch_message_ids
-        assert [message["status"] for message in remaining["messages"]] == [
+        assert [message['id'] for message in remaining['messages']] == batch_message_ids
+        assert [message['status'] for message in remaining['messages']] == [
             MESSAGE_STATUS_PENDING,
             MESSAGE_STATUS_PENDING,
         ]
-    elif operation_name == "batch_delete":
+    elif operation_name == 'batch_delete':
         remaining = await service.list_messages(conversation_id)
-        assert [message["id"] for message in remaining["messages"]] == batch_message_ids
-        assert [message["status"] for message in remaining["messages"]] == [
+        assert [message['id'] for message in remaining['messages']] == batch_message_ids
+        assert [message['status'] for message in remaining['messages']] == [
             MESSAGE_STATUS_PENDING,
             MESSAGE_STATUS_PENDING,
         ]
@@ -2949,15 +3194,15 @@ async def test_list_conversations_returns_searchable_summary_fields(service_app)
     service, _ = service_app
     await service.ingest_internal_event(_sample_payload())
 
-    result = await service.list_conversations(keyword="pricing")
+    result = await service.list_conversations(keyword='pricing')
 
-    assert result["total"] == 1
-    conversation = result["conversations"][0]
-    assert conversation["connector_id"] == "wxwork-local"
-    assert conversation["external_conversation_id"] == "S:100_200"
-    assert conversation["latest_customer"] == "Customer A"
-    assert conversation["latest_message_summary"] == "Need pricing details"
-    assert conversation["last_message_at"].endswith("+00:00")
+    assert result['total'] == 1
+    conversation = result['conversations'][0]
+    assert conversation['connector_id'] == 'wxwork-local'
+    assert conversation['external_conversation_id'] == 'S:100_200'
+    assert conversation['latest_customer'] == 'Customer A'
+    assert conversation['latest_message_summary'] == 'Need pricing details'
+    assert conversation['last_message_at'].endswith('+00:00')
 
 
 async def test_list_conversations_can_filter_by_connector_id(service_app):
@@ -2967,35 +3212,83 @@ async def test_list_conversations_can_filter_by_connector_id(service_app):
         await conn.execute(
             sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
                 {
-                    "connector_id": "other-connector",
-                    "source": "wxwork",
-                    "external_conversation_id": "S:200_300",
-                    "conversation_name": "Other Customer",
-                    "conversation_type": "direct",
-                    "last_message_at": datetime.datetime.now(datetime.timezone.utc),
+                    'connector_id': 'other-connector',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:200_300',
+                    'conversation_name': 'Other Customer',
+                    'conversation_type': 'direct',
+                    'last_message_at': datetime.datetime.now(datetime.timezone.utc),
                 }
             )
         )
 
-    result = await service.list_conversations(connector_id="wxwork-local")
+    result = await service.list_conversations(connector_id='wxwork-local')
 
-    assert result["total"] == 1
-    assert [conversation["connector_id"] for conversation in result["conversations"]] == ["wxwork-local"]
+    assert result['total'] == 1
+    assert [conversation['connector_id'] for conversation in result['conversations']] == ['wxwork-local']
 
 
 async def test_get_conversation_and_list_messages_can_filter_by_connector_id(service_app):
     service, _ = service_app
     await service.ingest_internal_event(_sample_payload())
-    result = await service.list_conversations(connector_id="wxwork-local")
-    conversation_id = result["conversations"][0]["id"]
+    result = await service.list_conversations(connector_id='wxwork-local')
+    conversation_id = result['conversations'][0]['id']
 
-    conversation = await service.get_conversation(conversation_id, connector_id="wxwork-local")
+    conversation = await service.get_conversation(conversation_id, connector_id='wxwork-local')
     assert conversation is not None
-    assert conversation["connector_id"] == "wxwork-local"
+    assert conversation['connector_id'] == 'wxwork-local'
 
-    messages = await service.list_messages(conversation_id, connector_id="wxwork-local")
-    assert messages["total"] == 1
-    assert messages["messages"][0]["status"] == MESSAGE_STATUS_PENDING
+    messages = await service.list_messages(conversation_id, connector_id='wxwork-local')
+    assert messages['total'] == 1
+    assert messages['messages'][0]['status'] == MESSAGE_STATUS_PENDING
+
+
+async def test_list_messages_includes_active_draft_metadata_for_bot(service_app):
+    service, ap = service_app
+    await service.ingest_internal_event(_sample_payload())
+    result = await service.list_conversations(connector_id='wxwork-local')
+    conversation_id = result['conversations'][0]['id']
+    messages = await service.list_messages(conversation_id, connector_id='wxwork-local')
+    message_id = messages['messages'][0]['id']
+
+    async with ap.persistence_mgr.get_db_engine().begin() as conn:
+        await conn.execute(
+            sqlalchemy.update(persistence_database_mode.DatabaseMessage)
+            .where(persistence_database_mode.DatabaseMessage.id == message_id)
+            .values(
+                {
+                    'status': MESSAGE_STATUS_DRAFT_READY,
+                    'draft_text': 'Persisted draft',
+                    'draft_source': 'pipeline',
+                    'updated_at': datetime.datetime.now(datetime.timezone.utc),
+                }
+            )
+        )
+        draft_result = await conn.execute(
+            sqlalchemy.insert(persistence_database_mode.ReplyDraft).values(
+                {
+                    'processing_run_id': None,
+                    'message_id': message_id,
+                    'bot_uuid': 'bot-draft-metadata',
+                    'content': 'Persisted draft',
+                    'source': 'pipeline',
+                    'version': 2,
+                    'status': DRAFT_STATUS_ACTIVE,
+                }
+            )
+        )
+        draft_id = int(draft_result.inserted_primary_key[0])
+
+    hydrated = await service.list_messages(
+        conversation_id,
+        connector_id='wxwork-local',
+        bot_uuid='bot-draft-metadata',
+    )
+
+    assert hydrated['messages'][0]['draft_id'] == draft_id
+    assert hydrated['messages'][0]['draft_version'] == 2
+    assert hydrated['messages'][0]['draft_source'] == 'pipeline'
+    assert hydrated['messages'][0]['draft_text'] == 'Persisted draft'
 
 
 async def test_auto_draft_schedule_loads_binding_as_model_even_when_scalar_path_is_misleading(raw_processing_app):
@@ -3006,61 +3299,71 @@ async def test_auto_draft_schedule_loads_binding_as_model_even_when_scalar_path_
 
     async with ap.persistence_mgr.get_db_engine().begin() as conn:
         await conn.execute(
-            sqlalchemy.insert(persistence_bot.Bot).values({
-                'uuid': 'bot-enabled',
-                'name': 'Database Bot',
-                'description': '',
-                'adapter': 'wxwork_database',
-                'adapter_config': {'connector_id': 'wxwork-local'},
-                'enable': True,
-                'use_pipeline_name': None,
-                'use_pipeline_uuid': 'pipeline-123',
-                'pipeline_routing_rules': [],
-            })
+            sqlalchemy.insert(persistence_bot.Bot).values(
+                {
+                    'uuid': 'bot-enabled',
+                    'name': 'Database Bot',
+                    'description': '',
+                    'adapter': 'wxwork_database',
+                    'adapter_config': {'connector_id': 'wxwork-local'},
+                    'enable': True,
+                    'use_pipeline_name': None,
+                    'use_pipeline_uuid': 'pipeline-123',
+                    'pipeline_routing_rules': [],
+                }
+            )
         )
         channel_account_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values({
-                'connector_id': 'wxwork-local',
-                'channel_type': 'wxwork',
-                'external_account_id': 'acc-auto-draft-binding',
-                'display_name': 'Raw Account',
-                'enabled': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.ChannelAccount).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'channel_type': 'wxwork',
+                    'external_account_id': 'acc-auto-draft-binding',
+                    'display_name': 'Raw Account',
+                    'enabled': True,
+                }
+            )
         )
         channel_account_id = channel_account_result.inserted_primary_key[0]
         await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values({
-                'bot_uuid': 'bot-enabled',
-                'channel_account_id': channel_account_id,
-                'enabled': True,
-                'auto_generate_draft': True,
-            })
+            sqlalchemy.insert(persistence_database_mode.BotChannelBinding).values(
+                {
+                    'bot_uuid': 'bot-enabled',
+                    'channel_account_id': channel_account_id,
+                    'enabled': True,
+                    'auto_generate_draft': True,
+                }
+            )
         )
         conversation_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values({
-                'connector_id': 'wxwork-local',
-                'source': 'wxwork',
-                'external_conversation_id': 'S:100_auto_draft',
-                'conversation_name': 'Customer Auto',
-                'conversation_type': 'direct',
-                'last_message_at': datetime.datetime.now(datetime.timezone.utc),
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'S:100_auto_draft',
+                    'conversation_name': 'Customer Auto',
+                    'conversation_type': 'direct',
+                    'last_message_at': datetime.datetime.now(datetime.timezone.utc),
+                }
+            )
         )
         conversation_id = conversation_result.inserted_primary_key[0]
         message_result = await conn.execute(
-            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values({
-                'event_id': 'wxwork-local:evt-auto-draft-binding',
-                'message_key': 'wxwork-local:key-auto-draft-binding',
-                'conversation_id': conversation_id,
-                'external_message_id': 'auto-draft-1',
-                'sender_id': '300',
-                'sender_name': 'Customer Auto',
-                'content': 'Please draft this automatically',
-                'message_type': 'text',
-                'sent_at': datetime.datetime.now(datetime.timezone.utc),
-                'observed_at': datetime.datetime.now(datetime.timezone.utc),
-                'status': MESSAGE_STATUS_PENDING,
-            })
+            sqlalchemy.insert(persistence_database_mode.DatabaseMessage).values(
+                {
+                    'event_id': 'wxwork-local:evt-auto-draft-binding',
+                    'message_key': 'wxwork-local:key-auto-draft-binding',
+                    'conversation_id': conversation_id,
+                    'external_message_id': 'auto-draft-1',
+                    'sender_id': '300',
+                    'sender_name': 'Customer Auto',
+                    'content': 'Please draft this automatically',
+                    'message_type': 'text',
+                    'sent_at': datetime.datetime.now(datetime.timezone.utc),
+                    'observed_at': datetime.datetime.now(datetime.timezone.utc),
+                    'status': MESSAGE_STATUS_PENDING,
+                }
+            )
         )
         message_id = message_result.inserted_primary_key[0]
 
@@ -3078,12 +3381,8 @@ async def test_auto_draft_schedule_loads_binding_as_model_even_when_scalar_path_
     async def execute_async_with_misleading_binding(*args, conn=None, **kwargs):
         stmt = args[0] if args else None
         text = str(stmt) if stmt is not None else ''
-        if (
-            conn is None
-            and 'FROM bot_channel_bindings' in text
-            and 'channel_account_id' in text
-            and 'bot_uuid' in text
-        ):
+        if conn is None and 'FROM bot_channel_bindings' in text and 'channel_account_id' in text and 'bot_uuid' in text:
+
             class _MisleadingBindingResult:
                 def scalars(self):
                     class _Scalars:
@@ -3093,9 +3392,7 @@ async def test_auto_draft_schedule_loads_binding_as_model_even_when_scalar_path_
                     return _Scalars()
 
                 def first(self):
-                    return SimpleNamespace(
-                        _mapping={persistence_database_mode.BotChannelBinding: binding_model}
-                    )
+                    return SimpleNamespace(_mapping={persistence_database_mode.BotChannelBinding: binding_model})
 
                 def keys(self):
                     return ['BotChannelBinding']
@@ -3105,25 +3402,36 @@ async def test_auto_draft_schedule_loads_binding_as_model_even_when_scalar_path_
 
     ap.persistence_mgr.execute_async = execute_async_with_misleading_binding
     ap.bot_service = SimpleNamespace(
-        get_bots=AsyncMock(side_effect=lambda include_secret=True: [{
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        }]),
-        get_bot=AsyncMock(return_value={
-            'uuid': 'bot-enabled',
-            'adapter': 'wxwork_database',
-            'enable': True,
-            'adapter_config': {'connector_id': 'wxwork-local'},
-        }),
+        get_bots=AsyncMock(
+            side_effect=lambda include_secret=True: [
+                {
+                    'uuid': 'bot-enabled',
+                    'adapter': 'wxwork_database',
+                    'enable': True,
+                    'adapter_config': {'connector_id': 'wxwork-local'},
+                }
+            ]
+        ),
+        get_bot=AsyncMock(
+            return_value={
+                'uuid': 'bot-enabled',
+                'adapter': 'wxwork_database',
+                'enable': True,
+                'adapter_config': {'connector_id': 'wxwork-local'},
+            }
+        ),
     )
     ap.database_mode_processing_service = SimpleNamespace(
-        generate_draft=AsyncMock(side_effect=lambda message_id, bot_uuid, trigger='automatic': generated.append({
-            'message_id': message_id,
-            'bot_uuid': bot_uuid,
-            'trigger': trigger,
-        }) or {'status': 'succeeded'})
+        generate_draft=AsyncMock(
+            side_effect=lambda message_id, bot_uuid, trigger='automatic': generated.append(
+                {
+                    'message_id': message_id,
+                    'bot_uuid': bot_uuid,
+                    'trigger': trigger,
+                }
+            )
+            or {'status': 'succeeded'}
+        )
     )
 
     class _TaskManager:
@@ -3140,13 +3448,13 @@ async def test_auto_draft_schedule_loads_binding_as_model_even_when_scalar_path_
     assert scheduled[0]['kwargs']['kind'] == 'database-mode-auto-draft'
 
     await scheduled[0]['coro']
-    assert generated == [{
-        'message_id': message_id,
-        'bot_uuid': 'bot-enabled',
-        'trigger': 'automatic',
-    }]
-
-
+    assert generated == [
+        {
+            'message_id': message_id,
+            'bot_uuid': 'bot-enabled',
+            'trigger': 'automatic',
+        }
+    ]
 
 
 async def test_get_message_serializes_datetimes_with_timezone_offset(service_app):
@@ -3155,10 +3463,10 @@ async def test_get_message_serializes_datetimes_with_timezone_offset(service_app
 
     message = await service.get_message(message_id)
 
-    assert message["sent_at"].endswith("+00:00")
-    assert message["observed_at"].endswith("+00:00")
-    assert message["created_at"].endswith("+00:00")
-    assert message["updated_at"].endswith("+00:00")
+    assert message['sent_at'].endswith('+00:00')
+    assert message['observed_at'].endswith('+00:00')
+    assert message['created_at'].endswith('+00:00')
+    assert message['updated_at'].endswith('+00:00')
 
 
 async def test_delete_message_publishes_deleted_event(service_app):
@@ -3169,7 +3477,7 @@ async def test_delete_message_publishes_deleted_event(service_app):
     await service.delete_message(message_id)
 
     remaining = await service.list_messages(conversation_id)
-    assert remaining["total"] == 0
+    assert remaining['total'] == 0
     assert len(ap.database_mode_event_bus.published_events) == 1
     event = ap.database_mode_event_bus.published_events[0]
     assert event.type == DatabaseModeEventType.MESSAGE_DELETED
@@ -3184,9 +3492,9 @@ async def test_process_and_skip_publish_updated_event(service_app):
     processed = await service.process_message(message_id)
     skipped = await service.skip_message(message_id)
 
-    assert processed["status"] == MESSAGE_STATUS_PROCESSED
-    assert processed["attempt_count"] == 1
-    assert skipped["status"] == MESSAGE_STATUS_SKIPPED
+    assert processed['status'] == MESSAGE_STATUS_PROCESSED
+    assert processed['attempt_count'] == 1
+    assert skipped['status'] == MESSAGE_STATUS_SKIPPED
     assert [event.type for event in ap.database_mode_event_bus.published_events] == [
         DatabaseModeEventType.MESSAGE_UPDATED,
         DatabaseModeEventType.MESSAGE_UPDATED,
@@ -3201,7 +3509,7 @@ async def test_batch_delete_publishes_one_invalidated_event(service_app):
 
     result = await service.batch_delete(message_ids)
 
-    assert result == {"deleted_ids": message_ids}
+    assert result == {'deleted_ids': message_ids}
     assert len(ap.database_mode_event_bus.published_events) == 1
     event = ap.database_mode_event_bus.published_events[0]
     assert event.type == DatabaseModeEventType.INVALIDATED
@@ -3216,7 +3524,7 @@ async def test_batch_process_publishes_one_invalidated_event(service_app):
 
     result = await service.batch_process(message_ids)
 
-    assert [message["status"] for message in result["messages"]] == [
+    assert [message['status'] for message in result['messages']] == [
         MESSAGE_STATUS_PROCESSED,
         MESSAGE_STATUS_PROCESSED,
     ]
@@ -3231,7 +3539,7 @@ async def test_batch_skip_publishes_one_invalidated_event(service_app):
 
     result = await service.batch_skip(message_ids)
 
-    assert [message["status"] for message in result["messages"]] == [
+    assert [message['status'] for message in result['messages']] == [
         MESSAGE_STATUS_SKIPPED,
         MESSAGE_STATUS_SKIPPED,
     ]
@@ -3242,7 +3550,7 @@ async def test_batch_skip_publishes_one_invalidated_event(service_app):
 async def test_batch_operations_require_message_ids(service_app):
     service, _ = service_app
 
-    with pytest.raises(ValueError, match="message_ids is required"):
+    with pytest.raises(ValueError, match='message_ids is required'):
         await service.batch_process([])
 
 

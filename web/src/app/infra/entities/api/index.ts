@@ -762,6 +762,13 @@ export interface DatabaseModeRealtimeEvent {
   message_id?: number | null;
   occurred_at?: string | null;
   metadata?: {
+    desktop_run_id?: number | null;
+    desktop_status?: string | null;
+    desktop_stage?: string | null;
+    desktop_error_code?: string | null;
+    draft_id?: number | null;
+    bot_uuid?: string | null;
+    action?: string | null;
     timings?: {
       file_change_detected_at?: string | null;
       stability_completed_at?: string | null;

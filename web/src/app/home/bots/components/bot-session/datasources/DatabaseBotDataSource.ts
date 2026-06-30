@@ -13,7 +13,12 @@ import type {
   MessagesResponse,
   DraftResponse,
   BatchResponse,
+  SendDraftResponse,
 } from '../types';
+import type {
+  DesktopAutomationRun,
+  DesktopRuntimeStatus,
+} from '@/app/infra/entities/api';
 
 export class DatabaseBotDataSource implements BotSessionDataSource {
   constructor(private botId: string) {}
@@ -95,6 +100,48 @@ export class DatabaseBotDataSource implements BotSessionDataSource {
     }
 
     return backendClient.deleteDatabaseModeDraft(Number(messageId));
+  }
+
+  async pasteDraft(
+    messageId: string,
+    draftId: string,
+    idempotencyKey: string,
+  ): Promise<SendDraftResponse> {
+    const run = await backendClient.pasteBotDraft(
+      this.botId,
+      messageId,
+      draftId,
+      idempotencyKey,
+    );
+    return { run };
+  }
+
+  async sendDraft(
+    messageId: string,
+    draftId: string,
+    sendStrategy: 'enter' | 'ctrl_enter' | 'click_send_button',
+    idempotencyKey?: string,
+  ): Promise<SendDraftResponse> {
+    const run = await backendClient.sendBotDraft(
+      this.botId,
+      messageId,
+      draftId,
+      sendStrategy,
+      idempotencyKey,
+    );
+    return { run };
+  }
+
+  async getDesktopRun(runId: string): Promise<DesktopAutomationRun> {
+    return backendClient.getBotDesktopAutomationRun(this.botId, runId);
+  }
+
+  async cancelDesktopRun(runId: string): Promise<DesktopAutomationRun> {
+    return backendClient.cancelBotDesktopAutomationRun(this.botId, runId);
+  }
+
+  async getDesktopRuntimeStatus(): Promise<DesktopRuntimeStatus> {
+    return backendClient.getDesktopAutomationRuntimeStatus();
   }
 
   async processMessage(messageId: string): Promise<void> {

@@ -1706,6 +1706,73 @@ export class BackendClient extends BaseHttpClient {
   }
 
   /**
+   * Paste the current persisted draft into the verified WeCom input box.
+   */
+  public pasteBotDraft(
+    botId: string,
+    messageId: string,
+    draftId: string,
+    idempotencyKey: string,
+  ): Promise<import('@/app/infra/entities/api').DesktopAutomationRun> {
+    return this.post(
+      `/api/v1/bots/${botId}/messages/${messageId}/paste-draft`,
+      { draft_id: Number(draftId) },
+      { headers: { 'Idempotency-Key': idempotencyKey } },
+    );
+  }
+
+  /**
+   * Explicitly send a persisted draft through the desktop runtime. Disabled unless the backend/runtime gates allow it.
+   */
+  public sendBotDraft(
+    botId: string,
+    messageId: string,
+    draftId: string,
+    sendStrategy: 'enter' | 'ctrl_enter' | 'click_send_button',
+    idempotencyKey?: string,
+  ): Promise<import('@/app/infra/entities/api').DesktopAutomationRun> {
+    return this.post(`/api/v1/bots/${botId}/messages/${messageId}/send-draft`, {
+      draft_id: Number(draftId),
+      explicit_send_action: true,
+      python_authorized: true,
+      send_strategy: sendStrategy,
+      ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+    });
+  }
+
+  /**
+   * Get a bot-scoped desktop automation run.
+   */
+  public getBotDesktopAutomationRun(
+    botId: string,
+    runId: string,
+  ): Promise<import('@/app/infra/entities/api').DesktopAutomationRun> {
+    return this.get(`/api/v1/bots/${botId}/desktop-automation/runs/${runId}`);
+  }
+
+  /**
+   * Cancel a bot-scoped desktop automation run.
+   */
+  public cancelBotDesktopAutomationRun(
+    botId: string,
+    runId: string,
+  ): Promise<import('@/app/infra/entities/api').DesktopAutomationRun> {
+    return this.post(
+      `/api/v1/bots/${botId}/desktop-automation/runs/${runId}/cancel`,
+      {},
+    );
+  }
+
+  /**
+   * Get the desktop runtime status without starting the runtime.
+   */
+  public getDesktopAutomationRuntimeStatus(): Promise<
+    import('@/app/infra/entities/api').DesktopRuntimeStatus
+  > {
+    return this.get('/api/v1/desktop-automation/runtime/status');
+  }
+
+  /**
    * Mark a message as processed
    */
   public processBotMessage(botId: string, messageId: string): Promise<void> {

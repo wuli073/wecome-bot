@@ -8,8 +8,6 @@ from dataclasses import dataclass
 import sqlalchemy
 from sqlalchemy import func
 
-from langbot_plugin.api.entities.builtin.provider import message as provider_message
-
 from ..core import app
 from ..entity.persistence import database_mode as persistence_database_mode
 from .conversation_type import normalize_conversation_type
@@ -233,11 +231,7 @@ class DatabaseModeService:
             created_message_id = int(created_message.id)
             conversation_id = int(created_message.conversation_id)
 
-        published_timings = {
-            key: str(value)
-            for key, value in timings.items()
-            if key and value
-        }
+        published_timings = {key: str(value) for key, value in timings.items() if key and value}
         published_timings.setdefault('langbot_ingested_at', self._to_iso(self._utcnow()))
         published_timings = await self._publish_event(
             DatabaseModeEventType.MESSAGE_CREATED,
@@ -326,11 +320,7 @@ class DatabaseModeService:
 
         total_stmt = sqlalchemy.select(func.count()).select_from(stmt.subquery())
         total = int((await self.ap.persistence_mgr.execute_async(total_stmt)).scalar() or 0)
-        rows = (
-            await self.ap.persistence_mgr.execute_async(
-                stmt.offset((page - 1) * page_size).limit(page_size)
-            )
-        ).all()
+        rows = (await self.ap.persistence_mgr.execute_async(stmt.offset((page - 1) * page_size).limit(page_size))).all()
 
         conversations = []
         for row in rows:
@@ -347,7 +337,9 @@ class DatabaseModeService:
                     'pending_count': int(row.pending_count or 0),
                     'failed_count': int(row.failed_count or 0),
                     'latest_customer': latest_message.get('sender_name') if latest_message else '',
-                    'latest_message_summary': self._summarize_text(latest_message.get('content') if latest_message else ''),
+                    'latest_message_summary': self._summarize_text(
+                        latest_message.get('content') if latest_message else ''
+                    ),
                 }
             )
 
@@ -391,6 +383,7 @@ class DatabaseModeService:
         page: int = 1,
         page_size: int = 50,
         connector_id: str | None = None,
+        bot_uuid: str | None = None,
     ) -> dict:
         page, page_size = self._normalize_page(page, page_size, max_page_size=200)
         status = self._normalize_status_filter(status)
@@ -425,6 +418,7 @@ class DatabaseModeService:
             else:
                 rows.append(row)
         messages = [self._serialize_message(row) for row in rows]
+        messages = await self._hydrate_active_draft_metadata(messages, bot_uuid=bot_uuid)
         return {
             'messages': messages,
             'total': total,
@@ -452,9 +446,7 @@ class DatabaseModeService:
         if bot_uuid is None:
             raise ValueError(f'No enabled wxwork_database bot found for connector {conversation.connector_id}')
 
-        result = await self.ap.database_mode_processing_service.generate_draft(
-            message_id, bot_uuid, trigger='manual'
-        )
+        result = await self.ap.database_mode_processing_service.generate_draft(message_id, bot_uuid, trigger='manual')
 
         if result.get('status') in {'succeeded', 'already_succeeded'}:
             return await self.get_message(message_id)
@@ -468,9 +460,11 @@ class DatabaseModeService:
             try:
                 bots = await self.ap.bot_service.get_bots(include_secret=True)
                 for bot in bots:
-                    if (bot.get('adapter') == 'wxwork_database'
+                    if (
+                        bot.get('adapter') == 'wxwork_database'
                         and bot.get('enable', False)
-                        and bot.get('adapter_config', {}).get('connector_id') == connector_id):
+                        and bot.get('adapter_config', {}).get('connector_id') == connector_id
+                    ):
                         return bot.get('uuid')
             except Exception:
                 pass
@@ -480,8 +474,7 @@ class DatabaseModeService:
 
         try:
             result = await self.ap.persistence_mgr.execute_async(
-                sqlalchemy.select(persistence_bot.Bot.uuid, persistence_bot.Bot.adapter_config)
-                .where(
+                sqlalchemy.select(persistence_bot.Bot.uuid, persistence_bot.Bot.adapter_config).where(
                     persistence_bot.Bot.adapter == 'wxwork_database',
                     persistence_bot.Bot.enable == True,
                 )
@@ -495,7 +488,6 @@ class DatabaseModeService:
             pass
 
         return None
-
 
     async def update_draft(self, message_id: int, draft_text: str, draft_source: str | None = None) -> dict:
         if not str(draft_text or '').strip():
@@ -812,6 +804,54 @@ class DatabaseModeService:
         data['content_preview'] = self._summarize_text(data.get('content') or '')
         return data
 
+    async def _hydrate_active_draft_metadata(
+        self,
+        messages: list[dict],
+        *,
+        bot_uuid: str | None = None,
+    ) -> list[dict]:
+        if not bot_uuid or not messages:
+            return messages
+
+        message_ids = [int(message_id) for message in messages if (message_id := message.get('id')) is not None]
+        if not message_ids:
+            return messages
+
+        result = await self.ap.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_database_mode.ReplyDraft).where(
+                persistence_database_mode.ReplyDraft.message_id.in_(message_ids),
+                persistence_database_mode.ReplyDraft.bot_uuid == bot_uuid,
+                persistence_database_mode.ReplyDraft.status == 'active',
+            )
+        )
+        drafts_by_message_id: dict[int, dict] = {}
+        for row in result.all():
+            draft = row
+            if hasattr(row, '_mapping'):
+                mapped = row._mapping.get(persistence_database_mode.ReplyDraft)
+                draft = mapped if mapped is not None else row
+            draft_data = self._serialize_model(persistence_database_mode.ReplyDraft, draft)
+            drafts_by_message_id[int(draft_data['message_id'])] = draft_data
+
+        hydrated_messages: list[dict] = []
+        for message in messages:
+            draft_data = drafts_by_message_id.get(int(message['id']))
+            if draft_data is None:
+                hydrated_messages.append(message)
+                continue
+
+            hydrated = dict(message)
+            hydrated['draft_id'] = draft_data['id']
+            hydrated['draft_version'] = draft_data['version']
+            hydrated['draft_updated_at'] = draft_data.get('updated_at')
+            if not hydrated.get('draft_text'):
+                hydrated['draft_text'] = draft_data.get('content') or ''
+            if not hydrated.get('draft_source'):
+                hydrated['draft_source'] = draft_data.get('source')
+            hydrated_messages.append(hydrated)
+
+        return hydrated_messages
+
     @staticmethod
     def _message_content_to_text(content: object) -> str:
         if isinstance(content, str):
@@ -998,7 +1038,10 @@ class DatabaseModeService:
                 self._log_event('auto_draft_skipped_no_task_mgr', message_id=message_id)
                 return
 
-            if not hasattr(self.ap, 'database_mode_processing_service') or self.ap.database_mode_processing_service is None:
+            if (
+                not hasattr(self.ap, 'database_mode_processing_service')
+                or self.ap.database_mode_processing_service is None
+            ):
                 self._log_event('auto_draft_skipped_no_processing_service', message_id=message_id)
                 return
 
@@ -1052,11 +1095,7 @@ class DatabaseModeService:
         logger = getattr(self.ap, 'logger', None)
         if logger is None:
             return
-        details = ' '.join(
-            f'{key}={value}'
-            for key, value in payload.items()
-            if value is not None
-        )
+        details = ' '.join(f'{key}={value}' for key, value in payload.items() if value is not None)
         logger.info(f'{event_name}{(" " + details) if details else ""}')
 
     @staticmethod

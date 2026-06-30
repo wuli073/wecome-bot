@@ -124,3 +124,68 @@ export interface ApiRespBatchOperation {
   succeeded: number;
   failed: number;
 }
+
+export interface DesktopAutomationRun {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  conversation_id: number;
+  message_id: number;
+  draft_id: number;
+  action:
+    | 'paste_current_wecom_draft'
+    | 'paste_draft'
+    | 'send_draft'
+    | 'send_draft_dry_run'
+    | 'diagnose';
+  execution_mode:
+    | 'paste_only'
+    | 'auto_send'
+    | 'user_confirmed_send'
+    | 'send_dry_run'
+    | 'diagnose';
+  runtime_task_id?: string | null;
+  status:
+    | 'queued'
+    | 'starting'
+    | 'running'
+    | 'waiting_manual'
+    | 'succeeded'
+    | 'succeeded_with_warning'
+    | 'blocked'
+    | 'failed'
+    | 'cancelled'
+    | 'timed_out';
+  stage?: string | null;
+  attempt_count: number;
+  request_digest: string;
+  draft_content_hash: string;
+  target_snapshot?: Record<string, unknown>;
+  result_evidence?: Record<string, unknown> | null;
+  last_error_code?: string | null;
+  last_error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DesktopRuntimeStatus {
+  status:
+    | 'unsupported'
+    | 'disabled'
+    | 'not_configured'
+    | 'starting'
+    | 'ready'
+    | 'failed'
+    | 'stopped';
+  host?: string;
+  port?: number;
+  runtimeVersion?: string;
+  protocolVersion?: string;
+  error?: string;
+  runtime_configured?: boolean;
+  runtime_startable?: boolean;
+  runtime_reachable?: boolean;
+  send_enabled?: boolean;
+}
