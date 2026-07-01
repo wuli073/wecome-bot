@@ -5,6 +5,7 @@ Tests handler helper methods that don't require full handler setup.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock
 import pytest
@@ -157,6 +158,24 @@ class TestHandlerRagErrorResponse:
         # No context parts means no brackets
         assert '[' in response.message  # Still has error type bracket
         assert 'KeyError' in response.message
+
+
+class TestHandlerPendingCalls:
+    """Tests for pending action waiter cleanup."""
+
+    def test_fail_pending_calls_fails_and_clears_waiting_future(self):
+        """Disconnect cleanup fails pending futures immediately and clears maps."""
+        runtime_handler = make_handler(SimpleNamespace())
+        future = asyncio.Future()
+        runtime_handler.resp_waiters[1] = future
+
+        runtime_handler.fail_pending_calls(RuntimeError('runtime disconnected'))
+
+        assert future.done()
+        with pytest.raises(RuntimeError, match='runtime disconnected'):
+            future.result()
+        assert runtime_handler.resp_waiters == {}
+        assert runtime_handler.resp_queues == {}
 
 
 class TestConstantsSemanticVersion:

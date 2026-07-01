@@ -1,5 +1,5 @@
 import type { WindowDescriptor } from '../domain/window-types'
-import { getActiveWindowDescriptor, isValidVisibleWxWorkMainWindow } from './window-finder'
+import { getActiveWindowDescriptor, matchesWxWorkWindow } from './window-finder'
 import { windowManager } from 'node-window-manager'
 
 type ManagedWindowLike = {
@@ -22,7 +22,6 @@ interface ActivateManagedWindowDeps {
 
 const ACTIVATION_POLL_MS = 60
 const ACTIVATION_MAX_ATTEMPTS = 6
-const FOCUS_CONFIRM_ATTEMPTS = 1
 const ACTIVATION_METHODS = [
   'restore',
   'show',
@@ -56,14 +55,63 @@ function isManagedWindowAvailable(window: ManagedWindowLike | null | undefined):
   return true
 }
 
+function sanitizeForLog(value: unknown): string {
+  return String(value ?? '').replace(/[\r\n]+/g, ' ').trim()
+}
+
+function logActivationTarget(target: WindowDescriptor): void {
+  console.info(
+    `event=window_activation_target targetId=${sanitizeForLog(target.windowId)} targetProcessId=${sanitizeForLog(target.processId)} targetProcessName=${sanitizeForLog(target.processName || 'unknown')} targetTitleLength=${target.title.length}`,
+  )
+}
+
+function logActivationMethod(method: string, available: boolean, ok: boolean, errorName?: string): void {
+  console.info(
+    `event=window_activation_method method=${sanitizeForLog(method)} available=${available} ok=${ok} errorName=${sanitizeForLog(errorName ?? '')}`,
+  )
+}
+
+function logActivationPoll(attempt: number, activeDescriptor: WindowDescriptor | null, matched: boolean): void {
+  console.info(
+    `event=window_activation_poll attempt=${attempt} matched=${matched} activeId=${sanitizeForLog(activeDescriptor?.windowId ?? '')} activeProcessId=${sanitizeForLog(activeDescriptor?.processId ?? '')} activeProcessName=${sanitizeForLog(activeDescriptor?.processName ?? '')} activeTitleLength=${activeDescriptor?.title.length ?? 0}`,
+  )
+}
+
+function isWxWorkActiveWindow(window: WindowDescriptor | null | undefined): window is WindowDescriptor {
+  return Boolean(window) && matchesWxWorkWindow(window)
+}
+
+async function findMatchingActiveWindow(
+  getActiveDescriptor: () => Promise<WindowDescriptor | null>,
+  sleep: (ms: number) => Promise<void>,
+): Promise<WindowDescriptor | null> {
+  for (let attempt = 0; attempt < ACTIVATION_MAX_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) {
+      await sleep(ACTIVATION_POLL_MS)
+    }
+    const activeDescriptor = await getActiveDescriptor()
+    const matched = isWxWorkActiveWindow(activeDescriptor)
+    logActivationPoll(attempt, activeDescriptor, matched)
+    if (matched) {
+      return activeDescriptor
+    }
+  }
+
+  return null
+}
+
 function runActivationSteps(window: ManagedWindowLike): void {
   for (const methodName of ACTIVATION_METHODS) {
     const method = window[methodName] as (() => void) | undefined
-    if (typeof method !== 'function') continue
+    if (typeof method !== 'function') {
+      logActivationMethod(methodName, false, false)
+      continue
+    }
     try {
-      method()
-    } catch {
-      // Best effort: continue trying the remaining foreground APIs.
+      method.call(window)
+      logActivationMethod(methodName, true, true)
+    } catch (error) {
+      logActivationMethod(methodName, true, false, error instanceof Error ? error.name : 'UnknownError')
     }
   }
 }
@@ -75,33 +123,22 @@ export async function activateManagedWindow(
 ): Promise<{ ok: boolean; errorCode?: string; window?: WindowDescriptor }> {
   if (!isManagedWindowAvailable(nativeWindow)) return { ok: false, errorCode: 'WINDOW_NOT_FOUND' }
 
-  const availableWindow = nativeWindow
-  runActivationSteps(availableWindow)
+  logActivationTarget(_target)
 
   const sleep = deps.sleep ?? defaultSleep
   const getActiveDescriptor = deps.getActiveWindowDescriptor ?? getActiveWindowDescriptor
-
-  let matchedWindow: WindowDescriptor | null = null
-  for (let attempt = 0; attempt < ACTIVATION_MAX_ATTEMPTS; attempt += 1) {
-    await sleep(ACTIVATION_POLL_MS)
-    const activeDescriptor = await getActiveDescriptor()
-    if (isValidVisibleWxWorkMainWindow(activeDescriptor)) {
-      matchedWindow = activeDescriptor
-      break
-    }
+  const activeBeforeActivation = await getActiveDescriptor()
+  if (isWxWorkActiveWindow(activeBeforeActivation)) {
+    logActivationPoll(0, activeBeforeActivation, true)
+    return { ok: true, window: activeBeforeActivation }
   }
+
+  const availableWindow = nativeWindow
+  runActivationSteps(availableWindow)
+  const matchedWindow = await findMatchingActiveWindow(getActiveDescriptor, sleep)
 
   if (!matchedWindow) {
     return { ok: false, errorCode: 'WINDOW_ACTIVATION_FAILED' }
-  }
-
-  for (let attempt = 0; attempt < FOCUS_CONFIRM_ATTEMPTS; attempt += 1) {
-    await sleep(ACTIVATION_POLL_MS)
-    const activeDescriptor = await getActiveDescriptor()
-    if (!isValidVisibleWxWorkMainWindow(activeDescriptor)) {
-      return { ok: false, errorCode: 'WINDOW_FOCUS_LOST' }
-    }
-    matchedWindow = activeDescriptor
   }
 
   return { ok: true, window: matchedWindow }

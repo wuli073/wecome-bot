@@ -80,7 +80,7 @@ function SpaceOAuthCallbackContent() {
 
         // If wizard state exists, redirect back to wizard instead of home
         const wizardState = localStorage.getItem('langbot_wizard_state');
-        const redirectTo = wizardState ? '/wizard' : '/home';
+        const redirectTo = wizardState ? '/wizard' : '/home/monitoring';
         setTimeout(() => {
           navigate(redirectTo);
         }, 1000);
@@ -120,7 +120,7 @@ function SpaceOAuthCallbackContent() {
         setStatus('success');
         toast.success(t('account.bindSpaceSuccess'));
         setTimeout(() => {
-          navigate('/home');
+          navigate('/home/monitoring');
         }, 1000);
       } catch (err) {
         if (!isMountedRef.current) {
@@ -196,7 +196,7 @@ function SpaceOAuthCallbackContent() {
   };
 
   const handleCancelBind = () => {
-    navigate('/home');
+    navigate('/home/monitoring');
   };
 
   return (
@@ -267,10 +267,10 @@ function SpaceOAuthCallbackContent() {
             <>
               <AlertCircle className="h-12 w-12 text-red-500" />
               <Button
-                onClick={() => navigate(isBindMode ? '/home' : '/login')}
+                onClick={() => navigate('/home/monitoring')}
                 className="w-full mt-4"
               >
-                {isBindMode ? t('common.backToHome') : t('common.backToLogin')}
+                {t('common.backToHome')}
               </Button>
             </>
           )}

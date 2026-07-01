@@ -71,7 +71,7 @@ export default function ResetPassword() {
       .resetPassword(email, recoveryKey, newPassword)
       .then(() => {
         toast.success(t('resetPassword.resetSuccess'));
-        navigate('/login');
+        navigate('/home/monitoring');
       })
       .catch(() => {
         toast.error(t('resetPassword.resetFailed'));
@@ -87,11 +87,11 @@ export default function ResetPassword() {
         <CardHeader>
           <div className="flex justify-between items-center mb-6">
             <Link
-              to="/login"
+              to="/home/monitoring"
               className="flex items-center text-sm text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 transition-colors"
             >
               <ArrowLeft className="h-4 w-4 mr-1" />
-              {t('resetPassword.backToLogin')}
+              {t('common.backToHome')}
             </Link>
             <ThemeToggle />
           </div>

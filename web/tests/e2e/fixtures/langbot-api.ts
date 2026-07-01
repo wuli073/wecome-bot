@@ -318,22 +318,6 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     });
   }
 
-  if (path === '/api/v1/user/account-info') {
-    return fulfillJson(route, {
-      initialized: true,
-      account_type: 'local',
-      has_password: true,
-    });
-  }
-
-  if (path === '/api/v1/user/check-token') {
-    return fulfillJson(route, { token: '' });
-  }
-
-  if (path === '/api/v1/user/auth') {
-    return fulfillJson(route, { token: 'playwright-token' });
-  }
-
   if (path === '/api/v1/user/info') {
     return fulfillJson(route, {
       user: 'admin@example.com',

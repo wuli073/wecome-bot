@@ -11,7 +11,6 @@ const APP_NAME = 'LangBot';
 // to the currently-selected sub-entity name (detailEntityName) via context and
 // renders "<entity> · <type> · LangBot".
 const ROUTE_TITLE_KEYS: { match: (path: string) => boolean; key: string }[] = [
-  { match: (p) => p === '/login', key: 'common.login' },
   { match: (p) => p === '/register', key: 'register.title' },
   { match: (p) => p === '/reset-password', key: 'resetPassword.title' },
   { match: (p) => p === '/wizard', key: 'sidebar.quickStart' },

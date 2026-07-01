@@ -4,7 +4,7 @@
 
 **Goal:** Add two fixed builtin Windows-only local connectors for WeChat and WXWork, expose one-click setup and worker lifecycle APIs, and keep LangBot MCP runtime in sync without affecting normal third-party MCP servers.
 
-**Architecture:** LangBot gets a new `local_connectors` control plane that owns connector status, setup jobs, worker process state, and runtime bridging. `mcp_servers` remains the runtime connection registry, augmented with builtin metadata and protected server semantics. `wechat-decrypt` gains a non-interactive JSON CLI that LangBot orchestrates.
+**Architecture:** LangBot gets a new `local_connectors` control plane that owns connector status, setup jobs, worker process state, and runtime bridging. `mcp_servers` remains the runtime connection registry, augmented with builtin metadata and protected server semantics. A vendored connector runtime snapshot gains a non-interactive JSON CLI that LangBot orchestrates.
 
 **Tech Stack:** Quart, SQLAlchemy, Alembic, asyncio task manager, Windows PowerShell process launch, React Router 7, Playwright, pytest.
 
@@ -39,15 +39,15 @@
 - [ ] Keep enable/disable allowed and preserve existing behavior for normal MCP servers.
 - [ ] Surface stable error messages/codes the frontend can distinguish.
 
-### Task 3: Add non-interactive connector CLI in `wechat-decrypt`
+### Task 3: Add non-interactive connector CLI in the vendored runtime
 
 **Files:**
-- Create: `C:/Users/33031/Desktop/wechat-decrypt/connector_cli.py`
-- Create: `C:/Users/33031/Desktop/wechat-decrypt/connector_runtime.py`
-- Create: `C:/Users/33031/Desktop/wechat-decrypt/connector_errors.py`
-- Modify: `C:/Users/33031/Desktop/wechat-decrypt/requirements.txt`
-- Modify: `C:/Users/33031/Desktop/wechat-decrypt/.gitignore`
-- Test: `C:/Users/33031/Desktop/wechat-decrypt/tests/test_connector_cli.py`
+- Create: `C:/Users/33031/Desktop/bot/vendor/wechat_decrypt/connector_cli.py`
+- Create: `C:/Users/33031/Desktop/bot/vendor/wechat_decrypt/connector_runtime.py`
+- Create: `C:/Users/33031/Desktop/bot/vendor/wechat_decrypt/connector_errors.py`
+- Modify: `C:/Users/33031/Desktop/bot/pyproject.toml`
+- Modify: `C:/Users/33031/Desktop/bot/.gitignore`
+- Test: `C:/Users/33031/Desktop/bot/tests/vendor_wechat_decrypt/test_connector_cli.py`
 
 - [ ] Build JSON-only commands for `wechat` and `wxwork`: `detect`, `extract-key`, `decrypt`.
 - [ ] Reuse the current WeChat/WXWork code paths without changing the semantics of the existing 17 and 5 MCP tools.
@@ -121,6 +121,6 @@
 - Modify as needed: targeted tests only
 
 - [ ] Run backend unit/integration tests for migration, MCP protection, connector service, jobs, and process manager.
-- [ ] Run `wechat-decrypt` pytest plus CLI smoke commands.
+- [ ] Run vendored runtime pytest plus CLI smoke commands.
 - [ ] Run frontend e2e/build commands available in the repo.
 - [ ] Attempt real Windows acceptance for WXWork and WeChat one-click setup on this machine, and report any blocker precisely.

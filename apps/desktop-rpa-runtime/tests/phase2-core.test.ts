@@ -207,24 +207,55 @@ test('managed window activation uses SightFlow-style method order and confirms W
   assert.equal(typeof activateManagedWindow, 'function')
 
   const calls: string[] = []
-  let pollCount = 0
+  let activeCheckCount = 0
   const nativeWindow = {
-    isWindow: () => true,
-    isVisible: () => true,
-    restore: () => { calls.push('restore') },
-    show: () => { calls.push('show') },
-    showWindow: () => { calls.push('showWindow') },
-    focus: () => { calls.push('focus') },
-    setForeground: () => { calls.push('setForeground') },
-    activate: () => { calls.push('activate') },
-    bringToTop: () => { calls.push('bringToTop') },
+    isWindow() { return true },
+    isVisible() { return true },
+    restore(this: Record<string, unknown>) {
+      assert.equal(this, nativeWindow)
+      calls.push('restore')
+    },
+    show(this: Record<string, unknown>) {
+      assert.equal(this, nativeWindow)
+      calls.push('show')
+    },
+    showWindow(this: Record<string, unknown>) {
+      assert.equal(this, nativeWindow)
+      calls.push('showWindow')
+      throw new Error('showWindow failed')
+    },
+    focus(this: Record<string, unknown>) {
+      assert.equal(this, nativeWindow)
+      calls.push('focus')
+    },
+    setForeground(this: Record<string, unknown>) {
+      assert.equal(this, nativeWindow)
+      calls.push('setForeground')
+    },
+    activate(this: Record<string, unknown>) {
+      assert.equal(this, nativeWindow)
+      calls.push('activate')
+    },
+    bringToTop(this: Record<string, unknown>) {
+      assert.equal(this, nativeWindow)
+      calls.push('bringToTop')
+    },
   }
 
   const result = await (activateManagedWindow as Function)(nativeWindow, wxworkWindow, {
     sleep: async () => undefined,
     getActiveWindowDescriptor: async () => {
-      pollCount += 1
-      return pollCount >= 2 ? { ...wxworkWindow, windowId: 'focused' } : null
+      activeCheckCount += 1
+      if (activeCheckCount === 1) {
+        return {
+          ...wxworkWindow,
+          appType: 'chrome',
+          title: 'Docs',
+          processName: 'chrome.exe',
+          executablePath: 'C:/Program Files/Google/Chrome/chrome.exe',
+        }
+      }
+      return { ...wxworkWindow, windowId: 'focused' }
     },
   })
 
@@ -232,27 +263,134 @@ test('managed window activation uses SightFlow-style method order and confirms W
   assert.deepEqual(calls, ['restore', 'show', 'showWindow', 'focus', 'setForeground', 'activate', 'bringToTop'])
 })
 
-test('managed window activation reports WINDOW_FOCUS_LOST when WXWork focus is stolen after activation', async () => {
+test('managed window activation succeeds immediately when active window is already WXWork', async () => {
+  const activateManagedWindow = (windowActivator as Record<string, unknown>).activateManagedWindow
+  assert.equal(typeof activateManagedWindow, 'function')
+
+  const calls: string[] = []
+  const result = await (activateManagedWindow as Function)({
+    isWindow() { return true },
+    isVisible() { return true },
+    restore() { calls.push('restore') },
+    show() { calls.push('show') },
+    showWindow() { calls.push('showWindow') },
+    focus() { calls.push('focus') },
+    setForeground() { calls.push('setForeground') },
+    activate() { calls.push('activate') },
+    bringToTop() { calls.push('bringToTop') },
+  }, wxworkWindow, {
+    sleep: async () => undefined,
+    getActiveWindowDescriptor: async () => ({ ...wxworkWindow, windowId: 'already-active' }),
+  })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(calls, [])
+})
+
+test('managed window activation succeeds when polling reaches a different WXWork HWND', async () => {
   const activateManagedWindow = (windowActivator as Record<string, unknown>).activateManagedWindow
   assert.equal(typeof activateManagedWindow, 'function')
 
   let pollCount = 0
   const result = await (activateManagedWindow as Function)({
-    isWindow: () => true,
-    isVisible: () => true,
+    isWindow() { return true },
+    isVisible() { return true },
+  }, { ...wxworkWindow, windowId: 'target-a', title: 'Customer A' }, {
+    sleep: async () => undefined,
+    getActiveWindowDescriptor: async () => {
+      pollCount += 1
+      if (pollCount === 1) return null
+      return {
+        ...wxworkWindow,
+        windowId: 'target-b',
+        title: 'Customer B',
+        clientBounds: { x: 0, y: 0, width: 0, height: 0 },
+        boundsLogical: { x: 0, y: 0, width: 0, height: 0 },
+        isVisible: true,
+      }
+    },
+  })
+
+  assert.equal(result.ok, true)
+  if (result.ok) {
+    assert.equal(result.window?.windowId, 'target-b')
+  }
+})
+
+test('managed window activation returns WINDOW_ACTIVATION_FAILED only after all polls miss WXWork', async () => {
+  const activateManagedWindow = (windowActivator as Record<string, unknown>).activateManagedWindow
+  assert.equal(typeof activateManagedWindow, 'function')
+
+  let pollCount = 0
+  const result = await (activateManagedWindow as Function)({
+    isWindow() { return true },
+    isVisible() { return true },
   }, wxworkWindow, {
     sleep: async () => undefined,
     getActiveWindowDescriptor: async () => {
       pollCount += 1
-      if (pollCount === 1) return { ...wxworkWindow, windowId: 'focused' }
       return { ...wxworkWindow, appType: 'chrome', title: 'Docs', processName: 'chrome.exe', executablePath: 'C:/Program Files/Google/Chrome/chrome.exe' }
     },
   })
 
   assert.equal(result.ok, false)
+  assert.equal(pollCount, 7)
   if (!result.ok) {
-    assert.equal(result.errorCode, 'WINDOW_FOCUS_LOST')
+    assert.equal(result.errorCode, 'WINDOW_ACTIVATION_FAILED')
   }
+})
+
+test('managed window activation logs structured safe fields without sensitive content', async () => {
+  const activateManagedWindow = (windowActivator as Record<string, unknown>).activateManagedWindow
+  assert.equal(typeof activateManagedWindow, 'function')
+
+  const logs: string[] = []
+  const originalInfo = console.info
+  console.info = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '))
+  }
+
+  try {
+    let activeCheckCount = 0
+    await (activateManagedWindow as Function)({
+      isWindow() { return true },
+      isVisible() { return true },
+      restore() {},
+    }, {
+      ...wxworkWindow,
+      title: 'Sensitive Conversation Name',
+      processName: 'WXWork.exe',
+    }, {
+      sleep: async () => undefined,
+      getActiveWindowDescriptor: async () => {
+        activeCheckCount += 1
+        if (activeCheckCount === 1) {
+          return {
+            ...wxworkWindow,
+            appType: 'chrome',
+            title: 'draftText token clipboard body',
+            processName: 'chrome.exe',
+            executablePath: 'C:/Program Files/Google/Chrome/chrome.exe',
+          }
+        }
+        return {
+          ...wxworkWindow,
+          windowId: 'focused-window',
+          title: 'draftText token clipboard body',
+        }
+      },
+    })
+  } finally {
+    console.info = originalInfo
+  }
+
+  assert.equal(logs.some((line) => line.includes('event=window_activation_target')), true)
+  assert.equal(logs.some((line) => line.includes('event=window_activation_method')), true)
+  assert.equal(logs.some((line) => line.includes('event=window_activation_poll')), true)
+  assert.equal(logs.some((line) => line.includes('Sensitive Conversation Name')), false)
+  assert.equal(logs.some((line) => line.includes('draftText')), false)
+  assert.equal(logs.some((line) => line.includes('token')), false)
+  assert.equal(logs.some((line) => line.includes('clipboard body')), false)
 })
 
 test('paste_only returns warning when successful paste cannot restore clipboard', async () => {

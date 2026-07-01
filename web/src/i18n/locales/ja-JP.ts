@@ -14,18 +14,12 @@ const jaJP = {
     editionCloud: 'Cloud',
   },
   common: {
-    login: 'ログイン',
     logout: 'ログアウト',
     accountOptions: 'システム設定',
     account: 'アカウント',
     integration: '連携',
     email: 'メールアドレス',
     password: 'パスワード',
-    welcome: 'LangBot へおかえりなさい 👋',
-    continueToLogin: 'ログインしてください',
-    loginSuccess: 'ログインに成功しました',
-    loginFailed:
-      'ログインに失敗しました。メールアドレスまたはパスワードをご確認ください',
     loginLoadError: 'サーバーに接続できません',
     loginLoadErrorDesc:
       'LangBot バックエンドに接続できません。サービスが起動していることを確認してから再試行してください。',
@@ -71,7 +65,6 @@ const jaJP = {
     copySuccess: 'コピーに成功しました',
     copyFailed: 'コピーに失敗しました',
     test: 'テスト',
-    forgotPassword: 'パスワードを忘れた？',
     agreementNotice: '続行することで、以下に同意したものとみなされます：',
     termsOfService: '利用規約',
     privacyPolicy: 'プライバシーポリシー',
@@ -81,11 +74,8 @@ const jaJP = {
     loading: '読み込み中...',
     fieldRequired: 'この項目は必須です',
     or: 'または',
-    loginWithSpace: 'Space でログイン',
     spaceLoginRecommended:
       'おすすめ：公式の安定したモデル API とクラウドサービスを利用',
-    loginLocal: 'ローカルアカウントでログイン',
-    loginWithPassword: 'パスワードでログイン',
     spaceLoginTitle: 'Space でログイン',
     spaceLoginDescription:
       'QRコードをスキャンするか、下のリンクにアクセスして認証してください',
@@ -104,7 +94,6 @@ const jaJP = {
     spaceLoginSuccessDescription: 'LangBot にリダイレクト中...',
     spaceLoginError: 'ログインに失敗しました',
     spaceLoginNoCode: '認証コードがありません',
-    backToLogin: 'ログインに戻る',
     backToHome: 'ホームに戻る',
     spaceAccountCannotChangePassword:
       'Space アカウントはここでパスワードを変更できません',
@@ -1354,7 +1343,6 @@ const jaJP = {
     resetSuccess: 'パスワードのリセットに成功しました。ログインしてください',
     resetFailed:
       'パスワードのリセットに失敗しました。メールアドレスと復旧キーを確認してください',
-    backToLogin: 'ログインに戻る',
   },
   embedding: {
     description: 'テキストのベクトル化に使用する埋め込みモデルを管理します',
@@ -1778,7 +1766,6 @@ const jaJP = {
     backendUnavailableStatus: 'バックエンドを利用できません',
     goBack: '戻る',
     backToHome: 'ホームに戻る',
-    backToLogin: 'ログインに戻る',
     retrying: '再試行中',
     retryFailed:
       'バックエンドにまだ接続できません。サービスを起動してからもう一度お試しください。',

@@ -429,10 +429,6 @@ export interface AsyncTask {
   task_context: AsyncTaskTaskContext;
 }
 
-export interface ApiRespUserToken {
-  token: string;
-}
-
 export interface ApiRespMarketplacePlugins {
   plugins: PluginV4[];
   total: number;

@@ -62,7 +62,7 @@ export default function Register() {
       .checkIfInited()
       .then((res) => {
         if (res.initialized) {
-          navigate('/login');
+          navigate('/home/monitoring');
         }
       })
       .catch(() => {});
@@ -77,7 +77,7 @@ export default function Register() {
       .initUser(username, password)
       .then(() => {
         toast.success(t('register.initSuccess'));
-        navigate('/login');
+        navigate('/home/monitoring');
       })
       .catch((err: Error) => {
         toast.error(t('register.initFailed') + (err as CustomApiError).msg);

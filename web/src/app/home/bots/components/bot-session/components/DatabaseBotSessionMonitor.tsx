@@ -36,14 +36,6 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
@@ -436,19 +428,17 @@ export const DatabaseBotSessionMonitor = forwardRef<
     useState<DesktopRuntimeStatus | null>(null);
   const [desktopRuntimeStatusLoading, setDesktopRuntimeStatusLoading] =
     useState(false);
-  const [desktopConfirmationDialogOpen, setDesktopConfirmationDialogOpen] =
-    useState(false);
-  const [desktopConfirmationSubmitting, setDesktopConfirmationSubmitting] =
-    useState(false);
-  const [desktopConfirmationTarget, setDesktopConfirmationTarget] =
-    useState<DesktopDraftTarget | null>(null);
   const [desktopRun, setDesktopRun] = useState<DesktopAutomationRun | null>(
     null,
   );
   const [desktopPasteSubmitting, setDesktopPasteSubmitting] = useState(false);
+  const [desktopSendSubmitting, setDesktopSendSubmitting] = useState(false);
   const [desktopRunPollingStartedAt, setDesktopRunPollingStartedAt] = useState<
     number | null
   >(null);
+  const [composerStatusText, setComposerStatusText] = useState<string | null>(
+    null,
+  );
 
   const messagesScrollAreaRef = useRef<HTMLDivElement | null>(null);
   const currentDraftRef = useRef<DraftEditorState | null>(null);
@@ -617,11 +607,11 @@ export const DatabaseBotSessionMonitor = forwardRef<
       setComposerText('');
       setPersistedDraftText('');
       setCurrentDraft(null);
-      setDesktopConfirmationDialogOpen(false);
-      setDesktopConfirmationTarget(null);
       setDesktopRun(null);
       setDesktopPasteSubmitting(false);
+      setDesktopSendSubmitting(false);
       setDesktopRunPollingStartedAt(null);
+      setComposerStatusText(null);
       setSelectedMessages(new Set());
       setSelectedMessageId(null);
       setAiPopoverOpen(false);
@@ -633,11 +623,11 @@ export const DatabaseBotSessionMonitor = forwardRef<
     setSelectedMessageId(null);
     setAiPopoverOpen(false);
     setIsBatchMode(false);
-    setDesktopConfirmationDialogOpen(false);
-    setDesktopConfirmationTarget(null);
     setDesktopRun(null);
     setDesktopPasteSubmitting(false);
+    setDesktopSendSubmitting(false);
     setDesktopRunPollingStartedAt(null);
+    setComposerStatusText(null);
     void loadMessages(selectedConversationId);
   }, [loadMessages, selectedConversationId]);
 
@@ -796,72 +786,10 @@ export const DatabaseBotSessionMonitor = forwardRef<
     isActiveDesktopRunStatus(desktopRun?.status)
       ? desktopRun
       : null;
-  const desktopRuntimeStartable = Boolean(
-    desktopRuntimeStatus?.runtime_startable ??
-    (desktopRuntimeStatus &&
-      desktopRuntimeStatus.status !== 'unsupported' &&
-      desktopRuntimeStatus.status !== 'disabled' &&
-      desktopRuntimeStatus.status !== 'not_configured' &&
-      desktopRuntimeStatus.status !== 'starting'),
-  );
-  const desktopRuntimeReachable = Boolean(
-    desktopRuntimeStatus?.runtime_reachable ??
-    (desktopRuntimeStatus && desktopRuntimeStatus.status === 'ready'),
-  );
-  const desktopRuntimeAvailable = Boolean(
-    desktopRuntimeReachable || desktopRuntimeStartable,
-  );
-  const canCancelDesktopRun = Boolean(
-    activeDesktopRun &&
-    activeDesktopRun.stage !== 'committing_send' &&
-    activeDesktopRun.stage !== 'completed',
-  );
   const desktopRunStatusText = (() => {
     if (!desktopRunMatchesCurrentDraft || !desktopRun) {
       return null;
     }
-
-    const stageTextMap: Record<string, string> = {
-      validating_process: t(
-        'bots.sessionMonitor.databaseComposer.stage.validating_process',
-      ),
-      binding_window: t(
-        'bots.sessionMonitor.databaseComposer.stage.binding_window',
-      ),
-      activating_window: t(
-        'bots.sessionMonitor.databaseComposer.stage.activating_window',
-      ),
-      waiting_stability: t(
-        'bots.sessionMonitor.databaseComposer.stage.waiting_stability',
-      ),
-      verifying_foreground: t(
-        'bots.sessionMonitor.databaseComposer.stage.verifying_foreground',
-      ),
-      verifying_conversation: t(
-        'bots.sessionMonitor.databaseComposer.stage.inspecting_session',
-      ),
-      inspecting_session: t(
-        'bots.sessionMonitor.databaseComposer.stage.inspecting_session',
-      ),
-      locating_input: t(
-        'bots.sessionMonitor.databaseComposer.stage.locating_input',
-      ),
-      checking_input: t(
-        'bots.sessionMonitor.databaseComposer.stage.reading_input',
-      ),
-      reading_input: t(
-        'bots.sessionMonitor.databaseComposer.stage.reading_input',
-      ),
-      revalidating_context: t(
-        'bots.sessionMonitor.databaseComposer.stage.revalidating_context',
-      ),
-      pasting_draft: t(
-        'bots.sessionMonitor.databaseComposer.stage.pasting_draft',
-      ),
-      pasted_to_input: t(
-        'bots.sessionMonitor.databaseComposer.stage.pasted_to_input',
-      ),
-    };
     const errorCode = desktopRun.last_error_code;
     const errorText = errorCode
       ? t(`bots.sessionMonitor.databaseComposer.error.${errorCode}`, {
@@ -870,15 +798,6 @@ export const DatabaseBotSessionMonitor = forwardRef<
       : null;
 
     switch (desktopRun.status) {
-      case 'queued':
-      case 'starting':
-      case 'running':
-        return (
-          stageTextMap[desktopRun.stage ?? ''] ??
-          t('bots.sessionMonitor.databaseComposer.status.running')
-        );
-      case 'succeeded':
-        return t('bots.sessionMonitor.databaseComposer.status.succeeded');
       case 'blocked':
         return (
           errorText ?? t('bots.sessionMonitor.databaseComposer.status.blocked')
@@ -933,35 +852,12 @@ export const DatabaseBotSessionMonitor = forwardRef<
         'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeFailed',
       );
     }
+    if (!hasComposerContent) {
+      return t('bots.sessionMonitor.databaseComposer.sendDisabled.emptyDraft');
+    }
     return null;
   })();
   const sendDisabledReason = pasteDisabledReason;
-  const desktopRuntimeErrorMessage = (() => {
-    if (desktopRuntimeStatusLoading || desktopRuntimeStatus === null) {
-      return null;
-    }
-    if (!desktopRuntimeAvailable) {
-      switch (desktopRuntimeStatus.status) {
-        case 'not_configured':
-          return t(
-            'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeNotConfigured',
-          );
-        case 'unsupported':
-          return t(
-            'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeUnsupported',
-          );
-        case 'failed':
-          return t(
-            'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeFailed',
-          );
-        default:
-          return t(
-            'bots.sessionMonitor.databaseComposer.sendDisabled.runtimeDisabled',
-          );
-      }
-    }
-    return null;
-  })();
   const actionDisabledReason = !botEnabled
     ? 'Please enable the bot first.'
     : effectiveTargetMessage && canGenerateDraft(effectiveTargetMessage)
@@ -1416,6 +1312,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
   const submitDesktopPaste = useCallback(
     async (target: DesktopDraftTarget, idempotencyKey: string) => {
       try {
+        setComposerStatusText(null);
         setDesktopPasteSubmitting(true);
         const response = await dataSource.pasteDraft(
           target.messageId.toString(),
@@ -1448,6 +1345,14 @@ export const DatabaseBotSessionMonitor = forwardRef<
         }
       } catch (error: any) {
         console.error('Failed to paste desktop draft:', error);
+        setComposerStatusText(
+          error?.msg === 'RPA_RUNTIME_NOT_AVAILABLE'
+            ? t(
+                'bots.sessionMonitor.databaseComposer.status.runtimeNotAvailable',
+              )
+            : error?.msg ||
+                t('bots.sessionMonitor.databaseComposer.status.failed'),
+        );
         toast.error(
           error?.msg === 'RPA_RUNTIME_NOT_AVAILABLE'
             ? t(
@@ -1463,79 +1368,141 @@ export const DatabaseBotSessionMonitor = forwardRef<
     [dataSource, t],
   );
 
-  const beginDesktopConfirmation = useCallback(() => {
-    if (!currentDraft?.draftId || !selectedConversation) {
-      toast.error(
+  const persistCurrentDraft = useCallback(async () => {
+    const targetDraft = currentDraftRef.current;
+    const targetMessage = targetDraft ?? effectiveTargetMessage;
+    if (!targetMessage || !selectedConversation) {
+      throw new Error(
         t('bots.sessionMonitor.databaseComposer.sendDisabled.noPersistedDraft'),
       );
-      return;
     }
-    setDesktopConfirmationTarget({
-      conversationId: currentDraft.conversationId,
-      messageId: currentDraft.messageId,
-      draftId: currentDraft.draftId,
-      conversationName: selectedConversation.conversation_name,
-    });
-    setDesktopConfirmationDialogOpen(true);
-  }, [currentDraft, selectedConversation, t]);
-
-  const handleDesktopConfirmationApproved = useCallback(async () => {
-    if (!desktopConfirmationTarget || desktopConfirmationSubmitting) {
-      return;
-    }
-    try {
-      setDesktopConfirmationSubmitting(true);
-      const idempotencyKey = crypto.randomUUID();
-      const target = desktopConfirmationTarget;
-      setDesktopConfirmationDialogOpen(false);
-      setDesktopConfirmationTarget(null);
-      await submitDesktopPaste(target, idempotencyKey);
-    } catch (error: any) {
-      console.error('Failed to confirm desktop paste:', error);
-      toast.error(
-        error?.msg ??
-          t('bots.sessionMonitor.databaseComposer.confirmation.confirmError'),
+    const targetMessageId =
+      targetDraft?.messageId ?? (targetMessage as BotMessage).id;
+    const targetDraftId =
+      targetDraft?.draftId ?? (targetMessage as BotMessage).draft_id ?? null;
+    if (typeof targetMessageId !== 'number') {
+      throw new Error(
+        t('bots.sessionMonitor.databaseComposer.sendDisabled.noPersistedDraft'),
       );
+    }
+
+    const content = composerText.trim();
+    if (!content) {
+      throw new Error(
+        t('bots.sessionMonitor.databaseComposer.sendDisabled.emptyDraft'),
+      );
+    }
+
+    setDraftSaving(true);
+    try {
+      const response = await dataSource.updateDraft(
+        targetMessageId.toString(),
+        content,
+        targetDraftId !== null ? targetDraftId.toString() : null,
+      );
+      const nextMessage = response?.message as BotMessage | undefined;
+      if (!nextMessage) {
+        throw new Error(t('bots.sessionMonitor.databaseComposer.saveError'));
+      }
+      const nextConversationId =
+        selectedConversationIdRef.current ?? nextMessage.conversation_id;
+      const nextDraftState = buildDraftState(
+        nextMessage,
+        nextConversationId,
+        currentDraftRef.current,
+      );
+
+      setPersistedDraftText(content);
+      draftDirtyRef.current = false;
+      setCurrentDraft(nextDraftState);
+      if (selectedConversationIdRef.current !== null) {
+        await loadMessages(selectedConversationIdRef.current, {
+          preserveDraftText: true,
+        });
+      }
+
+      return nextDraftState;
+    } catch (error: any) {
+      console.error('Failed to save draft:', error);
+      const message =
+        error?.msg ||
+        error?.message ||
+        t('bots.sessionMonitor.databaseComposer.saveError');
+      setComposerStatusText(message);
+      throw new Error(message);
     } finally {
-      setDesktopConfirmationSubmitting(false);
+      setDraftSaving(false);
     }
   }, [
-    desktopConfirmationSubmitting,
-    desktopConfirmationTarget,
-    submitDesktopPaste,
+    composerText,
+    currentDraft,
+    dataSource,
+    effectiveTargetMessage,
+    loadMessages,
+    selectedConversation,
     t,
   ]);
 
   const handleDesktopPaste = useCallback(async () => {
-    if (!currentDraft?.draftId) {
-      toast.error(
-        t('bots.sessionMonitor.databaseComposer.sendDisabled.noPersistedDraft'),
-      );
-      return;
-    }
     if (!hasComposerContent) {
-      toast.error(
-        t('bots.sessionMonitor.databaseComposer.sendDisabled.emptyDraft'),
+      const message = t(
+        'bots.sessionMonitor.databaseComposer.sendDisabled.emptyDraft',
       );
-      return;
-    }
-    if (isDirty) {
-      toast.error(
-        t('bots.sessionMonitor.databaseComposer.sendDisabled.unsavedChanges'),
-      );
+      setComposerStatusText(message);
+      toast.error(message);
       return;
     }
     if (pasteDisabledReason) {
+      setComposerStatusText(pasteDisabledReason);
       toast.error(pasteDisabledReason);
       return;
     }
-    beginDesktopConfirmation();
+    if (desktopSendSubmitting) {
+      return;
+    }
+
+    try {
+      setDesktopSendSubmitting(true);
+      const persistedDraft =
+        !currentDraft?.draftId || isDirty
+          ? await persistCurrentDraft()
+          : currentDraft;
+
+      if (!persistedDraft.draftId) {
+        const message = t(
+          'bots.sessionMonitor.databaseComposer.sendDisabled.noPersistedDraft',
+        );
+        setComposerStatusText(message);
+        toast.error(message);
+        return;
+      }
+
+      await submitDesktopPaste(
+        {
+          conversationId: persistedDraft.conversationId,
+          messageId: persistedDraft.messageId,
+          draftId: persistedDraft.draftId,
+          conversationName: selectedConversation?.conversation_name ?? '',
+        },
+        crypto.randomUUID(),
+      );
+    } catch (error: any) {
+      const message = error?.message ?? String(error ?? '');
+      if (message) {
+        toast.error(message);
+      }
+    } finally {
+      setDesktopSendSubmitting(false);
+    }
   }, [
-    beginDesktopConfirmation,
     currentDraft,
     hasComposerContent,
     isDirty,
     pasteDisabledReason,
+    persistCurrentDraft,
+    selectedConversation,
+    submitDesktopPaste,
+    desktopSendSubmitting,
     t,
   ]);
 
@@ -1558,7 +1525,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
   }, [dataSource, desktopRun, refreshConversationData, t]);
 
   const handleSaveDraft = useCallback(async () => {
-    if (!currentDraft) {
+    if (!effectiveTargetMessage) {
       toast.error('当前没有可保存的草稿');
       return;
     }
@@ -1568,38 +1535,13 @@ export const DatabaseBotSessionMonitor = forwardRef<
       return;
     }
 
-    setDraftSaving(true);
     try {
-      await dataSource.updateDraft(
-        currentDraft.messageId.toString(),
-        composerText,
-        currentDraft.draftId?.toString() ?? null,
-      );
-      setPersistedDraftText(composerText);
-      draftDirtyRef.current = false;
-      setCurrentDraft((previousDraft) =>
-        previousDraft
-          ? {
-              ...previousDraft,
-              source: 'manual',
-              updatedAt: new Date().toISOString(),
-              version: previousDraft.version + 1,
-            }
-          : previousDraft,
-      );
+      await persistCurrentDraft();
       toast.success('草稿已保存');
-      if (selectedConversationIdRef.current !== null) {
-        await loadMessages(selectedConversationIdRef.current, {
-          preserveDraftText: true,
-        });
-      }
     } catch (error: any) {
-      console.error('Failed to save draft:', error);
       toast.error(error?.message || '保存草稿失败');
-    } finally {
-      setDraftSaving(false);
     }
-  }, [composerText, currentDraft, dataSource, loadMessages]);
+  }, [composerText, effectiveTargetMessage, persistCurrentDraft]);
 
   const handleUndoEdit = useCallback(() => {
     setComposerText(persistedDraftText);
@@ -2213,29 +2155,6 @@ export const DatabaseBotSessionMonitor = forwardRef<
                 </div>
               </ScrollArea>
 
-              <div className="border-t bg-muted/20 px-4 py-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  {desktopRuntimeErrorMessage ? (
-                    <Badge variant="destructive">
-                      {desktopRuntimeErrorMessage}
-                    </Badge>
-                  ) : null}
-                  {desktopRunStatusText ? (
-                    <Badge variant="outline">{desktopRunStatusText}</Badge>
-                  ) : null}
-                  {canCancelDesktopRun ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => void handleCancelDesktopRun()}
-                    >
-                      {t('common.cancel')}
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-
               <DatabaseChatComposer
                 aiActions={
                   <DatabaseAiActionPopover
@@ -2253,6 +2172,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
                     }}
                   />
                 }
+                canSaveDraft={Boolean(currentDraft || effectiveTargetMessage)}
                 composerText={composerText}
                 copied={copied}
                 draftMeta={currentDraft}
@@ -2267,9 +2187,13 @@ export const DatabaseBotSessionMonitor = forwardRef<
                 )}
                 sendDisabledReason={sendDisabledReason}
                 sendInProgress={
-                  desktopPasteSubmitting || Boolean(activeDesktopRun)
+                  desktopPasteSubmitting ||
+                  desktopSendSubmitting ||
+                  Boolean(activeDesktopRun)
                 }
-                sendStatusText={null}
+                sendStatusText={
+                  desktopRunStatusText ?? composerStatusText ?? null
+                }
                 showCancelSend={false}
                 onCancelSend={() => undefined}
                 onClear={handleClearComposer}
@@ -2290,71 +2214,6 @@ export const DatabaseBotSessionMonitor = forwardRef<
           </>
         )}
       </div>
-
-      <Dialog
-        open={desktopConfirmationDialogOpen}
-        onOpenChange={(open) => {
-          setDesktopConfirmationDialogOpen(open);
-          if (!open) {
-            setDesktopConfirmationTarget(null);
-          }
-        }}
-      >
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>
-              {t(
-                'bots.sessionMonitor.databaseComposer.confirmation.dialogTitle',
-              )}
-            </DialogTitle>
-            <DialogDescription>
-              {t(
-                'bots.sessionMonitor.databaseComposer.confirmation.description',
-              )}
-            </DialogDescription>
-          </DialogHeader>
-
-          {desktopConfirmationTarget ? (
-            <div className="space-y-4">
-              <div className="rounded-xl border bg-muted/20 p-4">
-                <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                  {t(
-                    'bots.sessionMonitor.databaseComposer.confirmation.expectedLabel',
-                  )}
-                </div>
-                <div className="mt-2 text-base font-semibold">
-                  {desktopConfirmationTarget.conversationName}
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setDesktopConfirmationDialogOpen(false);
-                setDesktopConfirmationTarget(null);
-              }}
-            >
-              {t('common.cancel')}
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void handleDesktopConfirmationApproved()}
-              disabled={
-                desktopConfirmationSubmitting || !desktopConfirmationTarget
-              }
-            >
-              {desktopConfirmationSubmitting ? (
-                <RefreshCw className="mr-1 size-4 animate-spin" />
-              ) : null}
-              {t('bots.sessionMonitor.databaseComposer.confirmation.approve')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <AlertDialog
         open={deleteDraftDialogOpen}

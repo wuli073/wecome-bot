@@ -19,7 +19,6 @@ import {
   AsyncTaskCreatedResp,
   ApiRespSystemInfo,
   ApiRespAsyncTasks,
-  ApiRespUserToken,
   GetPipelineResponseData,
   GetPipelineMetadataResponseData,
   AsyncTask,
@@ -1175,14 +1174,6 @@ export class BackendClient extends BaseHttpClient {
     return this.post('/api/v1/user/init', { user, password });
   }
 
-  public authUser(user: string, password: string): Promise<ApiRespUserToken> {
-    return this.post('/api/v1/user/auth', { user, password });
-  }
-
-  public checkUserToken(): Promise<ApiRespUserToken> {
-    return this.get('/api/v1/user/check-token');
-  }
-
   public resetPassword(
     user: string,
     recoveryKey: string,
@@ -1215,14 +1206,6 @@ export class BackendClient extends BaseHttpClient {
 
   public getSpaceCredits(): Promise<{ credits: number | null }> {
     return this.get('/api/v1/user/space-credits');
-  }
-
-  public getAccountInfo(): Promise<{
-    initialized: boolean;
-    account_type?: 'local' | 'space';
-    has_password?: boolean;
-  }> {
-    return this.get('/api/v1/user/account-info');
   }
 
   public setPassword(

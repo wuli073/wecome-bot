@@ -14,17 +14,12 @@ const thTH = {
     editionCloud: 'Cloud',
   },
   common: {
-    login: 'เข้าสู่ระบบ',
     logout: 'ออกจากระบบ',
     accountOptions: 'การตั้งค่า',
     account: 'บัญชี',
     integration: 'การเชื่อมต่อ',
     email: 'อีเมล',
     password: 'รหัสผ่าน',
-    welcome: 'ยินดีต้อนรับกลับสู่ LangBot 👋',
-    continueToLogin: 'เข้าสู่ระบบเพื่อดำเนินการต่อ',
-    loginSuccess: 'เข้าสู่ระบบสำเร็จ',
-    loginFailed: 'เข้าสู่ระบบล้มเหลว กรุณาตรวจสอบอีเมลและรหัสผ่าน',
     loginLoadError: 'ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์',
     loginLoadErrorDesc:
       'ไม่สามารถเชื่อมต่อกับแบ็กเอนด์ LangBot ได้ กรุณาตรวจสอบว่าบริการกำลังทำงานอยู่แล้วลองใหม่อีกครั้ง',
@@ -70,7 +65,6 @@ const thTH = {
     copySuccess: 'คัดลอกสำเร็จ',
     copyFailed: 'คัดลอกล้มเหลว',
     test: 'ทดสอบ',
-    forgotPassword: 'ลืมรหัสผ่าน?',
     agreementNotice: 'การดำเนินการต่อแสดงว่าคุณยอมรับ',
     termsOfService: 'ข้อกำหนดการให้บริการ',
     privacyPolicy: 'นโยบายความเป็นส่วนตัว',
@@ -80,11 +74,8 @@ const thTH = {
     loading: 'กำลังโหลด...',
     fieldRequired: 'ช่องนี้จำเป็นต้องกรอก',
     or: 'หรือ',
-    loginWithSpace: 'เข้าสู่ระบบด้วย Space',
     spaceLoginRecommended:
       'แนะนำ: ใช้ API โมเดลที่เสถียรอย่างเป็นทางการและบริการคลาวด์',
-    loginLocal: 'เข้าสู่ระบบด้วยบัญชีท้องถิ่น',
-    loginWithPassword: 'เข้าสู่ระบบด้วยรหัสผ่าน',
     spaceLoginTitle: 'เข้าสู่ระบบด้วย Space',
     spaceLoginDescription:
       'สแกน QR code หรือเข้าชมลิงก์ด้านล่างเพื่อยืนยันสิทธิ์',
@@ -101,7 +92,6 @@ const thTH = {
     spaceLoginSuccessDescription: 'กำลังเปลี่ยนเส้นทางไปยัง LangBot...',
     spaceLoginError: 'เข้าสู่ระบบล้มเหลว',
     spaceLoginNoCode: 'ไม่พบรหัสยืนยันสิทธิ์',
-    backToLogin: 'กลับไปหน้าเข้าสู่ระบบ',
     backToHome: 'กลับไปหน้าแรก',
     spaceAccountCannotChangePassword:
       'บัญชี Space ไม่สามารถเปลี่ยนรหัสผ่านได้ที่นี่',
@@ -1130,7 +1120,6 @@ const thTH = {
     resetting: 'กำลังรีเซ็ต...',
     resetSuccess: 'รีเซ็ตรหัสผ่านสำเร็จ กรุณาเข้าสู่ระบบ',
     resetFailed: 'รีเซ็ตรหัสผ่านล้มเหลว กรุณาตรวจสอบอีเมลและคีย์กู้คืน',
-    backToLogin: 'กลับไปหน้าเข้าสู่ระบบ',
   },
   embedding: {
     description: 'จัดการโมเดล Embedding สำหรับการแปลงข้อความเป็นเวกเตอร์',
@@ -1513,7 +1502,6 @@ const thTH = {
     backendUnavailableStatus: 'แบ็กเอนด์ไม่พร้อมใช้งาน',
     goBack: 'ย้อนกลับ',
     backToHome: 'กลับหน้าหลัก',
-    backToLogin: 'กลับไปหน้าเข้าสู่ระบบ',
     retrying: 'กำลังลองใหม่',
     retryFailed:
       'ยังไม่สามารถเชื่อมต่อแบ็กเอนด์ได้ โปรดเริ่มบริการแล้วลองใหม่อีกครั้ง',

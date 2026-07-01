@@ -1626,10 +1626,6 @@ export default function HomeSidebar({
 
   useEffect(() => {
     initSelect();
-    if (!localStorage.getItem('token')) {
-      localStorage.setItem('token', 'test-token');
-      localStorage.setItem('userEmail', 'test@example.com');
-    }
 
     const storedEmail = localStorage.getItem('userEmail');
     if (storedEmail) {
@@ -1770,7 +1766,7 @@ export default function HomeSidebar({
   function handleLogout() {
     localStorage.removeItem('token');
     localStorage.removeItem('userEmail');
-    window.location.href = '/login';
+    navigate('/home/monitoring', { replace: true });
   }
 
   // Get the initial letter for user avatar

@@ -15,18 +15,12 @@ const esES = {
     editionCloud: 'Cloud',
   },
   common: {
-    login: 'Iniciar sesión',
     logout: 'Cerrar sesión',
     accountOptions: 'Configuración',
     account: 'Cuenta',
     integration: 'Integración',
     email: 'Correo electrónico',
     password: 'Contraseña',
-    welcome: 'Bienvenido de nuevo a LangBot 👋',
-    continueToLogin: 'Inicia sesión para continuar',
-    loginSuccess: 'Inicio de sesión exitoso',
-    loginFailed:
-      'Error de inicio de sesión, por favor verifica tu correo y contraseña',
     loginLoadError: 'No se puede conectar al servidor',
     loginLoadErrorDesc:
       'No se puede conectar al backend de LangBot. Asegúrate de que el servicio esté en ejecución e inténtalo de nuevo.',
@@ -73,7 +67,6 @@ const esES = {
     copySuccess: 'Copiado correctamente',
     copyFailed: 'Error al copiar',
     test: 'Probar',
-    forgotPassword: '¿Olvidaste tu contraseña?',
     agreementNotice: 'Al continuar, aceptas nuestros',
     termsOfService: 'Términos de servicio',
     privacyPolicy: 'Política de privacidad',
@@ -83,11 +76,8 @@ const esES = {
     loading: 'Cargando...',
     fieldRequired: 'Este campo es obligatorio',
     or: 'o',
-    loginWithSpace: 'Iniciar sesión con Space',
     spaceLoginRecommended:
       'Recomendado: Usa API de modelos oficiales estables y servicios en la nube',
-    loginLocal: 'Iniciar sesión con cuenta local',
-    loginWithPassword: 'Iniciar sesión con contraseña',
     spaceLoginTitle: 'Iniciar sesión con Space',
     spaceLoginDescription:
       'Escanea el código QR o visita el enlace para autorizar',
@@ -106,7 +96,6 @@ const esES = {
     spaceLoginSuccessDescription: 'Redirigiendo a LangBot...',
     spaceLoginError: 'Error de inicio de sesión',
     spaceLoginNoCode: 'Falta el código de autorización',
-    backToLogin: 'Volver al inicio de sesión',
     backToHome: 'Volver al inicio',
     spaceAccountCannotChangePassword:
       'Las cuentas de Space no pueden cambiar la contraseña aquí',
@@ -1178,7 +1167,6 @@ const esES = {
       'Contraseña restablecida correctamente, por favor inicia sesión',
     resetFailed:
       'Error al restablecer la contraseña, por favor verifica tu correo y clave de recuperación',
-    backToLogin: 'Volver al inicio de sesión',
   },
   embedding: {
     description: 'Gestionar modelos Embedding para la vectorización de texto',
@@ -1574,7 +1562,6 @@ const esES = {
     backendUnavailableStatus: 'Backend no disponible',
     goBack: 'Volver',
     backToHome: 'Ir al inicio',
-    backToLogin: 'Volver al inicio de sesión',
     retrying: 'Reintentando',
     retryFailed:
       'Aún no se puede conectar con el backend. Inicia el servicio e inténtalo de nuevo.',

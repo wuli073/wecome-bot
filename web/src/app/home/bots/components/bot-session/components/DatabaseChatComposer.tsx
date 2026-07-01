@@ -33,6 +33,7 @@ export interface ComposerDraftMeta {
 
 interface DatabaseChatComposerProps {
   aiActions: ReactNode;
+  canSaveDraft: boolean;
   composerText: string;
   copied: boolean;
   draftMeta: ComposerDraftMeta | null;
@@ -61,34 +62,9 @@ interface DatabaseChatComposerProps {
 const MIN_TEXTAREA_HEIGHT = 96;
 const MAX_TEXTAREA_HEIGHT = 240;
 
-function formatUpdatedAt(
-  t: ReturnType<typeof useTranslation>['t'],
-  updatedAt?: string,
-) {
-  if (!updatedAt) {
-    return t('bots.sessionMonitor.databaseComposer.updatedAtUnknown');
-  }
-
-  return t('bots.sessionMonitor.databaseComposer.updatedAt', {
-    time: new Date(updatedAt).toLocaleString(),
-  });
-}
-
-function formatDraftMeta(
-  t: ReturnType<typeof useTranslation>['t'],
-  draftMeta: ComposerDraftMeta,
-) {
-  return t('bots.sessionMonitor.databaseComposer.meta', {
-    version: draftMeta.version,
-    source: t(
-      `bots.sessionMonitor.databaseComposer.source.${draftMeta.source}`,
-    ),
-    updatedAt: formatUpdatedAt(t, draftMeta.updatedAt),
-  });
-}
-
 export function DatabaseChatComposer({
   aiActions,
+  canSaveDraft,
   composerText,
   copied,
   draftMeta,
@@ -117,13 +93,7 @@ export function DatabaseChatComposer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const showFullToolbar = hasComposerContent;
   const showCompactToolbar = !hasComposerContent && isClearedLocally;
-  const toolbarStatusText =
-    sendStatusText ??
-    (draftMeta
-      ? formatDraftMeta(t, draftMeta)
-      : generatingDraft
-        ? t('bots.sessionMonitor.databaseComposer.generating')
-        : t('bots.sessionMonitor.databaseComposer.unsaved'));
+  const toolbarStatusText = sendStatusText;
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -141,8 +111,14 @@ export function DatabaseChatComposer({
   return (
     <div className="sticky bottom-0 z-10 border-t bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
       {showFullToolbar ? (
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-sm">
-          <span className="text-muted-foreground">{toolbarStatusText}</span>
+        <div
+          className={`mb-3 flex flex-wrap items-center gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-sm ${
+            toolbarStatusText ? 'justify-between' : 'justify-end'
+          }`}
+        >
+          {toolbarStatusText ? (
+            <span className="text-muted-foreground">{toolbarStatusText}</span>
+          ) : null}
           <div className="flex flex-wrap items-center gap-1">
             {showCancelSend ? (
               <Button
@@ -186,7 +162,7 @@ export function DatabaseChatComposer({
               size="sm"
               onClick={onSave}
               disabled={
-                !draftMeta ||
+                !canSaveDraft ||
                 !hasComposerContent ||
                 !hasUnsavedChanges ||
                 draftSaving
@@ -209,6 +185,7 @@ export function DatabaseChatComposer({
               size="sm"
               onClick={onClear}
               disabled={!composerText}
+              aria-label={t('bots.sessionMonitor.databaseComposer.clear')}
             >
               {t('bots.sessionMonitor.databaseComposer.clear')}
             </Button>
@@ -290,7 +267,7 @@ export function DatabaseChatComposer({
               <Button
                 type="button"
                 size="icon"
-                disabled={sendInProgress}
+                disabled={sendInProgress || Boolean(sendDisabledReason)}
                 onClick={onSend}
                 aria-label={sendButtonLabel}
               >

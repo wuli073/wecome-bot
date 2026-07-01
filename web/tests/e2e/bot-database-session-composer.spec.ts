@@ -239,10 +239,6 @@ function pasteDraftButton(page: Page) {
   return page.getByRole('button', { name: 'Paste to WeCom input box' });
 }
 
-function confirmPasteButton(page: Page) {
-  return page.getByRole('button', { name: 'Confirm and paste' });
-}
-
 async function openDatabaseSession(page: Page) {
   await page.goto('/home/bots?id=bot-db&tab=sessions');
   await expect(sessionButton(page)).toBeVisible();
@@ -266,35 +262,21 @@ test('paste-only UI has no calibration entry and allows paste without calibratio
   await expect(pasteDraftButton(page)).toBeEnabled();
 });
 
-test('canceling manual confirmation does not call paste-draft API', async ({
+test('send pastes immediately without opening manual confirmation dialog', async ({
   page,
 }) => {
   const mockState = await installPasteOnlyDatabaseBotMocks(page);
   await openDatabaseSession(page);
 
   await pasteDraftButton(page).click();
-  await expect(page.getByText('Customer Beta').last()).toBeVisible();
-  await page.getByRole('button', { name: 'Cancel' }).last().click();
-
-  expect(mockState.pasteDraftCalls).toBe(0);
-  expect(mockState.forbiddenCalibrationCalls).toBe(0);
-  expect(mockState.forbiddenContextCalls).toBe(0);
-});
-
-test('confirming paste sends one body-only request with Idempotency-Key header', async ({
-  page,
-}) => {
-  const mockState = await installPasteOnlyDatabaseBotMocks(page);
-  await openDatabaseSession(page);
-
-  await pasteDraftButton(page).click();
-  await confirmPasteButton(page).click();
 
   await expect(
     page
       .getByText('Draft pasted into the WeCom input box; it was not sent.')
       .first(),
   ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Confirm and paste' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Cancel' })).toHaveCount(0);
   expect(mockState.pasteDraftCalls).toBe(1);
   expect(mockState.lastPasteDraftBody).toEqual({ draft_id: 9001 });
   expect(Object.keys(mockState.lastPasteDraftBody ?? {})).toEqual(['draft_id']);
@@ -314,7 +296,6 @@ test('repeated clicks during paste submission do not create duplicate requests',
   await openDatabaseSession(page);
 
   await pasteDraftButton(page).click();
-  await confirmPasteButton(page).click();
   await expect(pasteDraftButton(page)).toBeDisabled();
   await pasteDraftButton(page).click({ force: true });
 
@@ -326,4 +307,90 @@ test('repeated clicks during paste submission do not create duplicate requests',
       .first(),
   ).toBeVisible();
   expect(mockState.pasteDraftCalls).toBe(1);
+});
+
+test('send saves unsaved composer text before pasting the draft', async ({ page }) => {
+  const mockState = await installPasteOnlyDatabaseBotMocks(page);
+  let updateDraftCalls = 0;
+  let lastUpdateDraftBody: Record<string, unknown> | null = null;
+
+  await page.route('**/api/v1/bots/bot-db/drafts/9001', async (route) => {
+    if (route.request().method() !== 'PUT') {
+      return route.fallback();
+    }
+    updateDraftCalls += 1;
+    lastUpdateDraftBody = JSON.parse(route.request().postData() || '{}');
+    await fulfillJson(route, {
+      message: {
+        ...MESSAGE,
+        draft_text: String(lastUpdateDraftBody?.content ?? ''),
+        draft_source: 'manual',
+        draft_version: 2,
+        draft_updated_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    });
+  });
+
+  await openDatabaseSession(page);
+  await page.getByLabel('Composer draft').fill('Reply from operator');
+
+  await pasteDraftButton(page).click();
+
+  await expect(
+    page
+      .getByText('Draft pasted into the WeCom input box; it was not sent.')
+      .first(),
+  ).toBeVisible();
+  expect(updateDraftCalls).toBe(1);
+  expect(lastUpdateDraftBody).toEqual({ content: 'Reply from operator' });
+  expect(mockState.pasteDraftCalls).toBe(1);
+});
+
+test('send stops when saving unsaved composer text fails', async ({ page }) => {
+  const mockState = await installPasteOnlyDatabaseBotMocks(page);
+
+  await page.route('**/api/v1/bots/bot-db/drafts/9001', async (route) => {
+    if (route.request().method() !== 'PUT') {
+      return route.fallback();
+    }
+    await route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: -1,
+        msg: 'SAVE_FAILED',
+        message: 'SAVE_FAILED',
+        data: null,
+        timestamp: Date.now(),
+      }),
+    });
+  });
+
+  await openDatabaseSession(page);
+  await page.getByLabel('Composer draft').fill('Reply from operator');
+
+  await pasteDraftButton(page).click();
+
+  await expect(page.getByText('SAVE_FAILED').first()).toBeVisible();
+  expect(mockState.pasteDraftCalls).toBe(0);
+});
+
+test('empty composer text keeps send disabled and does not submit paste', async ({ page }) => {
+  const mockState = await installPasteOnlyDatabaseBotMocks(page);
+  await openDatabaseSession(page);
+
+  await page.getByRole('button', { name: 'Clear' }).click();
+  await expect(pasteDraftButton(page)).toBeDisabled();
+  expect(mockState.pasteDraftCalls).toBe(0);
+});
+
+test('ordinary draft status bar copy is hidden when there is no active send status or error', async ({
+  page,
+}) => {
+  await installPasteOnlyDatabaseBotMocks(page);
+  await openDatabaseSession(page);
+
+  await expect(page.getByText(/Draft v1/)).toHaveCount(0);
+  await expect(page.getByText('Current session has been manually confirmed, the window context is stable, and the input area is located')).toHaveCount(0);
 });

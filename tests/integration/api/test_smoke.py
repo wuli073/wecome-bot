@@ -9,6 +9,12 @@ Run: uv run pytest tests/integration/api/test_smoke.py -q
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
+import socket
+import urllib.request
+
 import pytest
 from unittest.mock import MagicMock, AsyncMock, Mock
 
@@ -16,6 +22,22 @@ from tests.factories import FakeApp
 
 
 pytestmark = pytest.mark.integration
+
+
+def _get_free_tcp_port(host: str = '127.0.0.1') -> int:
+    family = socket.AF_INET6 if ':' in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
+
+
+async def _fetch_json(url: str) -> tuple[int, dict]:
+    def _request():
+        with urllib.request.urlopen(url, timeout=3) as response:
+            return response.status, json.loads(response.read().decode('utf-8'))
+
+    return await asyncio.to_thread(_request)
 
 
 # ============== FIXTURE FOR SYS.MODULES ISOLATION ==============
@@ -199,6 +221,131 @@ class TestSystemEndpoint:
         assert 'version' in system_data
         assert 'debug' in system_data
         assert 'edition' in system_data
+
+    @pytest.mark.asyncio
+    async def test_system_info_responds_when_list_plugins_hangs(self, fake_api_app, http_controller_cls):
+        """system/info must not depend on plugin runtime list_plugins completing."""
+
+        async def never_returns():
+            await asyncio.Event().wait()
+
+        fake_api_app.plugin_connector.list_plugins = never_returns
+        controller = http_controller_cls(fake_api_app)
+        await controller.initialize()
+        client = controller.quart_app.test_client()
+
+        response = await asyncio.wait_for(client.get('/api/v1/system/info'), timeout=1)
+
+        assert response.status_code == 200
+        data = await response.get_json()
+        assert data['code'] == 0
+
+
+@pytest.mark.usefixtures('mock_circular_import_chain')
+class TestHttpBind:
+    """Tests for HTTP bind host selection."""
+
+    @pytest.mark.asyncio
+    async def test_run_starts_http_service_on_free_port(self, fake_api_app, http_controller_cls):
+        """HTTPController should start a real HTTP listener and answer system/info."""
+        port = _get_free_tcp_port()
+        fake_api_app.instance_config.data['api']['port'] = port
+        controller = http_controller_cls(fake_api_app)
+        await controller.initialize()
+
+        run_task = None
+        try:
+            run_task = asyncio.create_task(controller.run())
+            await asyncio.wait_for(asyncio.open_connection('127.0.0.1', port), timeout=5)
+
+            status_code, payload = await _fetch_json(f'http://127.0.0.1:{port}/api/v1/system/info')
+
+            assert status_code == 200
+            assert payload['code'] == 0
+        finally:
+            if run_task is not None:
+                run_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await run_task
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(('127.0.0.1', port))
+
+    def test_run_fails_fast_when_port_is_occupied(self, fake_api_app, http_controller_cls, caplog):
+        """HTTPController.run must fail before any success logs when bind is impossible."""
+        port = _get_free_tcp_port()
+        fake_api_app.instance_config.data['api']['port'] = port
+        controller = http_controller_cls(fake_api_app)
+
+        occupier = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        occupier.bind(('127.0.0.1', port))
+        occupier.listen(socket.SOMAXCONN)
+
+        try:
+            with pytest.raises(RuntimeError, match='(?i)(address already in use|port occupied)'):
+                controller.run()
+
+            assert 'Local Address:' not in caplog.text
+            assert 'Running on http://' not in caplog.text
+        finally:
+            occupier.close()
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(('127.0.0.1', port))
+
+    def test_default_bind_host_is_loopback(self, fake_api_app, http_controller_cls):
+        """Default local service bind should own 127.0.0.1, not only wildcard."""
+        controller = http_controller_cls(fake_api_app)
+
+        assert controller._get_bind_host() == '127.0.0.1'
+
+    def test_configured_bind_host_is_respected(self, fake_api_app, http_controller_cls, monkeypatch):
+        """Operators can still opt into a public/container bind host explicitly."""
+        fake_api_app.instance_config.data['api']['host'] = '0.0.0.0'
+        controller = http_controller_cls(fake_api_app)
+        captured_bind: list[str] = []
+
+        assert controller._get_bind_host() == '0.0.0.0'
+
+        def fake_reserve_sockets(config):
+            captured_bind.extend(config.bind)
+            from types import SimpleNamespace
+
+            return SimpleNamespace(secure_sockets=[], insecure_sockets=[], quic_sockets=[])
+
+        async def fake_run_with_readiness(*, config, sockets):
+            return None
+
+        monkeypatch.setattr(controller, '_reserve_sockets', fake_reserve_sockets)
+        monkeypatch.setattr(controller, '_run_with_readiness', fake_run_with_readiness)
+
+        run_coro = controller.run()
+        assert captured_bind == ['0.0.0.0:5300']
+        run_coro.close()
+
+    @pytest.mark.asyncio
+    async def test_run_propagates_serve_startup_exception(self, fake_api_app, http_controller_cls, monkeypatch):
+        """Startup exceptions from the underlying server coroutine must bubble out cleanly."""
+        port = _get_free_tcp_port()
+        fake_api_app.instance_config.data['api']['port'] = port
+        controller = http_controller_cls(fake_api_app)
+        await controller.initialize()
+
+        async def broken_serve(*, config, sockets, shutdown_trigger, ready_future):
+            raise RuntimeError('startup boom')
+
+        try:
+            monkeypatch.setattr(controller, '_run_task', broken_serve)
+            with pytest.raises(RuntimeError, match='startup boom'):
+                await asyncio.create_task(controller.run())
+        finally:
+            pass
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(('127.0.0.1', port))
 
 
 @pytest.mark.usefixtures('mock_circular_import_chain')

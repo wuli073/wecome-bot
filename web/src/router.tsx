@@ -2,18 +2,15 @@ import React, { Suspense } from 'react';
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 
 // Layouts
-import LoginLayout from '@/app/login/layout';
 import RegisterLayout from '@/app/register/layout';
 import ResetPasswordLayout from '@/app/reset-password/layout';
 import HomeLayout from '@/app/home/layout';
 
 // Pages
-import LoginPage from '@/app/login/page';
 import RegisterPage from '@/app/register/page';
 import ResetPasswordPage from '@/app/reset-password/page';
 import WizardPage from '@/app/wizard/page';
 import SpaceCallbackPage from '@/app/auth/space/callback/page';
-import HomePage from '@/app/home/page';
 import MonitoringPage from '@/app/home/monitoring/page';
 import BotsPage from '@/app/home/bots/page';
 import PipelinesPage from '@/app/home/pipelines/page';
@@ -22,7 +19,6 @@ import AddExtensionPage from '@/app/home/add-extension/page';
 import MCPPage from '@/app/home/mcp/page';
 import KnowledgePage from '@/app/home/knowledge/page';
 import SkillsPage from '@/app/home/skills/page';
-import DatabaseModePage from '@/app/home/database-mode/page';
 import DatabaseModeRedirect from '@/app/home/database-mode/redirect';
 import ErrorPage from '@/components/ErrorPage';
 import BackendUnavailablePage from '@/components/BackendUnavailablePage';
@@ -38,15 +34,11 @@ export const router = createBrowserRouter([
     children: [
       {
         path: '/',
-        element: <Navigate to="/login" replace />,
+        element: <Navigate to="/home/monitoring" replace />,
       },
       {
         path: '/login',
-        element: (
-          <LoginLayout>
-            <LoginPage />
-          </LoginLayout>
-        ),
+        element: <Navigate to="/home/monitoring" replace />,
       },
       {
         path: '/register',
@@ -78,13 +70,7 @@ export const router = createBrowserRouter([
       },
       {
         path: '/home',
-        element: (
-          <Suspense fallback={<Loading />}>
-            <HomeLayout>
-              <HomePage />
-            </HomeLayout>
-          </Suspense>
-        ),
+        element: <Navigate to="/home/monitoring" replace />,
       },
       {
         path: '/home/monitoring',

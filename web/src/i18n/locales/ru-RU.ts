@@ -15,17 +15,12 @@ const ruRU = {
     editionCloud: 'Cloud',
   },
   common: {
-    login: 'Войти',
     logout: 'Выйти',
     accountOptions: 'Настройки',
     account: 'Аккаунт',
     integration: 'Интеграция',
     email: 'Электронная почта',
     password: 'Пароль',
-    welcome: 'С возвращением в LangBot 👋',
-    continueToLogin: 'Войдите, чтобы продолжить',
-    loginSuccess: 'Вход выполнен успешно',
-    loginFailed: 'Ошибка входа, проверьте адрес электронной почты и пароль',
     loginLoadError: 'Не удалось подключиться к серверу',
     loginLoadErrorDesc:
       'Не удалось подключиться к серверу LangBot. Убедитесь, что сервис запущен, и повторите попытку.',
@@ -71,7 +66,6 @@ const ruRU = {
     copySuccess: 'Скопировано',
     copyFailed: 'Ошибка копирования',
     test: 'Тест',
-    forgotPassword: 'Забыли пароль?',
     agreementNotice: 'Продолжая, вы соглашаетесь с нашей',
     privacyPolicy: 'Политикой конфиденциальности',
     and: 'и',
@@ -80,11 +74,8 @@ const ruRU = {
     loading: 'Загрузка...',
     fieldRequired: 'Это поле обязательно для заполнения',
     or: 'или',
-    loginWithSpace: 'Войти через Space',
     spaceLoginRecommended:
       'Рекомендуется: Используйте официальные стабильные API моделей и облачные сервисы',
-    loginLocal: 'Войти с локальной учётной записью',
-    loginWithPassword: 'Войти с паролем',
     spaceLoginTitle: 'Войти через Space',
     spaceLoginDescription:
       'Отсканируйте QR-код или перейдите по ссылке ниже для авторизации',
@@ -102,7 +93,6 @@ const ruRU = {
     spaceLoginSuccessDescription: 'Перенаправление в LangBot...',
     spaceLoginError: 'Ошибка входа',
     spaceLoginNoCode: 'Отсутствует код авторизации',
-    backToLogin: 'Вернуться к входу',
     backToHome: 'На главную',
     spaceAccountCannotChangePassword:
       'Для аккаунтов Space невозможно изменить пароль здесь',
@@ -1156,7 +1146,6 @@ const ruRU = {
     resetting: 'Сброс...',
     resetSuccess: 'Пароль успешно сброшен, пожалуйста, войдите',
     resetFailed: 'Ошибка сброса пароля, проверьте email и ключ восстановления',
-    backToLogin: 'Вернуться к входу',
   },
   embedding: {
     description: 'Управление моделями Embedding для векторизации текста',
@@ -1547,7 +1536,6 @@ const ruRU = {
     backendUnavailableStatus: 'Бэкенд недоступен',
     goBack: 'Назад',
     backToHome: 'На главную',
-    backToLogin: 'Вернуться к входу',
     retrying: 'Повторяем',
     retryFailed:
       'По-прежнему не удается подключиться к бэкенду. Запустите сервис и повторите попытку.',

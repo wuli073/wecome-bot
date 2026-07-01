@@ -15,17 +15,12 @@ const viVN = {
     editionCloud: 'Cloud',
   },
   common: {
-    login: 'Đăng nhập',
     logout: 'Đăng xuất',
     accountOptions: 'Cài đặt',
     account: 'Tài khoản',
     integration: 'Tích hợp',
     email: 'Email',
     password: 'Mật khẩu',
-    welcome: 'Chào mừng trở lại LangBot 👋',
-    continueToLogin: 'Đăng nhập để tiếp tục',
-    loginSuccess: 'Đăng nhập thành công',
-    loginFailed: 'Đăng nhập thất bại, vui lòng kiểm tra email và mật khẩu',
     loginLoadError: 'Không thể kết nối đến máy chủ',
     loginLoadErrorDesc:
       'Không thể kết nối đến máy chủ LangBot. Vui lòng đảm bảo dịch vụ đang chạy và thử lại.',
@@ -71,7 +66,6 @@ const viVN = {
     copySuccess: 'Sao chép thành công',
     copyFailed: 'Sao chép thất bại',
     test: 'Kiểm tra',
-    forgotPassword: 'Quên mật khẩu?',
     agreementNotice: 'Bằng việc tiếp tục, bạn đồng ý với',
     termsOfService: 'Điều khoản dịch vụ',
     privacyPolicy: 'Chính sách bảo mật',
@@ -81,11 +75,8 @@ const viVN = {
     loading: 'Đang tải...',
     fieldRequired: 'Trường này là bắt buộc',
     or: 'hoặc',
-    loginWithSpace: 'Đăng nhập với Space',
     spaceLoginRecommended:
       'Khuyến nghị: Sử dụng API mô hình ổn định chính thức và dịch vụ đám mây',
-    loginLocal: 'Đăng nhập với tài khoản cục bộ',
-    loginWithPassword: 'Đăng nhập bằng mật khẩu',
     spaceLoginTitle: 'Đăng nhập với Space',
     spaceLoginDescription:
       'Quét mã QR hoặc truy cập liên kết bên dưới để ủy quyền',
@@ -103,7 +94,6 @@ const viVN = {
     spaceLoginSuccessDescription: 'Đang chuyển hướng đến LangBot...',
     spaceLoginError: 'Đăng nhập thất bại',
     spaceLoginNoCode: 'Thiếu mã ủy quyền',
-    backToLogin: 'Quay lại đăng nhập',
     backToHome: 'Quay lại trang chủ',
     spaceAccountCannotChangePassword:
       'Tài khoản Space không thể đổi mật khẩu tại đây',
@@ -1150,7 +1140,6 @@ const viVN = {
     resetSuccess: 'Đặt lại mật khẩu thành công, vui lòng đăng nhập',
     resetFailed:
       'Đặt lại mật khẩu thất bại, vui lòng kiểm tra email và khóa khôi phục',
-    backToLogin: 'Quay lại đăng nhập',
   },
   embedding: {
     description: 'Quản lý mô hình Embedding để véc tơ hóa văn bản',
@@ -1538,7 +1527,6 @@ const viVN = {
     backendUnavailableStatus: 'Backend không khả dụng',
     goBack: 'Quay lại',
     backToHome: 'Về trang chủ',
-    backToLogin: 'Quay lại đăng nhập',
     retrying: 'Đang thử lại',
     retryFailed:
       'Vẫn không thể kết nối backend. Hãy khởi động dịch vụ rồi thử lại.',

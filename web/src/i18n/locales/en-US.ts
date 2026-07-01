@@ -14,17 +14,12 @@ const enUS = {
     editionCloud: 'Cloud',
   },
   common: {
-    login: 'Login',
     logout: 'Logout',
     accountOptions: 'Settings',
     account: 'Account',
     integration: 'Integration',
     email: 'Email',
     password: 'Password',
-    welcome: 'Welcome back to LangBot 👋',
-    continueToLogin: 'Login to continue',
-    loginSuccess: 'Login successful',
-    loginFailed: 'Login failed, please check your email and password',
     loginLoadError: 'Unable to connect to server',
     loginLoadErrorDesc:
       'Unable to connect to the LangBot backend. Please make sure the service is running and try again.',
@@ -70,7 +65,6 @@ const enUS = {
     copySuccess: 'Copy Successfully',
     copyFailed: 'Copy Failed',
     test: 'Test',
-    forgotPassword: 'Forgot Password?',
     agreementNotice: 'By continuing, you agree to our',
     termsOfService: 'Terms of Service',
     privacyPolicy: 'Privacy Policy',
@@ -80,11 +74,8 @@ const enUS = {
     loading: 'Loading...',
     fieldRequired: 'This field is required',
     or: 'or',
-    loginWithSpace: 'Login with Space',
     spaceLoginRecommended:
       'Recommended: Use official stable model APIs and cloud services',
-    loginLocal: 'Login with local account',
-    loginWithPassword: 'Login with password',
     spaceLoginTitle: 'Login with Space',
     spaceLoginDescription:
       'Scan the QR code or visit the link below to authorize',
@@ -102,7 +93,6 @@ const enUS = {
     spaceLoginSuccessDescription: 'Redirecting to LangBot...',
     spaceLoginError: 'Login Failed',
     spaceLoginNoCode: 'Missing authorization code',
-    backToLogin: 'Back to Login',
     backToHome: 'Back to Home',
     spaceAccountCannotChangePassword:
       'Space accounts cannot change password here',
@@ -1355,7 +1345,6 @@ const enUS = {
     resetSuccess: 'Password reset successfully, please login',
     resetFailed:
       'Password reset failed, please check your email and recovery key',
-    backToLogin: 'Back to Login',
   },
   embedding: {
     description: 'Manage Embedding models for text vectorization',
@@ -1867,7 +1856,6 @@ const enUS = {
     backendUnavailableStatus: 'Backend unavailable',
     goBack: 'Go Back',
     backToHome: 'Back to Home',
-    backToLogin: 'Back to Login',
     retrying: 'Retrying',
     retryFailed:
       'Still cannot connect to the backend. Start the service and try again.',
