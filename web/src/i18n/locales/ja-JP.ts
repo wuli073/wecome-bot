@@ -500,9 +500,9 @@ const jaJP = {
         },
         sendDisabled: {
           botDisabled: '送信する前に Bot を有効化してください',
-          noPersistedDraft: '送信する前に草稿を保存してください',
+          noPersistedDraft: '現在の草稿対象は利用できません',
           emptyDraft: '草稿内容は空にできません',
-          unsavedChanges: '送信する前に草稿を保存してください',
+          unsavedChanges: '未保存の変更があります',
           busy: '現在の草稿操作が完了するまで待ってください',
           activeRun: '別のデスクトップ送信が進行中です',
           alreadySent: 'この草稿はすでに送信されています',

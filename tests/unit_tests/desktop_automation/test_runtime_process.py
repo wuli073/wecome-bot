@@ -598,3 +598,43 @@ async def test_runtime_process_manager_ensure_started_selects_latest_runtime_and
         assert 'Selected desktop runtime' in caplog.text
         assert str(target) in caplog.text
         assert 'token' not in caplog.text.lower()
+
+
+async def test_runtime_process_manager_get_status_bootstraps_runtime_when_startable():
+    with TemporaryDirectory(dir=r'C:\Users\33031\Desktop\bot\.tmp-pytest') as temp_dir:
+        tmp_path = Path(temp_dir)
+        runtime_executable = _write_official_runtime(tmp_path, '2026-06-30T04-24-26-368Z')
+
+        async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
+            assert path == runtime_executable
+            assert env['LANGBOT_RPA_TOKEN']
+            assert cwd == runtime_executable.parent
+            return _FakeProcess(['{"pid": 4321, "port": 55123, "protocolVersion": "1", "runtimeVersion": "0.1.0"}\n'])
+
+        fake_client = SimpleNamespace(
+            health=AsyncMock(return_value={'status': 'ready'}),
+            capabilities=AsyncMock(
+                return_value={
+                    'windowingAvailable': True,
+                    'captureAvailable': True,
+                    'inputAvailable': True,
+                    'providerHubReady': True,
+                }
+            ),
+        )
+
+        manager = DesktopRuntimeProcessManager(
+            config={'enabled': True, 'runtime_executable': str(runtime_executable)},
+            spawn_runtime=spawn_runtime,
+            client_factory=lambda runtime_info: fake_client,
+            runtime_root=tmp_path,
+        )
+
+        status = await manager.get_status()
+
+        assert status['status'] == 'ready'
+        assert status['runtime_configured'] is True
+        assert status['runtime_startable'] is True
+        assert status['runtime_reachable'] is True
+        assert status['host'] == '127.0.0.1'
+        assert status['port'] == 55123

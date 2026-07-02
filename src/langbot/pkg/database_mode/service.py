@@ -489,11 +489,105 @@ class DatabaseModeService:
 
         return None
 
-    async def update_draft(self, message_id: int, draft_text: str, draft_source: str | None = None) -> dict:
+    async def update_draft(
+        self,
+        message_id: int,
+        draft_text: str,
+        draft_source: str | None = None,
+        *,
+        draft_id: int | None = None,
+    ) -> dict:
         if not str(draft_text or '').strip():
             raise ValueError('draft_text is required')
         message = await self._require_message(message_id)
+        conversation = await self._fetch_required_model(
+            persistence_database_mode.DatabaseConversation,
+            sqlalchemy.select(persistence_database_mode.DatabaseConversation).where(
+                persistence_database_mode.DatabaseConversation.id == message.conversation_id
+            ),
+            error_message='Conversation not found',
+        )
+        normalized_source = draft_source or 'manual'
+        resolved_bot_uuid: str | None = None
+        if draft_id is None:
+            resolved_bot_uuid = await self._find_enabled_bot_for_connector(conversation.connector_id)
+            if resolved_bot_uuid is None:
+                raise ValueError(f'No enabled wxwork_database bot found for connector {conversation.connector_id}')
+
         async with self._transaction() as conn:
+            persisted_draft_id = draft_id
+            if draft_id is not None:
+                draft = await self._fetch_optional_model(
+                    persistence_database_mode.ReplyDraft,
+                    sqlalchemy.select(persistence_database_mode.ReplyDraft).where(
+                        persistence_database_mode.ReplyDraft.id == draft_id
+                    ),
+                    conn=conn,
+                )
+                if draft is None:
+                    raise ValueError(f'Draft {draft_id} not found')
+                if int(draft.message_id) != message_id:
+                    raise ValueError(f'Draft {draft_id} does not belong to message {message_id}')
+                resolved_bot_uuid = str(draft.bot_uuid)
+            elif resolved_bot_uuid is not None:
+                active_draft = await self._fetch_optional_model(
+                    persistence_database_mode.ReplyDraft,
+                    sqlalchemy.select(persistence_database_mode.ReplyDraft)
+                    .where(
+                        persistence_database_mode.ReplyDraft.message_id == message_id,
+                        persistence_database_mode.ReplyDraft.bot_uuid == resolved_bot_uuid,
+                        persistence_database_mode.ReplyDraft.status == 'active',
+                    )
+                    .order_by(persistence_database_mode.ReplyDraft.id.desc())
+                    .limit(1),
+                    conn=conn,
+                )
+                if active_draft is not None:
+                    persisted_draft_id = int(active_draft.id)
+
+            if persisted_draft_id is not None and resolved_bot_uuid is not None:
+                await conn.execute(
+                    sqlalchemy.update(persistence_database_mode.ReplyDraft)
+                    .where(
+                        persistence_database_mode.ReplyDraft.id == persisted_draft_id,
+                        persistence_database_mode.ReplyDraft.message_id == message_id,
+                        persistence_database_mode.ReplyDraft.bot_uuid == resolved_bot_uuid,
+                    )
+                    .values(
+                        {
+                            'content': draft_text,
+                            'source': normalized_source,
+                            'updated_at': self._utcnow(),
+                        }
+                    )
+                )
+            elif resolved_bot_uuid is not None:
+                max_version_result = await conn.execute(
+                    sqlalchemy.select(sqlalchemy.func.max(persistence_database_mode.ReplyDraft.version)).where(
+                        persistence_database_mode.ReplyDraft.message_id == message_id,
+                        persistence_database_mode.ReplyDraft.bot_uuid == resolved_bot_uuid,
+                    )
+                )
+                next_version = int(max_version_result.scalar() or 0) + 1
+                insert_result = await conn.execute(
+                    sqlalchemy.insert(persistence_database_mode.ReplyDraft).values(
+                        {
+                            'processing_run_id': None,
+                            'message_id': message_id,
+                            'bot_uuid': resolved_bot_uuid,
+                            'content': draft_text,
+                            'source': normalized_source,
+                            'version': next_version,
+                            'status': 'active',
+                        }
+                    )
+                )
+                inserted_primary_key = getattr(insert_result, 'inserted_primary_key', None) or ()
+                if inserted_primary_key:
+                    persisted_draft_id = int(inserted_primary_key[0])
+                else:
+                    persisted_draft_id = int(insert_result.lastrowid)
+
             await conn.execute(
                 sqlalchemy.update(persistence_database_mode.DatabaseMessage)
                 .where(persistence_database_mode.DatabaseMessage.id == message_id)
@@ -501,7 +595,7 @@ class DatabaseModeService:
                     {
                         'status': MESSAGE_STATUS_DRAFT_READY,
                         'draft_text': draft_text,
-                        'draft_source': draft_source or 'manual',
+                        'draft_source': normalized_source,
                         'last_error': None,
                         'updated_at': self._utcnow(),
                     }
@@ -512,7 +606,7 @@ class DatabaseModeService:
             conversation_id=int(message.conversation_id),
             message_id=message_id,
         )
-        return await self.get_message(message_id)
+        return await self.get_message(message_id, bot_uuid=resolved_bot_uuid)
 
     async def delete_draft(self, message_id: int, draft_id: int | None = None) -> dict:
         message = await self._require_message(message_id)
@@ -639,9 +733,14 @@ class DatabaseModeService:
         await self._publish_event(DatabaseModeEventType.INVALIDATED)
         return {'deleted_ids': normalized_ids}
 
-    async def get_message(self, message_id: int) -> dict:
+    async def get_message(self, message_id: int, *, bot_uuid: str | None = None) -> dict:
         message = await self._require_message(message_id)
-        return self._serialize_message(message)
+        serialized_message = self._serialize_message(message)
+        hydrated_messages = await self._hydrate_active_draft_metadata(
+            [serialized_message],
+            bot_uuid=bot_uuid,
+        )
+        return hydrated_messages[0] if hydrated_messages else serialized_message
 
     async def _get_or_create_conversation(
         self,

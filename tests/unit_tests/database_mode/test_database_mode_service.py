@@ -3061,6 +3061,18 @@ async def test_processing_service_reconcile_stale_processing_runs_is_idempotent(
 async def test_update_draft_publishes_one_updated_event_after_commit(service_app):
     service, ap = service_app
     _, message_id = await _ingest_and_get_message(service)
+    ap.bot_service = SimpleNamespace(
+        get_bots=AsyncMock(
+            return_value=[
+                {
+                    'uuid': 'bot-enabled',
+                    'adapter': 'wxwork_database',
+                    'enable': True,
+                    'adapter_config': {'connector_id': 'wxwork-local'},
+                }
+            ]
+        )
+    )
     ap.database_mode_event_bus.published_events.clear()
 
     updated = await service.update_draft(message_id, 'Handled manually.', draft_source='manual')
@@ -3072,6 +3084,156 @@ async def test_update_draft_publishes_one_updated_event_after_commit(service_app
     event = ap.database_mode_event_bus.published_events[0]
     assert event.type == DatabaseModeEventType.MESSAGE_UPDATED
     assert event.message_id == message_id
+
+
+async def test_update_draft_without_draft_id_creates_active_reply_draft_and_returns_draft_id(service_app):
+    service, ap = service_app
+    _, message_id = await _ingest_and_get_message(service)
+    ap.bot_service = SimpleNamespace(
+        get_bots=AsyncMock(
+            return_value=[
+                {
+                    'uuid': 'bot-enabled',
+                    'adapter': 'wxwork_database',
+                    'enable': True,
+                    'adapter_config': {'connector_id': 'wxwork-local'},
+                }
+            ]
+        )
+    )
+
+    updated = await service.update_draft(message_id, 'Handled manually.', draft_source='manual')
+
+    assert updated['status'] == MESSAGE_STATUS_DRAFT_READY
+    assert updated['draft_text'] == 'Handled manually.'
+    assert updated['draft_source'] == 'manual'
+    assert isinstance(updated.get('draft_id'), int)
+    assert updated['draft_id'] > 0
+
+    async with ap.persistence_mgr.get_db_engine().begin() as conn:
+        stored_draft = (
+            await conn.execute(
+                sqlalchemy.select(
+                    persistence_database_mode.ReplyDraft.message_id,
+                    persistence_database_mode.ReplyDraft.bot_uuid,
+                    persistence_database_mode.ReplyDraft.content,
+                    persistence_database_mode.ReplyDraft.source,
+                    persistence_database_mode.ReplyDraft.status,
+                ).where(persistence_database_mode.ReplyDraft.id == updated['draft_id'])
+            )
+        ).one()
+
+    assert stored_draft.message_id == message_id
+    assert stored_draft.bot_uuid == 'bot-enabled'
+    assert stored_draft.content == 'Handled manually.'
+    assert stored_draft.source == 'manual'
+    assert stored_draft.status == DRAFT_STATUS_ACTIVE
+
+
+async def test_update_draft_without_explicit_draft_id_reuses_existing_active_reply_draft(service_app):
+    service, ap = service_app
+    _, message_id = await _ingest_and_get_message(service)
+    ap.bot_service = SimpleNamespace(
+        get_bots=AsyncMock(
+            return_value=[
+                {
+                    'uuid': 'bot-enabled',
+                    'adapter': 'wxwork_database',
+                    'enable': True,
+                    'adapter_config': {'connector_id': 'wxwork-local'},
+                }
+            ]
+        )
+    )
+
+    async with ap.persistence_mgr.get_db_engine().begin() as conn:
+        draft_result = await conn.execute(
+            sqlalchemy.insert(persistence_database_mode.ReplyDraft).values(
+                {
+                    'processing_run_id': None,
+                    'message_id': message_id,
+                    'bot_uuid': 'bot-enabled',
+                    'content': 'Old active draft',
+                    'source': 'pipeline',
+                    'version': 2,
+                    'status': DRAFT_STATUS_ACTIVE,
+                }
+            )
+        )
+        existing_draft_id = int(draft_result.inserted_primary_key[0])
+
+    updated = await service.update_draft(message_id, 'Newest manual text', draft_source='manual')
+
+    assert updated['draft_id'] == existing_draft_id
+    assert updated['draft_text'] == 'Newest manual text'
+    assert updated['draft_source'] == 'manual'
+
+    async with ap.persistence_mgr.get_db_engine().begin() as conn:
+        stored_drafts = (
+            await conn.execute(
+                sqlalchemy.select(
+                    persistence_database_mode.ReplyDraft.id,
+                    persistence_database_mode.ReplyDraft.content,
+                    persistence_database_mode.ReplyDraft.source,
+                    persistence_database_mode.ReplyDraft.status,
+                )
+                .where(
+                    persistence_database_mode.ReplyDraft.message_id == message_id,
+                    persistence_database_mode.ReplyDraft.bot_uuid == 'bot-enabled',
+                )
+                .order_by(persistence_database_mode.ReplyDraft.id.asc())
+            )
+        ).all()
+
+    assert [(row.id, row.content, row.source, row.status) for row in stored_drafts] == [
+        (existing_draft_id, 'Newest manual text', 'manual', DRAFT_STATUS_ACTIVE)
+    ]
+
+
+async def test_update_draft_rejects_draft_id_that_does_not_belong_to_message(service_app):
+    service, ap = service_app
+    _, message_ids = await _ingest_two_messages(service)
+    first_message_id, second_message_id = message_ids
+
+    async with ap.persistence_mgr.get_db_engine().begin() as conn:
+        draft_result = await conn.execute(
+            sqlalchemy.insert(persistence_database_mode.ReplyDraft).values(
+                {
+                    'processing_run_id': None,
+                    'message_id': first_message_id,
+                    'bot_uuid': 'bot-enabled',
+                    'content': 'First message draft',
+                    'source': 'pipeline',
+                    'version': 1,
+                    'status': DRAFT_STATUS_ACTIVE,
+                }
+            )
+        )
+        draft_id = int(draft_result.inserted_primary_key[0])
+
+    with pytest.raises(
+        ValueError,
+        match=rf'Draft {draft_id} does not belong to message {second_message_id}',
+    ):
+        await service.update_draft(
+            second_message_id,
+            'Wrong target update',
+            draft_source='manual',
+            draft_id=draft_id,
+        )
+
+    async with ap.persistence_mgr.get_db_engine().begin() as conn:
+        stored_draft = (
+            await conn.execute(
+                sqlalchemy.select(
+                    persistence_database_mode.ReplyDraft.content,
+                    persistence_database_mode.ReplyDraft.source,
+                ).where(persistence_database_mode.ReplyDraft.id == draft_id)
+            )
+        ).one()
+
+    assert stored_draft.content == 'First message draft'
+    assert stored_draft.source == 'pipeline'
 
 
 async def test_generate_draft_does_not_publish_when_commit_fails(service_app):
@@ -3131,6 +3293,19 @@ async def test_write_methods_do_not_publish_when_commit_fails(service_app, opera
     batch_message_ids: list[int] | None = None
     if operation_name in {'batch_process', 'batch_skip', 'batch_delete'}:
         conversation_id, batch_message_ids = await _ingest_two_messages(service)
+    if operation_name == 'update_draft':
+        ap.bot_service = SimpleNamespace(
+            get_bots=AsyncMock(
+                return_value=[
+                    {
+                        'uuid': 'bot-enabled',
+                        'adapter': 'wxwork_database',
+                        'enable': True,
+                        'adapter_config': {'connector_id': 'wxwork-local'},
+                    }
+                ]
+            )
+        )
 
     ap.database_mode_event_bus.published_events.clear()
     ap.persistence_mgr.fail_next_commit = True

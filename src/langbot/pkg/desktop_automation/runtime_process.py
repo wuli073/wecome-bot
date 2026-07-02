@@ -265,14 +265,26 @@ class DesktopRuntimeProcessManager:
             }
 
         if self.client is None or self.runtime_info is None:
-            return {
-                'status': 'stopped',
-                'errorCode': None,
-                'runtime_configured': True,
-                'runtime_startable': True,
-                'runtime_reachable': False,
-                'send_enabled': False,
-            }
+            try:
+                await self.ensure_started()
+            except DesktopAutomationError as exc:
+                return {
+                    'status': 'failed' if exc.code == RUNTIME_UNAVAILABLE else 'stopped',
+                    'errorCode': exc.code,
+                    'runtime_configured': True,
+                    'runtime_startable': True,
+                    'runtime_reachable': False,
+                    'send_enabled': False,
+                }
+            except Exception:
+                return {
+                    'status': 'failed',
+                    'errorCode': RUNTIME_UNAVAILABLE,
+                    'runtime_configured': True,
+                    'runtime_startable': True,
+                    'runtime_reachable': False,
+                    'send_enabled': False,
+                }
 
         try:
             health = await self.client.health()

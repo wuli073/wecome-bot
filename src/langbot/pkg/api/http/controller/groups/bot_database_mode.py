@@ -390,8 +390,8 @@ class BotDatabaseModeRouterGroup(group.RouterGroup):
                 )
                 return self.success(data={'message': message})
 
-            # Update via ReplyDraft (manual edit creates new version)
-            # For now, we update the message's draft_text as compatibility
+            # Update the active ReplyDraft content and keep the message draft_text
+            # in sync for compatibility with existing message list hydration.
             payload = await quart.request.get_json(silent=True) or {}
             draft_content = str(payload.get('content') or '').strip()
             if not draft_content:
@@ -401,6 +401,7 @@ class BotDatabaseModeRouterGroup(group.RouterGroup):
                 int(draft.message_id),
                 draft_text=draft_content,
                 draft_source='manual',
+                draft_id=draft_id,
             )
             return self.success(data={'message': message})
 
@@ -604,11 +605,17 @@ class BotDatabaseModeRouterGroup(group.RouterGroup):
         import sqlalchemy
 
         result = await self.ap.persistence_mgr.execute_async(
-            sqlalchemy.select(persistence_database_mode.ReplyDraft).where(
+            sqlalchemy.select(*persistence_database_mode.ReplyDraft.__table__.columns).where(
                 persistence_database_mode.ReplyDraft.id == draft_id
             )
         )
-        return result.scalars().first()
+        row = result.mappings().first()
+        if row is None:
+            return None
+        draft = persistence_database_mode.ReplyDraft()
+        for column_name, value in dict(row).items():
+            setattr(draft, column_name, value)
+        return draft
 
     def _desktop_automation_error_response(self, error: DesktopAutomationError):
         code = error.code

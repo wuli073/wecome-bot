@@ -109,6 +109,11 @@ interface DesktopDraftTarget {
   conversationName: string;
 }
 
+interface PersistCurrentDraftOptions {
+  contentOverride?: string;
+  reloadMessages?: boolean;
+}
+
 const SCROLL_BOTTOM_THRESHOLD = 80;
 const PROCESSING_POLL_INTERVAL_MS = 1_500;
 const PROCESSING_RECOVERY_TIMEOUT_MS = 90_000;
@@ -1368,7 +1373,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
     [dataSource, t],
   );
 
-  const persistCurrentDraft = useCallback(async () => {
+  const persistCurrentDraft = useCallback(async (options?: PersistCurrentDraftOptions) => {
     const targetDraft = currentDraftRef.current;
     const targetMessage = targetDraft ?? effectiveTargetMessage;
     if (!targetMessage || !selectedConversation) {
@@ -1386,7 +1391,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
       );
     }
 
-    const content = composerText.trim();
+    const content = String(options?.contentOverride ?? composerText).trim();
     if (!content) {
       throw new Error(
         t('bots.sessionMonitor.databaseComposer.sendDisabled.emptyDraft'),
@@ -1414,8 +1419,9 @@ export const DatabaseBotSessionMonitor = forwardRef<
 
       setPersistedDraftText(content);
       draftDirtyRef.current = false;
+      currentDraftRef.current = nextDraftState;
       setCurrentDraft(nextDraftState);
-      if (selectedConversationIdRef.current !== null) {
+      if (options?.reloadMessages && selectedConversationIdRef.current !== null) {
         await loadMessages(selectedConversationIdRef.current, {
           preserveDraftText: true,
         });
@@ -1433,18 +1439,13 @@ export const DatabaseBotSessionMonitor = forwardRef<
     } finally {
       setDraftSaving(false);
     }
-  }, [
-    composerText,
-    currentDraft,
-    dataSource,
-    effectiveTargetMessage,
-    loadMessages,
-    selectedConversation,
-    t,
-  ]);
+  }, [composerText, dataSource, effectiveTargetMessage, loadMessages, selectedConversation, t]);
 
-  const handleDesktopPaste = useCallback(async () => {
-    if (!hasComposerContent) {
+  const handleDesktopPaste = useCallback(async (latestComposerText: string) => {
+    const contentSnapshot = String(latestComposerText ?? composerText);
+    const trimmedContent = contentSnapshot.trim();
+
+    if (!trimmedContent) {
       const message = t(
         'bots.sessionMonitor.databaseComposer.sendDisabled.emptyDraft',
       );
@@ -1463,10 +1464,14 @@ export const DatabaseBotSessionMonitor = forwardRef<
 
     try {
       setDesktopSendSubmitting(true);
+      const currentDraftSnapshot = currentDraftRef.current;
       const persistedDraft =
-        !currentDraft?.draftId || isDirty
-          ? await persistCurrentDraft()
-          : currentDraft;
+        !currentDraftSnapshot?.draftId || trimmedContent !== persistedDraftText
+          ? await persistCurrentDraft({
+              contentOverride: contentSnapshot,
+              reloadMessages: false,
+            })
+          : currentDraftSnapshot;
 
       if (!persistedDraft.draftId) {
         const message = t(
@@ -1495,10 +1500,9 @@ export const DatabaseBotSessionMonitor = forwardRef<
       setDesktopSendSubmitting(false);
     }
   }, [
-    currentDraft,
-    hasComposerContent,
-    isDirty,
+    composerText,
     pasteDisabledReason,
+    persistedDraftText,
     persistCurrentDraft,
     selectedConversation,
     submitDesktopPaste,
@@ -1536,7 +1540,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
     }
 
     try {
-      await persistCurrentDraft();
+      await persistCurrentDraft({ reloadMessages: true });
       toast.success('草稿已保存');
     } catch (error: any) {
       toast.error(error?.message || '保存草稿失败');
@@ -2207,7 +2211,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
                 }}
                 onRequestDeleteDraft={() => setDeleteDraftDialogOpen(true)}
                 onSave={() => void handleSaveDraft()}
-                onSend={() => void handleDesktopPaste()}
+                onSend={(latestText) => void handleDesktopPaste(latestText)}
                 onUndoEdit={handleUndoEdit}
               />
             </div>

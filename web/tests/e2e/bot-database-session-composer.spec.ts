@@ -51,7 +51,30 @@ const CONVERSATION = {
   updated_at: new Date().toISOString(),
 };
 
-const MESSAGE = {
+type MockMessage = {
+  id: number;
+  event_id: string;
+  message_key: string;
+  conversation_id: number;
+  sender_id: string;
+  sender_name: string;
+  content: string;
+  message_type: string;
+  sent_at: string;
+  observed_at: string;
+  status: string;
+  draft_text: string | null;
+  draft_source: string | null;
+  draft_id: number | null;
+  draft_version: number | null;
+  draft_updated_at: string | null;
+  last_error: string | null;
+  attempt_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+const MESSAGE: MockMessage = {
   id: 2001,
   event_id: 'evt-2001',
   message_key: 'wxwork:2001',
@@ -63,7 +86,7 @@ const MESSAGE = {
   sent_at: new Date().toISOString(),
   observed_at: new Date().toISOString(),
   status: 'draft_ready',
-  draft_text: 'Reply from bot',
+  draft_text: 'OLD_DRAFT',
   draft_source: 'pipeline',
   draft_id: 9001,
   draft_version: 1,
@@ -81,6 +104,8 @@ interface PasteOnlyMockState {
   lastPasteDraftBody: Record<string, unknown> | null;
   lastPasteDraftIdempotencyKey: string | undefined;
   pasteDraftCalls: number;
+  requestOrder: string[];
+  sendDraftCalls: number;
 }
 
 const READY_RUNTIME_STATUS = {
@@ -94,8 +119,12 @@ const READY_RUNTIME_STATUS = {
 
 async function installPasteOnlyDatabaseBotMocks(
   page: Page,
-  options?: { holdPasteResponse?: boolean },
+  options?: {
+    holdPasteResponse?: boolean;
+    message?: MockMessage;
+  },
 ): Promise<PasteOnlyMockState & { releasePasteResponse: () => void }> {
+  const message: MockMessage = options?.message ?? MESSAGE;
   let releasePasteResponse: () => void = () => undefined;
   const pasteGate = options?.holdPasteResponse
     ? new Promise<void>((resolve) => {
@@ -109,6 +138,8 @@ async function installPasteOnlyDatabaseBotMocks(
     lastPasteDraftBody: null,
     lastPasteDraftIdempotencyKey: undefined,
     pasteDraftCalls: 0,
+    requestOrder: [],
+    sendDraftCalls: 0,
     releasePasteResponse,
   };
 
@@ -132,13 +163,13 @@ async function installPasteOnlyDatabaseBotMocks(
     const pathname = new URL(route.request().url()).pathname;
     if (pathname.endsWith('/conversations/200/messages')) {
       await fulfillJson(route, {
-        messages: [MESSAGE],
+        messages: [message],
         total: 1,
         page: 1,
         page_size: 50,
         stats: {
-          pending_count: 0,
-          draft_ready_count: 1,
+          pending_count: message.status === 'pending' ? 1 : 0,
+          draft_ready_count: message.status === 'draft_ready' ? 1 : 0,
           processed_count: 0,
           failed_count: 0,
         },
@@ -195,6 +226,7 @@ async function installPasteOnlyDatabaseBotMocks(
     '**/api/v1/bots/bot-db/messages/2001/paste-draft',
     async (route) => {
       state.pasteDraftCalls += 1;
+      state.requestOrder.push('paste');
       state.lastPasteDraftBody = JSON.parse(route.request().postData() || '{}');
       state.lastPasteDraftIdempotencyKey = route.request().headers()[
         'idempotency-key'
@@ -224,6 +256,24 @@ async function installPasteOnlyDatabaseBotMocks(
         last_error_message: null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
+      });
+    },
+  );
+
+  await page.route(
+    '**/api/v1/bots/bot-db/messages/2001/send-draft',
+    async (route) => {
+      state.sendDraftCalls += 1;
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: -1,
+          msg: 'unexpected send-draft request in paste-only flow',
+          message: 'unexpected send-draft request in paste-only flow',
+          data: null,
+          timestamp: Date.now(),
+        }),
       });
     },
   );
@@ -283,6 +333,7 @@ test('send pastes immediately without opening manual confirmation dialog', async
   expect(mockState.lastPasteDraftIdempotencyKey).toMatch(
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
   );
+  expect(mockState.sendDraftCalls).toBe(0);
   expect(mockState.forbiddenCalibrationCalls).toBe(0);
   expect(mockState.forbiddenContextCalls).toBe(0);
 });
@@ -307,22 +358,26 @@ test('repeated clicks during paste submission do not create duplicate requests',
       .first(),
   ).toBeVisible();
   expect(mockState.pasteDraftCalls).toBe(1);
+  expect(mockState.sendDraftCalls).toBe(0);
 });
 
 test('send saves unsaved composer text before pasting the draft', async ({ page }) => {
   const mockState = await installPasteOnlyDatabaseBotMocks(page);
   let updateDraftCalls = 0;
   let lastUpdateDraftBody: Record<string, unknown> | null = null;
+  const latestMarker = 'LATEST_MARKER';
 
   await page.route('**/api/v1/bots/bot-db/drafts/9001', async (route) => {
     if (route.request().method() !== 'PUT') {
       return route.fallback();
     }
     updateDraftCalls += 1;
+    mockState.requestOrder.push('save');
     lastUpdateDraftBody = JSON.parse(route.request().postData() || '{}');
     await fulfillJson(route, {
       message: {
         ...MESSAGE,
+        draft_id: 9002,
         draft_text: String(lastUpdateDraftBody?.content ?? ''),
         draft_source: 'manual',
         draft_version: 2,
@@ -333,7 +388,7 @@ test('send saves unsaved composer text before pasting the draft', async ({ page 
   });
 
   await openDatabaseSession(page);
-  await page.getByLabel('Composer draft').fill('Reply from operator');
+  await page.getByLabel('Composer draft').fill(latestMarker);
 
   await pasteDraftButton(page).click();
 
@@ -342,9 +397,16 @@ test('send saves unsaved composer text before pasting the draft', async ({ page 
       .getByText('Draft pasted into the WeCom input box; it was not sent.')
       .first(),
   ).toBeVisible();
+  await expect(page.getByLabel('Composer draft')).toHaveValue(latestMarker);
+  await expect(
+    page.getByText('请先保存草稿后再发送').first(),
+  ).toHaveCount(0);
   expect(updateDraftCalls).toBe(1);
-  expect(lastUpdateDraftBody).toEqual({ content: 'Reply from operator' });
+  expect(lastUpdateDraftBody).toEqual({ content: latestMarker });
   expect(mockState.pasteDraftCalls).toBe(1);
+  expect(mockState.lastPasteDraftBody).toEqual({ draft_id: 9002 });
+  expect(mockState.requestOrder).toEqual(['save', 'paste']);
+  expect(mockState.sendDraftCalls).toBe(0);
 });
 
 test('send stops when saving unsaved composer text fails', async ({ page }) => {
@@ -373,7 +435,73 @@ test('send stops when saving unsaved composer text fails', async ({ page }) => {
   await pasteDraftButton(page).click();
 
   await expect(page.getByText('SAVE_FAILED').first()).toBeVisible();
+  await expect(
+    page.getByText('请先保存草稿后再发送').first(),
+  ).toHaveCount(0);
   expect(mockState.pasteDraftCalls).toBe(0);
+  expect(mockState.sendDraftCalls).toBe(0);
+});
+
+test('send creates a persisted draft before pasting when the current message has no draft_id', async ({
+  page,
+}) => {
+  const latestMarker = 'LATEST_MARKER_NO_DRAFT';
+  const mockState = await installPasteOnlyDatabaseBotMocks(page, {
+    message: {
+      ...MESSAGE,
+      status: 'pending',
+      draft_text: null,
+      draft_source: null,
+      draft_id: null,
+      draft_version: null,
+      draft_updated_at: null,
+    } as MockMessage,
+  });
+  let createDraftCalls = 0;
+  let lastCreateDraftBody: Record<string, unknown> | null = null;
+
+  await page.route('**/api/v1/database-mode/messages/2001/draft', async (route) => {
+    if (route.request().method() !== 'PUT') {
+      return route.fallback();
+    }
+    createDraftCalls += 1;
+    mockState.requestOrder.push('save');
+    lastCreateDraftBody = JSON.parse(route.request().postData() || '{}');
+    await fulfillJson(route, {
+      message: {
+        ...MESSAGE,
+        status: 'draft_ready',
+        draft_id: 9010,
+        draft_text: String(lastCreateDraftBody?.draft_text ?? ''),
+        draft_source: 'manual',
+        draft_version: 1,
+        draft_updated_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    });
+  });
+
+  await openDatabaseSession(page);
+  await page.getByLabel('Composer draft').fill(latestMarker);
+
+  await pasteDraftButton(page).click();
+
+  await expect(
+    page
+      .getByText('Draft pasted into the WeCom input box; it was not sent.')
+      .first(),
+  ).toBeVisible();
+  await expect(page.getByLabel('Composer draft')).toHaveValue(latestMarker);
+  await expect(page.getByText('当前草稿目标不可用').first()).toHaveCount(0);
+  expect(createDraftCalls).toBe(1);
+  expect(lastCreateDraftBody).toEqual({
+    draft_text: latestMarker,
+    draft_source: 'manual',
+  });
+  expect(mockState.pasteDraftCalls).toBe(1);
+  expect(mockState.lastPasteDraftBody).toEqual({ draft_id: 9010 });
+  expect(mockState.requestOrder).toEqual(['save', 'paste']);
+  expect(mockState.sendDraftCalls).toBe(0);
 });
 
 test('empty composer text keeps send disabled and does not submit paste', async ({ page }) => {
@@ -383,6 +511,7 @@ test('empty composer text keeps send disabled and does not submit paste', async 
   await page.getByRole('button', { name: 'Clear' }).click();
   await expect(pasteDraftButton(page)).toBeDisabled();
   expect(mockState.pasteDraftCalls).toBe(0);
+  expect(mockState.sendDraftCalls).toBe(0);
 });
 
 test('ordinary draft status bar copy is hidden when there is no active send status or error', async ({

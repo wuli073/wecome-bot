@@ -55,7 +55,7 @@ interface DatabaseChatComposerProps {
   onRegenerate: () => void;
   onRequestDeleteDraft: () => void;
   onSave: () => void;
-  onSend: () => void;
+  onSend: (latestText: string) => void;
   onUndoEdit: () => void;
 }
 
@@ -268,7 +268,7 @@ export function DatabaseChatComposer({
                 type="button"
                 size="icon"
                 disabled={sendInProgress || Boolean(sendDisabledReason)}
-                onClick={onSend}
+                onClick={() => onSend(textareaRef.current?.value ?? composerText)}
                 aria-label={sendButtonLabel}
               >
                 {sendInProgress ? (

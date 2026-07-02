@@ -474,9 +474,9 @@ const zhHans = {
         },
         sendDisabled: {
           botDisabled: '请先启用 Bot',
-          noPersistedDraft: '请先保存草稿后再发送',
+          noPersistedDraft: '当前草稿目标不可用',
           emptyDraft: '草稿内容不能为空',
-          unsavedChanges: '请先保存草稿后再发送',
+          unsavedChanges: '存在未保存的更改',
           busy: '请等待当前草稿操作完成',
           activeRun: '当前已有发送任务在执行',
           alreadySent: '该草稿已经发送过了',

@@ -1190,6 +1190,53 @@ async def test_bot_scoped_generate_draft_failure_returns_json_not_html():
     await persistence_mgr.dispose()
 
 
+async def test_bot_scoped_update_draft_uses_reply_draft_model_not_scalar_id():
+    _app, client, ap, persistence_mgr = await _make_bot_client_with_processing_service()
+
+    async with ap.persistence_mgr.get_db_engine().begin() as conn:
+        draft_result = await conn.execute(
+            sqlalchemy.insert(persistence_database_mode.ReplyDraft).values(
+                {
+                    'processing_run_id': None,
+                    'message_id': 1,
+                    'bot_uuid': 'bot-1',
+                    'content': 'Original persisted draft',
+                    'source': 'pipeline',
+                    'version': 1,
+                    'status': 'active',
+                }
+            )
+        )
+        draft_id = int(draft_result.inserted_primary_key[0])
+
+    response = await client.put(
+        f"/api/v1/bots/bot-1/drafts/{draft_id}",
+        headers={"Authorization": "Bearer valid-user-token"},
+        json={"content": "Updated draft content"},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload["data"]["message"]["id"] == 1
+    assert payload["data"]["message"]["draft_text"] == "Updated draft content"
+    assert payload["data"]["message"]["draft_source"] == "manual"
+
+    async with ap.persistence_mgr.get_db_engine().begin() as conn:
+        stored_draft = (
+            await conn.execute(
+                sqlalchemy.select(
+                    persistence_database_mode.ReplyDraft.content,
+                    persistence_database_mode.ReplyDraft.source,
+                ).where(persistence_database_mode.ReplyDraft.id == draft_id)
+            )
+        ).one()
+
+    assert stored_draft.content == "Updated draft content"
+    assert stored_draft.source == "manual"
+
+    await persistence_mgr.dispose()
+
+
 async def test_database_mode_list_conversations_keeps_all_connectors():
     app, client, ap, persistence_mgr = await _make_legacy_database_mode_client()
 

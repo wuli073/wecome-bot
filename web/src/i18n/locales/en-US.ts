@@ -493,9 +493,9 @@ const enUS = {
         },
         sendDisabled: {
           botDisabled: 'Enable the bot before sending',
-          noPersistedDraft: 'Save the draft before sending',
+          noPersistedDraft: 'Current draft target is unavailable',
           emptyDraft: 'Draft content cannot be empty',
-          unsavedChanges: 'Save the draft before sending',
+          unsavedChanges: 'There are unsaved changes',
           busy: 'Wait for the current draft action to finish',
           activeRun: 'A desktop send is already in progress',
           alreadySent: 'This draft has already been sent',
