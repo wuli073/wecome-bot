@@ -118,6 +118,8 @@ class DesktopRuntimeClient:
     @staticmethod
     def _task_collection_path(action: str) -> str:
         normalized = action.replace('_', '-').strip().lower()
+        if normalized == 'send-message':
+            return '/v1/tasks/send-message'
         if normalized == 'send-draft':
             return '/v1/tasks/send-draft'
         if normalized == 'diagnose':

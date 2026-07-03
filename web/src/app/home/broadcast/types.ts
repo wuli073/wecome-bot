@@ -198,13 +198,96 @@ export interface BroadcastDraftStatusUpdateResult {
 
 export interface BroadcastExecutionLog {
   id: number;
-  draftId: number;
+  batchId: number;
+  taskId: number;
+  attemptId: number;
+  draftId: number | null;
   customerName: string;
   conversationName: string;
-  status: BroadcastStatus;
-  action: 'mock_prepare' | 'mock_paste' | 'mock_retry' | 'mock_review';
+  batchStatus: string;
+  taskStatus: string;
+  attemptStatus: string;
+  action: string;
   message: string;
+  runtimeState: string | null;
+  sendTriggered: boolean;
+  inputLocated: boolean;
+  draftWritten: boolean;
+  clipboardRestored: boolean;
+  technicalDetails: string | null;
   timestamp: string;
+}
+
+export interface BroadcastExecutionTaskSummary {
+  id: number;
+  executionBatchId: number;
+  draftId: number | null;
+  targetConversationSnapshot: string;
+  draftTextSnapshot: string;
+  action: string;
+  status: string;
+  attemptCount: number;
+  idempotencyKey: string;
+  runtimeTaskId: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  updatedAt: string;
+}
+
+export interface BroadcastExecutionBatchSummary {
+  id: number;
+  status: string;
+  mode: string;
+  totalTasks: number;
+  pendingTasks: number;
+  runningTasks: number;
+  succeededTasks: number;
+  failedTasks: number;
+  cancelledTasks: number;
+  interruptedTasks: number;
+  createdBy: string;
+  lastActionBy: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  tasks: BroadcastExecutionTaskSummary[];
+}
+
+export interface BroadcastExecutorCapability {
+  channel: string;
+  supports_paste: boolean;
+  supports_send: boolean;
+  supports_cancel: boolean;
+  supports_status_query: boolean;
+  supports_clipboard_restore: boolean;
+  supports_evidence: boolean;
+  executor_version: string;
+  runtime_min_version: string;
+}
+
+export interface BroadcastExecutorHealth {
+  channel: string;
+  status: string;
+  protocol_version?: string | null;
+  runtime_version?: string | null;
+  capability: BroadcastExecutorCapability;
+  runtime_status?: Record<string, unknown> | null;
+}
+
+export interface BroadcastSendConfirmation {
+  id: number;
+  token: string;
+  expiresAt: string | null;
+  executionTaskId: number;
+}
+
+export interface BroadcastExecutionRequestStats {
+  executions: number;
+  starts: number;
+  retries: number;
 }
 
 export interface BroadcastWorkspaceSnapshot {

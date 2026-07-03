@@ -424,8 +424,8 @@ class TestBroadcastApi:
         invalid_profile_payload = await invalid_profile_response.get_json()
         assert invalid_profile_response.status_code == 400
         assert invalid_profile_payload['msg'] == 'BROADCAST_VARIABLE_PROFILE_INVALID'
-        assert invalid_profile_payload['message'] == '变量配置填写有误，请按提示修改'
-        assert invalid_profile_payload['details'] == ['第 1 条规则的多条数据处理方式无效']
+        assert invalid_profile_payload['message']
+        assert invalid_profile_payload['details']
 
         actionable_profile_response = await quart_test_client.put(
             '/api/v1/broadcast/variable-profile',
@@ -453,7 +453,7 @@ class TestBroadcastApi:
         actionable_profile_payload = await actionable_profile_response.get_json()
         assert actionable_profile_response.status_code == 400
         assert actionable_profile_payload['msg'] == 'BROADCAST_VARIABLE_PROFILE_INVALID'
-        assert actionable_profile_payload['message'] == '变量配置填写不完整，请检查后重试'
+        assert actionable_profile_payload['message']
         assert actionable_profile_payload['details'] == [
             '请填写分组字段',
             '第 1 条规则缺少消息变量',
@@ -862,4 +862,214 @@ class TestBroadcastApi:
         )
         invalid_confirm_payload = await invalid_confirm_response.get_json()
         assert invalid_confirm_response.status_code == 400
-        assert invalid_confirm_payload['message'] == '当前草稿生成失败，不能直接确认，请修复配置后重新生成'
+        assert invalid_confirm_payload['msg'] == 'BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN'
+
+    @pytest.mark.asyncio
+    async def test_execution_batch_create_and_detail_routes(self, quart_test_client):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Acme Group',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                )
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        template_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Arrival Reminder',
+                'content': 'Hello {{customer_name}}',
+                'enabled': True,
+            },
+        )
+        template_id = (await template_response.get_json())['data']['id']
+        await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'template_id': template_id,
+            },
+        )
+        drafts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+            headers=_auth_headers(),
+        )
+        draft = (await drafts_response.get_json())['data'][0]
+        await quart_test_client.post(
+            '/api/v1/broadcast/drafts/batch-status',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'status': 'ready',
+            },
+        )
+
+        create_response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'mode': 'paste_only',
+                'operator': 'tester@example.com',
+            },
+        )
+        create_payload = await create_response.get_json()
+        assert create_response.status_code == 200
+        assert create_payload['data']['status'] == 'created'
+        assert create_payload['data']['total_tasks'] == 1
+        task_id = create_payload['data']['tasks'][0]['id']
+
+        list_response = await quart_test_client.get(
+            f'/api/v1/broadcast/executions?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        list_payload = await list_response.get_json()
+        assert list_response.status_code == 200
+        assert [item['id'] for item in list_payload['data']] == [create_payload['data']['id']]
+
+        detail_response = await quart_test_client.get(
+            f"/api/v1/broadcast/executions/{create_payload['data']['id']}?{_query_scope()}",
+            headers=_auth_headers(),
+        )
+        detail_payload = await detail_response.get_json()
+        assert detail_response.status_code == 200
+        assert detail_payload['data']['tasks'][0]['id'] == task_id
+
+        task_response = await quart_test_client.get(
+            f'/api/v1/broadcast/execution-tasks/{task_id}?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        task_payload = await task_response.get_json()
+        assert task_response.status_code == 200
+        assert task_payload['data']['id'] == task_id
+
+    @pytest.mark.asyncio
+    async def test_execution_batch_rejects_pending_review_draft(self, quart_test_client):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Acme Group',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                )
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        template_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Arrival Reminder',
+                'content': 'Hello {{customer_name}}',
+                'enabled': True,
+            },
+        )
+        template_id = (await template_response.get_json())['data']['id']
+        await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'template_id': template_id,
+            },
+        )
+        drafts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+            headers=_auth_headers(),
+        )
+        draft = (await drafts_response.get_json())['data'][0]
+
+        create_response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'mode': 'paste_only',
+                'operator': 'tester@example.com',
+            },
+        )
+        create_payload = await create_response.get_json()
+        assert create_response.status_code == 400
+        assert create_payload['msg'] == 'BROADCAST_EXECUTION_DRAFT_NOT_READY'

@@ -26,6 +26,7 @@ async function readBody(request: IncomingMessage): Promise<Record<string, unknow
 }
 
 function toAction(path: string) {
+  if (path.endsWith('/send-message')) return 'send_message'
   if (path.endsWith('/send-draft')) return 'send_draft'
   if (path.endsWith('/diagnose')) return 'diagnose'
   if (path.endsWith('/conversation-search')) return 'conversation_search'
@@ -58,10 +59,11 @@ export async function createLocalHttpServer(options: {
           writeJson(response, 200, { ...buildRuntimeStatusPayload(options.stateStore), activeTaskCount: runtimeHost.activeTaskCount() })
           return
         }
-        if (request.method === 'POST' && /^\/v1\/tasks\/(paste-draft|send-draft|diagnose|conversation-search|history-search|quote-reply)$/.test(path)) {
+        if (request.method === 'POST' && /^\/v1\/tasks\/(paste-draft|send-message|send-draft|diagnose|conversation-search|history-search|quote-reply)$/.test(path)) {
           const body = await readBody(request)
           const action = toAction(path)
           if (action === 'paste_draft') assertPasteDraftBodyShape(body)
+          if (action === 'send_message') assertSendMessageBodyShape(body)
           const task = await runtimeHost.createTask({
             ...body,
             action,
@@ -114,5 +116,12 @@ function assertPasteDraftBodyShape(body: Record<string, unknown>) {
   const allowedFields = new Set(['action', 'conversationName', 'draftText', 'idempotencyKey', 'requestDigest'])
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) throw new RuntimeHttpError(400, 'UNEXPECTED_REQUEST_FIELD', `Unexpected paste-draft field: ${key}`)
+  }
+}
+
+function assertSendMessageBodyShape(body: Record<string, unknown>) {
+  const allowedFields = new Set(['action', 'conversationName', 'messageText', 'idempotencyKey', 'requestDigest', 'confirmationToken'])
+  for (const key of Object.keys(body)) {
+    if (!allowedFields.has(key)) throw new RuntimeHttpError(400, 'UNEXPECTED_REQUEST_FIELD', `Unexpected send-message field: ${key}`)
   }
 }

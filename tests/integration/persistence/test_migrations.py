@@ -323,6 +323,382 @@ class TestSQLiteMigrationUpgrade:
         assert 'broadcast_drafts' in created_tables
 
     @pytest.mark.asyncio
+    async def test_broadcast_execution_tables_exist_after_upgrade(self, sqlite_engine):
+        """Execution persistence tables, indexes, and unique constraints exist after upgrade."""
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_schema(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                table_names = set(inspector.get_table_names())
+                batch_indexes = {index['name'] for index in inspector.get_indexes('broadcast_execution_batches')}
+                task_indexes = {index['name'] for index in inspector.get_indexes('broadcast_execution_tasks')}
+                attempt_indexes = {index['name'] for index in inspector.get_indexes('broadcast_execution_attempts')}
+                evidence_indexes = {index['name'] for index in inspector.get_indexes('broadcast_execution_evidence')}
+                confirmation_indexes = {
+                    index['name'] for index in inspector.get_indexes('broadcast_send_confirmations')
+                }
+                task_uniques = {
+                    tuple(sorted(item['column_names']))
+                    for item in inspector.get_unique_constraints('broadcast_execution_tasks')
+                }
+                attempt_uniques = {
+                    tuple(sorted(item['column_names']))
+                    for item in inspector.get_unique_constraints('broadcast_execution_attempts')
+                }
+                confirmation_uniques = {
+                    tuple(sorted(item['column_names']))
+                    for item in inspector.get_unique_constraints('broadcast_send_confirmations')
+                }
+                return (
+                    table_names,
+                    batch_indexes,
+                    task_indexes,
+                    attempt_indexes,
+                    evidence_indexes,
+                    confirmation_indexes,
+                    task_uniques,
+                    attempt_uniques,
+                    confirmation_uniques,
+                )
+
+            (
+                table_names,
+                batch_indexes,
+                task_indexes,
+                attempt_indexes,
+                evidence_indexes,
+                confirmation_indexes,
+                task_uniques,
+                attempt_uniques,
+                confirmation_uniques,
+            ) = await conn.run_sync(inspect_schema)
+
+        assert {
+            'broadcast_execution_batches',
+            'broadcast_execution_tasks',
+            'broadcast_execution_attempts',
+            'broadcast_execution_evidence',
+            'broadcast_send_confirmations',
+        }.issubset(table_names)
+        assert 'ix_broadcast_execution_batches_bot_uuid' in batch_indexes
+        assert 'ix_broadcast_execution_batches_connector_id' in batch_indexes
+        assert 'ix_broadcast_execution_batches_status' in batch_indexes
+        assert 'ix_broadcast_execution_tasks_execution_batch_id' in task_indexes
+        assert 'ix_broadcast_execution_tasks_status' in task_indexes
+        assert 'ix_broadcast_execution_tasks_sequence_no' in task_indexes
+        assert 'ix_broadcast_execution_attempts_execution_task_id' in attempt_indexes
+        assert 'ix_broadcast_execution_attempts_runtime_task_id' in attempt_indexes
+        assert 'ix_broadcast_execution_evidence_execution_attempt_id' in evidence_indexes
+        assert 'ix_broadcast_send_confirmations_execution_task_id' in confirmation_indexes
+        assert tuple(sorted(['execution_batch_id', 'sequence_no'])) in task_uniques
+        assert tuple(sorted(['execution_task_id', 'attempt_no'])) in attempt_uniques
+        assert tuple(sorted(['runtime_task_id'])) in attempt_uniques
+        assert tuple(sorted(['confirmation_token_hash'])) in confirmation_uniques
+
+    @pytest.mark.asyncio
+    async def test_broadcast_execution_revision_metadata_is_correct(self, sqlite_engine):
+        """Execution migration revision id is present, short enough, and chained from 0014."""
+        script_path = _get_revision_script('0015_broadcast_execution')
+        assert script_path.exists(), 'Expected 0015_broadcast_execution migration script to exist'
+
+        module = importlib.import_module('langbot.pkg.persistence.alembic.versions.0015_broadcast_execution')
+        assert len(module.revision) <= 32
+        assert module.down_revision == '0014_broadcast_phase3'
+
+    @pytest.mark.asyncio
+    async def test_broadcast_execution_models_are_registered_in_metadata(self, sqlite_engine):
+        """Execution ORM models appear in metadata and create_all creates the tables."""
+        table_names = set(Base.metadata.tables)
+        assert 'broadcast_execution_batches' in table_names
+        assert 'broadcast_execution_tasks' in table_names
+        assert 'broadcast_execution_attempts' in table_names
+        assert 'broadcast_execution_evidence' in table_names
+        assert 'broadcast_send_confirmations' in table_names
+
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+            def inspect_tables(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                return set(inspector.get_table_names())
+
+            created_tables = await conn.run_sync(inspect_tables)
+
+        assert 'broadcast_execution_batches' in created_tables
+        assert 'broadcast_execution_tasks' in created_tables
+        assert 'broadcast_execution_attempts' in created_tables
+        assert 'broadcast_execution_evidence' in created_tables
+        assert 'broadcast_send_confirmations' in created_tables
+
+    @pytest.mark.asyncio
+    async def test_deleting_batch_cascades_to_execution_children(self, sqlite_engine):
+        """Deleting a batch should cascade delete tasks, attempts, evidence, and send confirmations."""
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def sync_case(sync_conn):
+                metadata = sa.MetaData()
+                import_batches = sa.Table('broadcast_import_batches', metadata, autoload_with=sync_conn)
+                templates = sa.Table('broadcast_templates', metadata, autoload_with=sync_conn)
+                drafts = sa.Table('broadcast_drafts', metadata, autoload_with=sync_conn)
+                exec_batches = sa.Table('broadcast_execution_batches', metadata, autoload_with=sync_conn)
+                exec_tasks = sa.Table('broadcast_execution_tasks', metadata, autoload_with=sync_conn)
+                exec_attempts = sa.Table('broadcast_execution_attempts', metadata, autoload_with=sync_conn)
+                exec_evidence = sa.Table('broadcast_execution_evidence', metadata, autoload_with=sync_conn)
+                confirmations = sa.Table('broadcast_send_confirmations', metadata, autoload_with=sync_conn)
+
+                template_id = sync_conn.execute(
+                    sa.insert(templates).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        name='template',
+                        content='hello',
+                        variables=[],
+                        enabled=True,
+                    )
+                ).inserted_primary_key[0]
+                import_batch_id = sync_conn.execute(
+                    sa.insert(import_batches).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        original_file_name='customers.csv',
+                        file_type='csv',
+                        worksheet_name=None,
+                        status='drafts_generated',
+                        drafts_stale=False,
+                        total_rows=1,
+                        valid_rows=1,
+                        invalid_rows=0,
+                        matched_rows=1,
+                        unmatched_rows=0,
+                    )
+                ).inserted_primary_key[0]
+                draft_id = sync_conn.execute(
+                    sa.insert(drafts).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        import_batch_id=import_batch_id,
+                        group_value='Acme',
+                        target_conversation_name='Acme Group',
+                        template_id=template_id,
+                        template_name_snapshot='template',
+                        template_content_snapshot='hello',
+                        render_variables={'customer_name': 'Acme'},
+                        draft_text='hello',
+                        status='ready',
+                        error_message=None,
+                    )
+                ).inserted_primary_key[0]
+                execution_batch_id = sync_conn.execute(
+                    sa.insert(exec_batches).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        channel='wecom',
+                        mode='paste_only',
+                        status='created',
+                        total_tasks=1,
+                        pending_tasks=1,
+                        running_tasks=0,
+                        succeeded_tasks=0,
+                        failed_tasks=0,
+                        cancelled_tasks=0,
+                        interrupted_tasks=0,
+                        error_message=None,
+                        version=1,
+                        created_by='tester',
+                        last_action_by='tester',
+                    )
+                ).inserted_primary_key[0]
+                task_id = sync_conn.execute(
+                    sa.insert(exec_tasks).values(
+                        execution_batch_id=execution_batch_id,
+                        draft_id=draft_id,
+                        draft_text_snapshot='hello',
+                        target_conversation_snapshot='Acme Group',
+                        channel='wecom',
+                        action='paste_draft',
+                        status='pending',
+                        sequence_no=1,
+                        attempt_count=0,
+                        max_attempts=3,
+                        idempotency_key='broadcast:1:1',
+                        request_digest='digest-1',
+                        runtime_task_id=None,
+                        error_code=None,
+                        error_message=None,
+                    )
+                ).inserted_primary_key[0]
+                attempt_id = sync_conn.execute(
+                    sa.insert(exec_attempts).values(
+                        execution_task_id=task_id,
+                        attempt_no=1,
+                        idempotency_key='broadcast:1:1',
+                        request_digest='digest-1',
+                        runtime_task_id='runtime-1',
+                        request_summary='summary',
+                        response_summary='response',
+                        status='running',
+                        error_code=None,
+                        error_message=None,
+                    )
+                ).inserted_primary_key[0]
+                sync_conn.execute(
+                    sa.insert(exec_evidence).values(
+                        execution_attempt_id=attempt_id,
+                        window_title='WeCom',
+                        target_conversation='Acme Group',
+                        action='paste_draft',
+                        input_located=True,
+                        draft_written=True,
+                        send_triggered=False,
+                        clipboard_restored=True,
+                        runtime_state='running',
+                        evidence_summary='summary',
+                        technical_details='details',
+                    )
+                )
+                sync_conn.execute(
+                    sa.insert(confirmations).values(
+                        execution_task_id=task_id,
+                        confirmation_token_hash='hash-1',
+                        issued_by='tester',
+                        used_by=None,
+                        status='issued',
+                    )
+                )
+                sync_conn.execute(sa.delete(exec_batches).where(exec_batches.c.id == execution_batch_id))
+
+                return {
+                    'tasks': sync_conn.execute(sa.select(sa.func.count()).select_from(exec_tasks)).scalar_one(),
+                    'attempts': sync_conn.execute(sa.select(sa.func.count()).select_from(exec_attempts)).scalar_one(),
+                    'evidence': sync_conn.execute(sa.select(sa.func.count()).select_from(exec_evidence)).scalar_one(),
+                    'confirmations': sync_conn.execute(
+                        sa.select(sa.func.count()).select_from(confirmations)
+                    ).scalar_one(),
+                }
+
+            counts = await conn.run_sync(sync_case)
+
+        assert counts == {'tasks': 0, 'attempts': 0, 'evidence': 0, 'confirmations': 0}
+
+    @pytest.mark.asyncio
+    async def test_deleting_draft_sets_execution_task_draft_id_to_null(self, sqlite_engine):
+        """Deleting a draft should preserve execution tasks and null out draft_id."""
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def sync_case(sync_conn):
+                metadata = sa.MetaData()
+                import_batches = sa.Table('broadcast_import_batches', metadata, autoload_with=sync_conn)
+                templates = sa.Table('broadcast_templates', metadata, autoload_with=sync_conn)
+                drafts = sa.Table('broadcast_drafts', metadata, autoload_with=sync_conn)
+                exec_batches = sa.Table('broadcast_execution_batches', metadata, autoload_with=sync_conn)
+                exec_tasks = sa.Table('broadcast_execution_tasks', metadata, autoload_with=sync_conn)
+
+                template_id = sync_conn.execute(
+                    sa.insert(templates).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        name='template',
+                        content='hello',
+                        variables=[],
+                        enabled=True,
+                    )
+                ).inserted_primary_key[0]
+                import_batch_id = sync_conn.execute(
+                    sa.insert(import_batches).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        original_file_name='customers.csv',
+                        file_type='csv',
+                        worksheet_name=None,
+                        status='drafts_generated',
+                        drafts_stale=False,
+                        total_rows=1,
+                        valid_rows=1,
+                        invalid_rows=0,
+                        matched_rows=1,
+                        unmatched_rows=0,
+                    )
+                ).inserted_primary_key[0]
+                draft_id = sync_conn.execute(
+                    sa.insert(drafts).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        import_batch_id=import_batch_id,
+                        group_value='Acme',
+                        target_conversation_name='Acme Group',
+                        template_id=template_id,
+                        template_name_snapshot='template',
+                        template_content_snapshot='hello',
+                        render_variables={'customer_name': 'Acme'},
+                        draft_text='hello',
+                        status='ready',
+                        error_message=None,
+                    )
+                ).inserted_primary_key[0]
+                execution_batch_id = sync_conn.execute(
+                    sa.insert(exec_batches).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        channel='wecom',
+                        mode='paste_only',
+                        status='created',
+                        total_tasks=1,
+                        pending_tasks=1,
+                        running_tasks=0,
+                        succeeded_tasks=0,
+                        failed_tasks=0,
+                        cancelled_tasks=0,
+                        interrupted_tasks=0,
+                        error_message=None,
+                        version=1,
+                        created_by='tester',
+                        last_action_by='tester',
+                    )
+                ).inserted_primary_key[0]
+                task_id = sync_conn.execute(
+                    sa.insert(exec_tasks).values(
+                        execution_batch_id=execution_batch_id,
+                        draft_id=draft_id,
+                        draft_text_snapshot='hello',
+                        target_conversation_snapshot='Acme Group',
+                        channel='wecom',
+                        action='paste_draft',
+                        status='pending',
+                        sequence_no=1,
+                        attempt_count=0,
+                        max_attempts=3,
+                        idempotency_key='broadcast:1:1',
+                        request_digest='digest-1',
+                        runtime_task_id=None,
+                        error_code=None,
+                        error_message=None,
+                    )
+                ).inserted_primary_key[0]
+                sync_conn.execute(sa.delete(drafts).where(drafts.c.id == draft_id))
+                return sync_conn.execute(
+                    sa.select(exec_tasks.c.draft_id).where(exec_tasks.c.id == task_id)
+                ).scalar_one()
+
+            draft_id = await conn.run_sync(sync_case)
+
+        assert draft_id is None
+
+    @pytest.mark.asyncio
     async def test_deleting_group_rule_sets_import_row_matched_rule_to_null(self, sqlite_engine):
         """Deleting a broadcast group rule should preserve rows and null out matched_rule_id."""
         async with sqlite_engine.begin() as conn:

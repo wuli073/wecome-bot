@@ -9,17 +9,44 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 import type { BroadcastWorkspaceSnapshot } from '../types';
 
+interface BroadcastScopeOption {
+  botUuid: string;
+  botName: string;
+  connectorId: string;
+}
+
 interface BroadcastHeaderProps {
   snapshot: BroadcastWorkspaceSnapshot;
+  scope: {
+    botUuid: string;
+    connectorId: string;
+  };
+  scopeOptions: BroadcastScopeOption[];
+  loading?: boolean;
+  onScopeChange: (botUuid: string) => void;
 }
 
 export default function BroadcastHeader({
   snapshot,
+  scope,
+  scopeOptions,
+  loading = false,
+  onScopeChange,
 }: BroadcastHeaderProps) {
   const { t } = useTranslation();
+  const connectorOptions = scopeOptions.filter(
+    (option) => option.botUuid === scope.botUuid,
+  );
 
   const stats = [
     {
@@ -64,6 +91,62 @@ export default function BroadcastHeader({
             <CardDescription className="max-w-3xl">
               {t('broadcast.workspaceDescription')}
             </CardDescription>
+          </div>
+          <div className="grid min-w-[280px] gap-3 md:grid-cols-2">
+            <div className="space-y-2">
+              <div className="text-sm font-medium">
+                {t('broadcast.scope.bot')}
+              </div>
+              <Select
+                value={scope.botUuid}
+                onValueChange={onScopeChange}
+                disabled={loading || scopeOptions.length === 0}
+              >
+                <SelectTrigger
+                  data-testid="broadcast-bot-select"
+                  className="w-full"
+                  aria-label={t('broadcast.scope.bot')}
+                >
+                  <SelectValue placeholder={t('broadcast.scope.selectBot')} />
+                </SelectTrigger>
+                <SelectContent>
+                  {scopeOptions.map((option) => (
+                    <SelectItem key={option.botUuid} value={option.botUuid}>
+                      {option.botName}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <div className="text-sm font-medium">
+                {t('broadcast.scope.connector')}
+              </div>
+              <Select
+                value={scope.connectorId}
+                disabled={loading || connectorOptions.length === 0}
+              >
+                <SelectTrigger
+                  data-testid="broadcast-connector-select"
+                  className="w-full"
+                  aria-label={t('broadcast.scope.connector')}
+                >
+                  <SelectValue
+                    placeholder={t('broadcast.scope.selectConnector')}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {connectorOptions.map((option) => (
+                    <SelectItem
+                      key={`${option.botUuid}:${option.connectorId}`}
+                      value={option.connectorId}
+                    >
+                      {option.connectorId}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
       </CardHeader>

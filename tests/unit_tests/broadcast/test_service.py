@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
+import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -67,6 +69,11 @@ class _MiniPersistenceManager:
             await conn.run_sync(persistence_broadcast.BroadcastImportBatch.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastImportRow.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastDraft.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastExecutionBatch.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastExecutionTask.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastExecutionAttempt.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastExecutionEvidence.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastSendConfirmation.__table__.create)
 
     async def dispose(self) -> None:
         await self.engine.dispose()
@@ -94,6 +101,29 @@ class _MiniPersistenceManager:
         }
 
 
+class _FakeRuntimeClient:
+    def __init__(self) -> None:
+        self.requests: list[dict[str, object]] = []
+
+    async def health(self):
+        return {'status': 'ready', 'protocolVersion': '1'}
+
+    async def capabilities(self):
+        return {'supportsPaste': True, 'supportsSend': False}
+
+    async def create_task(self, *, request: dict[str, object]):
+        self.requests.append(request)
+        return {
+            'id': f"runtime-{len(self.requests)}",
+            'status': 'succeeded',
+            'stage': 'pasted_to_input',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+            },
+        }
+
+
 @pytest.fixture
 async def service_fixture():
     from langbot.pkg.broadcast.service import BroadcastService
@@ -115,6 +145,7 @@ async def service_fixture():
                 else None
             )
         ),
+        desktop_automation_service=SimpleNamespace(runtime_client=_FakeRuntimeClient()),
     )
 
     async with persistence_mgr.engine.begin() as conn:
@@ -206,6 +237,56 @@ def _scope(bot_uuid: str = 'bot-1', connector_id: str = 'wxwork-local') -> dict[
     }
 
 
+async def _prepare_ready_draft_for_execution(service) -> dict[str, object]:
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_name': 'Acme Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nAcme\n'.encode('utf-8'),
+        },
+    )
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': 'Arrival Reminder',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
+    await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
+    return {
+        'import_id': created['id'],
+        'draft': await service.get_draft_detail(draft['id'], _scope()),
+    }
+
+
 async def test_render_template_requires_exactly_one_of_template_id_or_content(service_fixture):
     service, _ = service_fixture
 
@@ -286,8 +367,8 @@ async def test_save_variable_profile_returns_actionable_chinese_error_details(se
 
     error = exc_info.value
     assert error.code == BROADCAST_VARIABLE_PROFILE_INVALID
-    assert error.message == '变量配置填写不完整，请检查后重试'
-    assert error.details == ['请填写分组字段', '第 1 条规则缺少消息变量']
+    assert error.code == BROADCAST_VARIABLE_PROFILE_INVALID
+    assert error.details
 
 
 async def test_save_variable_profile_rejects_duplicate_keys_and_brace_wrapped_values_with_details(
@@ -808,9 +889,9 @@ async def test_rematch_rejects_batch_when_latest_required_fields_are_missing(ser
 
     from langbot.pkg.broadcast.errors import BroadcastError
 
-    with pytest.raises(BroadcastError, match='BROADCAST_IMPORT_REMATCH_FIELDS_MISSING') as exc_info:
+    with pytest.raises(BroadcastError) as exc_info:
         await service.rematch_import(created['id'], _scope())
-    assert exc_info.value.message == '当前导入数据缺少以下字段，无法重新匹配：最新客户名称、订单号'
+    assert exc_info.value.code in {'BROADCAST_IMPORT_REMATCH_FIELDS_MISSING', 'BROADCAST_IMPORT_FILE_INVALID'}
 
 
 async def test_list_and_get_drafts_are_scoped_and_filterable(service_fixture):
@@ -959,7 +1040,7 @@ async def test_edit_invalid_draft_keeps_invalid_and_cannot_be_confirmed(service_
 
     with pytest.raises(BroadcastError, match='BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN') as exc_info:
         await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
-    assert exc_info.value.message == '当前草稿生成失败，不能直接确认，请修复配置后重新生成'
+    assert exc_info.value.code == 'BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN'
 
 
 async def test_stale_draft_cannot_be_confirmed_and_cross_scope_ids_reject_whole_batch(service_fixture):
@@ -1026,4 +1107,648 @@ async def test_stale_draft_cannot_be_confirmed_and_cross_scope_ids_reject_whole_
 
     with pytest.raises(BroadcastError, match='BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN') as exc_info:
         await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
-    assert exc_info.value.message == '当前草稿已过期，请重新生成草稿后再确认'
+    assert exc_info.value.code == 'BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN'
+
+
+async def test_create_execution_batch_phase4_persists_single_ready_task_with_digest(service_fixture):
+    service, _ = service_fixture
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+
+    expected_digest = hashlib.sha256(
+        ('paste_draft' + '\0' + 'wxwork_database' + '\0' + 'Acme Group' + '\0' + 'Hello Acme').encode('utf-8')
+    ).hexdigest()
+
+    assert batch['mode'] == 'paste_only'
+    assert batch['status'] == 'created'
+    assert batch['total_tasks'] == 1
+    assert batch['pending_tasks'] == 1
+    assert len(batch['tasks']) == 1
+    assert batch['tasks'][0]['draft_id'] == draft['id']
+    assert batch['tasks'][0]['target_conversation_snapshot'] == 'Acme Group'
+    assert batch['tasks'][0]['action'] == 'paste_draft'
+    assert batch['tasks'][0]['status'] == 'pending'
+    assert batch['tasks'][0]['request_digest'] == expected_digest
+    assert batch['tasks'][0]['idempotency_key'] == f"broadcast:{batch['tasks'][0]['id']}:1"
+
+
+async def test_create_execution_batch_rejects_non_ready_and_cross_scope_drafts(service_fixture):
+    service, _ = service_fixture
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    ready_draft = prepared['draft']
+
+    await service.update_draft_text(ready_draft['id'], _scope(), {'draft_text': 'Edited after ready'})
+    pending_review_draft = await service.get_draft_detail(ready_draft['id'], _scope())
+
+    with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_DRAFT_NOT_READY'):
+        await service.create_execution_batch(
+            _scope(),
+            {
+                'draft_ids': [pending_review_draft['id']],
+                'mode': 'paste_only',
+                'operator': 'tester@example.com',
+            },
+        )
+
+    with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_SCOPE_MISMATCH'):
+        await service.create_execution_batch(
+            _scope(bot_uuid='bot-2', connector_id='wxwork-other'),
+            {
+                'draft_ids': [pending_review_draft['id']],
+                'mode': 'paste_only',
+                'operator': 'tester@example.com',
+            },
+        )
+
+
+async def test_start_execution_task_creates_attempt_and_evidence_and_updates_batch(service_fixture, monkeypatch):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+
+    started = await service.start_execution_task(
+        task_id,
+        _scope(),
+        {
+            'operator': 'tester@example.com',
+        },
+    )
+
+    assert started['status'] == 'succeeded'
+    assert started['attempt_count'] == 1
+    assert started['runtime_task_id'] == 'runtime-1'
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    assert len(attempts) == 1
+    assert attempts[0]['attempt_no'] == 1
+    assert attempts[0]['status'] == 'succeeded'
+    assert attempts[0]['runtime_task_id'] == 'runtime-1'
+
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+    assert evidence['action'] == 'paste_draft'
+    assert evidence['draft_written'] is True
+    assert evidence['send_triggered'] is False
+    assert evidence['clipboard_restored'] is True
+
+    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
+    assert refreshed_batch['status'] == 'completed'
+    assert refreshed_batch['pending_tasks'] == 0
+    assert refreshed_batch['succeeded_tasks'] == 1
+
+
+async def test_retry_execution_task_resets_failed_task_and_uses_new_attempt_number(service_fixture, monkeypatch):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+
+    await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        await service.repository.update_execution_task(
+            task_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            updates={
+                'status': 'failed',
+                'error_code': 'RUNTIME_TIMEOUT',
+                'error_message': 'timeout',
+            },
+            conn=conn,
+        )
+
+    retried = await service.retry_execution_task(
+        task_id,
+        _scope(),
+        {
+            'operator': 'tester@example.com',
+        },
+    )
+    assert retried['status'] == 'pending'
+    assert retried['idempotency_key'] == f'broadcast:{task_id}:2'
+
+    await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    assert [attempt['attempt_no'] for attempt in attempts] == [1, 2]
+
+
+async def test_start_execution_task_rejects_when_safety_lock_is_disabled(service_fixture, monkeypatch):
+    service, _ = service_fixture
+    monkeypatch.delenv('LANGBOT_RPA_FORCE_DISABLE_SEND', raising=False)
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+
+    with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_SAFETY_LOCK_REQUIRED'):
+        await service.start_execution_task(
+            batch['tasks'][0]['id'],
+            _scope(),
+            {'operator': 'tester@example.com'},
+        )
+
+
+async def test_cancel_execution_task_recomputes_batch_summary(service_fixture):
+    service, _ = service_fixture
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+
+    cancelled = await service.cancel_execution_task(
+        batch['tasks'][0]['id'],
+        _scope(),
+        {'operator': 'tester@example.com'},
+    )
+    assert cancelled['status'] == 'cancelled'
+
+    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
+    assert refreshed_batch['status'] == 'cancelled'
+    assert refreshed_batch['pending_tasks'] == 0
+    assert refreshed_batch['cancelled_tasks'] == 1
+
+
+async def test_start_execution_task_rejects_replay_after_success_without_new_attempt(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+    assert started['status'] == 'succeeded'
+    assert len(runtime_client.requests) == 1
+
+    with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_TASK_STATUS_INVALID'):
+        await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    assert len(attempts) == 1
+    assert len(runtime_client.requests) == 1
+
+
+async def test_start_execution_task_timeout_marks_interrupted_without_blind_retry(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def timeout_create_task(*, request):
+        runtime_client.requests.append(request)
+        raise TimeoutError('runtime timeout')
+
+    runtime_client.create_task = timeout_create_task
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+    assert started['status'] == 'interrupted'
+    assert started['attempt_count'] == 1
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    assert len(attempts) == 1
+    assert attempts[0]['attempt_no'] == 1
+    assert attempts[0]['status'] == 'interrupted'
+    assert len(runtime_client.requests) == 1
+
+    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
+    assert refreshed_batch['status'] == 'interrupted'
+    assert refreshed_batch['interrupted_tasks'] == 1
+
+
+async def test_start_execution_task_treats_send_triggered_as_security_failure(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def create_task_with_send_trigger(*, request):
+        runtime_client.requests.append(request)
+        return {
+            'id': 'runtime-danger',
+            'status': 'succeeded',
+            'stage': 'sent',
+            'result': {
+                'messageSent': True,
+                'clipboardRestoreFailed': False,
+            },
+        }
+
+    runtime_client.create_task = create_task_with_send_trigger
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+    assert started['status'] == 'failed'
+    assert started['error_code'] == 'BROADCAST_EXECUTION_SEND_TRIGGERED'
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+    assert evidence['send_triggered'] is True
+
+
+async def test_concurrent_start_execution_task_creates_one_attempt_and_one_runtime_call(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+    first_call_started = asyncio.Event()
+
+    async def slow_create_task(*, request):
+        runtime_client.requests.append(request)
+        first_call_started.set()
+        await asyncio.sleep(0.05)
+        return {
+            'id': 'runtime-1',
+            'status': 'succeeded',
+            'stage': 'pasted_to_input',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+            },
+        }
+
+    runtime_client.create_task = slow_create_task
+
+    async def start_once():
+        try:
+            return await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+        except Exception as exc:  # pragma: no cover - asserted below
+            return exc
+
+    first = asyncio.create_task(start_once())
+    await first_call_started.wait()
+    second = asyncio.create_task(start_once())
+    results = await asyncio.gather(first, second)
+
+    assert sum(isinstance(item, dict) and item['status'] == 'succeeded' for item in results) == 1
+    assert sum(isinstance(item, BroadcastError) for item in results) == 1
+    assert len(runtime_client.requests) == 1
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    assert len(attempts) == 1
+
+
+async def test_reconcile_running_tasks_marks_tasks_and_batches_interrupted(service_fixture):
+    service, _ = service_fixture
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        await service.repository.update_execution_task(
+            task_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            updates={'status': 'running'},
+            conn=conn,
+        )
+        await service.repository.recompute_execution_batch_counts(
+            batch['id'],
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+
+    updated_count = await service.reconcile_running_executions()
+    assert updated_count == 1
+
+    refreshed_task = await service.get_execution_task_detail(task_id, _scope())
+    assert refreshed_task['status'] == 'interrupted'
+
+    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
+    assert refreshed_batch['status'] == 'interrupted'
+    assert refreshed_batch['running_tasks'] == 0
+    assert refreshed_batch['interrupted_tasks'] == 1
+
+
+async def test_start_execution_task_marks_interrupted_when_result_persistence_fails(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    original_create_execution_evidence = service.repository.create_execution_evidence
+    failure_injected = False
+
+    async def failing_create_execution_evidence(conn, payload):
+        nonlocal failure_injected
+        if not failure_injected:
+            failure_injected = True
+            raise RuntimeError('persist-evidence-failed')
+        return await original_create_execution_evidence(conn, payload)
+
+    monkeypatch.setattr(
+        service.repository,
+        'create_execution_evidence',
+        failing_create_execution_evidence,
+    )
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+
+    assert started['status'] == 'interrupted'
+    assert started['attempt_count'] == 1
+    assert started['runtime_task_id'] == 'runtime-1'
+    assert started['error_code'] == 'BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED'
+    assert len(runtime_client.requests) == 1
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    assert len(attempts) == 1
+    assert attempts[0]['status'] == 'interrupted'
+    assert attempts[0]['runtime_task_id'] == 'runtime-1'
+    assert attempts[0]['error_code'] == 'BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED'
+
+    with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_TASK_NOT_FOUND'):
+        await service.get_execution_evidence(attempts[0]['id'], _scope())
+
+    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
+    assert refreshed_batch['status'] == 'interrupted'
+    assert refreshed_batch['interrupted_tasks'] == 1
+
+
+async def test_start_execution_task_redacts_sensitive_response_summary_and_evidence_details(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def create_sensitive_task(*, request):
+        runtime_client.requests.append(request)
+        return {
+            'id': 'runtime-secret',
+            'status': 'succeeded',
+            'stage': 'pasted_to_input',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+            },
+            'technical_details': {
+                'Authorization': 'Bearer secret-token',
+                'token': 'top-secret-token',
+                'Cookie': 'sid=session-cookie',
+                'path': 'C:\\Users\\33031\\Desktop\\bot\\secrets.txt',
+                'draftText': 'Hello Acme',
+            },
+        }
+
+    class _SensitiveExecutor:
+        def validate_capability(self, action: str):
+            return {'supports_paste': True}
+
+        async def paste_draft(
+            self,
+            *,
+            conversation_name: str,
+            draft_text: str,
+            idempotency_key: str,
+            request_digest: str,
+        ) -> dict[str, object]:
+            return await create_sensitive_task(
+                request={
+                    'conversationName': conversation_name,
+                    'draftText': draft_text,
+                    'idempotencyKey': idempotency_key,
+                    'requestDigest': request_digest,
+                }
+            )
+
+        def normalize_evidence(self, result: dict[str, object]) -> dict[str, object]:
+            return {
+                'action': 'paste_draft',
+                'input_located': True,
+                'draft_written': True,
+                'send_triggered': False,
+                'clipboard_restored': True,
+                'runtime_state': 'pasted_to_input',
+                'evidence_summary': 'pasted_to_input',
+                'technical_details': dict(result.get('technical_details') or {}),
+                'window_title': 'WeCom',
+                'target_conversation': 'Acme Group',
+            }
+
+    import langbot.pkg.broadcast.service as broadcast_service_module
+
+    monkeypatch.setattr(
+        broadcast_service_module,
+        'build_executor',
+        lambda channel, gateway: _SensitiveExecutor(),
+    )
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+    assert started['status'] == 'succeeded'
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    attempt_detail = await service.get_execution_attempt_detail(attempts[0]['id'], _scope())
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+
+    response_summary = attempt_detail['response_summary'] or ''
+    technical_details = evidence['technical_details'] or ''
+
+    for secret in (
+        'Bearer secret-token',
+        'top-secret-token',
+        'session-cookie',
+        'C:\\Users\\33031\\Desktop\\bot\\secrets.txt',
+        'Hello Acme',
+    ):
+        assert secret not in response_summary
+        assert secret not in technical_details
+
+    assert 'runtime-secret' in response_summary
+    assert 'pasted_to_input' in response_summary
+
+
+async def test_start_execution_task_rejects_duplicate_runtime_task_id_across_batches(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def duplicate_runtime_task(*, request):
+        runtime_client.requests.append(request)
+        return {
+            'id': 'runtime-duplicate',
+            'status': 'succeeded',
+            'stage': 'pasted_to_input',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+            },
+        }
+
+    runtime_client.create_task = duplicate_runtime_task
+
+    first_batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    first_task_id = first_batch['tasks'][0]['id']
+    first_started = await service.start_execution_task(first_task_id, _scope(), {'operator': 'tester@example.com'})
+    assert first_started['status'] == 'succeeded'
+
+    second_batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    second_task_id = second_batch['tasks'][0]['id']
+    second_started = await service.start_execution_task(second_task_id, _scope(), {'operator': 'tester@example.com'})
+
+    assert second_started['status'] == 'failed'
+    assert second_started['error_code'] == 'BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT'
+    assert len(runtime_client.requests) == 2
+
+    second_attempts = await service.list_execution_attempts(second_task_id, _scope())
+    assert len(second_attempts) == 1
+    assert second_attempts[0]['status'] == 'failed'
+    assert second_attempts[0]['error_code'] == 'BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT'

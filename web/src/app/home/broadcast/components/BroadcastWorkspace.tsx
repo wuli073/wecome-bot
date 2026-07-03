@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { Tabs, TabsContent } from '@/components/ui/tabs';
 import { backendClient } from '@/app/infra/http';
+import type { Bot } from '@/app/infra/entities/api';
 
 import BroadcastHeader from './BroadcastHeader';
 import BroadcastTabs from './BroadcastTabs';
@@ -18,17 +19,28 @@ import {
   createBroadcastDataSource,
 } from '../datasources/BroadcastDataSource';
 import type {
-  BroadcastBatchState,
   BroadcastDraft,
+  BroadcastExecutionBatchSummary,
+  BroadcastExecutionLog,
+  BroadcastExecutorCapability,
+  BroadcastExecutorHealth,
   BroadcastImportBatch,
   BroadcastImportDetail,
-  BroadcastScope,
   BroadcastRulesTab,
+  BroadcastScope,
   BroadcastStatusFilter,
   BroadcastTopTab,
 } from '../types';
 
 const draftStatusOrder = ['pending_review', 'ready', 'invalid'] as const;
+const OPERATOR_EMAIL = 'tester@example.com';
+const EXECUTION_TERMINAL_STATUSES = new Set([
+  'completed',
+  'partially_failed',
+  'failed',
+  'cancelled',
+  'interrupted',
+]);
 
 function getErrorMessage(error: unknown, fallback: string): string {
   if (
@@ -63,6 +75,13 @@ function getConnectorId(adapterConfig: object): string | null {
     : null;
 }
 
+function isBroadcastDatabaseBot(bot: Bot): boolean {
+  if (!bot.uuid || !bot.enable || bot.adapter !== 'wxwork_database') {
+    return false;
+  }
+  return Boolean(getConnectorId(bot.adapter_config));
+}
+
 export default function BroadcastWorkspace() {
   const { t } = useTranslation();
   const dataSource = useMemo(() => createBroadcastDataSource(), []);
@@ -75,8 +94,7 @@ export default function BroadcastWorkspace() {
   const [topTab, setTopTab] = useState<BroadcastTopTab>('rules');
   const [rulesTab, setRulesTab] = useState<BroadcastRulesTab>('variables');
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] =
-    useState<BroadcastStatusFilter>('all');
+  const [statusFilter, setStatusFilter] = useState<BroadcastStatusFilter>('all');
   const [draftImportBatchId, setDraftImportBatchId] = useState<number | null>(null);
   const [selectedDraftId, setSelectedDraftId] = useState<number | null>(
     snapshot.drafts[0]?.id ?? null,
@@ -84,11 +102,6 @@ export default function BroadcastWorkspace() {
   const [selectedDraftIds, setSelectedDraftIds] = useState<number[]>([]);
   const [editingDraftId, setEditingDraftId] = useState<number | null>(null);
   const [draftEditorText, setDraftEditorText] = useState('');
-  const [batchState, setBatchState] = useState<BroadcastBatchState>({
-    phase: 'idle',
-    total: 0,
-    completed: 0,
-  });
   const [rulesLoading, setRulesLoading] = useState(false);
   const [rulesSaving, setRulesSaving] = useState(false);
   const [rulesError, setRulesError] = useState<string | null>(null);
@@ -98,6 +111,18 @@ export default function BroadcastWorkspace() {
     useState<BroadcastImportDetail | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [draftBusy, setDraftBusy] = useState(false);
+  const [sendBusy, setSendBusy] = useState(false);
+  const [scopeOptions, setScopeOptions] = useState<
+    Array<{ botUuid: string; botName: string; connectorId: string }>
+  >([]);
+  const [executionLogs, setExecutionLogs] = useState<BroadcastExecutionLog[]>([]);
+  const [latestExecutionBatch, setLatestExecutionBatch] =
+    useState<BroadcastExecutionBatchSummary | null>(null);
+  const [executorCapability, setExecutorCapability] =
+    useState<BroadcastExecutorCapability | null>(null);
+  const [executorHealth, setExecutorHealth] =
+    useState<BroadcastExecutorHealth | null>(null);
+  const [pasteRequestInFlight, setPasteRequestInFlight] = useState(false);
 
   const topTabOptions = useMemo(
     () => [
@@ -205,6 +230,101 @@ export default function BroadcastWorkspace() {
     }
   }, [selectedDraftId, snapshot.drafts]);
 
+  const refreshExecutorState = async (nextScope: BroadcastScope = scope) => {
+    try {
+      const [capability, health] = await Promise.all([
+        dataSource.getExecutorCapabilities(nextScope),
+        dataSource.getExecutorHealth(nextScope),
+      ]);
+      setExecutorCapability(capability);
+      setExecutorHealth(health);
+    } catch {
+      setExecutorCapability(null);
+      setExecutorHealth(null);
+    }
+  };
+
+  const refreshRules = async (nextScope: BroadcastScope = scope) => {
+    const rulesData = await dataSource.loadRulesData(nextScope);
+    setScope(nextScope);
+    setSnapshot((current) => applyRulesDataToSnapshot(current, rulesData));
+  };
+
+  const refreshImports = async (nextScope: BroadcastScope = scope) => {
+    const batches = await dataSource.listImportBatches(nextScope);
+    setImportBatches(batches);
+
+    const nextImportId =
+      selectedImportId && batches.some((item) => item.id === selectedImportId)
+        ? selectedImportId
+        : batches[0]?.id ?? null;
+    setSelectedImportId(nextImportId);
+
+    if (nextImportId) {
+      const detail = await dataSource.getImportDetail(nextScope, nextImportId);
+      setSelectedImportDetail(detail);
+    } else {
+      setSelectedImportDetail(null);
+    }
+  };
+
+  const refreshDrafts = async (
+    nextScope: BroadcastScope = scope,
+    focusImportBatchId?: number | null,
+  ) => {
+    const drafts = await dataSource.listDrafts(nextScope, {
+      status: statusFilter === 'all' ? 'all' : statusFilter,
+      keyword: searchTerm || undefined,
+    });
+    setSnapshot((current) => ({
+      ...current,
+      drafts,
+    }));
+
+    if (focusImportBatchId !== undefined) {
+      setDraftImportBatchId(focusImportBatchId);
+      setSelectedDraftId(
+        drafts.find((draft) => draft.importBatchId === focusImportBatchId)?.id ??
+          drafts[0]?.id ??
+          null,
+      );
+      return;
+    }
+
+    setSelectedDraftId((current) =>
+      drafts.some((draft) => draft.id === current) ? current : drafts[0]?.id ?? null,
+    );
+  };
+
+  const refreshExecutionState = async (nextScope: BroadcastScope = scope) => {
+    const drafts = await dataSource.listDrafts(nextScope, {
+      status: statusFilter === 'all' ? 'all' : statusFilter,
+      keyword: searchTerm || undefined,
+    });
+    setSnapshot((current) => ({
+      ...current,
+      drafts,
+    }));
+
+    const batchSummaries = await dataSource.listExecutionBatches(nextScope);
+    const latestBatchSummary =
+      [...batchSummaries].sort((left, right) => right.id - left.id)[0] ?? null;
+    if (latestBatchSummary) {
+      setLatestExecutionBatch(
+        await dataSource.getExecutionBatchDetail(nextScope, latestBatchSummary.id),
+      );
+    } else {
+      setLatestExecutionBatch(null);
+    }
+
+    try {
+      const logs = await dataSource.listExecutionLogs(nextScope, drafts);
+      setExecutionLogs(logs);
+    } catch {
+      setExecutionLogs([]);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
 
@@ -248,6 +368,11 @@ export default function BroadcastWorkspace() {
             drafts: [],
           }));
         }
+
+        if (!cancelled) {
+          await refreshExecutionState(resolvedScope);
+          await refreshExecutorState(resolvedScope);
+        }
       } catch (error) {
         if (cancelled) {
           return;
@@ -265,13 +390,26 @@ export default function BroadcastWorkspace() {
 
       try {
         const response = await backendClient.getBots();
-        const databaseBot = response.bots.find((bot) => {
-          if (!bot.uuid || !bot.enable || bot.adapter !== 'wxwork_database') {
-            return false;
-          }
-          return Boolean(getConnectorId(bot.adapter_config));
-        });
+        const databaseBots = response.bots.filter(isBroadcastDatabaseBot);
+        const nextScopeOptions = databaseBots
+          .map((bot) => {
+            const connectorId = getConnectorId(bot.adapter_config);
+            if (!bot.uuid || !connectorId) {
+              return null;
+            }
+            return {
+              botUuid: bot.uuid,
+              botName: bot.name,
+              connectorId,
+            };
+          })
+          .filter((option): option is NonNullable<typeof option> => option != null);
 
+        if (!cancelled) {
+          setScopeOptions(nextScopeOptions);
+        }
+
+        const databaseBot = databaseBots[0];
         if (databaseBot?.uuid) {
           const connectorId = getConnectorId(databaseBot.adapter_config);
           if (connectorId) {
@@ -295,52 +433,149 @@ export default function BroadcastWorkspace() {
     };
   }, [dataSource, initialSnapshot.scope, t]);
 
-  const refreshRules = async (nextScope: BroadcastScope = scope) => {
-    const rulesData = await dataSource.loadRulesData(nextScope);
-    setScope(nextScope);
-    setSnapshot((current) => applyRulesDataToSnapshot(current, rulesData));
-  };
-
-  const refreshImports = async (nextScope: BroadcastScope = scope) => {
-    const batches = await dataSource.listImportBatches(nextScope);
-    setImportBatches(batches);
-
-    const nextImportId =
-      selectedImportId && batches.some((item) => item.id === selectedImportId)
-        ? selectedImportId
-        : batches[0]?.id ?? null;
-    setSelectedImportId(nextImportId);
-
-    if (nextImportId) {
-      const detail = await dataSource.getImportDetail(nextScope, nextImportId);
-      setSelectedImportDetail(detail);
-    } else {
-      setSelectedImportDetail(null);
-    }
-  };
-
-  const refreshDrafts = async (
-    nextScope: BroadcastScope = scope,
-    focusImportBatchId?: number | null,
-  ) => {
-    const drafts = await dataSource.listDrafts(nextScope, {
-      status: statusFilter === 'all' ? 'all' : statusFilter,
-      keyword: searchTerm || undefined,
-    });
-    setSnapshot((current) => ({
-      ...current,
-      drafts,
-    }));
-    if (focusImportBatchId !== undefined) {
-      setDraftImportBatchId(focusImportBatchId);
-      setSelectedDraftId(
-        drafts.find((draft) => draft.importBatchId === focusImportBatchId)?.id ??
-          drafts[0]?.id ??
-          null,
-      );
+  useEffect(() => {
+    if (
+      topTab !== 'logs' ||
+      !latestExecutionBatch ||
+      EXECUTION_TERMINAL_STATUSES.has(latestExecutionBatch.status)
+    ) {
       return;
     }
-    setSelectedDraftId(drafts[0]?.id ?? null);
+
+    const timer = window.setInterval(() => {
+      void refreshExecutionState(scope);
+    }, 2000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [latestExecutionBatch, scope, topTab]);
+
+  const handleCreateExecutionBatch = async () => {
+    const targetDraftIds =
+      selectedDraftIds.length > 0 ? selectedDraftIds : activeDraft ? [activeDraft.id] : [];
+    if (targetDraftIds.length === 0) {
+      toast.error(t('broadcast.toasts.noDraftSelected'));
+      return;
+    }
+    setDraftBusy(true);
+    try {
+      const batch = await dataSource.createExecutionBatch(
+        scope,
+        targetDraftIds,
+        'paste_only',
+        OPERATOR_EMAIL,
+      );
+      setLatestExecutionBatch(batch);
+      await refreshExecutionState(scope);
+      setTopTab('logs');
+      toast.success(t('broadcast.toasts.executionBatchCreated'));
+    } catch (error) {
+      toast.error(getErrorMessage(error, t('common.error')));
+    } finally {
+      setDraftBusy(false);
+    }
+  };
+
+  const handleBatchAction = async (action: 'start' | 'pause' | 'resume' | 'cancel') => {
+    if (!latestExecutionBatch) {
+      return;
+    }
+    setDraftBusy(true);
+    try {
+      const batch =
+        action === 'start'
+          ? await dataSource.startExecutionBatch(scope, latestExecutionBatch.id, OPERATOR_EMAIL)
+          : action === 'pause'
+            ? await dataSource.pauseExecutionBatch(scope, latestExecutionBatch.id, OPERATOR_EMAIL)
+            : action === 'resume'
+              ? await dataSource.resumeExecutionBatch(scope, latestExecutionBatch.id, OPERATOR_EMAIL)
+              : await dataSource.cancelExecutionBatch(scope, latestExecutionBatch.id, OPERATOR_EMAIL);
+      setLatestExecutionBatch(batch);
+      await refreshExecutionState(scope);
+      toast.success(
+        action === 'start'
+          ? t('broadcast.toasts.executionBatchStarted')
+          : action === 'pause'
+            ? t('broadcast.toasts.executionBatchPaused')
+            : action === 'resume'
+              ? t('broadcast.toasts.executionBatchResumed')
+              : t('broadcast.toasts.executionBatchCancelled'),
+      );
+    } catch (error) {
+      toast.error(getErrorMessage(error, t('common.error')));
+    } finally {
+      setDraftBusy(false);
+    }
+  };
+
+  const handleRetryExecutionTask = async (taskId: number) => {
+    setDraftBusy(true);
+    try {
+      await dataSource.retryExecutionTask(scope, taskId, OPERATOR_EMAIL);
+      await refreshExecutionState(scope);
+      toast.success(t('broadcast.toasts.executionTaskRetried'));
+    } catch (error) {
+      toast.error(getErrorMessage(error, t('common.error')));
+    } finally {
+      setDraftBusy(false);
+    }
+  };
+
+  const handlePasteDraft = async (draft: BroadcastDraft) => {
+    if (pasteRequestInFlight) {
+      return;
+    }
+    setPasteRequestInFlight(true);
+    setDraftBusy(true);
+    try {
+      const batch = await dataSource.createExecutionBatch(
+        scope,
+        [draft.id],
+        'paste_only',
+        OPERATOR_EMAIL,
+      );
+      setLatestExecutionBatch(batch);
+      await dataSource.startExecutionBatch(scope, batch.id, OPERATOR_EMAIL);
+      await refreshExecutionState(scope);
+      setTopTab('logs');
+      toast.success(t('broadcast.toasts.pasteSubmitted'));
+    } catch (error) {
+      toast.error(getErrorMessage(error, t('common.error')));
+    } finally {
+      setDraftBusy(false);
+      setPasteRequestInFlight(false);
+    }
+  };
+
+  const handleRealSendDraft = async (draft: BroadcastDraft) => {
+    setSendBusy(true);
+    try {
+      const batch = await dataSource.createExecutionBatch(
+        scope,
+        [draft.id],
+        'send',
+        OPERATOR_EMAIL,
+      );
+      setLatestExecutionBatch(batch);
+      setTopTab('logs');
+      const taskId = batch.tasks[0]?.id;
+      if (!taskId) {
+        throw new Error(t('broadcast.logs.missingSendTask'));
+      }
+      const confirmation = await dataSource.createSendConfirmation(
+        scope,
+        taskId,
+        OPERATOR_EMAIL,
+      );
+      await dataSource.sendExecutionTask(scope, taskId, confirmation.token, OPERATOR_EMAIL);
+      await refreshExecutionState(scope);
+      toast.success(t('broadcast.toasts.sendSubmitted'));
+    } catch (error) {
+      toast.error(getErrorMessage(error, t('common.error')));
+    } finally {
+      setSendBusy(false);
+    }
   };
 
   const runRulesMutation = async (
@@ -429,7 +664,7 @@ export default function BroadcastWorkspace() {
     try {
       await dataSource.updateDraftStatuses(scope, targetDraftIds, 'ready');
       await refreshDrafts();
-      toast.success('草稿已确认');
+      toast.success(t('broadcast.toasts.draftsConfirmed'));
     } catch (error) {
       toast.error(getErrorMessage(error, t('common.error')));
     } finally {
@@ -437,9 +672,65 @@ export default function BroadcastWorkspace() {
     }
   };
 
+  const handleUpdateSingleDraftStatus = async (
+    draftId: number,
+    status: 'ready' | 'pending_review',
+    successMessage: string,
+  ) => {
+    setDraftBusy(true);
+    try {
+      await dataSource.updateDraftStatuses(scope, [draftId], status);
+      await refreshDrafts();
+      toast.success(successMessage);
+    } catch (error) {
+      toast.error(getErrorMessage(error, t('common.error')));
+    } finally {
+      setDraftBusy(false);
+    }
+  };
+
+  const handleScopeChange = async (botUuid: string) => {
+    const nextScope = scopeOptions.find((option) => option.botUuid === botUuid);
+    if (!nextScope) {
+      return;
+    }
+
+    setSelectedDraftIds([]);
+    setEditingDraftId(null);
+    setDraftEditorText('');
+    setSelectedDraftId(null);
+    setDraftImportBatchId(null);
+    setSelectedImportId(null);
+    setSelectedImportDetail(null);
+    setLatestExecutionBatch(null);
+    setExecutionLogs([]);
+
+    setRulesLoading(true);
+    setRulesError(null);
+    try {
+      await refreshRules(nextScope);
+      await refreshImports(nextScope);
+      await refreshDrafts(nextScope);
+      await refreshExecutionState(nextScope);
+      await refreshExecutorState(nextScope);
+    } catch (error) {
+      const message = getErrorMessage(error, t('common.error'));
+      setRulesError(message);
+      toast.error(message);
+    } finally {
+      setRulesLoading(false);
+    }
+  };
+
   return (
     <div className="flex min-h-full flex-col gap-4 pb-4">
-      <BroadcastHeader snapshot={snapshot} />
+      <BroadcastHeader
+        snapshot={snapshot}
+        scope={scope}
+        scopeOptions={scopeOptions}
+        loading={rulesLoading}
+        onScopeChange={(botUuid) => void handleScopeChange(botUuid)}
+      />
 
       <Tabs
         value={topTab}
@@ -598,7 +889,11 @@ export default function BroadcastWorkspace() {
                 await refreshDrafts(scope, detail.id);
                 setSelectedImportId(detail.id);
                 setSelectedImportDetail(detail);
-                toast.success(`已导入 ${detail.originalFileName}`);
+                toast.success(
+                  t('broadcast.toasts.importUploaded', {
+                    fileName: detail.originalFileName,
+                  }),
+                );
               } catch (error) {
                 toast.error(getErrorMessage(error, t('common.error')));
               } finally {
@@ -621,7 +916,7 @@ export default function BroadcastWorkspace() {
                 await dataSource.deleteImport(scope, batchId);
                 await refreshImports();
                 await refreshDrafts();
-                toast.success('导入批次已删除');
+                toast.success(t('broadcast.toasts.importDeleted'));
               } catch (error) {
                 toast.error(getErrorMessage(error, t('common.error')));
               } finally {
@@ -635,7 +930,7 @@ export default function BroadcastWorkspace() {
                 await refreshImports();
                 await refreshDrafts(scope, batchId);
                 setSelectedImportDetail(detail);
-                toast.success('已按当前规则重新匹配');
+                toast.success(t('broadcast.toasts.importRematched'));
               } catch (error) {
                 toast.error(getErrorMessage(error, t('common.error')));
               } finally {
@@ -652,7 +947,11 @@ export default function BroadcastWorkspace() {
                 );
                 await refreshImports();
                 await refreshDrafts(scope, batchId);
-                toast.success(`已生成 ${result.totalGroupCount} 个分组草稿`);
+                toast.success(
+                  t('broadcast.toasts.draftsGenerated', {
+                    count: result.totalGroupCount,
+                  }),
+                );
               } catch (error) {
                 toast.error(getErrorMessage(error, t('common.error')));
               } finally {
@@ -672,53 +971,65 @@ export default function BroadcastWorkspace() {
               statusFilter={statusFilter}
               selectedDraftId={selectedDraftId}
               selectedDraftIds={selectedDraftIds}
-              busy={draftBusy}
+              busy={draftBusy || sendBusy}
               onImportBatchChange={setDraftImportBatchId}
               onSearchTermChange={setSearchTerm}
               onStatusFilterChange={setStatusFilter}
               onSelectDraft={handleSelectDraft}
               onToggleDraftSelection={handleToggleDraftSelection}
               onBatchConfirm={() => void handleBatchConfirm()}
+              onCreateExecutionBatch={() => void handleCreateExecutionBatch()}
             />
             <DraftDetail
               draft={activeDraft}
               editingDraftId={editingDraftId}
               draftEditorText={draftEditorText}
               busy={draftBusy}
+              canRealSend={Boolean(executorCapability?.supports_send)}
+              sendBusy={sendBusy}
               onStartEdit={handleStartEdit}
               onDraftEditorTextChange={setDraftEditorText}
               onSaveDraft={() => void handleSaveDraft()}
               onCancelEdit={handleCancelEdit}
               onConfirmDraft={() =>
                 activeDraft &&
-                void dataSource
-                  .updateDraftStatuses(scope, [activeDraft.id], 'ready')
-                  .then(async () => {
-                    await refreshDrafts();
-                    toast.success('草稿已确认');
-                  })
-                  .catch((error) => {
-                    toast.error(getErrorMessage(error, t('common.error')));
-                  })
+                void handleUpdateSingleDraftStatus(
+                  activeDraft.id,
+                  'ready',
+                  t('broadcast.toasts.draftsConfirmed'),
+                )
               }
               onRevokeDraft={() =>
                 activeDraft &&
-                void dataSource
-                  .updateDraftStatuses(scope, [activeDraft.id], 'pending_review')
-                  .then(async () => {
-                    await refreshDrafts();
-                    toast.success('已撤回确认');
-                  })
-                  .catch((error) => {
-                    toast.error(getErrorMessage(error, t('common.error')));
-                  })
+                void handleUpdateSingleDraftStatus(
+                  activeDraft.id,
+                  'pending_review',
+                  t('broadcast.toasts.draftConfirmationRevoked'),
+                )
+              }
+              onPasteDraft={() =>
+                activeDraft && void handlePasteDraft(activeDraft)
+              }
+              onSendDraft={() =>
+                activeDraft && void handleRealSendDraft(activeDraft)
               }
             />
           </div>
         </TabsContent>
 
         <TabsContent value="logs" className="mt-0">
-          <ExecutionLogPanel logs={snapshot.executionLogs} />
+          <ExecutionLogPanel
+            logs={executionLogs}
+            latestBatch={latestExecutionBatch}
+            executorCapability={executorCapability}
+            executorHealth={executorHealth}
+            busy={draftBusy || sendBusy}
+            onStartBatch={() => void handleBatchAction('start')}
+            onPauseBatch={() => void handleBatchAction('pause')}
+            onResumeBatch={() => void handleBatchAction('resume')}
+            onCancelBatch={() => void handleBatchAction('cancel')}
+            onRetryTask={(taskId) => void handleRetryExecutionTask(taskId)}
+          />
         </TabsContent>
       </Tabs>
     </div>

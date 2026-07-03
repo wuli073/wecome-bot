@@ -894,6 +894,89 @@ export interface ApiBroadcastDraftStatusUpdateResult {
   updated_count: number;
 }
 
+export interface ApiBroadcastExecutionTask {
+  id: number;
+  execution_batch_id: number;
+  draft_id: number | null;
+  draft_text_snapshot: string;
+  target_conversation_snapshot: string;
+  channel: string;
+  action: string;
+  status: string;
+  sequence_no: number;
+  attempt_count: number;
+  max_attempts: number;
+  idempotency_key: string;
+  request_digest: string;
+  runtime_task_id: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  operator_note: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  cancelled_at: string | null;
+  updated_at: string;
+}
+
+export interface ApiBroadcastExecutionBatch {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  channel: string;
+  mode: string;
+  status: string;
+  total_tasks: number;
+  pending_tasks: number;
+  running_tasks: number;
+  succeeded_tasks: number;
+  failed_tasks: number;
+  cancelled_tasks: number;
+  interrupted_tasks: number;
+  created_by: string;
+  last_action_by: string | null;
+  error_message: string | null;
+  version: number;
+  created_at: string;
+  started_at: string | null;
+  paused_at: string | null;
+  finished_at: string | null;
+  cancelled_at: string | null;
+  tasks?: ApiBroadcastExecutionTask[];
+}
+
+export interface ApiBroadcastExecutionAttempt {
+  id: number;
+  execution_task_id: number;
+  attempt_no: number;
+  idempotency_key: string;
+  request_digest: string;
+  runtime_task_id: string | null;
+  request_summary: string | null;
+  response_summary: string | null;
+  status: string;
+  error_code: string | null;
+  error_message: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface ApiBroadcastExecutionEvidence {
+  id: number;
+  execution_attempt_id: number;
+  window_title: string | null;
+  target_conversation: string | null;
+  action: string;
+  input_located: boolean;
+  draft_written: boolean;
+  send_triggered: boolean;
+  clipboard_restored: boolean;
+  runtime_state: string | null;
+  evidence_summary: string | null;
+  technical_details: string | null;
+  created_at: string;
+}
+
 export type DatabaseModeRealtimeEventType =
   | 'database-message-created'
   | 'database-message-updated'

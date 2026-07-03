@@ -44,6 +44,7 @@ from ...database_mode.events import DatabaseModeEventBus
 from ...database_mode import service as database_mode_service
 from ...database_mode import processing_service as database_mode_processing_service
 from ...broadcast.service import BroadcastService
+from ...broadcast.worker import BroadcastExecutionWorker
 from ...desktop_automation.repository import DesktopAutomationRepository
 from ...desktop_automation.runtime_process import (
     DesktopRuntimeProcessManager,
@@ -232,6 +233,18 @@ class BuildAppStage(stage.BootingStage):
             ),
         )
         await ap.desktop_automation_service.reconcile_stale_runs()
+        ap.broadcast_execution_worker = BroadcastExecutionWorker(
+            service=ap.broadcast_service,
+        )
+        quart_app = ap.http_ctrl.quart_app
+
+        @quart_app.before_serving
+        async def _start_broadcast_execution_worker() -> None:
+            await ap.broadcast_execution_worker.start()
+
+        @quart_app.after_serving
+        async def _stop_broadcast_execution_worker() -> None:
+            await ap.broadcast_execution_worker.stop()
 
         maintenance_service_inst = maintenance_service.MaintenanceService(ap)
         ap.maintenance_service = maintenance_service_inst

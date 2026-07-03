@@ -4,6 +4,7 @@ import datetime
 
 import pytest
 import sqlalchemy
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from langbot.pkg.entity.persistence import broadcast as persistence_broadcast
@@ -32,6 +33,11 @@ class _RawConnectionPersistenceManager:
             await conn.run_sync(persistence_broadcast.BroadcastImportBatch.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastImportRow.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastDraft.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastExecutionBatch.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastExecutionTask.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastExecutionAttempt.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastExecutionEvidence.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastSendConfirmation.__table__.create)
 
     async def dispose(self) -> None:
         await self.engine.dispose()
@@ -1005,3 +1011,451 @@ async def test_delete_operations_do_not_mutate_other_scope_when_sqlite_foreign_k
     assert rows[0].matched_rule_id == rule_id
     assert len(drafts) == 1
     assert drafts[0].template_id == template_id
+
+
+async def test_execution_batch_task_attempt_and_evidence_crud(repository_fixture):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        template_id = await repository.create_template(
+            conn,
+            {
+                **_scope(),
+                'name': 'Execution Template',
+                'content': 'Hello {{customer_name}}',
+                'variables': ['customer_name'],
+                'enabled': True,
+            },
+        )
+        import_batch_id = await repository.create_import_batch(
+            conn,
+            {
+                **_scope(),
+                'original_file_name': 'customers.csv',
+                'file_type': 'csv',
+                'worksheet_name': None,
+                'status': 'drafts_generated',
+                'drafts_stale': False,
+                'total_rows': 1,
+                'valid_rows': 1,
+                'invalid_rows': 0,
+                'matched_rows': 1,
+                'unmatched_rows': 0,
+            },
+        )
+        await repository.replace_drafts(
+            conn,
+            import_batch_id=import_batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            drafts=[
+                {
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'import_batch_id': import_batch_id,
+                    'group_value': 'Acme',
+                    'target_conversation_name': 'Acme Group',
+                    'template_id': template_id,
+                    'template_name_snapshot': 'Execution Template',
+                    'template_content_snapshot': 'Hello {{customer_name}}',
+                    'render_variables': {'customer_name': 'Acme'},
+                    'draft_text': 'Hello Acme',
+                    'status': 'ready',
+                    'error_message': None,
+                }
+            ],
+        )
+
+    draft = (await repository.list_drafts(bot_uuid='bot-1', connector_id='wxwork-local'))[0]
+
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id = await repository.create_execution_batch(
+            conn,
+            {
+                **_scope(),
+                'channel': 'wecom',
+                'mode': 'paste_only',
+                'status': 'queued',
+                'total_tasks': 1,
+                'pending_tasks': 1,
+                'running_tasks': 0,
+                'succeeded_tasks': 0,
+                'failed_tasks': 0,
+                'cancelled_tasks': 0,
+                'interrupted_tasks': 0,
+                'created_by': 'tester',
+                'last_action_by': 'tester',
+                'error_message': None,
+                'version': 1,
+            },
+        )
+        task_id = await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': batch_id,
+                'draft_id': draft.id,
+                'draft_text_snapshot': 'Hello Acme',
+                'target_conversation_snapshot': 'Acme Group',
+                'channel': 'wecom',
+                'action': 'paste_draft',
+                'status': 'pending',
+                'sequence_no': 1,
+                'attempt_count': 0,
+                'max_attempts': 3,
+                'idempotency_key': 'broadcast:1:1',
+                'request_digest': 'digest-1',
+                'runtime_task_id': None,
+                'error_code': None,
+                'error_message': None,
+                'operator_note': None,
+            },
+        )
+        attempt_id = await repository.create_execution_attempt(
+            conn,
+            {
+                'execution_task_id': task_id,
+                'attempt_no': 1,
+                'idempotency_key': 'broadcast:1:1',
+                'request_digest': 'digest-1',
+                'runtime_task_id': 'runtime-1',
+                'request_summary': 'request-summary',
+                'response_summary': 'response-summary',
+                'status': 'running',
+                'error_code': None,
+                'error_message': None,
+            },
+        )
+        evidence_id = await repository.create_execution_evidence(
+            conn,
+            {
+                'execution_attempt_id': attempt_id,
+                'window_title': 'WeCom',
+                'target_conversation': 'Acme Group',
+                'action': 'paste_draft',
+                'input_located': True,
+                'draft_written': True,
+                'send_triggered': False,
+                'clipboard_restored': True,
+                'runtime_state': 'running',
+                'evidence_summary': 'summary',
+                'technical_details': 'details',
+            },
+        )
+        confirmation_id = await repository.create_send_confirmation(
+            conn,
+            {
+                'execution_task_id': task_id,
+                'confirmation_token_hash': 'hash-1',
+                'issued_by': 'tester',
+                'used_by': None,
+                'status': 'issued',
+            },
+        )
+
+    batch = await repository.get_execution_batch(batch_id, bot_uuid='bot-1', connector_id='wxwork-local')
+    task = await repository.get_execution_task(task_id, bot_uuid='bot-1', connector_id='wxwork-local')
+    attempts = await repository.list_execution_attempts(task_id, bot_uuid='bot-1', connector_id='wxwork-local')
+    evidence = await repository.get_execution_evidence(attempt_id, bot_uuid='bot-1', connector_id='wxwork-local')
+    confirmation = await repository.get_send_confirmation(confirmation_id, bot_uuid='bot-1', connector_id='wxwork-local')
+
+    assert batch is not None
+    assert batch.channel == 'wecom'
+    assert task is not None
+    assert task.id == task_id
+    assert [attempt.id for attempt in attempts] == [attempt_id]
+    assert evidence is not None
+    assert evidence.id == evidence_id
+    assert confirmation is not None
+    assert confirmation.confirmation_token_hash == 'hash-1'
+
+
+async def test_claim_next_execution_task_is_scoped_serial_and_updates_running_state(repository_fixture):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id = await repository.create_execution_batch(
+            conn,
+            {
+                **_scope(),
+                'channel': 'wecom',
+                'mode': 'paste_only',
+                'status': 'queued',
+                'total_tasks': 2,
+                'pending_tasks': 2,
+                'running_tasks': 0,
+                'succeeded_tasks': 0,
+                'failed_tasks': 0,
+                'cancelled_tasks': 0,
+                'interrupted_tasks': 0,
+                'created_by': 'tester',
+                'last_action_by': 'tester',
+                'error_message': None,
+                'version': 1,
+            },
+        )
+        await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': batch_id,
+                'draft_id': None,
+                'draft_text_snapshot': 'first',
+                'target_conversation_snapshot': 'Acme Group',
+                'channel': 'wecom',
+                'action': 'paste_draft',
+                'status': 'pending',
+                'sequence_no': 2,
+                'attempt_count': 0,
+                'max_attempts': 3,
+                'idempotency_key': 'broadcast:2:1',
+                'request_digest': 'digest-2',
+                'runtime_task_id': None,
+                'error_code': None,
+                'error_message': None,
+                'operator_note': None,
+            },
+        )
+        first_task_id = await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': batch_id,
+                'draft_id': None,
+                'draft_text_snapshot': 'zero',
+                'target_conversation_snapshot': 'Zero Group',
+                'channel': 'wecom',
+                'action': 'paste_draft',
+                'status': 'pending',
+                'sequence_no': 1,
+                'attempt_count': 0,
+                'max_attempts': 3,
+                'idempotency_key': 'broadcast:1:1',
+                'request_digest': 'digest-1',
+                'runtime_task_id': None,
+                'error_code': None,
+                'error_message': None,
+                'operator_note': None,
+            },
+        )
+
+    async with persistence_mgr.engine.begin() as conn:
+        claimed = await repository.claim_next_execution_task(conn, bot_uuid='bot-1', connector_id='wxwork-local')
+
+    assert claimed is not None
+    assert claimed['task'].id == first_task_id
+    assert claimed['task'].status == 'running'
+    assert claimed['scope'] == _scope()
+
+
+async def test_execution_batch_delete_cascades_children(repository_fixture):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id = await repository.create_execution_batch(
+            conn,
+            {
+                **_scope(),
+                'channel': 'wecom',
+                'mode': 'paste_only',
+                'status': 'created',
+                'total_tasks': 1,
+                'pending_tasks': 1,
+                'running_tasks': 0,
+                'succeeded_tasks': 0,
+                'failed_tasks': 0,
+                'cancelled_tasks': 0,
+                'interrupted_tasks': 0,
+                'created_by': 'tester',
+                'last_action_by': 'tester',
+                'error_message': None,
+                'version': 1,
+            },
+        )
+        task_id = await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': batch_id,
+                'draft_id': None,
+                'draft_text_snapshot': 'body',
+                'target_conversation_snapshot': 'Acme Group',
+                'channel': 'wecom',
+                'action': 'paste_draft',
+                'status': 'pending',
+                'sequence_no': 1,
+                'attempt_count': 0,
+                'max_attempts': 3,
+                'idempotency_key': 'broadcast:1:1',
+                'request_digest': 'digest-1',
+                'runtime_task_id': None,
+                'error_code': None,
+                'error_message': None,
+                'operator_note': None,
+            },
+        )
+        attempt_id = await repository.create_execution_attempt(
+            conn,
+            {
+                'execution_task_id': task_id,
+                'attempt_no': 1,
+                'idempotency_key': 'broadcast:1:1',
+                'request_digest': 'digest-1',
+                'runtime_task_id': 'runtime-1',
+                'request_summary': 'request-summary',
+                'response_summary': 'response-summary',
+                'status': 'running',
+                'error_code': None,
+                'error_message': None,
+            },
+        )
+        await repository.create_execution_evidence(
+            conn,
+            {
+                'execution_attempt_id': attempt_id,
+                'window_title': 'WeCom',
+                'target_conversation': 'Acme Group',
+                'action': 'paste_draft',
+                'input_located': True,
+                'draft_written': True,
+                'send_triggered': False,
+                'clipboard_restored': True,
+                'runtime_state': 'running',
+                'evidence_summary': 'summary',
+                'technical_details': 'details',
+            },
+        )
+        await repository.create_send_confirmation(
+            conn,
+            {
+                'execution_task_id': task_id,
+                'confirmation_token_hash': 'hash-1',
+                'issued_by': 'tester',
+                'used_by': None,
+                'status': 'issued',
+            },
+        )
+
+    deleted = await repository.delete_execution_batch(batch_id, bot_uuid='bot-1', connector_id='wxwork-local')
+    assert deleted is True
+    assert await repository.get_execution_batch(batch_id, bot_uuid='bot-1', connector_id='wxwork-local') is None
+    assert await repository.get_execution_task(task_id, bot_uuid='bot-1', connector_id='wxwork-local') is None
+    assert await repository.list_execution_attempts(task_id, bot_uuid='bot-1', connector_id='wxwork-local') == []
+    assert await repository.get_execution_evidence(attempt_id, bot_uuid='bot-1', connector_id='wxwork-local') is None
+
+
+async def test_execution_attempt_runtime_task_id_is_unique(repository_fixture):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        first_batch_id = await repository.create_execution_batch(
+            conn,
+            {
+                **_scope(),
+                'channel': 'wecom',
+                'mode': 'paste_only',
+                'status': 'created',
+                'total_tasks': 1,
+                'pending_tasks': 1,
+                'running_tasks': 0,
+                'succeeded_tasks': 0,
+                'failed_tasks': 0,
+                'cancelled_tasks': 0,
+                'interrupted_tasks': 0,
+                'created_by': 'tester',
+                'last_action_by': 'tester',
+                'error_message': None,
+                'version': 1,
+            },
+        )
+        first_task_id = await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': first_batch_id,
+                'draft_id': None,
+                'draft_text_snapshot': 'body',
+                'target_conversation_snapshot': 'Acme Group',
+                'channel': 'wecom',
+                'action': 'paste_draft',
+                'status': 'pending',
+                'sequence_no': 1,
+                'attempt_count': 0,
+                'max_attempts': 1,
+                'idempotency_key': 'broadcast:first:1',
+                'request_digest': 'digest-first',
+                'runtime_task_id': None,
+                'error_code': None,
+                'error_message': None,
+                'operator_note': None,
+            },
+        )
+        await repository.create_execution_attempt(
+            conn,
+            {
+                'execution_task_id': first_task_id,
+                'attempt_no': 1,
+                'idempotency_key': 'broadcast:first:1',
+                'request_digest': 'digest-first',
+                'runtime_task_id': 'runtime-dup',
+                'request_summary': 'summary',
+                'response_summary': 'summary',
+                'status': 'succeeded',
+                'error_code': None,
+                'error_message': None,
+            },
+        )
+
+        second_batch_id = await repository.create_execution_batch(
+            conn,
+            {
+                **_scope(),
+                'channel': 'wecom',
+                'mode': 'paste_only',
+                'status': 'created',
+                'total_tasks': 1,
+                'pending_tasks': 1,
+                'running_tasks': 0,
+                'succeeded_tasks': 0,
+                'failed_tasks': 0,
+                'cancelled_tasks': 0,
+                'interrupted_tasks': 0,
+                'created_by': 'tester',
+                'last_action_by': 'tester',
+                'error_message': None,
+                'version': 1,
+            },
+        )
+        second_task_id = await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': second_batch_id,
+                'draft_id': None,
+                'draft_text_snapshot': 'body2',
+                'target_conversation_snapshot': 'Northwind Group',
+                'channel': 'wecom',
+                'action': 'paste_draft',
+                'status': 'pending',
+                'sequence_no': 1,
+                'attempt_count': 0,
+                'max_attempts': 1,
+                'idempotency_key': 'broadcast:second:1',
+                'request_digest': 'digest-second',
+                'runtime_task_id': None,
+                'error_code': None,
+                'error_message': None,
+                'operator_note': None,
+            },
+        )
+
+        with pytest.raises(IntegrityError):
+            await repository.create_execution_attempt(
+                conn,
+                {
+                    'execution_task_id': second_task_id,
+                    'attempt_no': 1,
+                    'idempotency_key': 'broadcast:second:1',
+                    'request_digest': 'digest-second',
+                    'runtime_task_id': 'runtime-dup',
+                    'request_summary': 'summary',
+                    'response_summary': 'summary',
+                    'status': 'succeeded',
+                    'error_code': None,
+                    'error_message': None,
+                },
+            )

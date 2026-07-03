@@ -1,6 +1,10 @@
 import { backendClient } from '@/app/infra/http';
 import type {
   ApiBroadcastDraft,
+  ApiBroadcastExecutionAttempt,
+  ApiBroadcastExecutionBatch,
+  ApiBroadcastExecutionEvidence,
+  ApiBroadcastExecutionTask,
   ApiBroadcastGroupMatchResult,
   ApiBroadcastGroupName,
   ApiBroadcastGroupRule,
@@ -23,6 +27,12 @@ import {
 import type {
   BroadcastDraft,
   BroadcastDraftDetail,
+  BroadcastExecutionBatchSummary,
+  BroadcastExecutorCapability,
+  BroadcastExecutorHealth,
+  BroadcastExecutionLog,
+  BroadcastSendConfirmation,
+  BroadcastExecutionTaskSummary,
   BroadcastDraftFilters,
   BroadcastDraftStatus,
   BroadcastDraftStatusUpdateResult,
@@ -241,6 +251,114 @@ function fromApiDraft(draft: ApiBroadcastDraft): BroadcastDraftDetail {
   };
 }
 
+function fromApiExecutionTask(task: ApiBroadcastExecutionTask): BroadcastExecutionTaskSummary {
+  return {
+    id: task.id,
+    executionBatchId: task.execution_batch_id,
+    draftId: task.draft_id,
+    targetConversationSnapshot: task.target_conversation_snapshot,
+    draftTextSnapshot: task.draft_text_snapshot,
+    action: task.action,
+    status: task.status,
+    attemptCount: task.attempt_count,
+    idempotencyKey: task.idempotency_key,
+    runtimeTaskId: task.runtime_task_id,
+    errorCode: task.error_code,
+    errorMessage: task.error_message,
+    createdAt: task.created_at,
+    startedAt: task.started_at,
+    finishedAt: task.finished_at,
+    updatedAt: task.updated_at,
+  };
+}
+
+function fromApiExecutionBatch(batch: ApiBroadcastExecutionBatch): BroadcastExecutionBatchSummary {
+  return {
+    id: batch.id,
+    status: batch.status,
+    mode: batch.mode,
+    totalTasks: batch.total_tasks,
+    pendingTasks: batch.pending_tasks,
+    runningTasks: batch.running_tasks,
+    succeededTasks: batch.succeeded_tasks,
+    failedTasks: batch.failed_tasks,
+    cancelledTasks: batch.cancelled_tasks,
+    interruptedTasks: batch.interrupted_tasks,
+    createdBy: batch.created_by,
+    lastActionBy: batch.last_action_by,
+    createdAt: batch.created_at,
+    startedAt: batch.started_at,
+    finishedAt: batch.finished_at,
+    tasks: (batch.tasks || []).map(fromApiExecutionTask),
+  };
+}
+
+function fromApiExecutorCapability(payload: Record<string, unknown>): BroadcastExecutorCapability {
+  return {
+    channel: String(payload.channel || 'wxwork_database'),
+    supports_paste: Boolean(payload.supports_paste),
+    supports_send: Boolean(payload.supports_send),
+    supports_cancel: Boolean(payload.supports_cancel),
+    supports_status_query: Boolean(payload.supports_status_query),
+    supports_clipboard_restore: Boolean(payload.supports_clipboard_restore),
+    supports_evidence: Boolean(payload.supports_evidence),
+    executor_version: String(payload.executor_version || ''),
+    runtime_min_version: String(payload.runtime_min_version || ''),
+  };
+}
+
+function fromApiExecutorHealth(payload: Record<string, unknown>): BroadcastExecutorHealth {
+  return {
+    channel: String(payload.channel || 'wxwork_database'),
+    status: String(payload.status || 'unknown'),
+    protocol_version: payload.protocol_version ? String(payload.protocol_version) : null,
+    runtime_version: payload.runtime_version ? String(payload.runtime_version) : null,
+    capability: fromApiExecutorCapability((payload.capability as Record<string, unknown>) || {}),
+    runtime_status: (payload.runtime_status as Record<string, unknown>) || null,
+  };
+}
+
+function fromApiSendConfirmation(
+  payload: { id: number; token: string; expires_at: string | null; execution_task_id: number },
+): BroadcastSendConfirmation {
+  return {
+    id: payload.id,
+    token: payload.token,
+    expiresAt: payload.expires_at,
+    executionTaskId: payload.execution_task_id,
+  };
+}
+
+function toExecutionLog(
+  batch: BroadcastExecutionBatchSummary,
+  task: BroadcastExecutionTaskSummary,
+  attempt: ApiBroadcastExecutionAttempt,
+  evidence: ApiBroadcastExecutionEvidence | null,
+  draft?: BroadcastDraft | null,
+): BroadcastExecutionLog {
+  return {
+    id: attempt.id,
+    batchId: batch.id,
+    taskId: task.id,
+    attemptId: attempt.id,
+    draftId: task.draftId,
+    customerName: draft?.customerName || draft?.groupValue || '',
+    conversationName: task.targetConversationSnapshot,
+    batchStatus: batch.status,
+    taskStatus: task.status,
+    attemptStatus: attempt.status,
+    action: evidence?.action || task.action,
+    message: evidence?.evidence_summary || task.errorMessage || attempt.error_message || task.status,
+    runtimeState: evidence?.runtime_state || null,
+    sendTriggered: evidence?.send_triggered || false,
+    inputLocated: evidence?.input_located || false,
+    draftWritten: evidence?.draft_written || false,
+    clipboardRestored: evidence?.clipboard_restored || false,
+    technicalDetails: evidence?.technical_details || null,
+    timestamp: attempt.finished_at || attempt.started_at,
+  };
+}
+
 export interface BroadcastDataSource {
   loadSnapshot: () => BroadcastWorkspaceSnapshot;
   loadRulesData: (scope: BroadcastScope) => Promise<BroadcastRulesData>;
@@ -340,6 +458,74 @@ export interface BroadcastDataSource {
     draftIds: number[],
     status: BroadcastDraftStatus,
   ) => Promise<BroadcastDraftStatusUpdateResult>;
+  createExecutionBatch: (
+    scope: BroadcastScope,
+    draftIds: number[],
+    mode: 'paste_only' | 'send',
+    operator: string,
+  ) => Promise<BroadcastExecutionBatchSummary>;
+  startExecutionBatch: (
+    scope: BroadcastScope,
+    batchId: number,
+    operator: string,
+  ) => Promise<BroadcastExecutionBatchSummary>;
+  pauseExecutionBatch: (
+    scope: BroadcastScope,
+    batchId: number,
+    operator: string,
+  ) => Promise<BroadcastExecutionBatchSummary>;
+  resumeExecutionBatch: (
+    scope: BroadcastScope,
+    batchId: number,
+    operator: string,
+  ) => Promise<BroadcastExecutionBatchSummary>;
+  cancelExecutionBatch: (
+    scope: BroadcastScope,
+    batchId: number,
+    operator: string,
+  ) => Promise<BroadcastExecutionBatchSummary>;
+  listExecutionBatches: (
+    scope: BroadcastScope,
+  ) => Promise<BroadcastExecutionBatchSummary[]>;
+  startExecutionTask: (
+    scope: BroadcastScope,
+    taskId: number,
+    operator: string,
+  ) => Promise<BroadcastExecutionTaskSummary>;
+  retryExecutionTask: (
+    scope: BroadcastScope,
+    taskId: number,
+    operator: string,
+  ) => Promise<BroadcastExecutionTaskSummary>;
+  sendExecutionTask: (
+    scope: BroadcastScope,
+    taskId: number,
+    confirmationToken: string,
+    operator: string,
+  ) => Promise<BroadcastExecutionTaskSummary>;
+  getExecutorCapabilities: (
+    scope: BroadcastScope,
+  ) => Promise<BroadcastExecutorCapability>;
+  getExecutorHealth: (
+    scope: BroadcastScope,
+  ) => Promise<BroadcastExecutorHealth>;
+  createSendConfirmation: (
+    scope: BroadcastScope,
+    taskId: number,
+    operator: string,
+  ) => Promise<BroadcastSendConfirmation>;
+  getExecutionBatchDetail: (
+    scope: BroadcastScope,
+    batchId: number,
+  ) => Promise<BroadcastExecutionBatchSummary>;
+  getExecutionTaskDetail: (
+    scope: BroadcastScope,
+    taskId: number,
+  ) => Promise<BroadcastExecutionTaskSummary>;
+  listExecutionLogs: (
+    scope: BroadcastScope,
+    drafts: BroadcastDraft[],
+  ) => Promise<BroadcastExecutionLog[]>;
 }
 
 export function createBroadcastDataSource(): BroadcastDataSource {
@@ -547,6 +733,110 @@ export function createBroadcastDataSource(): BroadcastDataSource {
       return {
         updatedCount: response.updated_count,
       };
+    },
+    createExecutionBatch: async (scope, draftIds, mode, operator) =>
+      fromApiExecutionBatch(
+        await backendClient.createBroadcastExecutionBatch(toApiScope(scope), {
+          draft_ids: draftIds,
+          mode,
+          operator,
+        }),
+      ),
+    startExecutionBatch: async (scope, batchId, operator) =>
+      fromApiExecutionBatch(
+        await backendClient.startBroadcastExecutionBatch(toApiScope(scope), batchId, operator),
+      ),
+    pauseExecutionBatch: async (scope, batchId, operator) =>
+      fromApiExecutionBatch(
+        await backendClient.pauseBroadcastExecutionBatch(toApiScope(scope), batchId, operator),
+      ),
+    resumeExecutionBatch: async (scope, batchId, operator) =>
+      fromApiExecutionBatch(
+        await backendClient.resumeBroadcastExecutionBatch(toApiScope(scope), batchId, operator),
+      ),
+    cancelExecutionBatch: async (scope, batchId, operator) =>
+      fromApiExecutionBatch(
+        await backendClient.cancelBroadcastExecutionBatch(toApiScope(scope), batchId, operator),
+      ),
+    listExecutionBatches: async (scope) =>
+      (
+        await backendClient.getBroadcastExecutionBatches(toApiScope(scope))
+      ).map(fromApiExecutionBatch),
+    startExecutionTask: async (scope, taskId, operator) =>
+      fromApiExecutionTask(
+        await backendClient.startBroadcastExecutionTask(toApiScope(scope), taskId, operator),
+      ),
+    retryExecutionTask: async (scope, taskId, operator) =>
+      fromApiExecutionTask(
+        await backendClient.retryBroadcastExecutionTask(toApiScope(scope), taskId, operator),
+      ),
+    sendExecutionTask: async (scope, taskId, confirmationToken, operator) =>
+      fromApiExecutionTask(
+        await backendClient.sendBroadcastExecutionTask(toApiScope(scope), taskId, {
+          confirmation_token: confirmationToken,
+          operator,
+        }),
+      ),
+    getExecutorCapabilities: async (scope) =>
+      fromApiExecutorCapability(
+        await backendClient.getBroadcastExecutorCapabilities(toApiScope(scope)),
+      ),
+    getExecutorHealth: async (scope) =>
+      fromApiExecutorHealth(
+        await backendClient.getBroadcastExecutorHealth(toApiScope(scope)),
+      ),
+    createSendConfirmation: async (scope, taskId, operator) =>
+      fromApiSendConfirmation(
+        await backendClient.createBroadcastSendConfirmation(toApiScope(scope), {
+          execution_task_id: taskId,
+          operator,
+        }),
+      ),
+    getExecutionBatchDetail: async (scope, batchId) =>
+      fromApiExecutionBatch(
+        await backendClient.getBroadcastExecutionBatchDetail(toApiScope(scope), batchId),
+      ),
+    getExecutionTaskDetail: async (scope, taskId) =>
+      fromApiExecutionTask(
+        await backendClient.getBroadcastExecutionTaskDetail(toApiScope(scope), taskId),
+      ),
+    listExecutionLogs: async (scope, drafts) => {
+      const batchSummaries = await backendClient.getBroadcastExecutionBatches(toApiScope(scope));
+      const batches = await Promise.all(
+        batchSummaries.map(async (batch) =>
+          fromApiExecutionBatch(
+            await backendClient.getBroadcastExecutionBatchDetail(toApiScope(scope), batch.id),
+          ),
+        ),
+      );
+      const logs = await Promise.all(
+        batches.flatMap((batch) =>
+          batch.tasks.map(async (task) => {
+            const attempts = await backendClient.getBroadcastExecutionAttempts(
+              toApiScope(scope),
+              task.id,
+            );
+            return Promise.all(
+              attempts.map(async (attempt) => {
+                let evidence: ApiBroadcastExecutionEvidence | null = null;
+                try {
+                  evidence = await backendClient.getBroadcastExecutionEvidence(
+                    toApiScope(scope),
+                    attempt.id,
+                  );
+                } catch {
+                  evidence = null;
+                }
+                const draft = drafts.find((item) => item.id === task.draftId) ?? null;
+                return toExecutionLog(batch, task, attempt, evidence, draft);
+              }),
+            );
+          }),
+        ),
+      );
+      return logs.flat(2).sort((left, right) =>
+        right.timestamp.localeCompare(left.timestamp),
+      );
     },
   };
 }

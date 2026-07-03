@@ -185,7 +185,10 @@ export default function ImportMatchingPanel({
         <CardHeader>
           <CardTitle>{detail?.originalFileName || '导入详情'}</CardTitle>
           <CardDescription>
-            上传成功后立即展示真实匹配结果，无需先点击重新匹配。
+            <div>上传成功后立即展示真实匹配结果，无需先点击重新匹配。</div>
+            {detail?.worksheetName ? (
+              <div className="mt-1">工作表：{detail.worksheetName}</div>
+            ) : null}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

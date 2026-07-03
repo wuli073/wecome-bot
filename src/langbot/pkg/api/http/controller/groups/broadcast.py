@@ -10,6 +10,19 @@ from .....broadcast.errors import (
     BROADCAST_DRAFT_SCOPE_MISMATCH,
     BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN,
     BROADCAST_DRAFT_STATUS_INVALID,
+    BROADCAST_EXECUTION_BATCH_NOT_FOUND,
+    BROADCAST_EXECUTION_BATCH_STATUS_INVALID,
+    BROADCAST_EXECUTION_CONFIRMATION_EXPIRED,
+    BROADCAST_EXECUTION_CONFIRMATION_INVALID,
+    BROADCAST_EXECUTION_CONFIRMATION_REQUIRED,
+    BROADCAST_EXECUTION_DRAFT_LIMIT_EXCEEDED,
+    BROADCAST_EXECUTION_DRAFT_NOT_READY,
+    BROADCAST_EXECUTION_DRAFT_STALE,
+    BROADCAST_EXECUTION_MODE_INVALID,
+    BROADCAST_EXECUTION_SEND_DISABLED,
+    BROADCAST_EXECUTION_SCOPE_MISMATCH,
+    BROADCAST_EXECUTION_TASK_NOT_FOUND,
+    BROADCAST_EXECUTION_TASK_STATUS_INVALID,
     BROADCAST_IMPORT_FIELDS_MISSING,
     BROADCAST_IMPORT_FILE_INVALID,
     BROADCAST_IMPORT_GROUP_FIELD_REQUIRED,
@@ -263,6 +276,174 @@ class BroadcastRouterGroup(group.RouterGroup):
             except BroadcastError as exc:
                 return self._broadcast_error_response(exc)
 
+        @self.route('/executions', methods=['GET', 'POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def executions() -> str:
+            try:
+                if quart.request.method == 'GET':
+                    scope = await self.validate_scope(from_query=True)
+                    data = await self.ap.broadcast_service.list_execution_batches(scope)
+                    return self.success(data=data)
+
+                payload = await quart.request.get_json(silent=True) or {}
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.create_execution_batch(scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/executions/<int:batch_id>', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_detail(batch_id: int) -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                data = await self.ap.broadcast_service.get_execution_batch_detail(batch_id, scope)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/executions/<int:batch_id>/start', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_batch_start(batch_id: int) -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.start_execution_batch(batch_id, scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/executions/<int:batch_id>/pause', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_batch_pause(batch_id: int) -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.pause_execution_batch(batch_id, scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/executions/<int:batch_id>/resume', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_batch_resume(batch_id: int) -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.resume_execution_batch(batch_id, scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/executions/<int:batch_id>/cancel', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_batch_cancel(batch_id: int) -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.cancel_execution_batch(batch_id, scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/execution-tasks/<int:task_id>', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_task_detail(task_id: int) -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                data = await self.ap.broadcast_service.get_execution_task_detail(task_id, scope)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/execution-tasks/<int:task_id>/attempts', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_task_attempts(task_id: int) -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                data = await self.ap.broadcast_service.list_execution_attempts(task_id, scope)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/execution-attempts/<int:attempt_id>', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_attempt_detail(attempt_id: int) -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                data = await self.ap.broadcast_service.get_execution_attempt_detail(attempt_id, scope)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/execution-attempts/<int:attempt_id>/evidence', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_attempt_evidence(attempt_id: int) -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                data = await self.ap.broadcast_service.get_execution_evidence(attempt_id, scope)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/execution-tasks/<int:task_id>/start', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_task_start(task_id: int) -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.start_execution_task(task_id, scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/execution-tasks/<int:task_id>/cancel', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_task_cancel(task_id: int) -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.cancel_execution_task(task_id, scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/execution-tasks/<int:task_id>/retry', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_task_retry(task_id: int) -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.retry_execution_task(task_id, scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/execution-tasks/<int:task_id>/send', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_task_send(task_id: int) -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.send_execution_task(task_id, scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/executors/capabilities', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
+        async def executor_capabilities() -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                data = await self.ap.broadcast_service.get_executor_capabilities(scope)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/executors/health', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
+        async def executor_health() -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                data = await self.ap.broadcast_service.get_executor_health(scope)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/send-confirmations', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def send_confirmations() -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.issue_send_confirmation(scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
     async def validate_scope(
         self,
         *,
@@ -308,6 +489,17 @@ class BroadcastRouterGroup(group.RouterGroup):
             BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN,
             BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN,
             BROADCAST_DRAFT_SCOPE_MISMATCH,
+            BROADCAST_EXECUTION_DRAFT_NOT_READY,
+            BROADCAST_EXECUTION_DRAFT_STALE,
+            BROADCAST_EXECUTION_SCOPE_MISMATCH,
+            BROADCAST_EXECUTION_MODE_INVALID,
+            BROADCAST_EXECUTION_DRAFT_LIMIT_EXCEEDED,
+            BROADCAST_EXECUTION_BATCH_STATUS_INVALID,
+            BROADCAST_EXECUTION_TASK_STATUS_INVALID,
+            BROADCAST_EXECUTION_CONFIRMATION_REQUIRED,
+            BROADCAST_EXECUTION_CONFIRMATION_INVALID,
+            BROADCAST_EXECUTION_CONFIRMATION_EXPIRED,
+            BROADCAST_EXECUTION_SEND_DISABLED,
             BROADCAST_TEMPLATE_CONTENT_REQUIRED,
             BROADCAST_VARIABLE_PROFILE_INVALID,
             BROADCAST_GROUP_RULE_REGEX_INVALID,
@@ -320,6 +512,8 @@ class BroadcastRouterGroup(group.RouterGroup):
             BROADCAST_TEMPLATE_NOT_FOUND,
             BROADCAST_GROUP_RULE_NOT_FOUND,
             BROADCAST_GROUP_NAME_NOT_FOUND,
+            BROADCAST_EXECUTION_BATCH_NOT_FOUND,
+            BROADCAST_EXECUTION_TASK_NOT_FOUND,
         }:
             return 404
         if code in {

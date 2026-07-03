@@ -143,6 +143,32 @@ async def _make_client():
                 return_value={'id': 21, 'status': 'pending_review', 'draft_text': 'Updated', 'message': None}
             ),
             update_draft_statuses=AsyncMock(return_value={'updated_count': 1}),
+            create_execution_batch=AsyncMock(
+                return_value={
+                    'id': 301,
+                    'mode': 'paste_only',
+                    'status': 'created',
+                    'total_tasks': 1,
+                    'pending_tasks': 1,
+                    'tasks': [
+                        {
+                            'id': 401,
+                            'draft_id': 21,
+                            'status': 'pending',
+                            'action': 'paste_draft',
+                        }
+                    ],
+                }
+            ),
+            list_execution_batches=AsyncMock(return_value=[]),
+            get_execution_batch_detail=AsyncMock(return_value={'id': 301, 'tasks': []}),
+            get_execution_task_detail=AsyncMock(return_value={'id': 401, 'status': 'pending'}),
+            start_execution_task=AsyncMock(return_value={'id': 401, 'status': 'succeeded'}),
+            cancel_execution_task=AsyncMock(return_value={'id': 401, 'status': 'cancelled'}),
+            retry_execution_task=AsyncMock(return_value={'id': 401, 'status': 'pending'}),
+            list_execution_attempts=AsyncMock(return_value=[{'id': 501, 'status': 'succeeded'}]),
+            get_execution_attempt_detail=AsyncMock(return_value={'id': 501, 'status': 'succeeded'}),
+            get_execution_evidence=AsyncMock(return_value={'execution_attempt_id': 501, 'send_triggered': False}),
         ),
     )
     router = BroadcastRouterGroup(ap, app)
@@ -423,3 +449,135 @@ async def test_batch_update_draft_status_route_preserves_chinese_error():
     assert response.status_code == 400
     assert payload['msg'] == BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN
     assert payload['message'] == '当前草稿生成失败，不能直接确认，请修复配置后重新生成'
+
+
+async def test_create_and_get_execution_routes_use_scope_and_payload():
+    client, ap = await _make_client()
+
+    create_response = await client.post(
+        '/api/v1/broadcast/executions',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        json={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'draft_ids': [21],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    create_payload = await create_response.get_json()
+    assert create_response.status_code == 200
+    assert create_payload['data']['id'] == 301
+    ap.broadcast_service.create_execution_batch.assert_awaited_once_with(
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        {
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'draft_ids': [21],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+
+    list_response = await client.get(
+        '/api/v1/broadcast/executions?bot_uuid=bot-1&connector_id=wxwork-local',
+        headers={'Authorization': 'Bearer valid-user-token'},
+    )
+    assert list_response.status_code == 200
+    ap.broadcast_service.list_execution_batches.assert_awaited_once_with(
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'}
+    )
+
+    detail_response = await client.get(
+        '/api/v1/broadcast/executions/301?bot_uuid=bot-1&connector_id=wxwork-local',
+        headers={'Authorization': 'Bearer valid-user-token'},
+    )
+    assert detail_response.status_code == 200
+    ap.broadcast_service.get_execution_batch_detail.assert_awaited_once_with(
+        301,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+    )
+
+
+async def test_execution_task_routes_use_scope_and_map_service_calls():
+    client, ap = await _make_client()
+
+    task_response = await client.get(
+        '/api/v1/broadcast/execution-tasks/401?bot_uuid=bot-1&connector_id=wxwork-local',
+        headers={'Authorization': 'Bearer valid-user-token'},
+    )
+    assert task_response.status_code == 200
+    ap.broadcast_service.get_execution_task_detail.assert_awaited_once_with(
+        401,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+    )
+
+    start_response = await client.post(
+        '/api/v1/broadcast/execution-tasks/401/start',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        json={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+    )
+    assert start_response.status_code == 200
+    ap.broadcast_service.start_execution_task.assert_awaited_once_with(
+        401,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+    )
+
+    cancel_response = await client.post(
+        '/api/v1/broadcast/execution-tasks/401/cancel',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        json={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+    )
+    assert cancel_response.status_code == 200
+    ap.broadcast_service.cancel_execution_task.assert_awaited_once_with(
+        401,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+    )
+
+    retry_response = await client.post(
+        '/api/v1/broadcast/execution-tasks/401/retry',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        json={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+    )
+    assert retry_response.status_code == 200
+    ap.broadcast_service.retry_execution_task.assert_awaited_once_with(
+        401,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+    )
+
+
+async def test_execution_attempt_and_evidence_routes_use_scope_and_map_service_calls():
+    client, ap = await _make_client()
+
+    attempts_response = await client.get(
+        '/api/v1/broadcast/execution-tasks/401/attempts?bot_uuid=bot-1&connector_id=wxwork-local',
+        headers={'Authorization': 'Bearer valid-user-token'},
+    )
+    assert attempts_response.status_code == 200
+    ap.broadcast_service.list_execution_attempts.assert_awaited_once_with(
+        401,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+    )
+
+    attempt_response = await client.get(
+        '/api/v1/broadcast/execution-attempts/501?bot_uuid=bot-1&connector_id=wxwork-local',
+        headers={'Authorization': 'Bearer valid-user-token'},
+    )
+    assert attempt_response.status_code == 200
+    ap.broadcast_service.get_execution_attempt_detail.assert_awaited_once_with(
+        501,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+    )
+
+    evidence_response = await client.get(
+        '/api/v1/broadcast/execution-attempts/501/evidence?bot_uuid=bot-1&connector_id=wxwork-local',
+        headers={'Authorization': 'Bearer valid-user-token'},
+    )
+    assert evidence_response.status_code == 200
+    ap.broadcast_service.get_execution_evidence.assert_awaited_once_with(
+        501,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+    )

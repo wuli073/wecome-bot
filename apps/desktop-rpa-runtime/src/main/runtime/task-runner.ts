@@ -3,7 +3,7 @@ import type { WindowDescriptor } from '../domain/window-types'
 import { ClipboardController } from '../input/clipboard-controller'
 import { RobotInputDriver, type InputDriver } from '../input/mouse-controller'
 import { runPasteOnlyTask } from '../input/paste-controller'
-import { runSendDraftTask } from '../input/send-controller'
+import { runSendMessageTask } from '../input/send-controller'
 import { activateWindow } from '../window/window-activator'
 import { findUniqueVisibleWxWorkMainWindow } from '../window/window-finder'
 
@@ -50,8 +50,8 @@ export class TaskRunner {
         activateTargetWindow: this.activateTargetWindow,
       })
     }
-    if (request.action === 'send_draft') {
-      return runSendDraftTask(request, {
+    if (request.action === 'send_draft' || request.action === 'send_message') {
+      return runSendMessageTask(request, {
         input: this.input,
         runtimeAutoSendEnabled: this.runtimeAutoSendEnabled,
         sendDriverForceDisabled: this.sendDriverForceDisabled,

@@ -67,6 +67,19 @@ interface BotMock {
   updated_at: string;
 }
 
+export interface InstallLangBotApiMockBot {
+  uuid: string;
+  name: string;
+  description?: string;
+  enable?: boolean;
+  adapter?: string;
+  adapter_config?: JsonRecord;
+  use_pipeline_uuid?: string;
+  pipeline_routing_rules?: unknown[];
+  adapter_runtime_values?: JsonRecord;
+  updated_at?: string;
+}
+
 interface BroadcastTemplateMock {
   id: number;
   bot_uuid: string;
@@ -167,14 +180,112 @@ interface BroadcastDraftMock {
   updated_at: string;
 }
 
+interface BroadcastExecutionBatchMock {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  channel: string;
+  mode: 'paste_only' | 'send';
+  status: string;
+  total_tasks: number;
+  pending_tasks: number;
+  running_tasks: number;
+  succeeded_tasks: number;
+  failed_tasks: number;
+  cancelled_tasks: number;
+  interrupted_tasks: number;
+  created_by: string;
+  last_action_by: string | null;
+  error_message: string | null;
+  version: number;
+  created_at: string;
+  started_at: string | null;
+  paused_at: string | null;
+  finished_at: string | null;
+  cancelled_at: string | null;
+  scripted_failure_emitted?: boolean;
+}
+
+interface BroadcastExecutionTaskMock {
+  id: number;
+  execution_batch_id: number;
+  draft_id: number | null;
+  draft_text_snapshot: string;
+  target_conversation_snapshot: string;
+  channel: string;
+  action: 'paste_draft' | 'send_message';
+  status: string;
+  sequence_no: number;
+  attempt_count: number;
+  max_attempts: number;
+  idempotency_key: string;
+  request_digest: string;
+  runtime_task_id: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  operator_note: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  cancelled_at: string | null;
+  updated_at: string;
+}
+
+interface BroadcastExecutionAttemptMock {
+  id: number;
+  execution_task_id: number;
+  attempt_no: number;
+  idempotency_key: string;
+  request_digest: string;
+  runtime_task_id: string | null;
+  request_summary: string | null;
+  response_summary: string | null;
+  status: string;
+  error_code: string | null;
+  error_message: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+interface BroadcastExecutionEvidenceMock {
+  id: number;
+  execution_attempt_id: number;
+  window_title: string | null;
+  target_conversation: string | null;
+  action: 'paste_draft' | 'send_message';
+  input_located: boolean;
+  draft_written: boolean;
+  send_triggered: boolean;
+  clipboard_restored: boolean;
+  runtime_state: string | null;
+  evidence_summary: string | null;
+  technical_details: string | null;
+  created_at: string;
+}
+
+interface BroadcastSendConfirmationMock {
+  id: number;
+  execution_task_id: number;
+  token: string;
+  token_hash: string;
+  expires_at: string;
+  used_at: string | null;
+}
+
 interface LangBotApiMockState {
   bots: BotMock[];
   broadcastDrafts: BroadcastDraftMock[];
+  broadcastExecutionAttempts: BroadcastExecutionAttemptMock[];
+  broadcastExecutionBatches: BroadcastExecutionBatchMock[];
+  broadcastExecutionEvidence: BroadcastExecutionEvidenceMock[];
+  broadcastSendConfirmations: BroadcastSendConfirmationMock[];
+  broadcastExecutionTasks: BroadcastExecutionTaskMock[];
   broadcastGroupNames: BroadcastGroupNameMock[];
   broadcastGroupRules: BroadcastGroupRuleMock[];
   broadcastImportBatches: BroadcastImportBatchMock[];
   broadcastImportRows: BroadcastImportRowMock[];
   broadcastTemplates: BroadcastTemplateMock[];
+  broadcastSendEnabled: boolean;
   broadcastVariableProfile: BroadcastVariableProfileMock;
   counters: Record<string, number>;
   knowledgeBases: KnowledgeBaseMock[];
@@ -534,6 +645,134 @@ function syncDraftStaleFlags(state: LangBotApiMockState, importBatchId: number) 
         }
       : draft,
   );
+}
+
+function hashToken(token: string) {
+  return `hash:${token}`;
+}
+
+function findExecutionBatch(
+  state: LangBotApiMockState,
+  batchId: number,
+) {
+  return state.broadcastExecutionBatches.find((item) => item.id === batchId) || null;
+}
+
+function findExecutionTask(
+  state: LangBotApiMockState,
+  taskId: number,
+) {
+  return state.broadcastExecutionTasks.find((item) => item.id === taskId) || null;
+}
+
+function syncExecutionBatchCounts(
+  state: LangBotApiMockState,
+  batchId: number,
+) {
+  const batch = findExecutionBatch(state, batchId);
+  if (!batch) {
+    return null;
+  }
+  const tasks = state.broadcastExecutionTasks.filter((item) => item.execution_batch_id === batchId);
+  batch.total_tasks = tasks.length;
+  batch.pending_tasks = tasks.filter((item) => item.status === 'pending').length;
+  batch.running_tasks = tasks.filter((item) => item.status === 'running').length;
+  batch.succeeded_tasks = tasks.filter((item) => item.status === 'succeeded').length;
+  batch.failed_tasks = tasks.filter((item) => item.status === 'failed').length;
+  batch.cancelled_tasks = tasks.filter((item) => item.status === 'cancelled').length;
+  batch.interrupted_tasks = tasks.filter((item) => item.status === 'interrupted').length;
+
+  if (batch.running_tasks > 0) {
+    batch.status = 'running';
+  } else if (tasks.length > 0 && batch.pending_tasks === tasks.length && batch.paused_at) {
+    batch.status = 'paused';
+  } else if (batch.pending_tasks > 0 && batch.succeeded_tasks === 0 && batch.failed_tasks === 0) {
+    batch.status = batch.started_at ? 'queued' : 'created';
+  } else if (batch.pending_tasks === 0 && batch.failed_tasks === 0 && batch.interrupted_tasks === 0) {
+    batch.status = 'completed';
+    batch.finished_at = batch.finished_at || now();
+  } else if (batch.pending_tasks > 0 && (batch.failed_tasks > 0 || batch.interrupted_tasks > 0)) {
+    batch.status = 'partially_failed';
+  } else if (batch.pending_tasks === 0 && batch.succeeded_tasks === 0 && batch.cancelled_tasks > 0) {
+    batch.status = 'cancelled';
+  } else if (batch.pending_tasks === 0 && batch.failed_tasks > 0 && batch.succeeded_tasks === 0) {
+    batch.status = 'failed';
+  } else if (batch.pending_tasks === 0 && batch.interrupted_tasks > 0 && batch.succeeded_tasks === 0) {
+    batch.status = 'interrupted';
+  } else if (batch.failed_tasks > 0 || batch.interrupted_tasks > 0) {
+    batch.status = 'partially_failed';
+  }
+
+  return batch;
+}
+
+function createExecutionAttempt(
+  state: LangBotApiMockState,
+  task: BroadcastExecutionTaskMock,
+  payload: {
+    status: string;
+    action: 'paste_draft' | 'send_message';
+    runtime_state: string;
+    send_triggered: boolean;
+    evidence_summary: string;
+    error_code?: string | null;
+    error_message?: string | null;
+  },
+) {
+  const timestamp = now();
+  const attemptId = Number(nextId(state, 'broadcast-execution-attempt').split('-').pop());
+  const evidenceId = Number(nextId(state, 'broadcast-execution-evidence').split('-').pop());
+  const nextAttemptNo = task.attempt_count + 1;
+  task.attempt_count = nextAttemptNo;
+  task.runtime_task_id = `runtime-${attemptId}`;
+  task.idempotency_key = `broadcast:${task.id}:${nextAttemptNo}`;
+  task.started_at = task.started_at || timestamp;
+  task.finished_at = timestamp;
+  task.updated_at = timestamp;
+  task.error_code = payload.error_code || null;
+  task.error_message = payload.error_message || null;
+  task.status = payload.status;
+
+  const attempt: BroadcastExecutionAttemptMock = {
+    id: attemptId,
+    execution_task_id: task.id,
+    attempt_no: nextAttemptNo,
+    idempotency_key: task.idempotency_key,
+    request_digest: task.request_digest,
+    runtime_task_id: task.runtime_task_id,
+    request_summary: JSON.stringify({ action: payload.action }),
+    response_summary: JSON.stringify({ status: payload.status }),
+    status: payload.status,
+    error_code: payload.error_code || null,
+    error_message: payload.error_message || null,
+    started_at: timestamp,
+    finished_at: timestamp,
+  };
+
+  const evidence: BroadcastExecutionEvidenceMock = {
+    id: evidenceId,
+    execution_attempt_id: attemptId,
+    window_title: 'WeCom Test Window',
+    target_conversation: task.target_conversation_snapshot,
+    action: payload.action,
+    input_located: true,
+    draft_written: true,
+    send_triggered: payload.send_triggered,
+    clipboard_restored: true,
+    runtime_state: payload.runtime_state,
+    evidence_summary: payload.evidence_summary,
+    technical_details: null,
+    created_at: timestamp,
+  };
+
+  state.broadcastExecutionAttempts = [
+    ...state.broadcastExecutionAttempts.filter((item) => item.id !== attemptId),
+    attempt,
+  ];
+  state.broadcastExecutionEvidence = [
+    ...state.broadcastExecutionEvidence.filter((item) => item.id !== evidenceId),
+    evidence,
+  ];
 }
 
 function seedBroadcastState(): Pick<
@@ -1230,6 +1469,378 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     });
   }
 
+
+  if (path === '/api/v1/broadcast/executions') {
+    const botUuid = url.searchParams.get('bot_uuid');
+    const connectorId = url.searchParams.get('connector_id');
+
+    if (method === 'GET') {
+      const batches = state.broadcastExecutionBatches
+        .filter((item) => item.bot_uuid === botUuid && item.connector_id === connectorId)
+        .sort((left, right) => right.id - left.id);
+      return fulfillJson(route, batches);
+    }
+
+    if (method === 'POST') {
+      const body = parseJsonBody(route);
+      const draftIds = Array.isArray(body.draft_ids)
+        ? body.draft_ids.map((item) => Number(item)).filter((item) => Number.isFinite(item))
+        : [];
+      const drafts = draftIds
+        .map((draftId) => state.broadcastDrafts.find((item) => item.id === draftId) || null)
+        .filter((draft): draft is BroadcastDraftMock => draft != null);
+      if (drafts.length === 0 || drafts.length !== draftIds.length) {
+        return fulfillError(route, 404, 'BROADCAST_DRAFT_NOT_FOUND', '????????????');
+      }
+      const mode = body.mode === 'send' ? 'send' : 'paste_only';
+      const timestamp = now();
+      const batchId = Number(nextId(state, 'broadcast-execution-batch').split('-').pop());
+      const batch: BroadcastExecutionBatchMock = {
+        id: batchId,
+        bot_uuid: String(body.bot_uuid || ''),
+        connector_id: String(body.connector_id || ''),
+        channel: 'wxwork_database',
+        mode,
+        status: 'created',
+        total_tasks: drafts.length,
+        pending_tasks: drafts.length,
+        running_tasks: 0,
+        succeeded_tasks: 0,
+        failed_tasks: 0,
+        cancelled_tasks: 0,
+        interrupted_tasks: 0,
+        created_by: String(body.operator || 'tester@example.com'),
+        last_action_by: String(body.operator || 'tester@example.com'),
+        error_message: null,
+        version: 1,
+        created_at: timestamp,
+        started_at: null,
+        paused_at: null,
+        finished_at: null,
+        cancelled_at: null,
+      };
+      const tasks = drafts.map((draft, index) => {
+        const taskId = Number(nextId(state, 'broadcast-execution-task').split('-').pop());
+        const task: BroadcastExecutionTaskMock = {
+          id: taskId,
+          execution_batch_id: batchId,
+          draft_id: draft.id,
+          draft_text_snapshot: draft.draft_text,
+          target_conversation_snapshot: draft.target_conversation_name || '',
+          channel: 'wxwork_database',
+          action: mode === 'send' ? 'send_message' : 'paste_draft',
+          status: 'pending',
+          sequence_no: index + 1,
+          attempt_count: 0,
+          max_attempts: 3,
+          idempotency_key: `broadcast:${taskId}:1`,
+          request_digest: `fixture-digest-${taskId}`,
+          runtime_task_id: null,
+          error_code: null,
+          error_message: null,
+          operator_note: null,
+          created_at: timestamp,
+          started_at: null,
+          finished_at: null,
+          cancelled_at: null,
+          updated_at: timestamp,
+        };
+        return task;
+      });
+      state.broadcastExecutionBatches = [
+        batch,
+        ...state.broadcastExecutionBatches.filter((item) => item.id !== batchId),
+      ];
+      state.broadcastExecutionTasks = [
+        ...tasks,
+        ...state.broadcastExecutionTasks.filter(
+          (item) => !tasks.some((task) => task.id === item.id),
+        ),
+      ];
+      return fulfillJson(route, {
+        ...batch,
+        tasks,
+      });
+    }
+  }
+
+  const executionDetailMatch = path.match(/^\/api\/v1\/broadcast\/executions\/(\d+)$/);
+  if (executionDetailMatch && method === 'GET') {
+    const batchId = Number(executionDetailMatch[1]);
+    const batch = state.broadcastExecutionBatches.find((item) => item.id === batchId);
+    if (!batch) {
+      return fulfillError(route, 404, 'BROADCAST_EXECUTION_BATCH_NOT_FOUND', '??????????????');
+    }
+    const tasks = state.broadcastExecutionTasks.filter((item) => item.execution_batch_id === batchId);
+    return fulfillJson(route, {
+      ...batch,
+      tasks,
+    });
+  }
+
+  const executionBatchActionMatch = path.match(
+    /^\/api\/v1\/broadcast\/executions\/(\d+)\/(start|pause|resume|cancel)$/,
+  );
+  if (executionBatchActionMatch && method === 'POST') {
+    const batchId = Number(executionBatchActionMatch[1]);
+    const action = executionBatchActionMatch[2];
+    const batch = findExecutionBatch(state, batchId);
+    if (!batch) {
+      return fulfillError(route, 404, 'BROADCAST_EXECUTION_BATCH_NOT_FOUND', '??????????????');
+    }
+    const body = parseJsonBody(route);
+    const tasks = state.broadcastExecutionTasks
+      .filter((item) => item.execution_batch_id === batchId)
+      .sort((left, right) => left.sequence_no - right.sequence_no);
+    const timestamp = now();
+    batch.last_action_by = String(body.operator || batch.last_action_by || 'tester@example.com');
+
+    if (action === 'start') {
+      batch.started_at = batch.started_at || timestamp;
+      batch.paused_at = null;
+      if (batch.mode === 'paste_only' && tasks.length === 1) {
+        createExecutionAttempt(state, tasks[0], {
+          status: 'succeeded',
+          action: 'paste_draft',
+          runtime_state: 'pasted_to_input',
+          send_triggered: false,
+          evidence_summary: 'Draft written to input',
+        });
+      } else {
+        batch.status = 'running';
+      }
+      syncExecutionBatchCounts(state, batchId);
+    }
+
+    if (action === 'pause') {
+      batch.status = 'paused';
+      batch.paused_at = timestamp;
+    }
+
+    if (action === 'resume') {
+      batch.paused_at = null;
+      batch.status = 'running';
+      if (!batch.scripted_failure_emitted) {
+        const task = tasks.find((item) => item.status === 'pending');
+        if (task) {
+          createExecutionAttempt(state, task, {
+            status: 'failed',
+            action: task.action,
+            runtime_state: 'failed',
+            send_triggered: false,
+            evidence_summary: 'Scripted failure for retry flow',
+            error_code: 'SCRIPTED_FAILURE',
+            error_message: 'Scripted failure for retry flow',
+          });
+          batch.scripted_failure_emitted = true;
+        }
+      }
+      syncExecutionBatchCounts(state, batchId);
+    }
+
+    if (action === 'cancel') {
+      for (const task of tasks.filter((item) => item.status === 'pending')) {
+        task.status = 'cancelled';
+        task.cancelled_at = timestamp;
+        task.finished_at = timestamp;
+        task.updated_at = timestamp;
+      }
+      batch.cancelled_at = timestamp;
+      syncExecutionBatchCounts(state, batchId);
+      batch.status = 'cancelled';
+    }
+
+    return fulfillJson(route, {
+      ...batch,
+      tasks: state.broadcastExecutionTasks.filter((item) => item.execution_batch_id === batchId),
+    });
+  }
+
+  const executionTaskAttemptsMatch = path.match(/^\/api\/v1\/broadcast\/execution-tasks\/(\d+)\/attempts$/);
+  if (executionTaskAttemptsMatch && method === 'GET') {
+    const taskId = Number(executionTaskAttemptsMatch[1]);
+    return fulfillJson(route, state.broadcastExecutionAttempts.filter((item) => item.execution_task_id === taskId));
+  }
+
+  const executionTaskDetailMatch = path.match(/^\/api\/v1\/broadcast\/execution-tasks\/(\d+)$/);
+  if (executionTaskDetailMatch && method === 'GET') {
+    const taskId = Number(executionTaskDetailMatch[1]);
+    const task = findExecutionTask(state, taskId);
+    if (!task) {
+      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+    }
+    return fulfillJson(route, task);
+  }
+
+  const executionTaskStartMatch = path.match(/^\/api\/v1\/broadcast\/execution-tasks\/(\d+)\/start$/);
+  if (executionTaskStartMatch && method === 'POST') {
+    const taskId = Number(executionTaskStartMatch[1]);
+    const task = findExecutionTask(state, taskId);
+    if (!task) {
+      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+    }
+    const batch = findExecutionBatch(state, task.execution_batch_id);
+    if (!batch) {
+      return fulfillError(route, 404, 'BROADCAST_EXECUTION_BATCH_NOT_FOUND', '??????????????');
+    }
+    batch.started_at = batch.started_at || now();
+    createExecutionAttempt(state, task, {
+      status: 'succeeded',
+      action: task.action,
+      runtime_state: task.action === 'send_message' ? 'send_verified' : 'pasted_to_input',
+      send_triggered: task.action === 'send_message',
+      evidence_summary: task.action === 'send_message' ? 'Message sent' : 'Draft written to input',
+    });
+    syncExecutionBatchCounts(state, batch.id);
+    return fulfillJson(route, task);
+  }
+
+  const executionTaskRetryMatch = path.match(/^\/api\/v1\/broadcast\/execution-tasks\/(\d+)\/retry$/);
+  if (executionTaskRetryMatch && method === 'POST') {
+    const taskId = Number(executionTaskRetryMatch[1]);
+    const task = findExecutionTask(state, taskId);
+    if (!task) {
+      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+    }
+    task.status = 'pending';
+    task.error_code = null;
+    task.error_message = null;
+    task.finished_at = null;
+    task.cancelled_at = null;
+    task.updated_at = now();
+    const batch = findExecutionBatch(state, task.execution_batch_id);
+    if (batch) {
+      batch.finished_at = null;
+      batch.cancelled_at = null;
+      batch.paused_at = null;
+      batch.status = 'queued';
+      syncExecutionBatchCounts(state, batch.id);
+    }
+    return fulfillJson(route, task);
+  }
+
+  const executionTaskSendMatch = path.match(/^\/api\/v1\/broadcast\/execution-tasks\/(\d+)\/send$/);
+  if (executionTaskSendMatch && method === 'POST') {
+    const taskId = Number(executionTaskSendMatch[1]);
+    const task = findExecutionTask(state, taskId);
+    if (!task) {
+      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+    }
+    if (!state.broadcastSendEnabled) {
+      return fulfillError(route, 409, 'BROADCAST_EXECUTION_SEND_DISABLED', 'Real send is disabled');
+    }
+    const body = parseJsonBody(route);
+    const token = String(body.confirmation_token || '');
+    const confirmation = state.broadcastSendConfirmations.find(
+      (item) => item.execution_task_id === taskId && item.token === token,
+    );
+    if (!confirmation) {
+      return fulfillError(route, 409, 'BROADCAST_EXECUTION_CONFIRMATION_INVALID', 'Invalid confirmation token');
+    }
+    if (confirmation.used_at) {
+      return fulfillError(route, 409, 'BROADCAST_EXECUTION_CONFIRMATION_INVALID', 'Confirmation token already used');
+    }
+    confirmation.used_at = now();
+    createExecutionAttempt(state, task, {
+      status: 'succeeded',
+      action: 'send_message',
+      runtime_state: 'send_verified',
+      send_triggered: true,
+      evidence_summary: 'Message sent',
+    });
+    syncExecutionBatchCounts(state, task.execution_batch_id);
+    return fulfillJson(route, task);
+  }
+
+  if (path === '/api/v1/broadcast/send-confirmations' && method === 'POST') {
+    const body = parseJsonBody(route);
+    const taskId = Number(body.execution_task_id || 0);
+    const task = findExecutionTask(state, taskId);
+    if (!task) {
+      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+    }
+    if (!state.broadcastSendEnabled) {
+      return fulfillError(route, 409, 'BROADCAST_EXECUTION_SEND_DISABLED', 'Real send is disabled');
+    }
+    const confirmationId = Number(nextId(state, 'broadcast-send-confirmation').split('-').pop());
+    const token = `confirm-${confirmationId}`;
+    const confirmation: BroadcastSendConfirmationMock = {
+      id: confirmationId,
+      execution_task_id: taskId,
+      token,
+      token_hash: hashToken(token),
+      expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      used_at: null,
+    };
+    state.broadcastSendConfirmations = [
+      confirmation,
+      ...state.broadcastSendConfirmations.filter((item) => item.id !== confirmationId),
+    ];
+    return fulfillJson(route, {
+      id: confirmation.id,
+      token: confirmation.token,
+      expires_at: confirmation.expires_at,
+      execution_task_id: confirmation.execution_task_id,
+    });
+  }
+
+  if (path === '/api/v1/broadcast/executors/capabilities' && method === 'GET') {
+    return fulfillJson(route, {
+      channel: 'wxwork_database',
+      supports_paste: true,
+      supports_send: state.broadcastSendEnabled,
+      supports_cancel: true,
+      supports_status_query: true,
+      supports_clipboard_restore: true,
+      supports_evidence: true,
+      executor_version: 'fixture-phase7',
+      runtime_min_version: '1.0.0',
+    });
+  }
+
+  if (path === '/api/v1/broadcast/executors/health' && method === 'GET') {
+    return fulfillJson(route, {
+      channel: 'wxwork_database',
+      status: 'healthy',
+      protocol_version: '1.0.0',
+      runtime_version: '1.0.0',
+      capability: {
+        channel: 'wxwork_database',
+        supports_paste: true,
+        supports_send: state.broadcastSendEnabled,
+        supports_cancel: true,
+        supports_status_query: true,
+        supports_clipboard_restore: true,
+        supports_evidence: true,
+        executor_version: 'fixture-phase7',
+        runtime_min_version: '1.0.0',
+      },
+      runtime_status: {
+        runtimeAutoSendEnabled: state.broadcastSendEnabled,
+      },
+    });
+  }
+
+  const executionAttemptDetailMatch = path.match(/^\/api\/v1\/broadcast\/execution-attempts\/(\d+)$/);
+  if (executionAttemptDetailMatch && method === 'GET') {
+    const attemptId = Number(executionAttemptDetailMatch[1]);
+    const attempt = state.broadcastExecutionAttempts.find((item) => item.id === attemptId);
+    if (!attempt) {
+      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+    }
+    return fulfillJson(route, attempt);
+  }
+
+  const executionEvidenceMatch = path.match(/^\/api\/v1\/broadcast\/execution-attempts\/(\d+)\/evidence$/);
+  if (executionEvidenceMatch && method === 'GET') {
+    const attemptId = Number(executionEvidenceMatch[1]);
+    const evidence = state.broadcastExecutionEvidence.find((item) => item.execution_attempt_id === attemptId);
+    if (!evidence) {
+      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+    }
+    return fulfillJson(route, evidence);
+  }
+
   if (path === '/api/v1/broadcast/drafts' && method === 'GET') {
     const importBatchId = Number(url.searchParams.get('import_batch_id') || 0);
     const status = url.searchParams.get('status');
@@ -1828,21 +2439,53 @@ async function handleCloudApi(route: Route) {
 
 export async function installLangBotApiMocks(
   page: Page,
-  options: { authenticated?: boolean; storage?: JsonRecord } = {},
+  options: {
+    authenticated?: boolean;
+    storage?: JsonRecord;
+    bots?: InstallLangBotApiMockBot[];
+    broadcastSendEnabled?: boolean;
+  } = {},
 ) {
-  const { authenticated = false, storage = {} } = options;
+  const {
+    authenticated = false,
+    storage = {},
+    bots = [],
+    broadcastSendEnabled = false,
+  } = options;
   const broadcastSeed = seedBroadcastState();
   const state: LangBotApiMockState = {
-    bots: [],
+    bots: bots.map((bot) => ({
+      uuid: bot.uuid,
+      name: bot.name,
+      description: bot.description || '',
+      enable: bot.enable !== false,
+      adapter: bot.adapter || 'playwright-adapter',
+      adapter_config: bot.adapter_config || {},
+      use_pipeline_uuid: bot.use_pipeline_uuid,
+      pipeline_routing_rules: bot.pipeline_routing_rules || [],
+      adapter_runtime_values: bot.adapter_runtime_values || {},
+      updated_at: bot.updated_at || now(),
+    })),
     broadcastDrafts: [],
+    broadcastExecutionAttempts: [],
+    broadcastExecutionBatches: [],
+    broadcastExecutionEvidence: [],
+    broadcastSendConfirmations: [],
+    broadcastExecutionTasks: [],
     broadcastGroupNames: broadcastSeed.broadcastGroupNames,
     broadcastGroupRules: broadcastSeed.broadcastGroupRules,
     broadcastImportBatches: [],
     broadcastImportRows: [],
+    broadcastSendEnabled,
     broadcastTemplates: broadcastSeed.broadcastTemplates,
     broadcastVariableProfile: broadcastSeed.broadcastVariableProfile,
     counters: {
       'broadcast-draft': 0,
+      'broadcast-execution-batch': 0,
+      'broadcast-execution-task': 0,
+      'broadcast-execution-attempt': 0,
+      'broadcast-execution-evidence': 0,
+      'broadcast-send-confirmation': 0,
       'broadcast-template': broadcastSeed.broadcastTemplates.length,
       'broadcast-group-rule': broadcastSeed.broadcastGroupRules.length,
       'broadcast-group-name': broadcastSeed.broadcastGroupNames.length,

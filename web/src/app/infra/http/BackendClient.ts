@@ -1,4 +1,5 @@
 import { BaseHttpClient, RequestConfig } from './BaseHttpClient';
+import axios from 'axios';
 import {
   ApiRespProviderRequesters,
   ApiRespProviderRequester,
@@ -67,6 +68,10 @@ import {
   ApiBroadcastDraft,
   ApiBroadcastDraftStatus,
   ApiBroadcastDraftStatusUpdateResult,
+  ApiBroadcastExecutionAttempt,
+  ApiBroadcastExecutionBatch,
+  ApiBroadcastExecutionEvidence,
+  ApiBroadcastExecutionTask,
   ApiBroadcastImportBatch,
   ApiBroadcastImportDetail,
   ApiBroadcastImportDraftGenerationResult,
@@ -104,32 +109,50 @@ export class BackendClient extends BaseHttpClient {
   }
 
   private async requestBroadcast<T>(config: RequestConfig): Promise<T> {
+    const token =
+      typeof window !== 'undefined' && !this.disableToken
+        ? this.getSessionSync()
+        : null;
+    const headers = {
+      ...this.instance.defaults.headers.common,
+      ...(config.headers ?? {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+
     try {
-      return await this.request<T>(config);
+      const response = await axios.request<{
+        code: number;
+        message: string;
+        data: T;
+        timestamp: number;
+      }>({
+        baseURL: this.instance.defaults.baseURL,
+        timeout: this.instance.defaults.timeout,
+        ...config,
+        headers,
+      });
+      return response.data.data;
     } catch (error) {
-      if (
-        error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        'msg' in error
-      ) {
-        const axiosError = error as {
-          code: unknown;
-          msg: unknown;
-          data?: unknown;
-          message?: unknown;
-          details?: unknown;
-        };
+      if (axios.isAxiosError(error) && error.response) {
+        const responseData = error.response.data as
+          | {
+              code?: unknown;
+              msg?: unknown;
+              message?: unknown;
+              details?: unknown;
+            }
+          | undefined;
         throw {
-          code: axiosError.code,
-          msg: String(axiosError.msg),
+          code: responseData?.code ?? error.response.status,
+          msg: String(responseData?.msg ?? error.message),
           data: {
             message:
-              typeof axiosError.message === 'string'
-                ? axiosError.message
-                : String(axiosError.msg),
-            details: Array.isArray(axiosError.details)
-              ? axiosError.details
+              typeof responseData?.message === 'string' &&
+              responseData.message.trim()
+                ? responseData.message
+                : String(responseData?.msg ?? error.message),
+            details: Array.isArray(responseData?.details)
+              ? responseData.details
               : [],
           },
         };
@@ -2215,6 +2238,202 @@ export class BackendClient extends BaseHttpClient {
         ...scope,
         draft_ids: draftIds,
         status,
+      },
+    });
+  }
+
+  public createBroadcastExecutionBatch(
+    scope: ApiBroadcastScope,
+    payload: {
+      draft_ids: number[];
+      mode: 'paste_only' | 'send';
+      operator: string;
+    },
+  ): Promise<ApiBroadcastExecutionBatch> {
+    return this.requestBroadcast<ApiBroadcastExecutionBatch>({
+      method: 'post',
+      url: '/api/v1/broadcast/executions',
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public getBroadcastExecutionBatches(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastExecutionBatch[]> {
+    return this.get('/api/v1/broadcast/executions', scope);
+  }
+
+  public getBroadcastExecutionBatchDetail(
+    scope: ApiBroadcastScope,
+    batchId: number,
+  ): Promise<ApiBroadcastExecutionBatch> {
+    return this.get(`/api/v1/broadcast/executions/${batchId}`, scope);
+  }
+
+  public getBroadcastExecutionTaskDetail(
+    scope: ApiBroadcastScope,
+    taskId: number,
+  ): Promise<ApiBroadcastExecutionTask> {
+    return this.get(`/api/v1/broadcast/execution-tasks/${taskId}`, scope);
+  }
+
+  public startBroadcastExecutionBatch(
+    scope: ApiBroadcastScope,
+    batchId: number,
+    operator: string,
+  ): Promise<ApiBroadcastExecutionBatch> {
+    return this.requestBroadcast<ApiBroadcastExecutionBatch>({
+      method: 'post',
+      url: `/api/v1/broadcast/executions/${batchId}/start`,
+      data: {
+        ...scope,
+        operator,
+      },
+    });
+  }
+
+  public pauseBroadcastExecutionBatch(
+    scope: ApiBroadcastScope,
+    batchId: number,
+    operator: string,
+  ): Promise<ApiBroadcastExecutionBatch> {
+    return this.requestBroadcast<ApiBroadcastExecutionBatch>({
+      method: 'post',
+      url: `/api/v1/broadcast/executions/${batchId}/pause`,
+      data: {
+        ...scope,
+        operator,
+      },
+    });
+  }
+
+  public resumeBroadcastExecutionBatch(
+    scope: ApiBroadcastScope,
+    batchId: number,
+    operator: string,
+  ): Promise<ApiBroadcastExecutionBatch> {
+    return this.requestBroadcast<ApiBroadcastExecutionBatch>({
+      method: 'post',
+      url: `/api/v1/broadcast/executions/${batchId}/resume`,
+      data: {
+        ...scope,
+        operator,
+      },
+    });
+  }
+
+  public cancelBroadcastExecutionBatch(
+    scope: ApiBroadcastScope,
+    batchId: number,
+    operator: string,
+  ): Promise<ApiBroadcastExecutionBatch> {
+    return this.requestBroadcast<ApiBroadcastExecutionBatch>({
+      method: 'post',
+      url: `/api/v1/broadcast/executions/${batchId}/cancel`,
+      data: {
+        ...scope,
+        operator,
+      },
+    });
+  }
+
+  public startBroadcastExecutionTask(
+    scope: ApiBroadcastScope,
+    taskId: number,
+    operator: string,
+  ): Promise<ApiBroadcastExecutionTask> {
+    return this.requestBroadcast<ApiBroadcastExecutionTask>({
+      method: 'post',
+      url: `/api/v1/broadcast/execution-tasks/${taskId}/start`,
+      data: {
+        ...scope,
+        operator,
+      },
+    });
+  }
+
+  public retryBroadcastExecutionTask(
+    scope: ApiBroadcastScope,
+    taskId: number,
+    operator: string,
+  ): Promise<ApiBroadcastExecutionTask> {
+    return this.requestBroadcast<ApiBroadcastExecutionTask>({
+      method: 'post',
+      url: `/api/v1/broadcast/execution-tasks/${taskId}/retry`,
+      data: {
+        ...scope,
+        operator,
+      },
+    });
+  }
+
+  public sendBroadcastExecutionTask(
+    scope: ApiBroadcastScope,
+    taskId: number,
+    payload: {
+      operator: string;
+      confirmation_token: string;
+    },
+  ): Promise<ApiBroadcastExecutionTask> {
+    return this.requestBroadcast<ApiBroadcastExecutionTask>({
+      method: 'post',
+      url: `/api/v1/broadcast/execution-tasks/${taskId}/send`,
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public getBroadcastExecutionAttempts(
+    scope: ApiBroadcastScope,
+    taskId: number,
+  ): Promise<ApiBroadcastExecutionAttempt[]> {
+    return this.get(`/api/v1/broadcast/execution-tasks/${taskId}/attempts`, scope);
+  }
+
+  public getBroadcastExecutionAttemptDetail(
+    scope: ApiBroadcastScope,
+    attemptId: number,
+  ): Promise<ApiBroadcastExecutionAttempt> {
+    return this.get(`/api/v1/broadcast/execution-attempts/${attemptId}`, scope);
+  }
+
+  public getBroadcastExecutionEvidence(
+    scope: ApiBroadcastScope,
+    attemptId: number,
+  ): Promise<ApiBroadcastExecutionEvidence> {
+    return this.get(`/api/v1/broadcast/execution-attempts/${attemptId}/evidence`, scope);
+  }
+
+  public getBroadcastExecutorCapabilities(
+    scope: ApiBroadcastScope,
+  ): Promise<Record<string, unknown>> {
+    return this.get('/api/v1/broadcast/executors/capabilities', scope);
+  }
+
+  public getBroadcastExecutorHealth(
+    scope: ApiBroadcastScope,
+  ): Promise<Record<string, unknown>> {
+    return this.get('/api/v1/broadcast/executors/health', scope);
+  }
+
+  public createBroadcastSendConfirmation(
+    scope: ApiBroadcastScope,
+    payload: {
+      execution_task_id: number;
+      operator: string;
+    },
+  ): Promise<{ id: number; token: string; expires_at: string | null; execution_task_id: number }> {
+    return this.requestBroadcast({
+      method: 'post',
+      url: '/api/v1/broadcast/send-confirmations',
+      data: {
+        ...scope,
+        ...payload,
       },
     });
   }

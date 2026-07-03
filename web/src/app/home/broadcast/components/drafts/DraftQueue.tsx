@@ -1,3 +1,4 @@
+﻿import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -41,6 +42,20 @@ interface DraftQueueProps {
   onSelectDraft: (draftId: number) => void;
   onToggleDraftSelection: (draftId: number, checked: boolean) => void;
   onBatchConfirm: () => void;
+  onCreateExecutionBatch: () => void;
+}
+
+function getStatusLabel(
+  status: BroadcastDraftStatus,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  if (status === 'pending_review') {
+    return t('broadcast.drafts.statusPendingReview');
+  }
+  if (status === 'ready') {
+    return t('broadcast.drafts.statusReady');
+  }
+  return t('broadcast.drafts.statusInvalid');
 }
 
 export default function DraftQueue({
@@ -58,18 +73,26 @@ export default function DraftQueue({
   onSelectDraft,
   onToggleDraftSelection,
   onBatchConfirm,
+  onCreateExecutionBatch,
 }: DraftQueueProps) {
   const { t } = useTranslation();
+
+  const selectableDraftIds = useMemo(
+    () =>
+      drafts
+        .flatMap((group) => group.drafts)
+        .filter((draft) => draft.status !== 'invalid' && !draft.draftsStale)
+        .map((draft) => draft.id),
+    [drafts],
+  );
+
   const eligibleSelectedCount = selectedDraftIds.filter((draftId) =>
-    drafts.some((group) =>
-      group.drafts.some(
-        (draft) =>
-          draft.id === draftId &&
-          draft.status !== 'invalid' &&
-          !draft.draftsStale,
-      ),
-    ),
+    selectableDraftIds.includes(draftId),
   ).length;
+
+  const allSelectableChecked =
+    selectableDraftIds.length > 0 &&
+    selectableDraftIds.every((draftId) => selectedDraftIds.includes(draftId));
 
   return (
     <Card className="min-h-0 gap-4" data-testid="broadcast-draft-queue">
@@ -86,13 +109,13 @@ export default function DraftQueue({
             }
           >
             <SelectTrigger
-              aria-label="批次筛选"
+              aria-label={t('broadcast.drafts.batchFilter')}
               data-testid="broadcast-draft-batch-filter"
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部批次</SelectItem>
+              <SelectItem value="all">{t('broadcast.drafts.allBatches')}</SelectItem>
               {importBatches.map((batch) => (
                 <SelectItem key={batch.id} value={String(batch.id)}>
                   {batch.originalFileName}
@@ -116,29 +139,58 @@ export default function DraftQueue({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部状态</SelectItem>
-              <SelectItem value="pending_review">待审核</SelectItem>
-              <SelectItem value="ready">已确认</SelectItem>
-              <SelectItem value="invalid">无效</SelectItem>
+              <SelectItem value="all">{t('broadcast.drafts.allStatuses')}</SelectItem>
+              <SelectItem value="pending_review">
+                {t('broadcast.drafts.statusPendingReview')}
+              </SelectItem>
+              <SelectItem value="ready">{t('broadcast.drafts.statusReady')}</SelectItem>
+              <SelectItem value="invalid">{t('broadcast.drafts.statusInvalid')}</SelectItem>
             </SelectContent>
           </Select>
         </div>
 
         <div className="rounded-xl border bg-muted/20 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">批量操作</div>
-              <div className="text-xs text-muted-foreground">
-                已选 {eligibleSelectedCount} 条草稿
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  aria-label={t('broadcast.drafts.selectAllEligible')}
+                  checked={allSelectableChecked}
+                  disabled={selectableDraftIds.length === 0 || busy}
+                  data-testid="broadcast-draft-select-all-checkbox"
+                  onCheckedChange={(checked) => {
+                    for (const draftId of selectableDraftIds) {
+                      onToggleDraftSelection(draftId, Boolean(checked));
+                    }
+                  }}
+                />
+                <div>
+                  <div className="text-sm font-medium">{t('broadcast.drafts.batchToolbar')}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {t('broadcast.drafts.selectedCount', {
+                      count: eligibleSelectedCount,
+                    })}
+                  </div>
+                </div>
               </div>
             </div>
-            <Button
-              data-testid="broadcast-draft-batch-confirm-button"
-              onClick={onBatchConfirm}
-              disabled={eligibleSelectedCount === 0 || busy}
-            >
-              批量确认
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                data-testid="broadcast-draft-batch-confirm-button"
+                onClick={onBatchConfirm}
+                disabled={eligibleSelectedCount === 0 || busy}
+              >
+                {t('broadcast.drafts.batchConfirm')}
+              </Button>
+              <Button
+                data-testid="broadcast-draft-create-execution-batch-button"
+                variant="outline"
+                onClick={onCreateExecutionBatch}
+                disabled={eligibleSelectedCount === 0 || busy}
+              >
+                {t('broadcast.drafts.createExecutionBatch')}
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -151,11 +203,7 @@ export default function DraftQueue({
               <section key={group.status} className="space-y-2">
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-medium">
-                    {group.status === 'pending_review'
-                      ? '待审核'
-                      : group.status === 'ready'
-                        ? '已确认'
-                        : '无效'}
+                    {getStatusLabel(group.status, t)}
                   </div>
                   <Badge variant="outline">{group.drafts.length}</Badge>
                 </div>
@@ -170,12 +218,14 @@ export default function DraftQueue({
                         className={`rounded-xl border p-3 ${
                           isActive ? 'border-blue-500 bg-blue-50' : 'bg-card'
                         }`}
+                        data-testid={`broadcast-draft-row-${draft.id}`}
                       >
                         <div className="flex items-start gap-3">
                           <Checkbox
-                            aria-label={`选择草稿 ${draft.id}`}
+                            aria-label={t('broadcast.drafts.selectDraft', { id: draft.id })}
                             checked={selectedDraftIds.includes(draft.id)}
-                            disabled={selectionDisabled}
+                            disabled={selectionDisabled || busy}
+                            data-testid={`broadcast-draft-select-${draft.id}`}
                             onCheckedChange={(checked) =>
                               onToggleDraftSelection(draft.id, Boolean(checked))
                             }
@@ -190,12 +240,8 @@ export default function DraftQueue({
                               {draft.conversationName}
                             </div>
                             <div className="mt-2 text-xs text-muted-foreground">
-                              {draft.status === 'pending_review'
-                                ? '待审核'
-                                : draft.status === 'ready'
-                                  ? '已确认'
-                                  : '无效'}
-                              {draft.draftsStale ? ' · 草稿已过期' : ''}
+                              {getStatusLabel(draft.status as BroadcastDraftStatus, t)}
+                              {draft.draftsStale ? ` · ${t('broadcast.drafts.staleBadge')}` : ''}
                             </div>
                           </button>
                         </div>
