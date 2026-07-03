@@ -43,6 +43,7 @@ from ...local_connectors import service as local_connectors_service
 from ...database_mode.events import DatabaseModeEventBus
 from ...database_mode import service as database_mode_service
 from ...database_mode import processing_service as database_mode_processing_service
+from ...broadcast.service import BroadcastService
 from ...desktop_automation.repository import DesktopAutomationRepository
 from ...desktop_automation.runtime_process import (
     DesktopRuntimeProcessManager,
@@ -210,6 +211,7 @@ class BuildAppStage(stage.BootingStage):
         ap.database_mode_service = database_mode_service_inst
         ap.database_mode_processing_service = database_mode_processing_service.DatabaseModeProcessingService(ap)
         await ap.database_mode_processing_service.reconcile_stale_processing_runs()
+        ap.broadcast_service = BroadcastService(ap)
 
         desktop_automation_config = apply_local_desktop_automation_defaults(
             ap.instance_config.data.get('desktop_automation', {})

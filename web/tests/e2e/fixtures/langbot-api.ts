@@ -67,8 +67,62 @@ interface BotMock {
   updated_at: string;
 }
 
+interface BroadcastTemplateMock {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  name: string;
+  content: string;
+  variables: string[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+interface BroadcastVariableProfileMock {
+  group_field: string | null;
+  mapping_rules: Array<{
+    source_field: string;
+    variable_key: string;
+    merge_mode:
+      | 'first'
+      | 'lines'
+      | 'unique_lines'
+      | 'commas'
+      | 'unique_commas';
+    order: number;
+  }>;
+}
+
+interface BroadcastGroupRuleMock {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  source_value: string;
+  match_type: 'exact' | 'contains' | 'regex';
+  match_expression: string;
+  target_conversation_name: string;
+  priority: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+interface BroadcastGroupNameMock {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
 interface LangBotApiMockState {
   bots: BotMock[];
+  broadcastGroupNames: BroadcastGroupNameMock[];
+  broadcastGroupRules: BroadcastGroupRuleMock[];
+  broadcastTemplates: BroadcastTemplateMock[];
+  broadcastVariableProfile: BroadcastVariableProfileMock;
   counters: Record<string, number>;
   knowledgeBases: KnowledgeBaseMock[];
   mcpServers: MCPServerMock[];
@@ -90,6 +144,27 @@ async function fulfillJson(route: Route, data: unknown) {
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify(ok(data)),
+  });
+}
+
+async function fulfillError(
+  route: Route,
+  status: number,
+  msg: string,
+  message: string,
+  details: string[] = [],
+) {
+  await route.fulfill({
+    status,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      code: -1,
+      msg,
+      message,
+      details,
+      data: null,
+      timestamp: Date.now(),
+    }),
   });
 }
 
@@ -272,6 +347,154 @@ function makeBot(
   };
 }
 
+function extractTemplateVariables(content: string): string[] {
+  const matches = content.matchAll(/{{\s*([A-Za-z0-9_\-\u4e00-\u9fff]+)\s*}}/g);
+  return Array.from(new Set(Array.from(matches, (match) => match[1])));
+}
+
+function renderBroadcastTemplate(
+  content: string,
+  variables: Record<string, unknown>,
+) {
+  const required_variables = extractTemplateVariables(content);
+  const rendered_text = content.replace(
+    /{{\s*([A-Za-z0-9_\-\u4e00-\u9fff]+)\s*}}/g,
+    (token, key: string) => {
+      const value = variables[key];
+      return value === undefined || value === null || value === ''
+        ? token
+        : String(value);
+    },
+  );
+  const missing_variables = required_variables.filter((key) => {
+    const value = variables[key];
+    return value === undefined || value === null || value === '';
+  });
+  return {
+    rendered_text,
+    required_variables,
+    missing_variables,
+    valid: missing_variables.length === 0,
+  };
+}
+
+function matchBroadcastRule(
+  rule: BroadcastGroupRuleMock,
+  sourceValue: string,
+): boolean {
+  if (!rule.enabled) {
+    return false;
+  }
+
+  if (rule.match_type === 'exact') {
+    return sourceValue === rule.match_expression;
+  }
+
+  if (rule.match_type === 'contains') {
+    return sourceValue.includes(rule.match_expression);
+  }
+
+  try {
+    return new RegExp(rule.match_expression).test(sourceValue);
+  } catch {
+    return false;
+  }
+}
+
+function seedBroadcastState(): Pick<
+  LangBotApiMockState,
+  | 'broadcastTemplates'
+  | 'broadcastVariableProfile'
+  | 'broadcastGroupRules'
+  | 'broadcastGroupNames'
+> {
+  const timestamp = now();
+  return {
+    broadcastTemplates: [
+      {
+        id: 1,
+        bot_uuid: 'bot-1',
+        connector_id: 'wxwork-local',
+        name: 'Arrival Reminder',
+        content:
+          'Hello {{customer_name}},\nShipment {{shipment_no}} is expected to arrive on {{eta_date}}.',
+        variables: ['customer_name', 'shipment_no', 'eta_date'],
+        enabled: true,
+        created_at: timestamp,
+        updated_at: timestamp,
+      },
+      {
+        id: 2,
+        bot_uuid: 'bot-1',
+        connector_id: 'wxwork-local',
+        name: 'Payment Notice',
+        content:
+          'Hi {{customer_name}},\nInvoice {{invoice_no}} is awaiting confirmation.',
+        variables: ['customer_name', 'invoice_no'],
+        enabled: true,
+        created_at: timestamp,
+        updated_at: timestamp,
+      },
+    ],
+    broadcastVariableProfile: {
+      group_field: 'Customer Name',
+      mapping_rules: [
+        {
+          source_field: 'Customer Name',
+          variable_key: 'customer_name',
+          merge_mode: 'first',
+          order: 1,
+        },
+        {
+          source_field: 'Shipment No',
+          variable_key: 'shipment_no',
+          merge_mode: 'first',
+          order: 2,
+        },
+        {
+          source_field: 'ETA Date',
+          variable_key: 'eta_date',
+          merge_mode: 'first',
+          order: 3,
+        },
+      ],
+    },
+    broadcastGroupRules: [
+      {
+        id: 1,
+        bot_uuid: 'bot-1',
+        connector_id: 'wxwork-local',
+        source_value: 'Acme Freight',
+        match_type: 'exact',
+        match_expression: 'Acme Freight',
+        target_conversation_name: 'Acme Freight Ops',
+        priority: 30,
+        enabled: true,
+        created_at: timestamp,
+        updated_at: timestamp,
+      },
+    ],
+    broadcastGroupNames: [
+      {
+        id: 1,
+        bot_uuid: 'bot-1',
+        connector_id: 'wxwork-local',
+        name: 'Acme Freight Ops',
+        created_at: timestamp,
+        updated_at: timestamp,
+      },
+      {
+        id: 2,
+        bot_uuid: 'bot-1',
+        connector_id: 'wxwork-local',
+        name: 'Northwind Service Group',
+        created_at: timestamp,
+        updated_at: timestamp,
+      },
+    ],
+  };
+}
+
 function mockAdapters() {
   return [
     {
@@ -345,6 +568,346 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     }
 
     return fulfillJson(route, { bots: state.bots });
+  }
+
+  if (path === '/api/v1/broadcast/templates') {
+    const botUuid = url.searchParams.get('bot_uuid');
+    const connectorId = url.searchParams.get('connector_id');
+
+    if (method === 'GET') {
+      const templates = state.broadcastTemplates.filter(
+        (template) =>
+          template.bot_uuid === botUuid &&
+          template.connector_id === connectorId,
+      );
+      return fulfillJson(route, templates);
+    }
+
+    if (method === 'POST') {
+      const body = parseJsonBody(route);
+      const content = String(body.content || '');
+      const template: BroadcastTemplateMock = {
+        id: Number(nextId(state, 'broadcast-template').split('-').pop()),
+        bot_uuid: String(body.bot_uuid || ''),
+        connector_id: String(body.connector_id || ''),
+        name: String(body.name || ''),
+        content,
+        variables: extractTemplateVariables(content),
+        enabled: body.enabled !== false,
+        created_at: now(),
+        updated_at: now(),
+      };
+      state.broadcastTemplates = [
+        ...state.broadcastTemplates.filter((item) => item.id !== template.id),
+        template,
+      ];
+      return fulfillJson(route, template);
+    }
+  }
+
+  const templateDetailMatch = path.match(/^\/api\/v1\/broadcast\/templates\/(\d+)$/);
+  if (templateDetailMatch) {
+    const templateId = Number(templateDetailMatch[1]);
+    const botUuid = url.searchParams.get('bot_uuid');
+    const connectorId = url.searchParams.get('connector_id');
+
+    if (method === 'PUT') {
+      const body = parseJsonBody(route);
+      const content = String(body.content || '');
+      const existing = state.broadcastTemplates.find((item) => item.id === templateId);
+      const template: BroadcastTemplateMock = {
+        id: templateId,
+        bot_uuid: String(body.bot_uuid || existing?.bot_uuid || ''),
+        connector_id: String(body.connector_id || existing?.connector_id || ''),
+        name: String(body.name || existing?.name || ''),
+        content,
+        variables: extractTemplateVariables(content),
+        enabled: body.enabled !== false,
+        created_at: existing?.created_at || now(),
+        updated_at: now(),
+      };
+      state.broadcastTemplates = [
+        ...state.broadcastTemplates.filter((item) => item.id !== templateId),
+        template,
+      ];
+      return fulfillJson(route, template);
+    }
+
+    if (method === 'DELETE') {
+      state.broadcastTemplates = state.broadcastTemplates.filter(
+        (item) =>
+          !(
+            item.id === templateId &&
+            item.bot_uuid === botUuid &&
+            item.connector_id === connectorId
+          ),
+      );
+      return fulfillJson(route, { deleted: true });
+    }
+  }
+
+  if (path === '/api/v1/broadcast/templates/render' && method === 'POST') {
+    const body = parseJsonBody(route);
+    const templateId = Number(body.template_id || 0);
+    const variables = (body.variables as Record<string, unknown> | undefined) || {};
+    const template =
+      templateId > 0
+        ? state.broadcastTemplates.find((item) => item.id === templateId)
+        : null;
+    const content = template ? template.content : String(body.content || '');
+    return fulfillJson(route, renderBroadcastTemplate(content, variables));
+  }
+
+  if (path === '/api/v1/broadcast/variable-profile') {
+    if (method === 'GET') {
+      return fulfillJson(route, state.broadcastVariableProfile);
+    }
+
+    if (method === 'PUT') {
+      const body = parseJsonBody(route);
+      const groupField = String(body.group_field || '').trim();
+      const mappingRules = Array.isArray(body.mapping_rules)
+        ? (body.mapping_rules as BroadcastVariableProfileMock['mapping_rules'])
+        : [];
+      const issues: string[] = [];
+      const seenKeys = new Set<string>();
+
+      if (!groupField) {
+        issues.push('请填写分组字段');
+      }
+
+      mappingRules.forEach((rule, index) => {
+        const row = index + 1;
+        const sourceField = String(rule.source_field || '').trim();
+        const variableKey = String(rule.variable_key || '').trim();
+        if (sourceField && !variableKey) {
+          issues.push(`第 ${row} 条规则缺少消息变量`);
+        }
+        if (!sourceField && variableKey) {
+          issues.push(`第 ${row} 条规则缺少表格字段`);
+        }
+        if (
+          (sourceField.includes('{{') || sourceField.includes('}}')) &&
+          sourceField
+        ) {
+          issues.push(`请填写“${sourceField.replace(/[{}]/g, '')}”，不要填写“${sourceField}”`);
+        }
+        if (
+          (variableKey.includes('{{') || variableKey.includes('}}')) &&
+          variableKey
+        ) {
+          issues.push(`请填写“${sourceField || '消息变量'}”，不要填写“${variableKey}”`);
+        }
+        if (
+          !['first', 'lines', 'unique_lines', 'commas', 'unique_commas'].includes(
+            String(rule.merge_mode || ''),
+          )
+        ) {
+          issues.push(`第 ${row} 条规则的多条数据处理方式无效`);
+        }
+        if (variableKey) {
+          if (seenKeys.has(variableKey)) {
+            issues.push(`消息变量“${variableKey}”重复`);
+          } else {
+            seenKeys.add(variableKey);
+          }
+        }
+      });
+
+      if (issues.length > 0) {
+        const message =
+          issues.some((item) => item.includes('缺少')) || issues.includes('请填写分组字段')
+            ? '变量配置填写不完整，请检查后重试'
+            : '变量配置填写有误，请按提示修改';
+        return fulfillError(
+          route,
+          400,
+          'BROADCAST_VARIABLE_PROFILE_INVALID',
+          message,
+          issues,
+        );
+      }
+
+      state.broadcastVariableProfile = {
+        group_field:
+          typeof body.group_field === 'string' ? body.group_field : null,
+        mapping_rules: Array.isArray(body.mapping_rules)
+          ? (body.mapping_rules as BroadcastVariableProfileMock['mapping_rules'])
+          : [],
+      };
+      return fulfillJson(route, state.broadcastVariableProfile);
+    }
+  }
+
+  if (path === '/api/v1/broadcast/group-rules') {
+    const botUuid = url.searchParams.get('bot_uuid');
+    const connectorId = url.searchParams.get('connector_id');
+
+    if (method === 'GET') {
+      const rules = state.broadcastGroupRules
+        .filter(
+          (rule) =>
+            rule.bot_uuid === botUuid && rule.connector_id === connectorId,
+        )
+        .sort((left, right) => right.priority - left.priority);
+      return fulfillJson(route, rules);
+    }
+
+    if (method === 'POST') {
+      const body = parseJsonBody(route);
+      const rule: BroadcastGroupRuleMock = {
+        id: Number(nextId(state, 'broadcast-group-rule').split('-').pop()),
+        bot_uuid: String(body.bot_uuid || ''),
+        connector_id: String(body.connector_id || ''),
+        source_value: String(body.source_value || ''),
+        match_type: (body.match_type as BroadcastGroupRuleMock['match_type']) || 'exact',
+        match_expression: String(body.match_expression || ''),
+        target_conversation_name: String(body.target_conversation_name || ''),
+        priority: Number(body.priority || 0),
+        enabled: body.enabled !== false,
+        created_at: now(),
+        updated_at: now(),
+      };
+      state.broadcastGroupRules = [
+        ...state.broadcastGroupRules.filter((item) => item.id !== rule.id),
+        rule,
+      ];
+      return fulfillJson(route, rule);
+    }
+  }
+
+  const groupRuleDetailMatch = path.match(/^\/api\/v1\/broadcast\/group-rules\/(\d+)$/);
+  if (groupRuleDetailMatch) {
+    const ruleId = Number(groupRuleDetailMatch[1]);
+    const botUuid = url.searchParams.get('bot_uuid');
+    const connectorId = url.searchParams.get('connector_id');
+
+    if (method === 'PUT') {
+      const body = parseJsonBody(route);
+      const existing = state.broadcastGroupRules.find((item) => item.id === ruleId);
+      const rule: BroadcastGroupRuleMock = {
+        id: ruleId,
+        bot_uuid: String(body.bot_uuid || existing?.bot_uuid || ''),
+        connector_id: String(body.connector_id || existing?.connector_id || ''),
+        source_value: String(body.source_value || existing?.source_value || ''),
+        match_type:
+          (body.match_type as BroadcastGroupRuleMock['match_type']) ||
+          existing?.match_type ||
+          'exact',
+        match_expression: String(
+          body.match_expression || existing?.match_expression || '',
+        ),
+        target_conversation_name: String(
+          body.target_conversation_name ||
+            existing?.target_conversation_name ||
+            '',
+        ),
+        priority: Number(body.priority ?? existing?.priority ?? 0),
+        enabled: body.enabled !== false,
+        created_at: existing?.created_at || now(),
+        updated_at: now(),
+      };
+      state.broadcastGroupRules = [
+        ...state.broadcastGroupRules.filter((item) => item.id !== ruleId),
+        rule,
+      ];
+      return fulfillJson(route, rule);
+    }
+
+    if (method === 'DELETE') {
+      state.broadcastGroupRules = state.broadcastGroupRules.filter(
+        (item) =>
+          !(
+            item.id === ruleId &&
+            item.bot_uuid === botUuid &&
+            item.connector_id === connectorId
+          ),
+      );
+      return fulfillJson(route, { deleted: true });
+    }
+  }
+
+  if (path === '/api/v1/broadcast/group-rules/match' && method === 'POST') {
+    const body = parseJsonBody(route);
+    const botUuid = String(body.bot_uuid || '');
+    const connectorId = String(body.connector_id || '');
+    const sourceValue = String(body.source_value || '');
+    const matchedRule =
+      state.broadcastGroupRules
+        .filter(
+          (rule) =>
+            rule.bot_uuid === botUuid &&
+            rule.connector_id === connectorId &&
+            matchBroadcastRule(rule, sourceValue),
+        )
+        .sort((left, right) => right.priority - left.priority)[0] || null;
+
+    return fulfillJson(route, {
+      matched: Boolean(matchedRule),
+      rule_id: matchedRule?.id || null,
+      target_conversation_name: matchedRule?.target_conversation_name || null,
+      match_type: matchedRule?.match_type || null,
+    });
+  }
+
+  if (path === '/api/v1/broadcast/group-names') {
+    const botUuid = url.searchParams.get('bot_uuid');
+    const connectorId = url.searchParams.get('connector_id');
+
+    if (method === 'GET') {
+      const names = state.broadcastGroupNames.filter(
+        (item) =>
+          item.bot_uuid === botUuid && item.connector_id === connectorId,
+      );
+      return fulfillJson(route, names);
+    }
+
+    if (method === 'POST') {
+      const body = parseJsonBody(route);
+      const bot_uuid = String(body.bot_uuid || '');
+      const connector_id = String(body.connector_id || '');
+      const rawNames = Array.isArray(body.names)
+        ? body.names
+        : body.name
+          ? [body.name]
+          : [];
+      const uniqueNames = Array.from(
+        new Set(
+          rawNames
+            .map((item) => String(item).trim())
+            .filter(Boolean),
+        ),
+      );
+      const created = uniqueNames.map((name) => ({
+        id: Number(nextId(state, 'broadcast-group-name').split('-').pop()),
+        bot_uuid,
+        connector_id,
+        name,
+        created_at: now(),
+        updated_at: now(),
+      }));
+      state.broadcastGroupNames = [
+        ...state.broadcastGroupNames,
+        ...created,
+      ];
+      return fulfillJson(route, { group_names: created });
+    }
+  }
+
+  const groupNameDetailMatch = path.match(/^\/api\/v1\/broadcast\/group-names\/(\d+)$/);
+  if (groupNameDetailMatch && method === 'DELETE') {
+    const groupNameId = Number(groupNameDetailMatch[1]);
+    const botUuid = url.searchParams.get('bot_uuid');
+    const connectorId = url.searchParams.get('connector_id');
+    state.broadcastGroupNames = state.broadcastGroupNames.filter(
+      (item) =>
+        !(
+          item.id === groupNameId &&
+          item.bot_uuid === botUuid &&
+          item.connector_id === connectorId
+        ),
+    );
+    return fulfillJson(route, { deleted: true });
   }
 
   const botLogsMatch = path.match(/^\/api\/v1\/platform\/bots\/([^/]+)\/logs$/);
@@ -821,9 +1384,18 @@ export async function installLangBotApiMocks(
   options: { authenticated?: boolean; storage?: JsonRecord } = {},
 ) {
   const { authenticated = false, storage = {} } = options;
+  const broadcastSeed = seedBroadcastState();
   const state: LangBotApiMockState = {
     bots: [],
-    counters: {},
+    broadcastGroupNames: broadcastSeed.broadcastGroupNames,
+    broadcastGroupRules: broadcastSeed.broadcastGroupRules,
+    broadcastTemplates: broadcastSeed.broadcastTemplates,
+    broadcastVariableProfile: broadcastSeed.broadcastVariableProfile,
+    counters: {
+      'broadcast-template': broadcastSeed.broadcastTemplates.length,
+      'broadcast-group-rule': broadcastSeed.broadcastGroupRules.length,
+      'broadcast-group-name': broadcastSeed.broadcastGroupNames.length,
+    },
     knowledgeBases: [],
     mcpServers: [],
     pipelines: [],
@@ -841,6 +1413,10 @@ export async function installLangBotApiMocks(
       } else {
         localStorage.removeItem('token');
         localStorage.removeItem('userEmail');
+      }
+
+      if (!storage.langbot_language) {
+        localStorage.setItem('langbot_language', 'en-US');
       }
 
       for (const [key, value] of Object.entries(storage)) {

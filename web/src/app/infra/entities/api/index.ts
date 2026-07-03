@@ -743,6 +743,76 @@ export interface ApiRespDatabaseModeMessage {
   message: DatabaseModeMessage;
 }
 
+export interface ApiBroadcastScope {
+  bot_uuid: string;
+  connector_id: string;
+}
+
+export interface ApiBroadcastTemplate {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  name: string;
+  content: string;
+  variables: string[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiBroadcastVariableMappingRule {
+  source_field: string;
+  variable_key: string;
+  merge_mode: 'first' | 'lines' | 'unique_lines' | 'commas' | 'unique_commas';
+  order: number;
+}
+
+export interface ApiBroadcastVariableProfile {
+  group_field: string | null;
+  mapping_rules: ApiBroadcastVariableMappingRule[];
+}
+
+export interface ApiBroadcastTemplateRenderResult {
+  rendered_text: string;
+  required_variables: string[];
+  missing_variables: string[];
+  valid: boolean;
+}
+
+export interface ApiBroadcastGroupRule {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  source_value: string;
+  match_type: 'exact' | 'contains' | 'regex';
+  match_expression: string;
+  target_conversation_name: string;
+  priority: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiBroadcastGroupMatchResult {
+  matched: boolean;
+  rule_id: number | null;
+  target_conversation_name: string | null;
+  match_type: 'exact' | 'contains' | 'regex' | null;
+}
+
+export interface ApiBroadcastGroupName {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiBroadcastGroupNamesResponse {
+  group_names: ApiBroadcastGroupName[];
+}
+
 export type DatabaseModeRealtimeEventType =
   | 'database-message-created'
   | 'database-message-updated'

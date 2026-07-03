@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from langbot.pkg.entity.persistence.base import Base
 from langbot.pkg.entity.persistence import bot as _bot  # noqa: F401
+from langbot.pkg.entity.persistence import broadcast as _broadcast  # noqa: F401
 from langbot.pkg.entity.persistence import database_mode as _database_mode  # noqa: F401
 from langbot.pkg.entity.persistence import mcp as _mcp  # noqa: F401
 from langbot.pkg.persistence.alembic_runner import (
@@ -182,6 +183,41 @@ class TestSQLiteMigrationUpgrade:
 
         assert {'builtin', 'locked', 'managed_by', 'connector_id'}.issubset(columns)
         assert any('connector_id' in index['name'] for index in indexes)
+
+    @pytest.mark.asyncio
+    async def test_broadcast_tables_exist_after_upgrade(self, sqlite_engine):
+        """Broadcast persistence tables and indexes exist after upgrading to head."""
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_schema(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                table_names = set(inspector.get_table_names())
+                template_indexes = {index['name'] for index in inspector.get_indexes('broadcast_templates')}
+                profile_indexes = {index['name'] for index in inspector.get_indexes('broadcast_variable_profiles')}
+                rule_indexes = {index['name'] for index in inspector.get_indexes('broadcast_group_rules')}
+                group_name_indexes = {index['name'] for index in inspector.get_indexes('broadcast_group_names')}
+                return table_names, template_indexes, profile_indexes, rule_indexes, group_name_indexes
+
+            table_names, template_indexes, profile_indexes, rule_indexes, group_name_indexes = (
+                await conn.run_sync(inspect_schema)
+            )
+
+        assert {
+            'broadcast_templates',
+            'broadcast_variable_profiles',
+            'broadcast_group_rules',
+            'broadcast_group_names',
+        }.issubset(table_names)
+        assert 'ix_broadcast_templates_bot_uuid' in template_indexes
+        assert 'ix_broadcast_templates_connector_id' in template_indexes
+        assert 'ix_broadcast_variable_profiles_bot_uuid' in profile_indexes
+        assert 'ix_broadcast_group_rules_priority' in rule_indexes
+        assert 'ix_broadcast_group_names_name' in group_name_indexes
 
 
 class TestSQLiteMigrationFreshDatabase:

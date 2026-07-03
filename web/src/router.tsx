@@ -19,6 +19,7 @@ import AddExtensionPage from '@/app/home/add-extension/page';
 import MCPPage from '@/app/home/mcp/page';
 import KnowledgePage from '@/app/home/knowledge/page';
 import SkillsPage from '@/app/home/skills/page';
+import BroadcastPage from '@/app/home/broadcast/page';
 import DatabaseModeRedirect from '@/app/home/database-mode/redirect';
 import ErrorPage from '@/components/ErrorPage';
 import BackendUnavailablePage from '@/components/BackendUnavailablePage';
@@ -138,6 +139,16 @@ export const router = createBrowserRouter([
           <Suspense fallback={<Loading />}>
             <HomeLayout>
               <KnowledgePage />
+            </HomeLayout>
+          </Suspense>
+        ),
+      },
+      {
+        path: '/home/broadcast',
+        element: (
+          <Suspense fallback={<Loading />}>
+            <HomeLayout>
+              <BroadcastPage />
             </HomeLayout>
           </Suspense>
         ),

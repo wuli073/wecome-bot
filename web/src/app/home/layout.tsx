@@ -69,6 +69,7 @@ const HOME_TITLE_KEYS: { match: (path: string) => boolean; key: string }[] = [
   { match: (p) => p.startsWith('/home/extensions'), key: 'plugins.title' },
   { match: (p) => p.startsWith('/home/mcp'), key: 'mcp.title' },
   { match: (p) => p.startsWith('/home/knowledge'), key: 'knowledge.title' },
+  { match: (p) => p.startsWith('/home/broadcast'), key: 'broadcast.title' },
   { match: (p) => p.startsWith('/home/skills'), key: 'skills.title' },
   {
     match: (p) => p.startsWith('/home/plugin-pages'),

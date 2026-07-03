@@ -60,6 +60,14 @@ import {
   ApiRespDatabaseModeConversations,
   ApiRespDatabaseModeMessage,
   ApiRespDatabaseModeMessages,
+  ApiBroadcastGroupMatchResult,
+  ApiBroadcastGroupName,
+  ApiBroadcastGroupNamesResponse,
+  ApiBroadcastGroupRule,
+  ApiBroadcastScope,
+  ApiBroadcastTemplate,
+  ApiBroadcastTemplateRenderResult,
+  ApiBroadcastVariableProfile,
 } from '@/app/infra/entities/api';
 import { Plugin } from '@/app/infra/entities/plugin';
 import type { PluginLogEntry } from '@/app/infra/entities/plugin';
@@ -74,6 +82,54 @@ import { GetBotLogsResponse } from '@/app/infra/http/requestParam/bots/GetBotLog
 export class BackendClient extends BaseHttpClient {
   constructor(baseURL: string) {
     super(baseURL, false);
+  }
+
+  private toSearchParams(
+    params: Record<string, string | number | boolean | null | undefined>,
+  ): string {
+    const searchParams = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value === undefined || value === null) {
+        return;
+      }
+      searchParams.set(key, String(value));
+    });
+    return searchParams.toString();
+  }
+
+  private async requestBroadcast<T>(config: RequestConfig): Promise<T> {
+    try {
+      return await this.request<T>(config);
+    } catch (error) {
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        'msg' in error
+      ) {
+        const axiosError = error as {
+          code: unknown;
+          msg: unknown;
+          data?: unknown;
+          message?: unknown;
+          details?: unknown;
+        };
+        throw {
+          code: axiosError.code,
+          msg: String(axiosError.msg),
+          data: {
+            message:
+              typeof axiosError.message === 'string'
+                ? axiosError.message
+                : String(axiosError.msg),
+            details: Array.isArray(axiosError.details)
+              ? axiosError.details
+              : [],
+          },
+        };
+      }
+      throw error;
+    }
   }
 
   // ============ Provider API ============
@@ -1810,6 +1866,220 @@ export class BackendClient extends BaseHttpClient {
     return this.post(`/api/v1/bots/${botId}/messages/batch-delete`, {
       message_ids: messageIds,
     });
+  }
+
+  // ============ Broadcast API ============
+  public getBroadcastTemplates(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastTemplate[]> {
+    return this.get('/api/v1/broadcast/templates', scope);
+  }
+
+  public createBroadcastTemplate(
+    scope: ApiBroadcastScope,
+    payload: {
+      name: string;
+      content: string;
+      enabled: boolean;
+    },
+  ): Promise<ApiBroadcastTemplate> {
+    return this.requestBroadcast<ApiBroadcastTemplate>({
+      method: 'post',
+      url: '/api/v1/broadcast/templates',
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public updateBroadcastTemplate(
+    scope: ApiBroadcastScope,
+    templateId: number,
+    payload: {
+      name: string;
+      content: string;
+      enabled: boolean;
+    },
+  ): Promise<ApiBroadcastTemplate> {
+    return this.requestBroadcast<ApiBroadcastTemplate>({
+      method: 'put',
+      url: `/api/v1/broadcast/templates/${templateId}`,
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public deleteBroadcastTemplate(
+    scope: ApiBroadcastScope,
+    templateId: number,
+  ): Promise<{ deleted: boolean }> {
+    return this.delete(
+      `/api/v1/broadcast/templates/${templateId}?${this.toSearchParams({
+        bot_uuid: scope.bot_uuid,
+        connector_id: scope.connector_id,
+      })}`,
+    );
+  }
+
+  public renderBroadcastTemplate(
+    scope: ApiBroadcastScope,
+    payload:
+      | {
+          templateId: number;
+          variables: Record<string, string>;
+        }
+      | {
+          content: string;
+          variables: Record<string, string>;
+        },
+  ): Promise<ApiBroadcastTemplateRenderResult> {
+    const body =
+      'templateId' in payload
+        ? {
+            ...scope,
+            template_id: payload.templateId,
+            variables: payload.variables,
+          }
+        : {
+            ...scope,
+            content: payload.content,
+            variables: payload.variables,
+          };
+    return this.requestBroadcast<ApiBroadcastTemplateRenderResult>({
+      method: 'post',
+      url: '/api/v1/broadcast/templates/render',
+      data: body,
+    });
+  }
+
+  public getBroadcastVariableProfile(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastVariableProfile> {
+    return this.get('/api/v1/broadcast/variable-profile', scope);
+  }
+
+  public saveBroadcastVariableProfile(
+    scope: ApiBroadcastScope,
+    payload: ApiBroadcastVariableProfile,
+  ): Promise<ApiBroadcastVariableProfile> {
+    return this.requestBroadcast<ApiBroadcastVariableProfile>({
+      method: 'put',
+      url: '/api/v1/broadcast/variable-profile',
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public getBroadcastGroupRules(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastGroupRule[]> {
+    return this.get('/api/v1/broadcast/group-rules', scope);
+  }
+
+  public createBroadcastGroupRule(
+    scope: ApiBroadcastScope,
+    payload: {
+      source_value: string;
+      match_type: 'exact' | 'contains' | 'regex';
+      match_expression: string;
+      target_conversation_name: string;
+      priority: number;
+      enabled: boolean;
+    },
+  ): Promise<ApiBroadcastGroupRule> {
+    return this.requestBroadcast<ApiBroadcastGroupRule>({
+      method: 'post',
+      url: '/api/v1/broadcast/group-rules',
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public updateBroadcastGroupRule(
+    scope: ApiBroadcastScope,
+    ruleId: number,
+    payload: {
+      source_value: string;
+      match_type: 'exact' | 'contains' | 'regex';
+      match_expression: string;
+      target_conversation_name: string;
+      priority: number;
+      enabled: boolean;
+    },
+  ): Promise<ApiBroadcastGroupRule> {
+    return this.requestBroadcast<ApiBroadcastGroupRule>({
+      method: 'put',
+      url: `/api/v1/broadcast/group-rules/${ruleId}`,
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public deleteBroadcastGroupRule(
+    scope: ApiBroadcastScope,
+    ruleId: number,
+  ): Promise<{ deleted: boolean }> {
+    return this.delete(
+      `/api/v1/broadcast/group-rules/${ruleId}?${this.toSearchParams({
+        bot_uuid: scope.bot_uuid,
+        connector_id: scope.connector_id,
+      })}`,
+    );
+  }
+
+  public matchBroadcastGroupRule(
+    scope: ApiBroadcastScope,
+    sourceValue: string,
+  ): Promise<ApiBroadcastGroupMatchResult> {
+    return this.requestBroadcast<ApiBroadcastGroupMatchResult>({
+      method: 'post',
+      url: '/api/v1/broadcast/group-rules/match',
+      data: {
+        ...scope,
+        source_value: sourceValue,
+      },
+    });
+  }
+
+  public getBroadcastGroupNames(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastGroupName[]> {
+    return this.get('/api/v1/broadcast/group-names', scope);
+  }
+
+  public createBroadcastGroupNames(
+    scope: ApiBroadcastScope,
+    names: string[],
+  ): Promise<ApiBroadcastGroupNamesResponse> {
+    return this.requestBroadcast<ApiBroadcastGroupNamesResponse>({
+      method: 'post',
+      url: '/api/v1/broadcast/group-names',
+      data: {
+        ...scope,
+        names,
+      },
+    });
+  }
+
+  public deleteBroadcastGroupName(
+    scope: ApiBroadcastScope,
+    groupNameId: number,
+  ): Promise<{ deleted: boolean }> {
+    return this.delete(
+      `/api/v1/broadcast/group-names/${groupNameId}?${this.toSearchParams({
+        bot_uuid: scope.bot_uuid,
+        connector_id: scope.connector_id,
+      })}`,
+    );
   }
 }
 

@@ -50,6 +50,7 @@ from ..database_mode.events import DatabaseModeEventBus
 from ..database_mode import service as database_mode_service
 from ..database_mode import processing_service as database_mode_processing_service
 from ..desktop_automation import service as desktop_automation_service
+from ..broadcast import service as broadcast_service
 
 
 class Application:
@@ -169,6 +170,7 @@ class Application:
     database_mode_processing_service: database_mode_processing_service.DatabaseModeProcessingService = None
     database_mode_event_bus: DatabaseModeEventBus | None = None
     desktop_automation_service: desktop_automation_service.DesktopAutomationService | None = None
+    broadcast_service: broadcast_service.BroadcastService | None = None
 
     skill_service: skill_service.SkillService = None
 

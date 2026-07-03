@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import text
 
 from langbot.pkg.entity.persistence.base import Base
+from langbot.pkg.entity.persistence import broadcast as _broadcast  # noqa: F401
 from langbot.pkg.persistence.alembic_runner import (
     run_alembic_upgrade,
     run_alembic_stamp,
@@ -189,6 +190,42 @@ class TestPostgreSQLMigrationUpgrade:
 
         rev2 = await get_alembic_current(postgres_engine)
         assert rev2 == rev1, f'Expected {rev1}, got {rev2}'
+
+    @pytest.mark.asyncio
+    async def test_postgres_broadcast_tables_exist_after_upgrade(
+        self, postgres_engine, clean_tables, clean_alembic_version
+    ):
+        async with postgres_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(postgres_engine, '0001_baseline')
+        await run_alembic_upgrade(postgres_engine, 'head')
+
+        async with postgres_engine.begin() as conn:
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT tablename
+                    FROM pg_tables
+                    WHERE schemaname = 'public'
+                      AND tablename IN (
+                        'broadcast_templates',
+                        'broadcast_variable_profiles',
+                        'broadcast_group_rules',
+                        'broadcast_group_names'
+                      )
+                    ORDER BY tablename
+                    """
+                )
+            )
+            table_names = [row[0] for row in result.fetchall()]
+
+        assert table_names == [
+            'broadcast_group_names',
+            'broadcast_group_rules',
+            'broadcast_templates',
+            'broadcast_variable_profiles',
+        ]
 
 
 class TestPostgreSQLMigrationGetCurrent:

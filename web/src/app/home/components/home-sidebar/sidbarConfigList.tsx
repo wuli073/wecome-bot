@@ -9,6 +9,7 @@ import {
   Database,
   Puzzle,
   PlusCircle,
+  Megaphone,
 } from 'lucide-react';
 
 const t = (key: string) => {
@@ -83,6 +84,19 @@ export const sidebarConfigList = [
     section: 'home',
   }),
   // ── Extensions section ──
+  new SidebarChildVO({
+    id: 'broadcast',
+    name: t('broadcast.title'),
+    icon: <Megaphone className="text-blue-500" />,
+    route: '/home/broadcast',
+    description: t('broadcast.description'),
+    helpLink: {
+      en_US: '',
+      zh_Hans: '',
+      ja_JP: '',
+    },
+    section: 'home',
+  }),
   new SidebarChildVO({
     id: 'plugins',
     name: t('sidebar.installedPlugins'),
