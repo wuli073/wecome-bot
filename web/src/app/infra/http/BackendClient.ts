@@ -64,6 +64,12 @@ import {
   ApiBroadcastGroupName,
   ApiBroadcastGroupNamesResponse,
   ApiBroadcastGroupRule,
+  ApiBroadcastDraft,
+  ApiBroadcastDraftStatus,
+  ApiBroadcastDraftStatusUpdateResult,
+  ApiBroadcastImportBatch,
+  ApiBroadcastImportDetail,
+  ApiBroadcastImportDraftGenerationResult,
   ApiBroadcastScope,
   ApiBroadcastTemplate,
   ApiBroadcastTemplateRenderResult,
@@ -2080,6 +2086,137 @@ export class BackendClient extends BaseHttpClient {
         connector_id: scope.connector_id,
       })}`,
     );
+  }
+
+  public uploadBroadcastImport(
+    scope: ApiBroadcastScope,
+    file: File,
+  ): Promise<ApiBroadcastImportDetail> {
+    const formData = new FormData();
+    formData.append('bot_uuid', scope.bot_uuid);
+    formData.append('connector_id', scope.connector_id);
+    formData.append('file', file);
+
+    return this.requestBroadcast<ApiBroadcastImportDetail>({
+      method: 'post',
+      url: '/api/v1/broadcast/imports',
+      data: formData,
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+  }
+
+  public getBroadcastImportBatches(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastImportBatch[]> {
+    return this.get('/api/v1/broadcast/imports', scope);
+  }
+
+  public getBroadcastImportDetail(
+    scope: ApiBroadcastScope,
+    importId: number,
+    filters?: {
+      match_status?: 'matched' | 'unmatched' | 'invalid';
+      keyword?: string;
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<ApiBroadcastImportDetail> {
+    return this.get(`/api/v1/broadcast/imports/${importId}`, {
+      ...scope,
+      ...filters,
+    });
+  }
+
+  public deleteBroadcastImport(
+    scope: ApiBroadcastScope,
+    importId: number,
+  ): Promise<{ deleted: boolean }> {
+    return this.delete(
+      `/api/v1/broadcast/imports/${importId}?${this.toSearchParams({
+        bot_uuid: scope.bot_uuid,
+        connector_id: scope.connector_id,
+      })}`,
+    );
+  }
+
+  public rematchBroadcastImport(
+    scope: ApiBroadcastScope,
+    importId: number,
+  ): Promise<ApiBroadcastImportDetail> {
+    return this.requestBroadcast<ApiBroadcastImportDetail>({
+      method: 'post',
+      url: `/api/v1/broadcast/imports/${importId}/rematch`,
+      data: scope,
+    });
+  }
+
+  public generateBroadcastImportDrafts(
+    scope: ApiBroadcastScope,
+    importId: number,
+    templateId: number,
+  ): Promise<ApiBroadcastImportDraftGenerationResult> {
+    return this.requestBroadcast<ApiBroadcastImportDraftGenerationResult>({
+      method: 'post',
+      url: `/api/v1/broadcast/imports/${importId}/generate-drafts`,
+      data: {
+        ...scope,
+        template_id: templateId,
+      },
+    });
+  }
+
+  public getBroadcastDrafts(
+    scope: ApiBroadcastScope,
+    filters?: {
+      import_batch_id?: number;
+      status?: ApiBroadcastDraftStatus;
+      keyword?: string;
+    },
+  ): Promise<ApiBroadcastDraft[]> {
+    return this.get('/api/v1/broadcast/drafts', {
+      ...scope,
+      ...filters,
+    });
+  }
+
+  public getBroadcastDraftDetail(
+    scope: ApiBroadcastScope,
+    draftId: number,
+  ): Promise<ApiBroadcastDraft> {
+    return this.get(`/api/v1/broadcast/drafts/${draftId}`, scope);
+  }
+
+  public updateBroadcastDraftText(
+    scope: ApiBroadcastScope,
+    draftId: number,
+    draftText: string,
+  ): Promise<ApiBroadcastDraft> {
+    return this.requestBroadcast<ApiBroadcastDraft>({
+      method: 'put',
+      url: `/api/v1/broadcast/drafts/${draftId}`,
+      data: {
+        ...scope,
+        draft_text: draftText,
+      },
+    });
+  }
+
+  public updateBroadcastDraftStatuses(
+    scope: ApiBroadcastScope,
+    draftIds: number[],
+    status: ApiBroadcastDraftStatus,
+  ): Promise<ApiBroadcastDraftStatusUpdateResult> {
+    return this.requestBroadcast<ApiBroadcastDraftStatusUpdateResult>({
+      method: 'post',
+      url: '/api/v1/broadcast/drafts/batch-status',
+      data: {
+        ...scope,
+        draft_ids: draftIds,
+        status,
+      },
+    });
   }
 }
 

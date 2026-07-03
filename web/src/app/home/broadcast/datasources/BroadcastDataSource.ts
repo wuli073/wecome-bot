@@ -1,8 +1,13 @@
 import { backendClient } from '@/app/infra/http';
 import type {
+  ApiBroadcastDraft,
   ApiBroadcastGroupMatchResult,
   ApiBroadcastGroupName,
   ApiBroadcastGroupRule,
+  ApiBroadcastImportBatch,
+  ApiBroadcastImportDetail,
+  ApiBroadcastImportDraftGenerationResult,
+  ApiBroadcastImportRow,
   ApiBroadcastScope,
   ApiBroadcastTemplate,
   ApiBroadcastTemplateRenderResult,
@@ -17,10 +22,18 @@ import {
 } from '../utils';
 import type {
   BroadcastDraft,
+  BroadcastDraftDetail,
+  BroadcastDraftFilters,
+  BroadcastDraftStatus,
+  BroadcastDraftStatusUpdateResult,
   BroadcastGroupMatchResult,
   BroadcastGroupName,
   BroadcastGroupRule,
   BroadcastGroupRuleDraft,
+  BroadcastImportBatch,
+  BroadcastImportDetail,
+  BroadcastImportDraftGenerationResult,
+  BroadcastImportFilters,
   BroadcastMessageTemplate,
   BroadcastPasteDraftRequest,
   BroadcastPasteOnlyAdapter,
@@ -142,9 +155,89 @@ function updateDraftStatus(
 ): BroadcastDraft {
   return {
     ...draft,
-    status,
-    progressLabel: BROADCAST_STATUS_LABELS[status],
+    status: status as BroadcastDraftStatus,
     updatedAt: new Date().toISOString(),
+  };
+}
+
+function fromApiImportRow(row: ApiBroadcastImportRow) {
+  const customerName = row.group_value ?? '';
+  const conversationName = row.matched_conversation_name ?? '';
+  const statusMap: Record<string, BroadcastStatus> = {
+    matched: 'completed',
+    unmatched: 'pending',
+    invalid: 'failed',
+  };
+  return {
+    id: row.id,
+    sourceRowNumber: row.source_row_number,
+    groupValue: row.group_value,
+    rawData: row.raw_data,
+    matchedConversationName: row.matched_conversation_name,
+    matchedRuleId: row.matched_rule_id,
+    matchStatus: row.match_status,
+    errorMessage: row.error_message,
+    customerName,
+    conversationName,
+    templateName: '',
+    variableSummary: `${Object.keys(row.raw_data ?? {}).length}`,
+    status: statusMap[row.match_status] ?? 'pending',
+    matchedRule:
+      row.matched_rule_id != null
+        ? `#${row.matched_rule_id}`
+        : row.matched_conversation_name
+          ? 'fallback'
+          : '',
+  };
+}
+
+function fromApiImportBatch(batch: ApiBroadcastImportBatch): BroadcastImportBatch {
+  return {
+    id: batch.id,
+    originalFileName: batch.original_file_name,
+    fileType: batch.file_type,
+    worksheetName: batch.worksheet_name,
+    status: batch.status,
+    draftsStale: batch.drafts_stale,
+    totalRows: batch.total_rows,
+    validRows: batch.valid_rows,
+    invalidRows: batch.invalid_rows,
+    matchedRows: batch.matched_rows,
+    unmatchedRows: batch.unmatched_rows,
+    createdAt: batch.created_at,
+    updatedAt: batch.updated_at,
+  };
+}
+
+function fromApiImportDetail(detail: ApiBroadcastImportDetail): BroadcastImportDetail {
+  return {
+    ...fromApiImportBatch(detail),
+    rows: detail.rows.map(fromApiImportRow),
+  };
+}
+
+function fromApiDraft(draft: ApiBroadcastDraft): BroadcastDraftDetail {
+  return {
+    id: draft.id,
+    botUuid: draft.bot_uuid,
+    connectorId: draft.connector_id,
+    importBatchId: draft.import_batch_id,
+    groupValue: draft.group_value,
+    customerName: draft.group_value,
+    conversationName: draft.target_conversation_name ?? '',
+    templateId: draft.template_id,
+    templateName: draft.template_name_snapshot,
+    templateContentSnapshot: draft.template_content_snapshot,
+    renderVariables: draft.render_variables,
+    draftText: draft.draft_text,
+    status: draft.status,
+    errorMessage: draft.error_message,
+    draftsStale: draft.drafts_stale,
+    updatedAt: draft.updated_at,
+    createdAt: draft.created_at,
+    message: draft.message ?? null,
+    progressLabel: BROADCAST_STATUS_LABELS[draft.status],
+    operator: '',
   };
 }
 
@@ -207,6 +300,46 @@ export interface BroadcastDataSource {
     snapshot: BroadcastWorkspaceSnapshot,
     entries: BroadcastWorkspaceSnapshot['executionLogs'],
   ) => BroadcastWorkspaceSnapshot;
+  listImportBatches: (
+    scope: BroadcastScope,
+  ) => Promise<BroadcastImportBatch[]>;
+  uploadImport: (
+    scope: BroadcastScope,
+    file: File,
+  ) => Promise<BroadcastImportDetail>;
+  getImportDetail: (
+    scope: BroadcastScope,
+    importId: number,
+    filters?: BroadcastImportFilters,
+  ) => Promise<BroadcastImportDetail>;
+  deleteImport: (scope: BroadcastScope, importId: number) => Promise<void>;
+  rematchImport: (
+    scope: BroadcastScope,
+    importId: number,
+  ) => Promise<BroadcastImportDetail>;
+  generateImportDrafts: (
+    scope: BroadcastScope,
+    importId: number,
+    templateId: number,
+  ) => Promise<BroadcastImportDraftGenerationResult>;
+  listDrafts: (
+    scope: BroadcastScope,
+    filters?: BroadcastDraftFilters,
+  ) => Promise<BroadcastDraft[]>;
+  getDraftDetail: (
+    scope: BroadcastScope,
+    draftId: number,
+  ) => Promise<BroadcastDraftDetail>;
+  updateDraftText: (
+    scope: BroadcastScope,
+    draftId: number,
+    draftText: string,
+  ) => Promise<BroadcastDraftDetail>;
+  updateDraftStatuses: (
+    scope: BroadcastScope,
+    draftIds: number[],
+    status: BroadcastDraftStatus,
+  ) => Promise<BroadcastDraftStatusUpdateResult>;
 }
 
 export function createBroadcastDataSource(): BroadcastDataSource {
@@ -342,6 +475,79 @@ export function createBroadcastDataSource(): BroadcastDataSource {
       ...snapshot,
       executionLogs: [...entries, ...snapshot.executionLogs],
     }),
+    listImportBatches: async (scope) =>
+      (
+        await backendClient.getBroadcastImportBatches(toApiScope(scope))
+      ).map(fromApiImportBatch),
+    uploadImport: async (scope, file) =>
+      fromApiImportDetail(
+        await backendClient.uploadBroadcastImport(toApiScope(scope), file),
+      ),
+    getImportDetail: async (scope, importId, filters) =>
+      fromApiImportDetail(
+        await backendClient.getBroadcastImportDetail(toApiScope(scope), importId, {
+          match_status:
+            filters?.matchStatus && filters.matchStatus !== 'all'
+              ? filters.matchStatus
+              : undefined,
+          keyword: filters?.keyword,
+          page: filters?.page,
+          page_size: filters?.pageSize,
+        }),
+      ),
+    deleteImport: async (scope, importId) => {
+      await backendClient.deleteBroadcastImport(toApiScope(scope), importId);
+    },
+    rematchImport: async (scope, importId) =>
+      fromApiImportDetail(
+        await backendClient.rematchBroadcastImport(toApiScope(scope), importId),
+      ),
+    generateImportDrafts: async (scope, importId, templateId) => {
+      const response = await backendClient.generateBroadcastImportDrafts(
+        toApiScope(scope),
+        importId,
+        templateId,
+      );
+      return {
+        totalGroupCount: response.total_group_count,
+        pendingReviewCount: response.pending_review_count,
+        invalidCount: response.invalid_count,
+        unmatchedGroupCount: response.unmatched_group_count,
+      };
+    },
+    listDrafts: async (scope, filters) =>
+      (
+        await backendClient.getBroadcastDrafts(toApiScope(scope), {
+          import_batch_id: filters?.importBatchId,
+          status:
+            filters?.status && filters.status !== 'all'
+              ? filters.status
+              : undefined,
+          keyword: filters?.keyword,
+        })
+      ).map(fromApiDraft),
+    getDraftDetail: async (scope, draftId) =>
+      fromApiDraft(
+        await backendClient.getBroadcastDraftDetail(toApiScope(scope), draftId),
+      ),
+    updateDraftText: async (scope, draftId, draftText) =>
+      fromApiDraft(
+        await backendClient.updateBroadcastDraftText(
+          toApiScope(scope),
+          draftId,
+          draftText,
+        ),
+      ),
+    updateDraftStatuses: async (scope, draftIds, status) => {
+      const response = await backendClient.updateBroadcastDraftStatuses(
+        toApiScope(scope),
+        draftIds,
+        status,
+      );
+      return {
+        updatedCount: response.updated_count,
+      };
+    },
   };
 }
 

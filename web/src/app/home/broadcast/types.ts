@@ -2,9 +2,23 @@ export type BroadcastTopTab = 'rules' | 'import' | 'drafts' | 'logs';
 
 export type BroadcastRulesTab = 'variables' | 'templates' | 'groups';
 
-export type BroadcastStatus = 'pending' | 'pasted' | 'failed' | 'completed';
+export type BroadcastImportBatchStatus =
+  | 'imported'
+  | 'matched'
+  | 'drafts_generated';
 
-export type BroadcastStatusFilter = 'all' | BroadcastStatus;
+export type BroadcastImportMatchStatus = 'matched' | 'unmatched' | 'invalid';
+
+export type BroadcastDraftStatus = 'pending_review' | 'ready' | 'invalid';
+
+export type BroadcastStatus =
+  | BroadcastDraftStatus
+  | 'pending'
+  | 'pasted'
+  | 'failed'
+  | 'completed';
+
+export type BroadcastStatusFilter = 'all' | BroadcastDraftStatus;
 
 export type BroadcastMergeMode =
   | 'first'
@@ -97,6 +111,13 @@ export interface BroadcastGroupName {
 
 export interface BroadcastImportPreviewRow {
   id: number;
+  sourceRowNumber: number;
+  groupValue: string | null;
+  rawData: Record<string, string>;
+  matchedConversationName: string | null;
+  matchedRuleId: number | null;
+  matchStatus: BroadcastImportMatchStatus;
+  errorMessage: string | null;
   customerName: string;
   conversationName: string;
   templateName: string;
@@ -105,18 +126,74 @@ export interface BroadcastImportPreviewRow {
   matchedRule: string;
 }
 
+export interface BroadcastImportBatch {
+  id: number;
+  originalFileName: string;
+  fileType: string;
+  worksheetName: string | null;
+  status: BroadcastImportBatchStatus;
+  draftsStale: boolean;
+  totalRows: number;
+  validRows: number;
+  invalidRows: number;
+  matchedRows: number;
+  unmatchedRows: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BroadcastImportDetail extends BroadcastImportBatch {
+  rows: BroadcastImportPreviewRow[];
+}
+
+export interface BroadcastImportFilters {
+  matchStatus?: BroadcastImportMatchStatus | 'all';
+  keyword?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface BroadcastImportDraftGenerationResult {
+  totalGroupCount: number;
+  pendingReviewCount: number;
+  invalidCount: number;
+  unmatchedGroupCount: number;
+}
+
 export interface BroadcastDraft {
   id: number;
   botUuid: string;
   connectorId: string;
+  importBatchId?: number;
+  groupValue: string;
   customerName: string;
   conversationName: string;
+  templateId?: number | null;
   templateName: string;
+  templateContentSnapshot?: string;
+  renderVariables?: Record<string, string>;
   status: BroadcastStatus;
   draftText: string;
-  progressLabel: string;
+  errorMessage?: string | null;
+  draftsStale?: boolean;
   updatedAt: string;
+  progressLabel: string;
   operator: string;
+}
+
+export interface BroadcastDraftDetail extends BroadcastDraft {
+  createdAt?: string;
+  message?: string | null;
+}
+
+export interface BroadcastDraftFilters {
+  importBatchId?: number;
+  status?: BroadcastDraftStatus | 'all';
+  keyword?: string;
+}
+
+export interface BroadcastDraftStatusUpdateResult {
+  updatedCount: number;
 }
 
 export interface BroadcastExecutionLog {

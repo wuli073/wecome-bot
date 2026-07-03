@@ -15,24 +15,20 @@ import DraftDetail from './drafts/DraftDetail';
 import ExecutionLogPanel from './logs/ExecutionLogPanel';
 import {
   applyRulesDataToSnapshot,
-  broadcastPasteOnlyAdapter,
   createBroadcastDataSource,
 } from '../datasources/BroadcastDataSource';
 import type {
   BroadcastBatchState,
   BroadcastDraft,
-  BroadcastPasteDraftRequest,
+  BroadcastImportBatch,
+  BroadcastImportDetail,
   BroadcastScope,
   BroadcastRulesTab,
   BroadcastStatusFilter,
   BroadcastTopTab,
 } from '../types';
 
-const draftStatusOrder = ['pending', 'pasted', 'failed', 'completed'] as const;
-
-function sleep(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
+const draftStatusOrder = ['pending_review', 'ready', 'invalid'] as const;
 
 function getErrorMessage(error: unknown, fallback: string): string {
   if (
@@ -81,6 +77,7 @@ export default function BroadcastWorkspace() {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] =
     useState<BroadcastStatusFilter>('all');
+  const [draftImportBatchId, setDraftImportBatchId] = useState<number | null>(null);
   const [selectedDraftId, setSelectedDraftId] = useState<number | null>(
     snapshot.drafts[0]?.id ?? null,
   );
@@ -95,6 +92,12 @@ export default function BroadcastWorkspace() {
   const [rulesLoading, setRulesLoading] = useState(false);
   const [rulesSaving, setRulesSaving] = useState(false);
   const [rulesError, setRulesError] = useState<string | null>(null);
+  const [importBatches, setImportBatches] = useState<BroadcastImportBatch[]>([]);
+  const [selectedImportId, setSelectedImportId] = useState<number | null>(null);
+  const [selectedImportDetail, setSelectedImportDetail] =
+    useState<BroadcastImportDetail | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const [draftBusy, setDraftBusy] = useState(false);
 
   const topTabOptions = useMemo(
     () => [
@@ -127,6 +130,8 @@ export default function BroadcastWorkspace() {
   const filteredDrafts = useMemo(() => {
     const normalizedSearch = searchTerm.trim().toLowerCase();
     return snapshot.drafts.filter((draft) => {
+      const matchesImportBatch =
+        draftImportBatchId == null ? true : draft.importBatchId === draftImportBatchId;
       const matchesStatus =
         statusFilter === 'all' ? true : draft.status === statusFilter;
       const matchesSearch = normalizedSearch
@@ -140,16 +145,16 @@ export default function BroadcastWorkspace() {
             .toLowerCase()
             .includes(normalizedSearch)
         : true;
-      return matchesStatus && matchesSearch;
+      return matchesImportBatch && matchesStatus && matchesSearch;
     });
-  }, [searchTerm, snapshot.drafts, statusFilter]);
+  }, [draftImportBatchId, searchTerm, snapshot.drafts, statusFilter]);
 
   const activeDraft = useMemo(
     () =>
-      snapshot.drafts.find((draft) => draft.id === selectedDraftId) ??
+      filteredDrafts.find((draft) => draft.id === selectedDraftId) ??
       filteredDrafts[0] ??
       null,
-    [filteredDrafts, selectedDraftId, snapshot.drafts],
+    [filteredDrafts, selectedDraftId],
   );
 
   const groupedDrafts = useMemo(
@@ -175,10 +180,30 @@ export default function BroadcastWorkspace() {
   useEffect(() => {
     setSelectedDraftIds((current) =>
       current.filter((draftId) =>
-        snapshot.drafts.some((draft) => draft.id === draftId),
+        snapshot.drafts.some(
+          (draft) =>
+            draft.id === draftId &&
+            draft.status !== 'invalid' &&
+            !draft.draftsStale,
+        ),
       ),
     );
   }, [snapshot.drafts]);
+
+  useEffect(() => {
+    if (
+      draftImportBatchId != null &&
+      !importBatches.some((batch) => batch.id === draftImportBatchId)
+    ) {
+      setDraftImportBatchId(null);
+    }
+  }, [draftImportBatchId, importBatches]);
+
+  useEffect(() => {
+    if (snapshot.drafts.length > 0 && !snapshot.drafts.some((draft) => draft.id === selectedDraftId)) {
+      setSelectedDraftId(snapshot.drafts[0].id);
+    }
+  }, [selectedDraftId, snapshot.drafts]);
 
   useEffect(() => {
     let cancelled = false;
@@ -194,6 +219,35 @@ export default function BroadcastWorkspace() {
         }
         setScope(resolvedScope);
         setSnapshot((current) => applyRulesDataToSnapshot(current, rulesData));
+        const batches = await dataSource.listImportBatches(resolvedScope);
+        if (cancelled) {
+          return;
+        }
+        setImportBatches(batches);
+        const nextImportId = batches[0]?.id ?? null;
+        setSelectedImportId(nextImportId);
+        if (nextImportId) {
+          const detail = await dataSource.getImportDetail(resolvedScope, nextImportId);
+          if (cancelled) {
+            return;
+          }
+          setSelectedImportDetail(detail);
+          const drafts = await dataSource.listDrafts(resolvedScope);
+          if (!cancelled) {
+            setDraftImportBatchId(nextImportId);
+            setSnapshot((current) => ({
+              ...current,
+              drafts,
+            }));
+          }
+        } else {
+          setSelectedImportDetail(null);
+          setDraftImportBatchId(null);
+          setSnapshot((current) => ({
+            ...current,
+            drafts: [],
+          }));
+        }
       } catch (error) {
         if (cancelled) {
           return;
@@ -247,6 +301,48 @@ export default function BroadcastWorkspace() {
     setSnapshot((current) => applyRulesDataToSnapshot(current, rulesData));
   };
 
+  const refreshImports = async (nextScope: BroadcastScope = scope) => {
+    const batches = await dataSource.listImportBatches(nextScope);
+    setImportBatches(batches);
+
+    const nextImportId =
+      selectedImportId && batches.some((item) => item.id === selectedImportId)
+        ? selectedImportId
+        : batches[0]?.id ?? null;
+    setSelectedImportId(nextImportId);
+
+    if (nextImportId) {
+      const detail = await dataSource.getImportDetail(nextScope, nextImportId);
+      setSelectedImportDetail(detail);
+    } else {
+      setSelectedImportDetail(null);
+    }
+  };
+
+  const refreshDrafts = async (
+    nextScope: BroadcastScope = scope,
+    focusImportBatchId?: number | null,
+  ) => {
+    const drafts = await dataSource.listDrafts(nextScope, {
+      status: statusFilter === 'all' ? 'all' : statusFilter,
+      keyword: searchTerm || undefined,
+    });
+    setSnapshot((current) => ({
+      ...current,
+      drafts,
+    }));
+    if (focusImportBatchId !== undefined) {
+      setDraftImportBatchId(focusImportBatchId);
+      setSelectedDraftId(
+        drafts.find((draft) => draft.importBatchId === focusImportBatchId)?.id ??
+          drafts[0]?.id ??
+          null,
+      );
+      return;
+    }
+    setSelectedDraftId(drafts[0]?.id ?? null);
+  };
+
   const runRulesMutation = async (
     action: () => Promise<void>,
     successMessage: string,
@@ -280,16 +376,31 @@ export default function BroadcastWorkspace() {
     );
   };
 
-  const handleSaveDraft = () => {
+  const handleSaveDraft = async () => {
     if (!editingDraftId) {
       return;
     }
 
-    setSnapshot((current) =>
-      dataSource.saveDraftText(current, editingDraftId, draftEditorText),
-    );
-    setEditingDraftId(null);
-    toast.success(t('broadcast.toasts.draftSaved'));
+    setDraftBusy(true);
+    try {
+      const updated = await dataSource.updateDraftText(
+        scope,
+        editingDraftId,
+        draftEditorText,
+      );
+      setSnapshot((current) => ({
+        ...current,
+        drafts: current.drafts.map((draft) =>
+          draft.id === updated.id ? updated : draft,
+        ),
+      }));
+      setEditingDraftId(null);
+      toast.success(updated.message || t('broadcast.toasts.draftSaved'));
+    } catch (error) {
+      toast.error(getErrorMessage(error, t('common.error')));
+    } finally {
+      setDraftBusy(false);
+    }
   };
 
   const handleStartEdit = (draft: BroadcastDraft) => {
@@ -302,7 +413,7 @@ export default function BroadcastWorkspace() {
     setDraftEditorText('');
   };
 
-  const handleRunMockBatch = async () => {
+  const handleBatchConfirm = async () => {
     const targetDraftIds =
       selectedDraftIds.length > 0
         ? selectedDraftIds
@@ -314,73 +425,17 @@ export default function BroadcastWorkspace() {
       toast.error(t('broadcast.toasts.noDraftSelected'));
       return;
     }
-
-    const targetDrafts = snapshot.drafts.filter((draft) =>
-      targetDraftIds.includes(draft.id),
-    );
-    setBatchState({
-      phase: 'running',
-      total: targetDrafts.length,
-      completed: 0,
-      currentLabel: targetDrafts[0]?.customerName ?? '',
-    });
-
-    for (let index = 0; index < targetDrafts.length; index += 1) {
-      const draft = targetDrafts[index];
-      await sleep(120);
-      setSnapshot((current) =>
-        dataSource.applyDraftStatus(current, [draft.id], 'pasted'),
-      );
-      setBatchState({
-        phase: 'running',
-        total: targetDrafts.length,
-        completed: index + 1,
-        currentLabel: draft.customerName,
-      });
+    setDraftBusy(true);
+    try {
+      await dataSource.updateDraftStatuses(scope, targetDraftIds, 'ready');
+      await refreshDrafts();
+      toast.success('草稿已确认');
+    } catch (error) {
+      toast.error(getErrorMessage(error, t('common.error')));
+    } finally {
+      setDraftBusy(false);
     }
-
-    const newLogs = targetDrafts.map((draft, index) => ({
-      id:
-        Math.max(0, ...snapshot.executionLogs.map((log) => log.id)) + index + 1,
-      draftId: draft.id,
-      customerName: draft.customerName,
-      conversationName: draft.conversationName,
-      status: 'pasted' as const,
-      action: 'mock_paste' as const,
-      message: `已为 ${draft.customerName} 准备写入内容，等待人工确认。`,
-      timestamp: new Date(Date.now() + index).toISOString(),
-    }));
-
-    setSnapshot((current) => dataSource.appendLogs(current, newLogs));
-    setBatchState({
-      phase: 'completed',
-      total: targetDrafts.length,
-      completed: targetDrafts.length,
-      currentLabel: targetDrafts[targetDrafts.length - 1]?.customerName,
-    });
-    toast.success(t('broadcast.toasts.batchCompleted'));
   };
-
-  const requestPreview: BroadcastPasteDraftRequest | null = activeDraft
-    ? {
-        botUuid: activeDraft.botUuid,
-        connectorId: activeDraft.connectorId,
-        broadcastDraftId: activeDraft.id,
-        conversationName: activeDraft.conversationName,
-        draftText:
-          editingDraftId === activeDraft.id
-            ? draftEditorText
-            : activeDraft.draftText,
-        idempotencyKey: `broadcast-${activeDraft.id}-mock`,
-      }
-    : null;
-
-  const runtimePreview = requestPreview
-    ? broadcastPasteOnlyAdapter.toRuntimePayload(
-        requestPreview,
-        'sha256:mock-request-digest',
-      )
-    : null;
 
   return (
     <div className="flex min-h-full flex-col gap-4 pb-4">
@@ -528,35 +583,136 @@ export default function BroadcastWorkspace() {
         </TabsContent>
 
         <TabsContent value="import" className="mt-0">
-          <ImportMatchingPanel rows={snapshot.importPreviewRows} />
+          <ImportMatchingPanel
+            batches={importBatches}
+            selectedBatchId={selectedImportId}
+            detail={selectedImportDetail}
+            templates={snapshot.templates}
+            loading={rulesLoading}
+            busy={importBusy}
+            onUpload={async (file) => {
+              setImportBusy(true);
+              try {
+                const detail = await dataSource.uploadImport(scope, file);
+                await refreshImports();
+                await refreshDrafts(scope, detail.id);
+                setSelectedImportId(detail.id);
+                setSelectedImportDetail(detail);
+                toast.success(`已导入 ${detail.originalFileName}`);
+              } catch (error) {
+                toast.error(getErrorMessage(error, t('common.error')));
+              } finally {
+                setImportBusy(false);
+              }
+            }}
+            onSelectBatch={async (batchId) => {
+              setSelectedImportId(batchId);
+              try {
+                const detail = await dataSource.getImportDetail(scope, batchId);
+                setSelectedImportDetail(detail);
+                await refreshDrafts(scope, batchId);
+              } catch (error) {
+                toast.error(getErrorMessage(error, t('common.error')));
+              }
+            }}
+            onDeleteBatch={async (batchId) => {
+              setImportBusy(true);
+              try {
+                await dataSource.deleteImport(scope, batchId);
+                await refreshImports();
+                await refreshDrafts();
+                toast.success('导入批次已删除');
+              } catch (error) {
+                toast.error(getErrorMessage(error, t('common.error')));
+              } finally {
+                setImportBusy(false);
+              }
+            }}
+            onRematch={async (batchId) => {
+              setImportBusy(true);
+              try {
+                const detail = await dataSource.rematchImport(scope, batchId);
+                await refreshImports();
+                await refreshDrafts(scope, batchId);
+                setSelectedImportDetail(detail);
+                toast.success('已按当前规则重新匹配');
+              } catch (error) {
+                toast.error(getErrorMessage(error, t('common.error')));
+              } finally {
+                setImportBusy(false);
+              }
+            }}
+            onGenerateDrafts={async (batchId, templateId) => {
+              setImportBusy(true);
+              try {
+                const result = await dataSource.generateImportDrafts(
+                  scope,
+                  batchId,
+                  templateId,
+                );
+                await refreshImports();
+                await refreshDrafts(scope, batchId);
+                toast.success(`已生成 ${result.totalGroupCount} 个分组草稿`);
+              } catch (error) {
+                toast.error(getErrorMessage(error, t('common.error')));
+              } finally {
+                setImportBusy(false);
+              }
+            }}
+          />
         </TabsContent>
 
         <TabsContent value="drafts" className="mt-0">
           <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
             <DraftQueue
               drafts={groupedDrafts}
+              importBatches={importBatches}
+              selectedImportId={draftImportBatchId}
               searchTerm={searchTerm}
               statusFilter={statusFilter}
               selectedDraftId={selectedDraftId}
               selectedDraftIds={selectedDraftIds}
-              batchState={batchState}
+              busy={draftBusy}
+              onImportBatchChange={setDraftImportBatchId}
               onSearchTermChange={setSearchTerm}
               onStatusFilterChange={setStatusFilter}
               onSelectDraft={handleSelectDraft}
               onToggleDraftSelection={handleToggleDraftSelection}
-              onRunMockBatch={() => void handleRunMockBatch()}
+              onBatchConfirm={() => void handleBatchConfirm()}
             />
             <DraftDetail
               draft={activeDraft}
               editingDraftId={editingDraftId}
               draftEditorText={draftEditorText}
-              batchState={batchState}
-              requestPreview={requestPreview}
-              runtimePreview={runtimePreview}
+              busy={draftBusy}
               onStartEdit={handleStartEdit}
               onDraftEditorTextChange={setDraftEditorText}
-              onSaveDraft={handleSaveDraft}
+              onSaveDraft={() => void handleSaveDraft()}
               onCancelEdit={handleCancelEdit}
+              onConfirmDraft={() =>
+                activeDraft &&
+                void dataSource
+                  .updateDraftStatuses(scope, [activeDraft.id], 'ready')
+                  .then(async () => {
+                    await refreshDrafts();
+                    toast.success('草稿已确认');
+                  })
+                  .catch((error) => {
+                    toast.error(getErrorMessage(error, t('common.error')));
+                  })
+              }
+              onRevokeDraft={() =>
+                activeDraft &&
+                void dataSource
+                  .updateDraftStatuses(scope, [activeDraft.id], 'pending_review')
+                  .then(async () => {
+                    await refreshDrafts();
+                    toast.success('已撤回确认');
+                  })
+                  .catch((error) => {
+                    toast.error(getErrorMessage(error, t('common.error')));
+                  })
+              }
             />
           </div>
         </TabsContent>

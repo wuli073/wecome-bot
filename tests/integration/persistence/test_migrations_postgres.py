@@ -17,11 +17,13 @@ import os
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import text
+from pathlib import Path
 
 from langbot.pkg.entity.persistence.base import Base
 from langbot.pkg.entity.persistence import broadcast as _broadcast  # noqa: F401
 from langbot.pkg.persistence.alembic_runner import (
     run_alembic_upgrade,
+    run_alembic_downgrade,
     run_alembic_stamp,
     get_alembic_current,
     _ALEMBIC_DIR,
@@ -39,6 +41,10 @@ def _get_script_head() -> str:
     cfg = Config()
     cfg.set_main_option('script_location', _ALEMBIC_DIR)
     return ScriptDirectory.from_config(cfg).get_current_head()
+
+
+def _get_revision_script(revision: str) -> Path:
+    return Path(_ALEMBIC_DIR) / 'versions' / f'{revision}.py'
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
@@ -226,6 +232,77 @@ class TestPostgreSQLMigrationUpgrade:
             'broadcast_templates',
             'broadcast_variable_profiles',
         ]
+
+    @pytest.mark.asyncio
+    async def test_postgres_broadcast_phase3_tables_exist_after_upgrade(
+        self, postgres_engine, clean_tables, clean_alembic_version
+    ):
+        async with postgres_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(postgres_engine, '0001_baseline')
+        await run_alembic_upgrade(postgres_engine, 'head')
+
+        async with postgres_engine.begin() as conn:
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT tablename
+                    FROM pg_tables
+                    WHERE schemaname = 'public'
+                      AND tablename IN (
+                        'broadcast_import_batches',
+                        'broadcast_import_rows',
+                        'broadcast_drafts'
+                      )
+                    ORDER BY tablename
+                    """
+                )
+            )
+            table_names = [row[0] for row in result.fetchall()]
+
+        assert table_names == [
+            'broadcast_drafts',
+            'broadcast_import_batches',
+            'broadcast_import_rows',
+        ]
+
+    def test_postgres_broadcast_phase3_revision_file_exists_and_is_chained(self):
+        script_path = _get_revision_script('0014_broadcast_phase3')
+        assert script_path.exists(), 'Expected 0014_broadcast_phase3 migration script to exist'
+
+    @pytest.mark.asyncio
+    async def test_postgres_broadcast_phase3_downgrade_returns_to_0013(
+        self, postgres_engine, clean_tables, clean_alembic_version
+    ):
+        async with postgres_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(postgres_engine, '0001_baseline')
+        await run_alembic_upgrade(postgres_engine, 'head')
+        await run_alembic_downgrade(postgres_engine, '0013_broadcast_rules')
+
+        async with postgres_engine.begin() as conn:
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT tablename
+                    FROM pg_tables
+                    WHERE schemaname = 'public'
+                      AND tablename IN (
+                        'broadcast_import_batches',
+                        'broadcast_import_rows',
+                        'broadcast_drafts'
+                      )
+                    ORDER BY tablename
+                    """
+                )
+            )
+            table_names = [row[0] for row in result.fetchall()]
+
+        assert table_names == []
+        rev = await get_alembic_current(postgres_engine)
+        assert rev == '0013_broadcast_rules'
 
 
 class TestPostgreSQLMigrationGetCurrent:

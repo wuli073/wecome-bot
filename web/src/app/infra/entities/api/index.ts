@@ -813,6 +813,87 @@ export interface ApiBroadcastGroupNamesResponse {
   group_names: ApiBroadcastGroupName[];
 }
 
+export type ApiBroadcastImportBatchStatus =
+  | 'imported'
+  | 'matched'
+  | 'drafts_generated';
+
+export type ApiBroadcastImportMatchStatus =
+  | 'matched'
+  | 'unmatched'
+  | 'invalid';
+
+export interface ApiBroadcastImportBatch {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  original_file_name: string;
+  file_type: string;
+  worksheet_name: string | null;
+  status: ApiBroadcastImportBatchStatus;
+  drafts_stale: boolean;
+  total_rows: number;
+  valid_rows: number;
+  invalid_rows: number;
+  matched_rows: number;
+  unmatched_rows: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiBroadcastImportRow {
+  id: number;
+  import_batch_id: number;
+  source_row_number: number;
+  raw_data: Record<string, string>;
+  group_value: string | null;
+  matched_conversation_name: string | null;
+  matched_rule_id: number | null;
+  match_status: ApiBroadcastImportMatchStatus;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface ApiBroadcastImportDetail extends ApiBroadcastImportBatch {
+  rows: ApiBroadcastImportRow[];
+}
+
+export type ApiBroadcastDraftStatus =
+  | 'pending_review'
+  | 'ready'
+  | 'invalid';
+
+export interface ApiBroadcastDraft {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  import_batch_id: number;
+  group_value: string;
+  target_conversation_name: string | null;
+  template_id: number | null;
+  template_name_snapshot: string;
+  template_content_snapshot: string;
+  render_variables: Record<string, string>;
+  draft_text: string;
+  status: ApiBroadcastDraftStatus;
+  error_message: string | null;
+  drafts_stale: boolean;
+  created_at: string;
+  updated_at: string;
+  message?: string | null;
+}
+
+export interface ApiBroadcastImportDraftGenerationResult {
+  total_group_count: number;
+  pending_review_count: number;
+  invalid_count: number;
+  unmatched_group_count: number;
+}
+
+export interface ApiBroadcastDraftStatusUpdateResult {
+  updated_count: number;
+}
+
 export type DatabaseModeRealtimeEventType =
   | 'database-message-created'
   | 'database-message-updated'

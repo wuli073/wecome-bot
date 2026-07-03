@@ -64,6 +64,9 @@ class _MiniPersistenceManager:
             await conn.run_sync(persistence_broadcast.BroadcastVariableProfile.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastGroupRule.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastGroupName.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastImportBatch.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastImportRow.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastDraft.__table__.create)
 
     async def dispose(self) -> None:
         await self.engine.dispose()
@@ -559,3 +562,468 @@ async def test_group_names_reject_existing_duplicate_and_delete_by_scope(service
     group_names = await service.list_group_names(_scope())
     await service.delete_group_name(group_names[0]['id'], _scope())
     assert await service.list_group_names(_scope()) == []
+
+
+async def test_upload_import_creates_first_match_results_immediately(service_fixture):
+    service, persistence_mgr = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                },
+                {
+                    'source_field': '订单号',
+                    'variable_key': 'order_no',
+                    'merge_mode': 'lines',
+                    'order': 2,
+                },
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_name': 'Acme Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'North',
+            'match_type': 'contains',
+            'match_expression': 'North',
+            'target_conversation_name': 'Disabled Group',
+            'priority': 999,
+            'enabled': False,
+        },
+    )
+    await service.create_group_names(
+        _scope(),
+        {
+            'names': ['Northwind Team'],
+        },
+    )
+
+    result = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': (
+                '客户名称,订单号\n'
+                'Acme,SO-001\n'
+                'Northwind Team,SO-002\n'
+                '   ,SO-003\n'
+            ).encode('utf-8'),
+        },
+    )
+
+    assert result['total_rows'] == 3
+    assert result['matched_rows'] == 2
+    assert result['unmatched_rows'] == 0
+    assert result['invalid_rows'] == 1
+    assert result['matched_rows'] + result['unmatched_rows'] + result['invalid_rows'] == result['total_rows']
+
+    detail = await service.get_import_detail(result['id'], _scope(), {})
+    assert [row['match_status'] for row in detail['rows']] == ['matched', 'matched', 'invalid']
+    assert detail['rows'][0]['matched_conversation_name'] == 'Acme Group'
+    assert detail['rows'][1]['matched_conversation_name'] == 'Northwind Team'
+    assert detail['rows'][1]['matched_rule_id'] is None
+    assert detail['rows'][2]['group_value'] is None
+
+
+async def test_upload_import_uses_parser_outside_transaction_and_persists_after_refresh(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+
+    parsed_before_transaction = []
+    import langbot.pkg.broadcast.service as service_module
+
+    original_parse = service_module.parse_import_file
+
+    async def wrapped_parse(file_name: str, payload: bytes):
+        parsed_before_transaction.append(service.ap.persistence_mgr.engine.pool is not None)
+        return await original_parse(file_name, payload)
+    try:
+        service_module.parse_import_file = wrapped_parse
+        created = await service.upload_import(
+            _scope(),
+            {
+                'filename': 'customers.csv',
+                'body': '客户名称\nAcme\n'.encode('utf-8'),
+            },
+        )
+    finally:
+        service_module.parse_import_file = original_parse
+
+    assert parsed_before_transaction == [True]
+    listed = await service.list_import_batches(_scope())
+    detail = await service.get_import_detail(created['id'], _scope(), {})
+    assert [item['id'] for item in listed] == [created['id']]
+    assert [row['group_value'] for row in detail['rows']] == ['Acme']
+
+
+async def test_rematch_uses_latest_profile_and_marks_drafts_stale_only_when_old_drafts_exist(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '历史客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '历史客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '历史客户名称,最新客户名称\nLegacy Acme,Acme\n'.encode('utf-8'),
+        },
+    )
+    await service.create_template(
+        _scope(),
+        {
+            'name': 'Arrival Reminder',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '最新客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '最新客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_name': 'Acme Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+
+    rematched = await service.rematch_import(created['id'], _scope())
+    assert rematched['drafts_stale'] is False
+
+    template = (await service.list_templates(_scope()))[0]
+    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+
+    second_rematch = await service.rematch_import(created['id'], _scope())
+    assert second_rematch['drafts_stale'] is True
+    detail = await service.get_import_detail(created['id'], _scope(), {})
+    assert detail['rows'][0]['group_value'] == 'Acme'
+    assert detail['rows'][0]['match_status'] == 'matched'
+
+
+async def test_rematch_rejects_batch_when_latest_required_fields_are_missing(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nAcme\n'.encode('utf-8'),
+        },
+    )
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '最新客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '最新客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                },
+                {
+                    'source_field': '订单号',
+                    'variable_key': 'order_no',
+                    'merge_mode': 'lines',
+                    'order': 2,
+                },
+            ],
+        },
+    )
+
+    from langbot.pkg.broadcast.errors import BroadcastError
+
+    with pytest.raises(BroadcastError, match='BROADCAST_IMPORT_REMATCH_FIELDS_MISSING') as exc_info:
+        await service.rematch_import(created['id'], _scope())
+    assert exc_info.value.message == '当前导入数据缺少以下字段，无法重新匹配：最新客户名称、订单号'
+
+
+async def test_list_and_get_drafts_are_scoped_and_filterable(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_name': 'Acme Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nAcme\nNorthwind\n'.encode('utf-8'),
+        },
+    )
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': 'Arrival Reminder',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+
+    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id'], 'status': 'invalid'})
+    assert [draft['group_value'] for draft in drafts] == ['Northwind']
+
+    detail = await service.get_draft_detail(drafts[0]['id'], _scope())
+    assert detail['group_value'] == 'Northwind'
+    assert detail['status'] == 'invalid'
+
+
+async def test_edit_ready_draft_rolls_back_to_pending_review_with_message(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_name': 'Acme Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nAcme\n'.encode('utf-8'),
+        },
+    )
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': 'Arrival Reminder',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
+    await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
+
+    updated = await service.update_draft_text(draft['id'], _scope(), {'draft_text': 'Updated draft'})
+    assert updated['status'] == 'pending_review'
+    assert updated['draft_text'] == 'Updated draft'
+    assert updated['message'] == '草稿内容已修改，请重新确认'
+
+
+async def test_edit_invalid_draft_keeps_invalid_and_cannot_be_confirmed(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nNorthwind\n'.encode('utf-8'),
+        },
+    )
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': 'Arrival Reminder',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
+
+    updated = await service.update_draft_text(draft['id'], _scope(), {'draft_text': 'Manual preview'})
+    assert updated['status'] == 'invalid'
+
+    with pytest.raises(BroadcastError, match='BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN') as exc_info:
+        await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
+    assert exc_info.value.message == '当前草稿生成失败，不能直接确认，请修复配置后重新生成'
+
+
+async def test_stale_draft_cannot_be_confirmed_and_cross_scope_ids_reject_whole_batch(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_name': 'Acme Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称,新客户名称\nAcme,Acme\n'.encode('utf-8'),
+        },
+    )
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': 'Arrival Reminder',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '新客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '新客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.rematch_import(created['id'], _scope())
+
+    with pytest.raises(BroadcastError, match='BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN') as exc_info:
+        await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
+    assert exc_info.value.message == '当前草稿已过期，请重新生成草稿后再确认'

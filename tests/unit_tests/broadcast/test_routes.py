@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import sys
 import types
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 import quart
+from werkzeug.datastructures import FileStorage
 
 core_app_stub = types.ModuleType('langbot.pkg.core.app')
 core_app_stub.Application = object
@@ -17,6 +19,7 @@ from langbot.pkg.api.http.controller.groups.broadcast import (  # noqa: E402
     BroadcastRouterGroup,
 )
 from langbot.pkg.broadcast.errors import (  # noqa: E402
+    BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN,
     BROADCAST_SCOPE_REQUIRED,
     BroadcastError,
 )
@@ -109,6 +112,37 @@ async def _make_client():
             list_group_names=AsyncMock(return_value=[]),
             create_group_names=AsyncMock(return_value={'group_names': []}),
             delete_group_name=AsyncMock(return_value={'deleted': True}),
+            upload_import=AsyncMock(
+                return_value={
+                    'id': 11,
+                    'status': 'imported',
+                    'drafts_stale': False,
+                    'total_rows': 3,
+                    'valid_rows': 2,
+                    'invalid_rows': 1,
+                    'matched_rows': 1,
+                    'unmatched_rows': 1,
+                    'rows': [],
+                }
+            ),
+            list_import_batches=AsyncMock(return_value=[]),
+            get_import_detail=AsyncMock(return_value={'id': 11, 'rows': []}),
+            delete_import=AsyncMock(return_value={'deleted': True}),
+            rematch_import=AsyncMock(return_value={'id': 11, 'drafts_stale': True, 'rows': []}),
+            generate_import_drafts=AsyncMock(
+                return_value={
+                    'total_group_count': 2,
+                    'pending_review_count': 1,
+                    'invalid_count': 1,
+                    'unmatched_group_count': 1,
+                }
+            ),
+            list_drafts=AsyncMock(return_value=[]),
+            get_draft_detail=AsyncMock(return_value={'id': 21, 'status': 'pending_review'}),
+            update_draft_text=AsyncMock(
+                return_value={'id': 21, 'status': 'pending_review', 'draft_text': 'Updated', 'message': None}
+            ),
+            update_draft_statuses=AsyncMock(return_value={'updated_count': 1}),
         ),
     )
     router = BroadcastRouterGroup(ap, app)
@@ -252,3 +286,140 @@ async def test_delete_template_uses_query_scope():
         1,
         {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
     )
+
+
+async def test_upload_import_uses_multipart_and_body_scope():
+    client, ap = await _make_client()
+
+    response = await client.post(
+        '/api/v1/broadcast/imports',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        form={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+        },
+        files={
+            'file': FileStorage(
+                stream=BytesIO('客户名称,订单号\nAcme,SO-001\n'.encode('utf-8')),
+                filename='customers.csv',
+            ),
+        },
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload['data']['id'] == 11
+    ap.broadcast_service.validate_scope.assert_awaited_once_with(
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'}
+    )
+    ap.broadcast_service.upload_import.assert_awaited_once()
+
+
+async def test_get_import_detail_uses_query_scope_and_filters():
+    client, ap = await _make_client()
+
+    response = await client.get(
+        '/api/v1/broadcast/imports/11?bot_uuid=bot-1&connector_id=wxwork-local&match_status=matched&keyword=Acme&page=1&page_size=20',
+        headers={'Authorization': 'Bearer valid-user-token'},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload['data']['id'] == 11
+    ap.broadcast_service.get_import_detail.assert_awaited_once_with(
+        11,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        {'match_status': 'matched', 'keyword': 'Acme', 'page': 1, 'page_size': 20},
+    )
+
+
+async def test_import_error_keeps_chinese_message_and_details():
+    client, ap = await _make_client()
+    ap.broadcast_service.upload_import = AsyncMock(
+        side_effect=BroadcastError(
+            'BROADCAST_IMPORT_FIELDS_MISSING',
+            '导入文件缺少以下字段：客户名称、订单号',
+            ['客户名称', '订单号'],
+        )
+    )
+
+    response = await client.post(
+        '/api/v1/broadcast/imports',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        form={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+        },
+        files={
+            'file': FileStorage(
+                stream=BytesIO('订单号\nSO-001\n'.encode('utf-8')),
+                filename='customers.csv',
+            ),
+        },
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 400
+    assert payload['msg'] == 'BROADCAST_IMPORT_FIELDS_MISSING'
+    assert payload['message'] == '导入文件缺少以下字段：客户名称、订单号'
+    assert payload['details'] == ['客户名称', '订单号']
+
+
+async def test_get_and_put_draft_routes_use_scope_and_payload():
+    client, ap = await _make_client()
+
+    detail_response = await client.get(
+        '/api/v1/broadcast/drafts/21?bot_uuid=bot-1&connector_id=wxwork-local',
+        headers={'Authorization': 'Bearer valid-user-token'},
+    )
+    assert detail_response.status_code == 200
+    ap.broadcast_service.get_draft_detail.assert_awaited_once_with(
+        21,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+    )
+
+    update_response = await client.put(
+        '/api/v1/broadcast/drafts/21',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        json={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'draft_text': 'Updated draft',
+        },
+    )
+    assert update_response.status_code == 200
+    ap.broadcast_service.update_draft_text.assert_awaited_once_with(
+        21,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        {
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'draft_text': 'Updated draft',
+        },
+    )
+
+
+async def test_batch_update_draft_status_route_preserves_chinese_error():
+    client, ap = await _make_client()
+    ap.broadcast_service.update_draft_statuses = AsyncMock(
+        side_effect=BroadcastError(
+            BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN,
+            '当前草稿生成失败，不能直接确认，请修复配置后重新生成',
+        )
+    )
+
+    response = await client.post(
+        '/api/v1/broadcast/drafts/batch-status',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        json={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'draft_ids': [21],
+            'status': 'ready',
+        },
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 400
+    assert payload['msg'] == BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN
+    assert payload['message'] == '当前草稿生成失败，不能直接确认，请修复配置后重新生成'

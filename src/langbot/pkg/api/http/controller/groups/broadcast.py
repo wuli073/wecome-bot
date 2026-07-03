@@ -4,6 +4,19 @@ import quart
 
 from .. import group
 from .....broadcast.errors import (
+    BROADCAST_DRAFT_BODY_EMPTY,
+    BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN,
+    BROADCAST_DRAFT_NOT_FOUND,
+    BROADCAST_DRAFT_SCOPE_MISMATCH,
+    BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN,
+    BROADCAST_DRAFT_STATUS_INVALID,
+    BROADCAST_IMPORT_FIELDS_MISSING,
+    BROADCAST_IMPORT_FILE_INVALID,
+    BROADCAST_IMPORT_GROUP_FIELD_REQUIRED,
+    BROADCAST_IMPORT_NOT_FOUND,
+    BROADCAST_IMPORT_READY_DRAFT_EXISTS,
+    BROADCAST_IMPORT_REMATCH_FIELDS_MISSING,
+    BROADCAST_IMPORT_VARIABLE_PROFILE_REQUIRED,
     BROADCAST_GROUP_NAME_DUPLICATE,
     BROADCAST_GROUP_NAME_NOT_FOUND,
     BROADCAST_GROUP_RULE_DUPLICATE,
@@ -141,6 +154,115 @@ class BroadcastRouterGroup(group.RouterGroup):
             except BroadcastError as exc:
                 return self._broadcast_error_response(exc)
 
+        @self.route('/imports', methods=['GET', 'POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def imports() -> str:
+            try:
+                if quart.request.method == 'GET':
+                    scope = await self.validate_scope(from_query=True)
+                    data = await self.ap.broadcast_service.list_import_batches(scope)
+                    return self.success(data=data)
+
+                form = await quart.request.form
+                files = await quart.request.files
+                scope = await self.ap.broadcast_service.validate_scope(
+                    {
+                        'bot_uuid': str(form.get('bot_uuid') or '').strip(),
+                        'connector_id': str(form.get('connector_id') or '').strip(),
+                    }
+                )
+                file = files.get('file')
+                payload = {
+                    'filename': getattr(file, 'filename', ''),
+                    'body': file.read() if file is not None else b'',
+                }
+                data = await self.ap.broadcast_service.upload_import(scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/imports/<int:import_id>', methods=['GET', 'DELETE'], auth_type=group.AuthType.USER_TOKEN)
+        async def import_detail(import_id: int) -> str:
+            try:
+                if quart.request.method == 'DELETE':
+                    scope = await self.validate_scope(from_query=True)
+                    data = await self.ap.broadcast_service.delete_import(import_id, scope)
+                    return self.success(data=data)
+
+                scope = await self.validate_scope(from_query=True)
+                filters = {
+                    'match_status': str(quart.request.args.get('match_status') or '').strip() or None,
+                    'keyword': str(quart.request.args.get('keyword') or '').strip() or None,
+                    'page': int(quart.request.args.get('page')) if quart.request.args.get('page') else None,
+                    'page_size': int(quart.request.args.get('page_size'))
+                    if quart.request.args.get('page_size')
+                    else None,
+                }
+                data = await self.ap.broadcast_service.get_import_detail(import_id, scope, filters)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/imports/<int:import_id>/rematch', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def rematch_import(import_id: int) -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.rematch_import(import_id, scope)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/imports/<int:import_id>/generate-drafts', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def generate_import_drafts(import_id: int) -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.generate_import_drafts(import_id, scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/drafts', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
+        async def drafts() -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                filters = {
+                    'import_batch_id': int(quart.request.args.get('import_batch_id'))
+                    if quart.request.args.get('import_batch_id')
+                    else None,
+                    'status': str(quart.request.args.get('status') or '').strip() or None,
+                    'keyword': str(quart.request.args.get('keyword') or '').strip() or None,
+                }
+                data = await self.ap.broadcast_service.list_drafts(scope, filters)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/drafts/<int:draft_id>', methods=['GET', 'PUT'], auth_type=group.AuthType.USER_TOKEN)
+        async def draft_detail(draft_id: int) -> str:
+            try:
+                if quart.request.method == 'GET':
+                    scope = await self.validate_scope(from_query=True)
+                    data = await self.ap.broadcast_service.get_draft_detail(draft_id, scope)
+                    return self.success(data=data)
+
+                payload = await quart.request.get_json(silent=True) or {}
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.update_draft_text(draft_id, scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/drafts/batch-status', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def draft_batch_status() -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.update_draft_statuses(scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
     async def validate_scope(
         self,
         *,
@@ -175,6 +297,17 @@ class BroadcastRouterGroup(group.RouterGroup):
     def _broadcast_http_status(code: str) -> int:
         if code in {
             BROADCAST_SCOPE_REQUIRED,
+            BROADCAST_IMPORT_FILE_INVALID,
+            BROADCAST_IMPORT_VARIABLE_PROFILE_REQUIRED,
+            BROADCAST_IMPORT_GROUP_FIELD_REQUIRED,
+            BROADCAST_IMPORT_FIELDS_MISSING,
+            BROADCAST_IMPORT_REMATCH_FIELDS_MISSING,
+            BROADCAST_IMPORT_READY_DRAFT_EXISTS,
+            BROADCAST_DRAFT_BODY_EMPTY,
+            BROADCAST_DRAFT_STATUS_INVALID,
+            BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN,
+            BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN,
+            BROADCAST_DRAFT_SCOPE_MISMATCH,
             BROADCAST_TEMPLATE_CONTENT_REQUIRED,
             BROADCAST_VARIABLE_PROFILE_INVALID,
             BROADCAST_GROUP_RULE_REGEX_INVALID,
@@ -182,6 +315,8 @@ class BroadcastRouterGroup(group.RouterGroup):
         }:
             return 400
         if code in {
+            BROADCAST_DRAFT_NOT_FOUND,
+            BROADCAST_IMPORT_NOT_FOUND,
             BROADCAST_TEMPLATE_NOT_FOUND,
             BROADCAST_GROUP_RULE_NOT_FOUND,
             BROADCAST_GROUP_NAME_NOT_FOUND,

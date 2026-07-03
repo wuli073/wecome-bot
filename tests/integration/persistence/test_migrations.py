@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import importlib
+from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -48,6 +49,25 @@ def _dt(value: str) -> datetime.datetime:
     return datetime.datetime.fromisoformat(value)
 
 
+def _get_revision_script(revision: str) -> Path:
+    return Path(_ALEMBIC_DIR) / 'versions' / f'{revision}.py'
+
+
+def _sqlite_engine(url: str):
+    engine = create_async_engine(url)
+    sa.event.listen(engine.sync_engine, 'connect', _enable_sqlite_foreign_keys)
+    return engine
+
+
+def _enable_sqlite_foreign_keys(dbapi_connection, connection_record) -> None:
+    del connection_record
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute('PRAGMA foreign_keys=ON')
+    finally:
+        cursor.close()
+
+
 pytestmark = pytest.mark.integration
 
 
@@ -61,7 +81,7 @@ def sqlite_db_url(tmp_path):
 @pytest.fixture
 async def sqlite_engine(sqlite_db_url):
     """Create async SQLite engine."""
-    engine = create_async_engine(sqlite_db_url)
+    engine = _sqlite_engine(sqlite_db_url)
     yield engine
     await engine.dispose()
 
@@ -219,6 +239,355 @@ class TestSQLiteMigrationUpgrade:
         assert 'ix_broadcast_group_rules_priority' in rule_indexes
         assert 'ix_broadcast_group_names_name' in group_name_indexes
 
+    @pytest.mark.asyncio
+    async def test_broadcast_phase3_tables_exist_after_upgrade(self, sqlite_engine):
+        """Phase 3 broadcast tables, indexes, and unique constraints exist after upgrade."""
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_schema(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                table_names = set(inspector.get_table_names())
+                batch_indexes = {index['name'] for index in inspector.get_indexes('broadcast_import_batches')}
+                row_indexes = {index['name'] for index in inspector.get_indexes('broadcast_import_rows')}
+                draft_indexes = {index['name'] for index in inspector.get_indexes('broadcast_drafts')}
+                row_uniques = {
+                    tuple(sorted(item['column_names']))
+                    for item in inspector.get_unique_constraints('broadcast_import_rows')
+                }
+                draft_uniques = {
+                    tuple(sorted(item['column_names']))
+                    for item in inspector.get_unique_constraints('broadcast_drafts')
+                }
+                return table_names, batch_indexes, row_indexes, draft_indexes, row_uniques, draft_uniques
+
+            (
+                table_names,
+                batch_indexes,
+                row_indexes,
+                draft_indexes,
+                row_uniques,
+                draft_uniques,
+            ) = await conn.run_sync(inspect_schema)
+
+        assert {
+            'broadcast_import_batches',
+            'broadcast_import_rows',
+            'broadcast_drafts',
+        }.issubset(table_names)
+        assert 'ix_broadcast_import_batches_bot_uuid' in batch_indexes
+        assert 'ix_broadcast_import_batches_connector_id' in batch_indexes
+        assert 'ix_broadcast_import_batches_created_at' in batch_indexes
+        assert 'ix_broadcast_import_rows_import_batch_id' in row_indexes
+        assert 'ix_broadcast_import_rows_match_status' in row_indexes
+        assert 'ix_broadcast_import_rows_group_value' in row_indexes
+        assert 'ix_broadcast_drafts_import_batch_id' in draft_indexes
+        assert 'ix_broadcast_drafts_status' in draft_indexes
+        assert 'ix_broadcast_drafts_updated_at' in draft_indexes
+        assert tuple(sorted(['import_batch_id', 'source_row_number'])) in row_uniques
+        assert tuple(sorted(['group_value', 'import_batch_id'])) in draft_uniques
+
+    @pytest.mark.asyncio
+    async def test_broadcast_phase3_revision_metadata_is_correct(self, sqlite_engine):
+        """Phase 3 migration revision id is present, short enough, and chained from 0013."""
+        script_path = _get_revision_script('0014_broadcast_phase3')
+        assert script_path.exists(), 'Expected 0014_broadcast_phase3 migration script to exist'
+
+        module = importlib.import_module('langbot.pkg.persistence.alembic.versions.0014_broadcast_phase3')
+        assert len(module.revision) <= 32
+        assert module.down_revision == '0013_broadcast_rules'
+
+    @pytest.mark.asyncio
+    async def test_broadcast_phase3_models_are_registered_in_metadata(self, sqlite_engine):
+        """Phase 3 ORM models appear in metadata and create_all creates the tables."""
+        table_names = set(Base.metadata.tables)
+        assert 'broadcast_import_batches' in table_names
+        assert 'broadcast_import_rows' in table_names
+        assert 'broadcast_drafts' in table_names
+
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+            def inspect_tables(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                return set(inspector.get_table_names())
+
+            created_tables = await conn.run_sync(inspect_tables)
+
+        assert 'broadcast_import_batches' in created_tables
+        assert 'broadcast_import_rows' in created_tables
+        assert 'broadcast_drafts' in created_tables
+
+    @pytest.mark.asyncio
+    async def test_deleting_group_rule_sets_import_row_matched_rule_to_null(self, sqlite_engine):
+        """Deleting a broadcast group rule should preserve rows and null out matched_rule_id."""
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def sync_case(sync_conn):
+                metadata = sa.MetaData()
+                templates = sa.Table('broadcast_templates', metadata, autoload_with=sync_conn)
+                rules = sa.Table('broadcast_group_rules', metadata, autoload_with=sync_conn)
+                batches = sa.Table('broadcast_import_batches', metadata, autoload_with=sync_conn)
+                rows = sa.Table('broadcast_import_rows', metadata, autoload_with=sync_conn)
+                sync_conn.execute(
+                    sa.insert(templates).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        name='template',
+                        content='hello',
+                        variables=[],
+                        enabled=True,
+                    )
+                )
+                rule_id = sync_conn.execute(
+                    sa.insert(rules).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        source_value='acme',
+                        match_type='exact',
+                        match_expression='Acme',
+                        target_conversation_name='Acme Group',
+                        priority=1,
+                        enabled=True,
+                    )
+                ).inserted_primary_key[0]
+                batch_id = sync_conn.execute(
+                    sa.insert(batches).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        original_file_name='customers.csv',
+                        file_type='csv',
+                        worksheet_name=None,
+                        status='imported',
+                        drafts_stale=False,
+                        total_rows=1,
+                        valid_rows=1,
+                        invalid_rows=0,
+                        matched_rows=1,
+                        unmatched_rows=0,
+                    )
+                ).inserted_primary_key[0]
+                row_id = sync_conn.execute(
+                    sa.insert(rows).values(
+                        import_batch_id=batch_id,
+                        source_row_number=2,
+                        raw_data={'Customer Name': 'Acme'},
+                        group_value='Acme',
+                        matched_conversation_name='Acme Group',
+                        matched_rule_id=rule_id,
+                        match_status='matched',
+                        error_message=None,
+                    )
+                ).inserted_primary_key[0]
+                sync_conn.execute(sa.delete(rules).where(rules.c.id == rule_id))
+                return sync_conn.execute(
+                    sa.select(rows.c.matched_rule_id).where(rows.c.id == row_id)
+                ).scalar_one()
+
+            matched_rule_id = await conn.run_sync(sync_case)
+
+        assert matched_rule_id is None
+
+    @pytest.mark.asyncio
+    async def test_deleting_template_sets_draft_template_id_to_null(self, sqlite_engine):
+        """Deleting a broadcast template should preserve drafts and null out template_id."""
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def sync_case(sync_conn):
+                metadata = sa.MetaData()
+                templates = sa.Table('broadcast_templates', metadata, autoload_with=sync_conn)
+                batches = sa.Table('broadcast_import_batches', metadata, autoload_with=sync_conn)
+                drafts = sa.Table('broadcast_drafts', metadata, autoload_with=sync_conn)
+                template_id = sync_conn.execute(
+                    sa.insert(templates).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        name='template',
+                        content='hello',
+                        variables=[],
+                        enabled=True,
+                    )
+                ).inserted_primary_key[0]
+                batch_id = sync_conn.execute(
+                    sa.insert(batches).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        original_file_name='customers.csv',
+                        file_type='csv',
+                        worksheet_name=None,
+                        status='drafts_generated',
+                        drafts_stale=False,
+                        total_rows=1,
+                        valid_rows=1,
+                        invalid_rows=0,
+                        matched_rows=1,
+                        unmatched_rows=0,
+                    )
+                ).inserted_primary_key[0]
+                draft_id = sync_conn.execute(
+                    sa.insert(drafts).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        import_batch_id=batch_id,
+                        group_value='Acme',
+                        target_conversation_name='Acme Group',
+                        template_id=template_id,
+                        template_name_snapshot='template',
+                        template_content_snapshot='hello',
+                        render_variables={'customer_name': 'Acme'},
+                        draft_text='hello',
+                        status='pending_review',
+                        error_message=None,
+                    )
+                ).inserted_primary_key[0]
+                sync_conn.execute(sa.delete(templates).where(templates.c.id == template_id))
+                return sync_conn.execute(
+                    sa.select(drafts.c.template_id).where(drafts.c.id == draft_id)
+                ).scalar_one()
+
+            template_id = await conn.run_sync(sync_case)
+
+        assert template_id is None
+
+    @pytest.mark.asyncio
+    async def test_deleting_import_batch_cascades_to_rows(self, sqlite_engine):
+        """Deleting an import batch should cascade delete its import rows."""
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def sync_case(sync_conn):
+                metadata = sa.MetaData()
+                batches = sa.Table('broadcast_import_batches', metadata, autoload_with=sync_conn)
+                rows = sa.Table('broadcast_import_rows', metadata, autoload_with=sync_conn)
+                batch_id = sync_conn.execute(
+                    sa.insert(batches).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        original_file_name='customers.csv',
+                        file_type='csv',
+                        worksheet_name=None,
+                        status='imported',
+                        drafts_stale=False,
+                        total_rows=1,
+                        valid_rows=1,
+                        invalid_rows=0,
+                        matched_rows=0,
+                        unmatched_rows=1,
+                    )
+                ).inserted_primary_key[0]
+                sync_conn.execute(
+                    sa.insert(rows).values(
+                        import_batch_id=batch_id,
+                        source_row_number=2,
+                        raw_data={'Customer Name': 'Acme'},
+                        group_value='Acme',
+                        matched_conversation_name=None,
+                        matched_rule_id=None,
+                        match_status='unmatched',
+                        error_message=None,
+                    )
+                )
+                sync_conn.execute(sa.delete(batches).where(batches.c.id == batch_id))
+                return sync_conn.execute(sa.select(sa.func.count()).select_from(rows)).scalar_one()
+
+            remaining_rows = await conn.run_sync(sync_case)
+
+        assert remaining_rows == 0
+
+    @pytest.mark.asyncio
+    async def test_deleting_import_batch_cascades_to_drafts(self, sqlite_engine):
+        """Deleting an import batch should cascade delete its drafts."""
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def sync_case(sync_conn):
+                metadata = sa.MetaData()
+                batches = sa.Table('broadcast_import_batches', metadata, autoload_with=sync_conn)
+                drafts = sa.Table('broadcast_drafts', metadata, autoload_with=sync_conn)
+                batch_id = sync_conn.execute(
+                    sa.insert(batches).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        original_file_name='customers.csv',
+                        file_type='csv',
+                        worksheet_name=None,
+                        status='drafts_generated',
+                        drafts_stale=False,
+                        total_rows=1,
+                        valid_rows=1,
+                        invalid_rows=0,
+                        matched_rows=1,
+                        unmatched_rows=0,
+                    )
+                ).inserted_primary_key[0]
+                sync_conn.execute(
+                    sa.insert(drafts).values(
+                        bot_uuid='bot-1',
+                        connector_id='connector-1',
+                        import_batch_id=batch_id,
+                        group_value='Acme',
+                        target_conversation_name='Acme Group',
+                        template_id=None,
+                        template_name_snapshot='template',
+                        template_content_snapshot='hello',
+                        render_variables={'customer_name': 'Acme'},
+                        draft_text='hello',
+                        status='pending_review',
+                        error_message=None,
+                    )
+                )
+                sync_conn.execute(sa.delete(batches).where(batches.c.id == batch_id))
+                return sync_conn.execute(sa.select(sa.func.count()).select_from(drafts)).scalar_one()
+
+            remaining_drafts = await conn.run_sync(sync_case)
+
+        assert remaining_drafts == 0
+
+    @pytest.mark.asyncio
+    async def test_broadcast_phase3_downgrade_removes_tables_and_returns_to_0013(self, sqlite_engine):
+        """Downgrading from head removes Phase 3 tables and returns revision 0013."""
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+        await run_alembic_downgrade(sqlite_engine, '0013_broadcast_rules')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_tables(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                return set(inspector.get_table_names())
+
+            table_names = await conn.run_sync(inspect_tables)
+
+        assert 'broadcast_import_batches' not in table_names
+        assert 'broadcast_import_rows' not in table_names
+        assert 'broadcast_drafts' not in table_names
+        rev = await get_alembic_current(sqlite_engine)
+        assert rev == '0013_broadcast_rules'
+
 
 class TestSQLiteMigrationFreshDatabase:
     """Tests for fresh database workflow."""
@@ -237,7 +606,7 @@ class TestSQLiteMigrationFreshDatabase:
         # Use different DB file for fresh test
         fresh_db_file = tmp_path / 'test_migrations_fresh.db'
         fresh_url = f'sqlite+aiosqlite:///{fresh_db_file}'
-        fresh_engine = create_async_engine(fresh_url)
+        fresh_engine = _sqlite_engine(fresh_url)
 
         # Create tables on fresh DB
         async with fresh_engine.begin() as conn:
@@ -269,7 +638,7 @@ class TestSQLiteMigrationFreshDatabase:
         """
         fresh_db_file = tmp_path / 'test_empty_migrations.db'
         fresh_url = f'sqlite+aiosqlite:///{fresh_db_file}'
-        fresh_engine = create_async_engine(fresh_url)
+        fresh_engine = _sqlite_engine(fresh_url)
 
         # Capture the actual behavior
         actual_result = None
