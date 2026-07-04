@@ -105,7 +105,7 @@ def fake_api_app():
     # API-specific config
     app.instance_config.data.update(
         {
-            'api': {'port': 5300},
+            'api': {'port': 5300, 'global_api_key': ''},
             'plugin': {'enable_marketplace': True},
             'space': {'url': 'https://space.langbot.app'},
             'system': {'allow_modify_login_info': True, 'limitation': {}},
@@ -117,12 +117,32 @@ def fake_api_app():
     app.user_service.is_initialized = AsyncMock(return_value=False)
     app.user_service.authenticate = AsyncMock(return_value='fake_token')
     app.user_service.create_user = AsyncMock()
-    app.user_service.verify_jwt_token = AsyncMock(side_effect=ValueError('Invalid token'))
-    app.user_service.get_user_by_email = AsyncMock(return_value=Mock())
+
+    async def verify_jwt_token(token: str) -> str:
+        if token == 'valid_user_token':
+            return 'test@example.com'
+        raise ValueError('Invalid token')
+
+    def make_user(email: str):
+        return Mock(user=email, account_type='local', password='secret')
+
+    async def get_user_by_email(user_email: str):
+        if not user_email:
+            return None
+        return make_user(user_email)
+
+    app.user_service.verify_jwt_token = AsyncMock(side_effect=verify_jwt_token)
+    app.user_service.get_user_by_email = AsyncMock(side_effect=get_user_by_email)
+    app.user_service.get_first_user = AsyncMock(return_value=make_user('local@example.com'))
     app.user_service.generate_jwt_token = AsyncMock(return_value='fake_token')
 
     app.apikey_service = Mock()
-    app.apikey_service.verify_api_key = AsyncMock(return_value=True)
+
+    async def verify_api_key(key: str) -> bool:
+        configured_key = app.instance_config.data.get('api', {}).get('global_api_key', '')
+        return key == 'valid_api_key' or bool(configured_key and key == configured_key)
+
+    app.apikey_service.verify_api_key = AsyncMock(side_effect=verify_api_key)
 
     app.maintenance_service = Mock()
     app.maintenance_service.get_storage_analysis = AsyncMock(return_value={})
@@ -158,6 +178,41 @@ async def quart_test_client(fake_api_app, http_controller_cls):
     client = controller.quart_app.test_client()
 
     yield client
+
+
+@pytest.fixture
+async def auth_probe_client(fake_api_app, mock_circular_import_chain):
+    """Create a minimal RouterGroup test client to exercise auth entry behavior."""
+    import quart
+
+    from langbot.pkg.api.http.controller.group import AuthType, RouterGroup
+
+    class AuthProbeRouterGroup(RouterGroup):
+        name = 'auth-probe'
+        path = '/auth-probe'
+
+        async def initialize(self) -> None:
+            @self.route('/none', methods=['GET'], auth_type=AuthType.NONE)
+            async def _none() -> str:
+                return self.success(data={'kind': 'none'})
+
+            @self.route('/user', methods=['GET'], auth_type=AuthType.USER_TOKEN)
+            async def _user(user_email: str) -> str:
+                return self.success(data={'user_email': user_email})
+
+            @self.route('/api-key', methods=['GET'], auth_type=AuthType.API_KEY)
+            async def _api_key() -> str:
+                return self.success(data={'kind': 'api-key'})
+
+            @self.route('/either', methods=['GET'], auth_type=AuthType.USER_TOKEN_OR_API_KEY)
+            async def _either(user_email: str | None = None) -> str:
+                return self.success(data={'user_email': user_email})
+
+    quart_app = quart.Quart(__name__)
+    group = AuthProbeRouterGroup(fake_api_app, quart_app)
+    await group.initialize()
+
+    yield quart_app.test_client()
 
 
 # ============== API SMOKE TESTS ==============
@@ -379,6 +434,167 @@ class TestProtectedEndpoints:
         )
 
         assert response.status_code == 401
+
+
+@pytest.mark.usefixtures('mock_circular_import_chain')
+class TestLocalNoAuthMode:
+    """Tests for loopback-only no-auth bypass in the unified auth entry."""
+
+    @pytest.mark.asyncio
+    async def test_loopback_ipv4_host_allows_without_auth(self, auth_probe_client):
+        response = await auth_probe_client.get(
+            '/auth-probe/user',
+            headers={'Host': '127.0.0.1'},
+            scope_base={'client': ('127.0.0.1', 5302)},
+        )
+
+        assert response.status_code == 200
+        data = await response.get_json()
+        assert data['data']['user_email'] == 'local@example.com'
+
+    @pytest.mark.asyncio
+    async def test_loopback_ipv4_host_with_port_allows_without_auth(self, auth_probe_client):
+        response = await auth_probe_client.get(
+            '/auth-probe/user',
+            headers={'Host': '127.0.0.1:5302'},
+            scope_base={'client': ('127.0.0.1', 5302)},
+        )
+
+        assert response.status_code == 200
+        data = await response.get_json()
+        assert data['data']['user_email'] == 'local@example.com'
+
+    @pytest.mark.asyncio
+    async def test_loopback_ipv6_host_allows_without_auth(self, auth_probe_client):
+        response = await auth_probe_client.get(
+            '/auth-probe/user',
+            headers={'Host': '[::1]'},
+            scope_base={'client': ('::1', 5302)},
+        )
+
+        assert response.status_code == 200
+        data = await response.get_json()
+        assert data['data']['user_email'] == 'local@example.com'
+
+    @pytest.mark.asyncio
+    async def test_non_loopback_remote_still_requires_auth(self, auth_probe_client):
+        response = await auth_probe_client.get(
+            '/auth-probe/user',
+            headers={'Host': '127.0.0.1'},
+            scope_base={'client': ('8.8.8.8', 5302)},
+        )
+
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_non_loopback_host_still_requires_auth(self, auth_probe_client):
+        response = await auth_probe_client.get(
+            '/auth-probe/user',
+            headers={'Host': 'example.com'},
+            scope_base={'client': ('127.0.0.1', 5302)},
+        )
+
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_configured_global_api_key_disables_bypass(self, auth_probe_client, fake_api_app):
+        fake_api_app.instance_config.data['api']['global_api_key'] = 'configured_api_key'
+
+        response = await auth_probe_client.get(
+            '/auth-probe/api-key',
+            headers={'Host': '127.0.0.1'},
+            scope_base={'client': ('127.0.0.1', 5302)},
+        )
+
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_configured_global_api_key_accepts_matching_header(self, auth_probe_client, fake_api_app):
+        fake_api_app.instance_config.data['api']['global_api_key'] = 'configured_api_key'
+
+        response = await auth_probe_client.get(
+            '/auth-probe/api-key',
+            headers={'Host': '127.0.0.1', 'X-API-Key': 'configured_api_key'},
+            scope_base={'client': ('127.0.0.1', 5302)},
+        )
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_configured_global_api_key_rejects_wrong_header(self, auth_probe_client, fake_api_app):
+        fake_api_app.instance_config.data['api']['global_api_key'] = 'configured_api_key'
+
+        response = await auth_probe_client.get(
+            '/auth-probe/api-key',
+            headers={'Host': '127.0.0.1', 'X-API-Key': 'wrong_key'},
+            scope_base={'client': ('127.0.0.1', 5302)},
+        )
+
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_user_token_or_api_key_remote_logic_still_allows_bearer_api_key(
+        self, auth_probe_client, fake_api_app
+    ):
+        fake_api_app.instance_config.data['api']['global_api_key'] = 'configured_api_key'
+
+        response = await auth_probe_client.get(
+            '/auth-probe/either',
+            headers={'Host': 'example.com', 'Authorization': 'Bearer configured_api_key'},
+            scope_base={'client': ('8.8.8.8', 5302)},
+        )
+
+        assert response.status_code == 200
+        data = await response.get_json()
+        assert data['data']['user_email'] is None
+
+    @pytest.mark.asyncio
+    async def test_local_no_auth_ignores_stale_bearer_token(self, auth_probe_client, fake_api_app):
+        fake_api_app.user_service.verify_jwt_token.reset_mock()
+
+        response = await auth_probe_client.get(
+            '/auth-probe/user',
+            headers={'Host': 'localhost', 'Authorization': 'Bearer expired_token'},
+            scope_base={'client': ('127.0.0.1', 5302)},
+        )
+
+        assert response.status_code == 200
+        fake_api_app.user_service.verify_jwt_token.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auth_type_none_is_unchanged(self, auth_probe_client):
+        response = await auth_probe_client.get(
+            '/auth-probe/none',
+            headers={'Host': 'example.com'},
+            scope_base={'client': ('8.8.8.8', 5302)},
+        )
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_user_info_allows_local_no_auth_without_token(self, quart_test_client):
+        response = await quart_test_client.get(
+            '/api/v1/user/info',
+            headers={'Host': '127.0.0.1'},
+            scope_base={'client': ('127.0.0.1', 5302)},
+        )
+
+        assert response.status_code == 200
+        data = await response.get_json()
+        assert data['data']['user'] == 'local@example.com'
+
+    @pytest.mark.asyncio
+    async def test_user_info_local_no_auth_ignores_invalid_bearer(self, quart_test_client, fake_api_app):
+        fake_api_app.user_service.verify_jwt_token.reset_mock()
+
+        response = await quart_test_client.get(
+            '/api/v1/user/info',
+            headers={'Host': '127.0.0.1', 'Authorization': 'Bearer expired_token'},
+            scope_base={'client': ('127.0.0.1', 5302)},
+        )
+
+        assert response.status_code == 200
+        fake_api_app.user_service.verify_jwt_token.assert_not_awaited()
 
 
 @pytest.mark.usefixtures('mock_circular_import_chain')
