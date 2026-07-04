@@ -127,6 +127,9 @@ async def _make_client():
             upload_import=AsyncMock(
                 return_value={
                     'id': 11,
+                    'original_file_name': 'customers.csv',
+                    'file_type': 'csv',
+                    'worksheet_name': None,
                     'status': 'imported',
                     'drafts_stale': False,
                     'total_rows': 3,
@@ -134,13 +137,56 @@ async def _make_client():
                     'invalid_rows': 1,
                     'matched_rows': 1,
                     'unmatched_rows': 1,
-                    'rows': [],
+                    'created_at': '2026-07-04T00:00:00',
+                    'updated_at': '2026-07-04T00:00:00',
                 }
             ),
             list_import_batches=AsyncMock(return_value=[]),
-            get_import_detail=AsyncMock(return_value={'id': 11, 'rows': []}),
+            get_import_detail=AsyncMock(
+                return_value={
+                    'id': 11,
+                    'original_file_name': 'customers.csv',
+                    'file_type': 'csv',
+                    'worksheet_name': None,
+                    'status': 'imported',
+                    'drafts_stale': False,
+                    'total_rows': 3,
+                    'valid_rows': 2,
+                    'invalid_rows': 1,
+                    'matched_rows': 1,
+                    'unmatched_rows': 1,
+                    'created_at': '2026-07-04T00:00:00',
+                    'updated_at': '2026-07-04T00:00:00',
+                    'rows': [],
+                    'page': 1,
+                    'page_size': 20,
+                    'total': 3,
+                    'total_pages': 1,
+                }
+            ),
             delete_import=AsyncMock(return_value={'deleted': True}),
-            rematch_import=AsyncMock(return_value={'id': 11, 'drafts_stale': True, 'rows': []}),
+            rematch_import=AsyncMock(
+                return_value={
+                    'id': 11,
+                    'original_file_name': 'customers.csv',
+                    'file_type': 'csv',
+                    'worksheet_name': None,
+                    'status': 'matched',
+                    'drafts_stale': True,
+                    'total_rows': 3,
+                    'valid_rows': 2,
+                    'invalid_rows': 1,
+                    'matched_rows': 1,
+                    'unmatched_rows': 1,
+                    'created_at': '2026-07-04T00:00:00',
+                    'updated_at': '2026-07-04T00:00:00',
+                    'rows': [],
+                    'page': 1,
+                    'page_size': 50,
+                    'total': 3,
+                    'total_pages': 1,
+                }
+            ),
             generate_import_drafts=AsyncMock(
                 return_value={
                     'total_group_count': 2,
@@ -347,6 +393,7 @@ async def test_upload_import_uses_multipart_and_body_scope():
 
     assert response.status_code == 200
     assert payload['data']['id'] == 11
+    assert 'rows' not in payload['data']
     ap.broadcast_service.validate_scope.assert_awaited_once_with(
         {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'}
     )
@@ -380,6 +427,10 @@ async def test_get_import_detail_uses_query_scope_and_filters():
 
     assert response.status_code == 200
     assert payload['data']['id'] == 11
+    assert payload['data']['page'] == 1
+    assert payload['data']['page_size'] == 20
+    assert payload['data']['total'] == 3
+    assert payload['data']['total_pages'] == 1
     ap.broadcast_service.get_import_detail.assert_awaited_once_with(
         11,
         {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},

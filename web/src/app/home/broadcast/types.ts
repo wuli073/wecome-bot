@@ -159,6 +159,10 @@ export interface BroadcastImportBatch {
 
 export interface BroadcastImportDetail extends BroadcastImportBatch {
   rows: BroadcastImportPreviewRow[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
 }
 
 export interface BroadcastImportFilters {

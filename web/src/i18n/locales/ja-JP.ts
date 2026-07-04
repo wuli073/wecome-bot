@@ -2141,6 +2141,43 @@ const jaJP = {
       title: 'インポート照合',
       description:
         'Mock データで会話照合結果、テンプレート準備状況、ルール適用状況を確認します。',
+      uploadButton: 'CSV / XLSX をアップロード',
+      batchSummary: '全 {{totalRows}} 行 / 一致 {{matchedRows}} 行',
+      emptyBatches: 'インポートバッチはまだありません',
+      detailTitle: 'インポート詳細',
+      detailHint:
+        'アップロード後すぐに実際の照合結果を表示し、先に再照合を押す必要はありません。',
+      worksheetName: 'ワークシート: {{name}}',
+      rematchButton: '再照合',
+      deleteBatchButton: 'バッチを削除',
+      templatePlaceholder: 'テンプレートを選択',
+      generateDraftsButton: '下書きを生成',
+      draftsStale: '下書きの内容が古くなっています。再生成してください。',
+      emptyRows: 'インポート明細はまだありません',
+      tableHeaders: {
+        sourceRowNumber: '行番号',
+        groupValue: '顧客 / グループ',
+        matchedConversationName: '一致した会話',
+        matchStatus: '結果',
+        errorMessage: '理由',
+      },
+      statusLabels: {
+        matched: '一致',
+        unmatched: '未一致',
+        invalid: '無効',
+      },
+      stats: {
+        totalRows: '総行数',
+        matchedRows: '一致',
+        unmatchedRows: '未一致',
+        invalidRows: '無効',
+      },
+      pagination: {
+        totalItems: '全 {{total}} 件',
+        previous: '前のページ',
+        next: '次のページ',
+        pageStatus: '{{page}} / {{totalPages}} ページ',
+      },
       summary: {
         rows: 'プレビュー行',
         ready: '準備完了',
@@ -2192,7 +2229,8 @@ const jaJP = {
       sendDialogTitle: '実送信の確認',
       sendDialogDescription:
         '対象会話と本文をもう一度確認してください。この操作は実際の送信を行います。',
-      sendWarning: 'この操作は実際にメッセージを送信し、自動で元に戻すことはできません。',
+      sendWarning:
+        'この操作は実際にメッセージを送信し、自動で元に戻すことはできません。',
       sendCountdown: '最終確認の前に {{count}} 秒待ってください。',
       sendAcknowledge:
         '対象会話と本文を確認済みであり、実際にメッセージが送信されることを理解しています。',
@@ -2204,8 +2242,7 @@ const jaJP = {
     },
     logs: {
       title: '実行ログ',
-      description:
-        '将来の API / Runtime 連携に備えた Mock 実行ログ一覧です。',
+      description: '将来の API / Runtime 連携に備えた Mock 実行ログ一覧です。',
       executorCapabilitiesTitle: '実行器の能力',
       executorHealthTitle: '実行器のヘルス状態',
       capabilityPaste: '入力欄書き込み',
@@ -2241,7 +2278,8 @@ const jaJP = {
       pasteOnly: '貼り付け専用',
       sendKeyCount: 'sendKeyCount = 0',
       messageSent: 'messageSent = false',
-      noRuntimeCall: 'このフェーズでは実際のバックエンド / Runtime 呼び出しはありません。',
+      noRuntimeCall:
+        'このフェーズでは実際のバックエンド / Runtime 呼び出しはありません。',
     },
     toasts: {
       draftSaved: 'ドラフトを Mock ワークスペースに保存しました',

@@ -7,10 +7,7 @@ import {
   useReactTable,
 } from '@tanstack/react-table';
 
-import {
-  Alert,
-  AlertDescription,
-} from '@/components/ui/alert';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Card,
   CardContent,
@@ -20,7 +17,6 @@ import {
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import {
   Select,
   SelectContent,
@@ -46,6 +42,8 @@ import type {
 } from '../../types';
 import { markBroadcastRender } from '../../diagnostics';
 
+const EMPTY_IMPORT_ROWS: BroadcastImportPreviewRow[] = [];
+
 interface ImportMatchingPanelProps {
   batches: BroadcastImportBatch[];
   selectedBatchId: number | null;
@@ -56,16 +54,11 @@ interface ImportMatchingPanelProps {
   error?: string | null;
   onUpload: (file: File) => Promise<void>;
   onSelectBatch: (batchId: number) => Promise<void>;
+  onPageChange: (page: number) => Promise<void>;
   onDeleteBatch: (batchId: number) => Promise<void>;
   onRematch: (batchId: number) => Promise<void>;
   onGenerateDrafts: (batchId: number, templateId: number) => Promise<void>;
 }
-
-const MATCH_STATUS_LABELS: Record<BroadcastImportMatchStatus, string> = {
-  matched: '已匹配',
-  unmatched: '未匹配',
-  invalid: '无效',
-};
 
 export default function ImportMatchingPanel({
   batches,
@@ -77,6 +70,7 @@ export default function ImportMatchingPanel({
   error = null,
   onUpload,
   onSelectBatch,
+  onPageChange,
   onDeleteBatch,
   onRematch,
   onGenerateDrafts,
@@ -85,41 +79,46 @@ export default function ImportMatchingPanel({
   const { t } = useTranslation();
   const uploadRef = useRef<HTMLInputElement | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
-  const rows = detail?.rows ?? [];
+  const rows = detail?.rows ?? EMPTY_IMPORT_ROWS;
 
-  const columns = useMemo<ColumnDef<BroadcastImportPreviewRow>[]>(
-    () => [
+  const columns = useMemo<ColumnDef<BroadcastImportPreviewRow>[]>(() => {
+    const matchStatusLabels: Record<BroadcastImportMatchStatus, string> = {
+      matched: t('broadcast.import.statusLabels.matched'),
+      unmatched: t('broadcast.import.statusLabels.unmatched'),
+      invalid: t('broadcast.import.statusLabels.invalid'),
+    };
+
+    return [
       {
         accessorKey: 'sourceRowNumber',
-        header: '行号',
+        header: t('broadcast.import.tableHeaders.sourceRowNumber'),
       },
       {
         accessorKey: 'groupValue',
-        header: '客户/分组',
+        header: t('broadcast.import.tableHeaders.groupValue'),
         cell: ({ row }) => row.original.groupValue || '-',
       },
       {
         accessorKey: 'matchedConversationName',
-        header: '匹配群聊',
+        header: t('broadcast.import.tableHeaders.matchedConversationName'),
         cell: ({ row }) => row.original.matchedConversationName || '-',
       },
       {
         accessorKey: 'matchStatus',
-        header: '结果',
+        header: t('broadcast.import.tableHeaders.matchStatus'),
         cell: ({ row }) => (
           <Badge variant="outline">
-            {MATCH_STATUS_LABELS[row.original.matchStatus]}
+            {matchStatusLabels[row.original.matchStatus]}
           </Badge>
         ),
       },
       {
         accessorKey: 'errorMessage',
-        header: '原因',
+        header: t('broadcast.import.tableHeaders.errorMessage'),
         cell: ({ row }) => row.original.errorMessage || '-',
       },
-    ],
-    [],
-  );
+    ];
+  }, [t]);
 
   const table = useReactTable({
     data: rows,
@@ -155,6 +154,10 @@ export default function ImportMatchingPanel({
               if (!file) {
                 return;
               }
+              if (busy) {
+                event.currentTarget.value = '';
+                return;
+              }
               const input = event.target;
               try {
                 await onUpload(file);
@@ -165,8 +168,12 @@ export default function ImportMatchingPanel({
               }
             }}
           />
-          <Button onClick={() => uploadRef.current?.click()} disabled={busy}>
-            上传 CSV / XLSX
+          <Button
+            data-testid="broadcast-import-upload-button"
+            onClick={() => uploadRef.current?.click()}
+            disabled={busy}
+          >
+            {t('broadcast.import.uploadButton')}
           </Button>
 
           <div data-testid="broadcast-import-batch-list" className="space-y-2">
@@ -179,18 +186,25 @@ export default function ImportMatchingPanel({
                   className={`w-full rounded-lg border p-3 text-left ${
                     active ? 'border-blue-500 bg-blue-50' : 'bg-background'
                   }`}
+                  disabled={busy}
                   onClick={() => void onSelectBatch(batch.id)}
                 >
                   <div className="font-medium">{batch.originalFileName}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    共 {batch.totalRows} 行 / 已匹配 {batch.matchedRows}
+                  <div
+                    className="mt-1 text-xs text-muted-foreground"
+                    data-testid={`broadcast-import-batch-summary-${batch.id}`}
+                  >
+                    {t('broadcast.import.batchSummary', {
+                      totalRows: batch.totalRows,
+                      matchedRows: batch.matchedRows,
+                    })}
                   </div>
                 </button>
               );
             })}
             {!loading && batches.length === 0 ? (
               <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                暂无导入批次
+                {t('broadcast.import.emptyBatches')}
               </div>
             ) : null}
           </div>
@@ -199,30 +213,51 @@ export default function ImportMatchingPanel({
 
       <Card className="gap-4">
         <CardHeader>
-          <CardTitle>{detail?.originalFileName || '导入详情'}</CardTitle>
+          <CardTitle>
+            {detail?.originalFileName || t('broadcast.import.detailTitle')}
+          </CardTitle>
           <CardDescription>
-            <div>上传成功后立即展示真实匹配结果，无需先点击重新匹配。</div>
+            <div>{t('broadcast.import.detailHint')}</div>
             {detail?.worksheetName ? (
-              <div className="mt-1">工作表：{detail.worksheetName}</div>
+              <div
+                className="mt-1"
+                data-testid="broadcast-import-worksheet-name"
+              >
+                {t('broadcast.import.worksheetName', {
+                  name: detail.worksheetName,
+                })}
+              </div>
             ) : null}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3 md:grid-cols-4">
             <div className="rounded-xl border bg-muted/20 p-4">
-              <div className="text-sm text-muted-foreground">总行数</div>
-              <div className="mt-2 text-2xl font-semibold">{detail?.totalRows ?? 0}</div>
+              <div className="text-sm text-muted-foreground">
+                {t('broadcast.import.stats.totalRows')}
+              </div>
+              <div className="mt-2 text-2xl font-semibold">
+                {detail?.totalRows ?? 0}
+              </div>
             </div>
             <div className="rounded-xl border bg-muted/20 p-4">
-              <div className="text-sm text-muted-foreground">已匹配</div>
+              <div className="text-sm text-muted-foreground">
+                {t('broadcast.import.stats.matchedRows')}
+              </div>
               <div className="mt-2 text-2xl font-semibold">{matchedCount}</div>
             </div>
             <div className="rounded-xl border bg-muted/20 p-4">
-              <div className="text-sm text-muted-foreground">未匹配</div>
-              <div className="mt-2 text-2xl font-semibold">{unmatchedCount}</div>
+              <div className="text-sm text-muted-foreground">
+                {t('broadcast.import.stats.unmatchedRows')}
+              </div>
+              <div className="mt-2 text-2xl font-semibold">
+                {unmatchedCount}
+              </div>
             </div>
             <div className="rounded-xl border bg-muted/20 p-4">
-              <div className="text-sm text-muted-foreground">无效</div>
+              <div className="text-sm text-muted-foreground">
+                {t('broadcast.import.stats.invalidRows')}
+              </div>
               <div className="mt-2 text-2xl font-semibold">{invalidCount}</div>
             </div>
           </div>
@@ -234,21 +269,29 @@ export default function ImportMatchingPanel({
               disabled={!selectedBatchId || busy}
               onClick={() => selectedBatchId && void onRematch(selectedBatchId)}
             >
-              重新匹配
+              {t('broadcast.import.rematchButton')}
             </Button>
             <Button
+              data-testid="broadcast-import-delete-batch-button"
               variant="outline"
               disabled={!selectedBatchId || busy}
-              onClick={() => selectedBatchId && void onDeleteBatch(selectedBatchId)}
+              onClick={() =>
+                selectedBatchId && void onDeleteBatch(selectedBatchId)
+              }
             >
-              删除批次
+              {t('broadcast.import.deleteBatchButton')}
             </Button>
-            <Select value={selectedTemplateId} onValueChange={setSelectedTemplateId}>
+            <Select
+              value={selectedTemplateId}
+              onValueChange={setSelectedTemplateId}
+            >
               <SelectTrigger
                 data-testid="broadcast-import-template-select"
                 className="w-[220px]"
               >
-                <SelectValue placeholder="选择模板" />
+                <SelectValue
+                  placeholder={t('broadcast.import.templatePlaceholder')}
+                />
               </SelectTrigger>
               <SelectContent>
                 {templates.map((template) => (
@@ -264,16 +307,19 @@ export default function ImportMatchingPanel({
               onClick={() =>
                 selectedBatchId &&
                 selectedTemplateId &&
-                void onGenerateDrafts(selectedBatchId, Number(selectedTemplateId))
+                void onGenerateDrafts(
+                  selectedBatchId,
+                  Number(selectedTemplateId),
+                )
               }
             >
-              生成草稿
+              {t('broadcast.import.generateDraftsButton')}
             </Button>
           </div>
 
           {detail?.draftsStale && detail.status === 'matched' ? (
             <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
-              草稿已过期，请重新生成
+              {t('broadcast.import.draftsStale')}
             </div>
           ) : null}
 
@@ -301,7 +347,10 @@ export default function ImportMatchingPanel({
                     {row.getVisibleCells().map((cell) => (
                       <TableCell key={cell.id}>
                         {cell.column.columnDef.cell
-                          ? flexRender(cell.column.columnDef.cell, cell.getContext())
+                          ? flexRender(
+                              cell.column.columnDef.cell,
+                              cell.getContext(),
+                            )
                           : String(cell.getValue() ?? '')}
                       </TableCell>
                     ))}
@@ -309,13 +358,68 @@ export default function ImportMatchingPanel({
                 ))}
                 {rows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground">
-                      暂无导入明细
+                    <TableCell
+                      colSpan={5}
+                      className="text-center text-muted-foreground"
+                    >
+                      {t('broadcast.import.emptyRows')}
                     </TableCell>
                   </TableRow>
                 ) : null}
               </TableBody>
             </Table>
+          </div>
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <div
+              className="text-muted-foreground"
+              data-testid="broadcast-import-total-items"
+            >
+              {t('broadcast.import.pagination.totalItems', {
+                total: detail?.total ?? 0,
+              })}
+            </div>
+            <div className="flex items-center gap-3">
+              <Button
+                data-testid="broadcast-import-prev-page"
+                variant="outline"
+                size="sm"
+                disabled={loading || busy || !detail || detail.page <= 1}
+                onClick={() => {
+                  if (!detail) {
+                    return;
+                  }
+                  void onPageChange(detail.page - 1);
+                }}
+              >
+                {t('broadcast.import.pagination.previous')}
+              </Button>
+              <span data-testid="broadcast-import-pagination">
+                {t('broadcast.import.pagination.pageStatus', {
+                  page: detail?.page ?? 0,
+                  totalPages: detail?.totalPages ?? 0,
+                })}
+              </span>
+              <Button
+                data-testid="broadcast-import-next-page"
+                variant="outline"
+                size="sm"
+                disabled={
+                  loading ||
+                  busy ||
+                  !detail ||
+                  detail.totalPages === 0 ||
+                  detail.page >= detail.totalPages
+                }
+                onClick={() => {
+                  if (!detail) {
+                    return;
+                  }
+                  void onPageChange(detail.page + 1);
+                }}
+              >
+                {t('broadcast.import.pagination.next')}
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>

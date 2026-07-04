@@ -537,6 +537,14 @@ async def test_import_batch_detail_queries_support_keyword_and_pagination(reposi
     )
     assert [row.matched_conversation_name for row in page] == ['Globex Group']
 
+    total = await repository.count_import_rows(
+        import_batch_id=batch_id,
+        bot_uuid='bot-1',
+        connector_id='wxwork-local',
+        keyword='Group',
+    )
+    assert total == 2
+
 
 async def test_drafts_can_be_rebuilt_queried_updated_and_deleted_in_scope(repository_fixture):
     repository, persistence_mgr = repository_fixture

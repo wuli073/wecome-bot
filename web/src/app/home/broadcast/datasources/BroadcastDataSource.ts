@@ -7,11 +7,9 @@ import type {
   ApiBroadcastExecutionTask,
   ApiBroadcastGroupMatchResult,
   ApiBroadcastGroupName,
-  ApiBroadcastGroupNameSyncResult,
   ApiBroadcastGroupRule,
   ApiBroadcastImportBatch,
   ApiBroadcastImportDetail,
-  ApiBroadcastImportDraftGenerationResult,
   ApiBroadcastImportRow,
   ApiBroadcastScope,
   ApiBroadcastTemplate,
@@ -70,7 +68,9 @@ function toApiScope(scope: BroadcastScope): ApiBroadcastScope {
   };
 }
 
-function fromApiTemplate(template: ApiBroadcastTemplate): BroadcastMessageTemplate {
+function fromApiTemplate(
+  template: ApiBroadcastTemplate,
+): BroadcastMessageTemplate {
   return {
     id: template.id,
     name: template.name,
@@ -155,7 +155,9 @@ function fromApiGroupMatchResult(
   };
 }
 
-function fromApiGroupName(groupName: ApiBroadcastGroupName): BroadcastGroupName {
+function fromApiGroupName(
+  groupName: ApiBroadcastGroupName,
+): BroadcastGroupName {
   return {
     id: groupName.id,
     name: groupName.name,
@@ -206,7 +208,9 @@ function fromApiImportRow(row: ApiBroadcastImportRow) {
   };
 }
 
-function fromApiImportBatch(batch: ApiBroadcastImportBatch): BroadcastImportBatch {
+function fromApiImportBatch(
+  batch: ApiBroadcastImportBatch,
+): BroadcastImportBatch {
   return {
     id: batch.id,
     originalFileName: batch.original_file_name,
@@ -224,10 +228,16 @@ function fromApiImportBatch(batch: ApiBroadcastImportBatch): BroadcastImportBatc
   };
 }
 
-function fromApiImportDetail(detail: ApiBroadcastImportDetail): BroadcastImportDetail {
+function fromApiImportDetail(
+  detail: ApiBroadcastImportDetail,
+): BroadcastImportDetail {
   return {
     ...fromApiImportBatch(detail),
     rows: detail.rows.map(fromApiImportRow),
+    page: detail.page,
+    pageSize: detail.page_size,
+    total: detail.total,
+    totalPages: detail.total_pages,
   };
 }
 
@@ -256,7 +266,9 @@ function fromApiDraft(draft: ApiBroadcastDraft): BroadcastDraftDetail {
   };
 }
 
-function fromApiExecutionTask(task: ApiBroadcastExecutionTask): BroadcastExecutionTaskSummary {
+function fromApiExecutionTask(
+  task: ApiBroadcastExecutionTask,
+): BroadcastExecutionTaskSummary {
   return {
     id: task.id,
     executionBatchId: task.execution_batch_id,
@@ -277,7 +289,9 @@ function fromApiExecutionTask(task: ApiBroadcastExecutionTask): BroadcastExecuti
   };
 }
 
-function fromApiExecutionBatch(batch: ApiBroadcastExecutionBatch): BroadcastExecutionBatchSummary {
+function fromApiExecutionBatch(
+  batch: ApiBroadcastExecutionBatch,
+): BroadcastExecutionBatchSummary {
   return {
     id: batch.id,
     status: batch.status,
@@ -298,7 +312,9 @@ function fromApiExecutionBatch(batch: ApiBroadcastExecutionBatch): BroadcastExec
   };
 }
 
-function fromApiExecutorCapability(payload: Record<string, unknown>): BroadcastExecutorCapability {
+function fromApiExecutorCapability(
+  payload: Record<string, unknown>,
+): BroadcastExecutorCapability {
   return {
     channel: String(payload.channel || 'wxwork_database'),
     supports_paste: Boolean(payload.supports_paste),
@@ -312,20 +328,31 @@ function fromApiExecutorCapability(payload: Record<string, unknown>): BroadcastE
   };
 }
 
-function fromApiExecutorHealth(payload: Record<string, unknown>): BroadcastExecutorHealth {
+function fromApiExecutorHealth(
+  payload: Record<string, unknown>,
+): BroadcastExecutorHealth {
   return {
     channel: String(payload.channel || 'wxwork_database'),
     status: String(payload.status || 'unknown'),
-    protocol_version: payload.protocol_version ? String(payload.protocol_version) : null,
-    runtime_version: payload.runtime_version ? String(payload.runtime_version) : null,
-    capability: fromApiExecutorCapability((payload.capability as Record<string, unknown>) || {}),
+    protocol_version: payload.protocol_version
+      ? String(payload.protocol_version)
+      : null,
+    runtime_version: payload.runtime_version
+      ? String(payload.runtime_version)
+      : null,
+    capability: fromApiExecutorCapability(
+      (payload.capability as Record<string, unknown>) || {},
+    ),
     runtime_status: (payload.runtime_status as Record<string, unknown>) || null,
   };
 }
 
-function fromApiSendConfirmation(
-  payload: { id: number; token: string; expires_at: string | null; execution_task_id: number },
-): BroadcastSendConfirmation {
+function fromApiSendConfirmation(payload: {
+  id: number;
+  token: string;
+  expires_at: string | null;
+  execution_task_id: number;
+}): BroadcastSendConfirmation {
   return {
     id: payload.id,
     token: payload.token,
@@ -353,7 +380,11 @@ function toExecutionLog(
     taskStatus: task.status,
     attemptStatus: attempt.status,
     action: evidence?.action || task.action,
-    message: evidence?.evidence_summary || task.errorMessage || attempt.error_message || task.status,
+    message:
+      evidence?.evidence_summary ||
+      task.errorMessage ||
+      attempt.error_message ||
+      task.status,
     runtimeState: evidence?.runtime_state || null,
     sendTriggered: evidence?.send_triggered || false,
     inputLocated: evidence?.input_located || false,
@@ -426,13 +457,11 @@ export interface BroadcastDataSource {
     snapshot: BroadcastWorkspaceSnapshot,
     entries: BroadcastWorkspaceSnapshot['executionLogs'],
   ) => BroadcastWorkspaceSnapshot;
-  listImportBatches: (
-    scope: BroadcastScope,
-  ) => Promise<BroadcastImportBatch[]>;
+  listImportBatches: (scope: BroadcastScope) => Promise<BroadcastImportBatch[]>;
   uploadImport: (
     scope: BroadcastScope,
     file: File,
-  ) => Promise<BroadcastImportDetail>;
+  ) => Promise<BroadcastImportBatch>;
   getImportDetail: (
     scope: BroadcastScope,
     importId: number,
@@ -583,14 +612,21 @@ export function createBroadcastDataSource(): BroadcastDataSource {
       ),
     updateTemplate: async (scope, templateId, template) =>
       fromApiTemplate(
-        await backendClient.updateBroadcastTemplate(toApiScope(scope), templateId, {
-          name: template.name,
-          content: template.body,
-          enabled: template.enabled,
-        }),
+        await backendClient.updateBroadcastTemplate(
+          toApiScope(scope),
+          templateId,
+          {
+            name: template.name,
+            content: template.body,
+            enabled: template.enabled,
+          },
+        ),
       ),
     deleteTemplate: async (scope, templateId) => {
-      await backendClient.deleteBroadcastTemplate(toApiScope(scope), templateId);
+      await backendClient.deleteBroadcastTemplate(
+        toApiScope(scope),
+        templateId,
+      );
     },
     renderTemplate: async (scope, payload) => {
       const variables = payload.variables ?? {};
@@ -672,24 +708,28 @@ export function createBroadcastDataSource(): BroadcastDataSource {
       executionLogs: [...entries, ...snapshot.executionLogs],
     }),
     listImportBatches: async (scope) =>
-      (
-        await backendClient.getBroadcastImportBatches(toApiScope(scope))
-      ).map(fromApiImportBatch),
+      (await backendClient.getBroadcastImportBatches(toApiScope(scope))).map(
+        fromApiImportBatch,
+      ),
     uploadImport: async (scope, file) =>
-      fromApiImportDetail(
+      fromApiImportBatch(
         await backendClient.uploadBroadcastImport(toApiScope(scope), file),
       ),
     getImportDetail: async (scope, importId, filters) =>
       fromApiImportDetail(
-        await backendClient.getBroadcastImportDetail(toApiScope(scope), importId, {
-          match_status:
-            filters?.matchStatus && filters.matchStatus !== 'all'
-              ? filters.matchStatus
-              : undefined,
-          keyword: filters?.keyword,
-          page: filters?.page,
-          page_size: filters?.pageSize,
-        }),
+        await backendClient.getBroadcastImportDetail(
+          toApiScope(scope),
+          importId,
+          {
+            match_status:
+              filters?.matchStatus && filters.matchStatus !== 'all'
+                ? filters.matchStatus
+                : undefined,
+            keyword: filters?.keyword,
+            page: filters?.page,
+            page_size: filters?.pageSize,
+          },
+        ),
       ),
     deleteImport: async (scope, importId) => {
       await backendClient.deleteBroadcastImport(toApiScope(scope), importId);
@@ -754,38 +794,66 @@ export function createBroadcastDataSource(): BroadcastDataSource {
       ),
     startExecutionBatch: async (scope, batchId, operator) =>
       fromApiExecutionBatch(
-        await backendClient.startBroadcastExecutionBatch(toApiScope(scope), batchId, operator),
+        await backendClient.startBroadcastExecutionBatch(
+          toApiScope(scope),
+          batchId,
+          operator,
+        ),
       ),
     pauseExecutionBatch: async (scope, batchId, operator) =>
       fromApiExecutionBatch(
-        await backendClient.pauseBroadcastExecutionBatch(toApiScope(scope), batchId, operator),
+        await backendClient.pauseBroadcastExecutionBatch(
+          toApiScope(scope),
+          batchId,
+          operator,
+        ),
       ),
     resumeExecutionBatch: async (scope, batchId, operator) =>
       fromApiExecutionBatch(
-        await backendClient.resumeBroadcastExecutionBatch(toApiScope(scope), batchId, operator),
+        await backendClient.resumeBroadcastExecutionBatch(
+          toApiScope(scope),
+          batchId,
+          operator,
+        ),
       ),
     cancelExecutionBatch: async (scope, batchId, operator) =>
       fromApiExecutionBatch(
-        await backendClient.cancelBroadcastExecutionBatch(toApiScope(scope), batchId, operator),
+        await backendClient.cancelBroadcastExecutionBatch(
+          toApiScope(scope),
+          batchId,
+          operator,
+        ),
       ),
     listExecutionBatches: async (scope) =>
-      (
-        await backendClient.getBroadcastExecutionBatches(toApiScope(scope))
-      ).map(fromApiExecutionBatch),
+      (await backendClient.getBroadcastExecutionBatches(toApiScope(scope))).map(
+        fromApiExecutionBatch,
+      ),
     startExecutionTask: async (scope, taskId, operator) =>
       fromApiExecutionTask(
-        await backendClient.startBroadcastExecutionTask(toApiScope(scope), taskId, operator),
+        await backendClient.startBroadcastExecutionTask(
+          toApiScope(scope),
+          taskId,
+          operator,
+        ),
       ),
     retryExecutionTask: async (scope, taskId, operator) =>
       fromApiExecutionTask(
-        await backendClient.retryBroadcastExecutionTask(toApiScope(scope), taskId, operator),
+        await backendClient.retryBroadcastExecutionTask(
+          toApiScope(scope),
+          taskId,
+          operator,
+        ),
       ),
     sendExecutionTask: async (scope, taskId, confirmationToken, operator) =>
       fromApiExecutionTask(
-        await backendClient.sendBroadcastExecutionTask(toApiScope(scope), taskId, {
-          confirmation_token: confirmationToken,
-          operator,
-        }),
+        await backendClient.sendBroadcastExecutionTask(
+          toApiScope(scope),
+          taskId,
+          {
+            confirmation_token: confirmationToken,
+            operator,
+          },
+        ),
       ),
     getExecutorCapabilities: async (scope) =>
       fromApiExecutorCapability(
@@ -804,18 +872,29 @@ export function createBroadcastDataSource(): BroadcastDataSource {
       ),
     getExecutionBatchDetail: async (scope, batchId) =>
       fromApiExecutionBatch(
-        await backendClient.getBroadcastExecutionBatchDetail(toApiScope(scope), batchId),
+        await backendClient.getBroadcastExecutionBatchDetail(
+          toApiScope(scope),
+          batchId,
+        ),
       ),
     getExecutionTaskDetail: async (scope, taskId) =>
       fromApiExecutionTask(
-        await backendClient.getBroadcastExecutionTaskDetail(toApiScope(scope), taskId),
+        await backendClient.getBroadcastExecutionTaskDetail(
+          toApiScope(scope),
+          taskId,
+        ),
       ),
     listExecutionLogs: async (scope, drafts) => {
-      const batchSummaries = await backendClient.getBroadcastExecutionBatches(toApiScope(scope));
+      const batchSummaries = await backendClient.getBroadcastExecutionBatches(
+        toApiScope(scope),
+      );
       const batches = await Promise.all(
         batchSummaries.map(async (batch) =>
           fromApiExecutionBatch(
-            await backendClient.getBroadcastExecutionBatchDetail(toApiScope(scope), batch.id),
+            await backendClient.getBroadcastExecutionBatchDetail(
+              toApiScope(scope),
+              batch.id,
+            ),
           ),
         ),
       );
@@ -837,16 +916,17 @@ export function createBroadcastDataSource(): BroadcastDataSource {
                 } catch {
                   evidence = null;
                 }
-                const draft = drafts.find((item) => item.id === task.draftId) ?? null;
+                const draft =
+                  drafts.find((item) => item.id === task.draftId) ?? null;
                 return toExecutionLog(batch, task, attempt, evidence, draft);
               }),
             );
           }),
         ),
       );
-      return logs.flat(2).sort((left, right) =>
-        right.timestamp.localeCompare(left.timestamp),
-      );
+      return logs
+        .flat(2)
+        .sort((left, right) => right.timestamp.localeCompare(left.timestamp));
     },
   };
 }

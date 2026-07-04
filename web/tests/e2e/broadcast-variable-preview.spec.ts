@@ -11,6 +11,23 @@ function ok(data: unknown) {
   };
 }
 
+function makeImportPage<T extends Record<string, unknown>>(
+  batch: T,
+  rows: unknown[],
+  page = 1,
+  pageSize = 50,
+) {
+  const total = Number(batch.total_rows ?? rows.length);
+  return {
+    ...batch,
+    rows,
+    page,
+    page_size: pageSize,
+    total,
+    total_pages: total === 0 ? 0 : Math.ceil(total / pageSize),
+  };
+}
+
 test.describe('broadcast variable preview', () => {
   test('shows configured status instead of missing when mapping exists but no import batch exists', async ({
     page,
@@ -245,12 +262,7 @@ test.describe('broadcast variable preview', () => {
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify(
-            ok({
-              ...batch,
-              rows: [row],
-            }),
-          ),
+          body: JSON.stringify(ok(batch)),
         });
         return;
       }
@@ -265,12 +277,7 @@ test.describe('broadcast variable preview', () => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(
-          ok({
-            ...batch,
-            rows: [row],
-          }),
-        ),
+        body: JSON.stringify(ok(makeImportPage(batch, [row]))),
       });
     });
 
@@ -295,20 +302,23 @@ test.describe('broadcast variable preview', () => {
       });
     });
 
-    await page.route('**/api/v1/broadcast/imports/1/generate-drafts', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify(
-          ok({
-            total_group_count: 1,
-            pending_review_count: 1,
-            invalid_count: 0,
-            unmatched_group_count: 0,
-          }),
-        ),
-      });
-    });
+    await page.route(
+      '**/api/v1/broadcast/imports/1/generate-drafts',
+      async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(
+            ok({
+              total_group_count: 1,
+              pending_review_count: 1,
+              invalid_count: 0,
+              unmatched_group_count: 0,
+            }),
+          ),
+        });
+      },
+    );
 
     await page.route('**/api/v1/broadcast/drafts**', async (route) => {
       if (route.request().method() !== 'GET') {
@@ -335,7 +345,8 @@ test.describe('broadcast variable preview', () => {
                     render_variables: {
                       运单号: 'TEST-20260704-001',
                     },
-                    draft_text: '查验通知：\n\n涉及单号如下：\nTEST-20260704-001',
+                    draft_text:
+                      '查验通知：\n\n涉及单号如下：\nTEST-20260704-001',
                     status: 'pending_review',
                     error_message: null,
                     drafts_stale: false,
@@ -353,6 +364,9 @@ test.describe('broadcast variable preview', () => {
     await expect(page).toHaveURL(/\/home\/broadcast$/);
 
     await page.getByRole('tab', { name: '导入匹配' }).click();
+    await expect(
+      page.getByRole('button', { name: '上传 CSV / XLSX' }),
+    ).toBeEnabled();
     await page.getByTestId('broadcast-import-upload-input').setInputFiles({
       name: 'customers.csv',
       mimeType: 'text/csv',
@@ -363,15 +377,17 @@ test.describe('broadcast variable preview', () => {
     await expect(page.locator('body')).toContainText('共 1 行 / 已匹配 1');
 
     await page.getByRole('tab', { name: '规则配置' }).click();
-    await expect(page.getByTestId('broadcast-variable-mapping-panel')).toContainText(
-      'TEST-20260704-001',
-    );
+    await expect(
+      page.getByTestId('broadcast-variable-mapping-panel'),
+    ).toContainText('TEST-20260704-001');
     await page.getByRole('tab', { name: '消息模板' }).click();
     const panel = page.getByTestId('broadcast-template-panel');
     await expect(panel).toContainText('{{运单号}}');
     await expect(panel).toContainText('TEST-20260704-001');
     await expect(panel).not.toContainText('缺失');
-    await expect(panel.locator('pre')).toContainText('涉及单号如下：\nTEST-20260704-001');
+    await expect(panel.locator('pre')).toContainText(
+      '涉及单号如下：\nTEST-20260704-001',
+    );
 
     await page.getByRole('tab', { name: '导入匹配' }).click();
     await page.getByTestId('broadcast-import-template-select').click();
@@ -386,6 +402,8 @@ test.describe('broadcast variable preview', () => {
     await expect(page).toHaveURL(/\/home\/broadcast$/);
     await page.getByRole('tab', { name: '规则配置' }).click();
     await page.getByRole('tab', { name: '消息模板' }).click();
-    await expect(page.getByTestId('broadcast-template-panel')).toContainText('TEST-20260704-001');
+    await expect(page.getByTestId('broadcast-template-panel')).toContainText(
+      'TEST-20260704-001',
+    );
   });
 });

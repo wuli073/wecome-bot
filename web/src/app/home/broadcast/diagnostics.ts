@@ -65,6 +65,54 @@ declare global {
       getSnapshot: () => BroadcastDiagnosticsState;
     };
   }
+
+  type BroadcastDiagnosticsEnvLike = {
+    DEV?: boolean;
+  };
+
+  type BroadcastDiagnosticsWindowLike = Window & {
+    __BROADCAST_DIAGNOSTICS__?: BroadcastDiagnosticsState & {
+      markRender: (componentName: string) => number;
+      recordCounter: (name: string, delta?: number) => number;
+      recordSelectedImportIdChange: (value: number | null) => void;
+      recordImportBusyChange: (value: boolean) => void;
+      measure: <T>(
+        label: string,
+        fn: () => Promise<T> | T,
+        options?: {
+          stack?: string;
+          meta?: Record<string, unknown>;
+          timingBucket?:
+            | 'buildVariableMappings'
+            | 'refreshImports'
+            | 'refreshDrafts';
+        },
+      ) => Promise<T>;
+      getSnapshot: () => BroadcastDiagnosticsState;
+    };
+  };
+
+  type BroadcastPerformanceEntryLike = PerformanceEntry & {
+    attribution?: Array<Record<string, unknown>>;
+  };
+
+  type BroadcastPerformanceObserverLike = {
+    observe: (options: { entryTypes: string[] }) => void;
+  };
+
+  type BroadcastPerformanceObserverCtor = {
+    new (callback: {
+      (list: { getEntries(): BroadcastPerformanceEntryLike[] }): void;
+    }): BroadcastPerformanceObserverLike;
+    supportedEntryTypes?: readonly string[];
+  };
+
+  interface BroadcastDiagnosticsRuntime {
+    env?: BroadcastDiagnosticsEnvLike;
+    window?: BroadcastDiagnosticsWindowLike;
+    PerformanceObserver?: BroadcastPerformanceObserverCtor;
+    consoleDebug?: (...args: unknown[]) => void;
+  }
 }
 
 function now() {
@@ -81,13 +129,38 @@ function ensureBucket(
   return state.timings[key];
 }
 
+function pushLimited<T>(items: T[], value: T, limit = 200) {
+  items.push(value);
+  if (items.length > limit) {
+    items.splice(0, items.length - limit);
+  }
+}
+
 export function getBroadcastDiagnostics() {
-  if (typeof window === 'undefined') {
+  return getBroadcastDiagnosticsWithRuntime({
+    env: import.meta.env,
+    window:
+      typeof window === 'undefined'
+        ? undefined
+        : (window as BroadcastDiagnosticsWindowLike),
+    PerformanceObserver:
+      typeof PerformanceObserver === 'undefined'
+        ? undefined
+        : (PerformanceObserver as unknown as BroadcastPerformanceObserverCtor),
+    consoleDebug: (...args) => console.debug(...args),
+  });
+}
+
+export function getBroadcastDiagnosticsWithRuntime(
+  runtime: BroadcastDiagnosticsRuntime,
+) {
+  const runtimeWindow = runtime.window;
+  if (!runtime.env?.DEV || !runtimeWindow) {
     return null;
   }
 
-  if (window.__BROADCAST_DIAGNOSTICS__) {
-    return window.__BROADCAST_DIAGNOSTICS__;
+  if (runtimeWindow.__BROADCAST_DIAGNOSTICS__) {
+    return runtimeWindow.__BROADCAST_DIAGNOSTICS__;
   }
 
   const state: BroadcastDiagnosticsState = {
@@ -121,13 +194,13 @@ export function getBroadcastDiagnostics() {
       return nextCount;
     },
     recordSelectedImportIdChange(value: number | null) {
-      state.selectedImportIdChanges.push({
+      pushLimited(state.selectedImportIdChanges, {
         at: Date.now(),
         value,
       });
     },
     recordImportBusyChange(value: boolean) {
-      state.importBusyChanges.push({
+      pushLimited(state.importBusyChanges, {
         at: Date.now(),
         value,
       });
@@ -150,7 +223,7 @@ export function getBroadcastDiagnostics() {
       } finally {
         const endedAt = now();
         const durationMs = endedAt - startedAt;
-        state.spans.push({
+        pushLimited(state.spans, {
           label,
           startedAt,
           endedAt,
@@ -171,10 +244,10 @@ export function getBroadcastDiagnostics() {
     },
   });
 
-  window.__BROADCAST_DIAGNOSTICS__ = diagnostics;
+  runtimeWindow.__BROADCAST_DIAGNOSTICS__ = diagnostics;
 
-  window.addEventListener('unhandledrejection', (event) => {
-    diagnostics.unhandledRejections.push({
+  runtimeWindow.addEventListener('unhandledrejection', (event) => {
+    pushLimited(diagnostics.unhandledRejections, {
       at: Date.now(),
       reason:
         event.reason instanceof Error
@@ -184,15 +257,13 @@ export function getBroadcastDiagnostics() {
   });
 
   if (
-    typeof PerformanceObserver !== 'undefined' &&
-    PerformanceObserver.supportedEntryTypes?.includes('longtask')
+    runtime.PerformanceObserver &&
+    runtime.PerformanceObserver.supportedEntryTypes?.includes('longtask')
   ) {
-    const observer = new PerformanceObserver((list) => {
+    const observer = new runtime.PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
-        const typedEntry = entry as PerformanceEntry & {
-          attribution?: Array<Record<string, unknown>>;
-        };
-        diagnostics.longTasks.push({
+        const typedEntry = entry as BroadcastPerformanceEntryLike;
+        pushLimited(diagnostics.longTasks, {
           startedAt: typedEntry.startTime,
           durationMs: typedEntry.duration,
           name: typedEntry.name,
@@ -205,18 +276,18 @@ export function getBroadcastDiagnostics() {
 
   const tickRaf = () => {
     diagnostics.rafTicks += 1;
-    window.requestAnimationFrame(tickRaf);
+    runtimeWindow.requestAnimationFrame(tickRaf);
   };
-  window.requestAnimationFrame(tickRaf);
+  runtimeWindow.requestAnimationFrame(tickRaf);
 
   const tickTimeout = () => {
     diagnostics.timeoutTicks += 1;
-    window.setTimeout(tickTimeout, 1000);
+    runtimeWindow.setTimeout(tickTimeout, 1000);
   };
-  window.setTimeout(tickTimeout, 1000);
+  runtimeWindow.setTimeout(tickTimeout, 1000);
 
-  if (import.meta.env.DEV) {
-    console.debug(
+  if (runtime.env?.DEV) {
+    runtime.consoleDebug?.(
       '[broadcast-diagnostics] loaded',
       BROADCAST_DIAGNOSTICS_VERSION,
     );

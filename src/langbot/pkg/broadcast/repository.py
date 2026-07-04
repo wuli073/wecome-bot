@@ -477,6 +477,41 @@ class BroadcastRepository:
         result = await self.persistence_mgr.execute_async(stmt)
         return self._all_models(result)
 
+    async def count_import_rows(
+        self,
+        *,
+        import_batch_id: int,
+        bot_uuid: str,
+        connector_id: str,
+        match_status: str | None = None,
+        keyword: str | None = None,
+    ) -> int:
+        stmt = (
+            sqlalchemy.select(sqlalchemy.func.count())
+            .select_from(persistence_broadcast.BroadcastImportRow)
+            .join(
+                persistence_broadcast.BroadcastImportBatch,
+                persistence_broadcast.BroadcastImportBatch.id == persistence_broadcast.BroadcastImportRow.import_batch_id,
+            )
+            .where(
+                persistence_broadcast.BroadcastImportRow.import_batch_id == import_batch_id,
+                persistence_broadcast.BroadcastImportBatch.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastImportBatch.connector_id == connector_id,
+            )
+        )
+        if match_status:
+            stmt = stmt.where(persistence_broadcast.BroadcastImportRow.match_status == match_status)
+        if keyword:
+            like_value = f'%{keyword}%'
+            stmt = stmt.where(
+                sqlalchemy.or_(
+                    persistence_broadcast.BroadcastImportRow.group_value.ilike(like_value),
+                    persistence_broadcast.BroadcastImportRow.matched_conversation_name.ilike(like_value),
+                )
+            )
+        result = await self.persistence_mgr.execute_async(stmt)
+        return int(result.scalar_one() or 0)
+
     async def replace_drafts(
         self,
         conn,

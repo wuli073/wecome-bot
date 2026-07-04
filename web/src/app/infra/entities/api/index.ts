@@ -830,10 +830,7 @@ export type ApiBroadcastImportBatchStatus =
   | 'matched'
   | 'drafts_generated';
 
-export type ApiBroadcastImportMatchStatus =
-  | 'matched'
-  | 'unmatched'
-  | 'invalid';
+export type ApiBroadcastImportMatchStatus = 'matched' | 'unmatched' | 'invalid';
 
 export interface ApiBroadcastImportBatch {
   id: number;
@@ -868,12 +865,13 @@ export interface ApiBroadcastImportRow {
 
 export interface ApiBroadcastImportDetail extends ApiBroadcastImportBatch {
   rows: ApiBroadcastImportRow[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
 }
 
-export type ApiBroadcastDraftStatus =
-  | 'pending_review'
-  | 'ready'
-  | 'invalid';
+export type ApiBroadcastDraftStatus = 'pending_review' | 'ready' | 'invalid';
 
 export interface ApiBroadcastDraft {
   id: number;

@@ -97,12 +97,7 @@ interface BroadcastVariableProfileMock {
   mapping_rules: Array<{
     source_field: string;
     variable_key: string;
-    merge_mode:
-      | 'first'
-      | 'lines'
-      | 'unique_lines'
-      | 'commas'
-      | 'unique_commas';
+    merge_mode: 'first' | 'lines' | 'unique_lines' | 'commas' | 'unique_commas';
     order: number;
   }>;
 }
@@ -566,23 +561,6 @@ function matchBroadcastRule(
   }
 }
 
-function parseCsvContent(content: string) {
-  const lines = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-  const nonEmptyLines = lines.filter((line) => line.trim() !== '');
-  if (nonEmptyLines.length === 0) {
-    return { headers: [] as string[], rows: [] as Array<Record<string, string>> };
-  }
-  const headers = nonEmptyLines[0].split(',').map((item) => item.trim());
-  const rows = nonEmptyLines.slice(1).map((line) => {
-    const cells = line.split(',');
-    return headers.reduce<Record<string, string>>((acc, header, index) => {
-      acc[header] = String(cells[index] ?? '').trim();
-      return acc;
-    }, {});
-  });
-  return { headers, rows };
-}
-
 function resolveImportMatch(
   state: LangBotApiMockState,
   botUuid: string,
@@ -598,7 +576,9 @@ function resolveImportMatch(
           matchBroadcastRule(rule, groupValue),
       )
       .sort((left, right) =>
-        right.priority === left.priority ? left.id - right.id : right.priority - left.priority,
+        right.priority === left.priority
+          ? left.id - right.id
+          : right.priority - left.priority,
       )[0] || null;
 
   if (matchedRule) {
@@ -633,8 +613,13 @@ function resolveImportMatch(
   };
 }
 
-function syncDraftStaleFlags(state: LangBotApiMockState, importBatchId: number) {
-  const batch = state.broadcastImportBatches.find((item) => item.id === importBatchId);
+function syncDraftStaleFlags(
+  state: LangBotApiMockState,
+  importBatchId: number,
+) {
+  const batch = state.broadcastImportBatches.find(
+    (item) => item.id === importBatchId,
+  );
   if (!batch) {
     return;
   }
@@ -652,53 +637,87 @@ function hashToken(token: string) {
   return `hash:${token}`;
 }
 
-function findExecutionBatch(
-  state: LangBotApiMockState,
-  batchId: number,
-) {
-  return state.broadcastExecutionBatches.find((item) => item.id === batchId) || null;
+function findExecutionBatch(state: LangBotApiMockState, batchId: number) {
+  return (
+    state.broadcastExecutionBatches.find((item) => item.id === batchId) || null
+  );
 }
 
-function findExecutionTask(
-  state: LangBotApiMockState,
-  taskId: number,
-) {
-  return state.broadcastExecutionTasks.find((item) => item.id === taskId) || null;
+function findExecutionTask(state: LangBotApiMockState, taskId: number) {
+  return (
+    state.broadcastExecutionTasks.find((item) => item.id === taskId) || null
+  );
 }
 
-function syncExecutionBatchCounts(
-  state: LangBotApiMockState,
-  batchId: number,
-) {
+function syncExecutionBatchCounts(state: LangBotApiMockState, batchId: number) {
   const batch = findExecutionBatch(state, batchId);
   if (!batch) {
     return null;
   }
-  const tasks = state.broadcastExecutionTasks.filter((item) => item.execution_batch_id === batchId);
+  const tasks = state.broadcastExecutionTasks.filter(
+    (item) => item.execution_batch_id === batchId,
+  );
   batch.total_tasks = tasks.length;
-  batch.pending_tasks = tasks.filter((item) => item.status === 'pending').length;
-  batch.running_tasks = tasks.filter((item) => item.status === 'running').length;
-  batch.succeeded_tasks = tasks.filter((item) => item.status === 'succeeded').length;
+  batch.pending_tasks = tasks.filter(
+    (item) => item.status === 'pending',
+  ).length;
+  batch.running_tasks = tasks.filter(
+    (item) => item.status === 'running',
+  ).length;
+  batch.succeeded_tasks = tasks.filter(
+    (item) => item.status === 'succeeded',
+  ).length;
   batch.failed_tasks = tasks.filter((item) => item.status === 'failed').length;
-  batch.cancelled_tasks = tasks.filter((item) => item.status === 'cancelled').length;
-  batch.interrupted_tasks = tasks.filter((item) => item.status === 'interrupted').length;
+  batch.cancelled_tasks = tasks.filter(
+    (item) => item.status === 'cancelled',
+  ).length;
+  batch.interrupted_tasks = tasks.filter(
+    (item) => item.status === 'interrupted',
+  ).length;
 
   if (batch.running_tasks > 0) {
     batch.status = 'running';
-  } else if (tasks.length > 0 && batch.pending_tasks === tasks.length && batch.paused_at) {
+  } else if (
+    tasks.length > 0 &&
+    batch.pending_tasks === tasks.length &&
+    batch.paused_at
+  ) {
     batch.status = 'paused';
-  } else if (batch.pending_tasks > 0 && batch.succeeded_tasks === 0 && batch.failed_tasks === 0) {
+  } else if (
+    batch.pending_tasks > 0 &&
+    batch.succeeded_tasks === 0 &&
+    batch.failed_tasks === 0
+  ) {
     batch.status = batch.started_at ? 'queued' : 'created';
-  } else if (batch.pending_tasks === 0 && batch.failed_tasks === 0 && batch.interrupted_tasks === 0) {
+  } else if (
+    batch.pending_tasks === 0 &&
+    batch.failed_tasks === 0 &&
+    batch.interrupted_tasks === 0
+  ) {
     batch.status = 'completed';
     batch.finished_at = batch.finished_at || now();
-  } else if (batch.pending_tasks > 0 && (batch.failed_tasks > 0 || batch.interrupted_tasks > 0)) {
+  } else if (
+    batch.pending_tasks > 0 &&
+    (batch.failed_tasks > 0 || batch.interrupted_tasks > 0)
+  ) {
     batch.status = 'partially_failed';
-  } else if (batch.pending_tasks === 0 && batch.succeeded_tasks === 0 && batch.cancelled_tasks > 0) {
+  } else if (
+    batch.pending_tasks === 0 &&
+    batch.succeeded_tasks === 0 &&
+    batch.cancelled_tasks > 0
+  ) {
     batch.status = 'cancelled';
-  } else if (batch.pending_tasks === 0 && batch.failed_tasks > 0 && batch.succeeded_tasks === 0) {
+  } else if (
+    batch.pending_tasks === 0 &&
+    batch.failed_tasks > 0 &&
+    batch.succeeded_tasks === 0
+  ) {
     batch.status = 'failed';
-  } else if (batch.pending_tasks === 0 && batch.interrupted_tasks > 0 && batch.succeeded_tasks === 0) {
+  } else if (
+    batch.pending_tasks === 0 &&
+    batch.interrupted_tasks > 0 &&
+    batch.succeeded_tasks === 0
+  ) {
     batch.status = 'interrupted';
   } else if (batch.failed_tasks > 0 || batch.interrupted_tasks > 0) {
     batch.status = 'partially_failed';
@@ -721,8 +740,12 @@ function createExecutionAttempt(
   },
 ) {
   const timestamp = now();
-  const attemptId = Number(nextId(state, 'broadcast-execution-attempt').split('-').pop());
-  const evidenceId = Number(nextId(state, 'broadcast-execution-evidence').split('-').pop());
+  const attemptId = Number(
+    nextId(state, 'broadcast-execution-attempt').split('-').pop(),
+  );
+  const evidenceId = Number(
+    nextId(state, 'broadcast-execution-evidence').split('-').pop(),
+  );
   const nextAttemptNo = task.attempt_count + 1;
   task.attempt_count = nextAttemptNo;
   task.runtime_task_id = `runtime-${attemptId}`;
@@ -771,7 +794,9 @@ function createExecutionAttempt(
     attempt,
   ];
   state.broadcastExecutionEvidence = [
-    ...state.broadcastExecutionEvidence.filter((item) => item.id !== evidenceId),
+    ...state.broadcastExecutionEvidence.filter(
+      (item) => item.id !== evidenceId,
+    ),
     evidence,
   ];
 }
@@ -980,7 +1005,9 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     }
   }
 
-  const templateDetailMatch = path.match(/^\/api\/v1\/broadcast\/templates\/(\d+)$/);
+  const templateDetailMatch = path.match(
+    /^\/api\/v1\/broadcast\/templates\/(\d+)$/,
+  );
   if (templateDetailMatch) {
     const templateId = Number(templateDetailMatch[1]);
     const botUuid = url.searchParams.get('bot_uuid');
@@ -989,7 +1016,9 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     if (method === 'PUT') {
       const body = parseJsonBody(route);
       const content = String(body.content || '');
-      const existing = state.broadcastTemplates.find((item) => item.id === templateId);
+      const existing = state.broadcastTemplates.find(
+        (item) => item.id === templateId,
+      );
       const template: BroadcastTemplateMock = {
         id: templateId,
         bot_uuid: String(body.bot_uuid || existing?.bot_uuid || ''),
@@ -1024,7 +1053,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
   if (path === '/api/v1/broadcast/templates/render' && method === 'POST') {
     const body = parseJsonBody(route);
     const templateId = Number(body.template_id || 0);
-    const variables = (body.variables as Record<string, unknown> | undefined) || {};
+    const variables =
+      (body.variables as Record<string, unknown> | undefined) || {};
     const template =
       templateId > 0
         ? state.broadcastTemplates.find((item) => item.id === templateId)
@@ -1065,18 +1095,26 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
           (sourceField.includes('{{') || sourceField.includes('}}')) &&
           sourceField
         ) {
-          issues.push(`请填写“${sourceField.replace(/[{}]/g, '')}”，不要填写“${sourceField}”`);
+          issues.push(
+            `请填写“${sourceField.replace(/[{}]/g, '')}”，不要填写“${sourceField}”`,
+          );
         }
         if (
           (variableKey.includes('{{') || variableKey.includes('}}')) &&
           variableKey
         ) {
-          issues.push(`请填写“${sourceField || '消息变量'}”，不要填写“${variableKey}”`);
+          issues.push(
+            `请填写“${sourceField || '消息变量'}”，不要填写“${variableKey}”`,
+          );
         }
         if (
-          !['first', 'lines', 'unique_lines', 'commas', 'unique_commas'].includes(
-            String(rule.merge_mode || ''),
-          )
+          ![
+            'first',
+            'lines',
+            'unique_lines',
+            'commas',
+            'unique_commas',
+          ].includes(String(rule.merge_mode || ''))
         ) {
           issues.push(`第 ${row} 条规则的多条数据处理方式无效`);
         }
@@ -1091,7 +1129,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
 
       if (issues.length > 0) {
         const message =
-          issues.some((item) => item.includes('缺少')) || issues.includes('请填写分组字段')
+          issues.some((item) => item.includes('缺少')) ||
+          issues.includes('请填写分组字段')
             ? '变量配置填写不完整，请检查后重试'
             : '变量配置填写有误，请按提示修改';
         return fulfillError(
@@ -1135,7 +1174,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         bot_uuid: String(body.bot_uuid || ''),
         connector_id: String(body.connector_id || ''),
         source_value: String(body.source_value || ''),
-        match_type: (body.match_type as BroadcastGroupRuleMock['match_type']) || 'exact',
+        match_type:
+          (body.match_type as BroadcastGroupRuleMock['match_type']) || 'exact',
         match_expression: String(body.match_expression || ''),
         target_conversation_name: String(body.target_conversation_name || ''),
         priority: Number(body.priority || 0),
@@ -1151,7 +1191,9 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     }
   }
 
-  const groupRuleDetailMatch = path.match(/^\/api\/v1\/broadcast\/group-rules\/(\d+)$/);
+  const groupRuleDetailMatch = path.match(
+    /^\/api\/v1\/broadcast\/group-rules\/(\d+)$/,
+  );
   if (groupRuleDetailMatch) {
     const ruleId = Number(groupRuleDetailMatch[1]);
     const botUuid = url.searchParams.get('bot_uuid');
@@ -1159,7 +1201,9 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
 
     if (method === 'PUT') {
       const body = parseJsonBody(route);
-      const existing = state.broadcastGroupRules.find((item) => item.id === ruleId);
+      const existing = state.broadcastGroupRules.find(
+        (item) => item.id === ruleId,
+      );
       const rule: BroadcastGroupRuleMock = {
         id: ruleId,
         bot_uuid: String(body.bot_uuid || existing?.bot_uuid || ''),
@@ -1247,11 +1291,7 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
           ? [body.name]
           : [];
       const uniqueNames = Array.from(
-        new Set(
-          rawNames
-            .map((item) => String(item).trim())
-            .filter(Boolean),
-        ),
+        new Set(rawNames.map((item) => String(item).trim()).filter(Boolean)),
       );
       const created = uniqueNames.map((name) => ({
         id: Number(nextId(state, 'broadcast-group-name').split('-').pop()),
@@ -1262,15 +1302,14 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         created_at: now(),
         updated_at: now(),
       }));
-      state.broadcastGroupNames = [
-        ...state.broadcastGroupNames,
-        ...created,
-      ];
+      state.broadcastGroupNames = [...state.broadcastGroupNames, ...created];
       return fulfillJson(route, { group_names: created });
     }
   }
 
-  const groupNameDetailMatch = path.match(/^\/api\/v1\/broadcast\/group-names\/(\d+)$/);
+  const groupNameDetailMatch = path.match(
+    /^\/api\/v1\/broadcast\/group-names\/(\d+)$/,
+  );
   if (groupNameDetailMatch && method === 'DELETE') {
     const groupNameId = Number(groupNameDetailMatch[1]);
     const botUuid = url.searchParams.get('bot_uuid');
@@ -1292,7 +1331,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
 
     if (method === 'GET') {
       const batches = state.broadcastImportBatches.filter(
-        (item) => item.bot_uuid === botUuid && item.connector_id === connectorId,
+        (item) =>
+          item.bot_uuid === botUuid && item.connector_id === connectorId,
       );
       return fulfillJson(route, batches);
     }
@@ -1301,16 +1341,23 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       const form = request.postDataBuffer()?.toString('utf-8') || '';
       const fileNameMatch = form.match(/filename=\"([^\"]+)\"/);
       const fileName = fileNameMatch?.[1] || 'customers.csv';
-      const groupField = state.broadcastVariableProfile.group_field || 'Customer Name';
+      const groupField =
+        state.broadcastVariableProfile.group_field || 'Customer Name';
       const rows = [
-        { [groupField]: 'Acme Freight', 'Shipment No': 'SO-100', 'ETA Date': '2026-07-05' },
-        { [groupField]: 'Northwind Service Group', 'Shipment No': 'SO-101', 'ETA Date': '2026-07-06' },
+        {
+          [groupField]: 'Acme Freight',
+          'Shipment No': 'SO-100',
+          'ETA Date': '2026-07-05',
+        },
+        {
+          [groupField]: 'Northwind Service Group',
+          'Shipment No': 'SO-101',
+          'ETA Date': '2026-07-06',
+        },
         { [groupField]: '', 'Shipment No': 'SO-102', 'ETA Date': '2026-07-07' },
       ];
       const parsedRows: BroadcastImportRowMock[] = rows.map((rawRow, index) => {
-        const groupValue = String(
-          rawRow[groupField] || '',
-        ).trim();
+        const groupValue = String(rawRow[groupField] || '').trim();
         if (!groupValue) {
           return {
             id: Number(nextId(state, 'broadcast-import-row').split('-').pop()),
@@ -1345,8 +1392,13 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         };
       });
 
-      const batchId = Number(nextId(state, 'broadcast-import-batch').split('-').pop());
-      const boundRows = parsedRows.map((row) => ({ ...row, import_batch_id: batchId }));
+      const batchId = Number(
+        nextId(state, 'broadcast-import-batch').split('-').pop(),
+      );
+      const boundRows = parsedRows.map((row) => ({
+        ...row,
+        import_batch_id: batchId,
+      }));
       const batch: BroadcastImportBatchMock = {
         id: batchId,
         bot_uuid: 'bot-1',
@@ -1357,78 +1409,134 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         status: 'imported',
         drafts_stale: false,
         total_rows: boundRows.length,
-        valid_rows: boundRows.filter((row) => row.match_status !== 'invalid').length,
-        invalid_rows: boundRows.filter((row) => row.match_status === 'invalid').length,
-        matched_rows: boundRows.filter((row) => row.match_status === 'matched').length,
-        unmatched_rows: boundRows.filter((row) => row.match_status === 'unmatched').length,
+        valid_rows: boundRows.filter((row) => row.match_status !== 'invalid')
+          .length,
+        invalid_rows: boundRows.filter((row) => row.match_status === 'invalid')
+          .length,
+        matched_rows: boundRows.filter((row) => row.match_status === 'matched')
+          .length,
+        unmatched_rows: boundRows.filter(
+          (row) => row.match_status === 'unmatched',
+        ).length,
         created_at: now(),
         updated_at: now(),
       };
       state.broadcastImportBatches = [batch, ...state.broadcastImportBatches];
-      state.broadcastImportRows = [
-        ...boundRows,
-        ...state.broadcastImportRows,
-      ];
-      return fulfillJson(route, {
-        ...batch,
-        rows: boundRows,
-      });
+      state.broadcastImportRows = [...boundRows, ...state.broadcastImportRows];
+      return fulfillJson(route, batch);
     }
   }
 
-  const importDetailMatch = path.match(/^\/api\/v1\/broadcast\/imports\/(\d+)$/);
+  const importDetailMatch = path.match(
+    /^\/api\/v1\/broadcast\/imports\/(\d+)$/,
+  );
   if (importDetailMatch) {
     const importId = Number(importDetailMatch[1]);
     if (method === 'GET') {
-      const batch = state.broadcastImportBatches.find((item) => item.id === importId);
+      const batch = state.broadcastImportBatches.find(
+        (item) => item.id === importId,
+      );
       if (!batch) {
-        return fulfillError(route, 404, 'BROADCAST_IMPORT_NOT_FOUND', '当前导入批次不存在或已被删除');
+        return fulfillError(
+          route,
+          404,
+          'BROADCAST_IMPORT_NOT_FOUND',
+          '当前导入批次不存在或已被删除',
+        );
       }
-      const rows = state.broadcastImportRows.filter((item) => item.import_batch_id === importId);
+      const page = Math.max(1, Number(url.searchParams.get('page') || '1'));
+      const pageSize = Math.min(
+        200,
+        Math.max(1, Number(url.searchParams.get('page_size') || '50')),
+      );
+      const rows = state.broadcastImportRows.filter(
+        (item) => item.import_batch_id === importId,
+      );
+      const offset = (page - 1) * pageSize;
       return fulfillJson(route, {
         ...batch,
-        rows,
+        rows: rows.slice(offset, offset + pageSize),
+        page,
+        page_size: pageSize,
+        total: rows.length,
+        total_pages: rows.length === 0 ? 0 : Math.ceil(rows.length / pageSize),
       });
     }
 
     if (method === 'DELETE') {
-      state.broadcastImportBatches = state.broadcastImportBatches.filter((item) => item.id !== importId);
-      state.broadcastImportRows = state.broadcastImportRows.filter((item) => item.import_batch_id !== importId);
-      state.broadcastDrafts = state.broadcastDrafts.filter((item) => item.import_batch_id !== importId);
+      state.broadcastImportBatches = state.broadcastImportBatches.filter(
+        (item) => item.id !== importId,
+      );
+      state.broadcastImportRows = state.broadcastImportRows.filter(
+        (item) => item.import_batch_id !== importId,
+      );
+      state.broadcastDrafts = state.broadcastDrafts.filter(
+        (item) => item.import_batch_id !== importId,
+      );
       return fulfillJson(route, { deleted: true });
     }
   }
 
-  const rematchMatch = path.match(/^\/api\/v1\/broadcast\/imports\/(\d+)\/rematch$/);
+  const rematchMatch = path.match(
+    /^\/api\/v1\/broadcast\/imports\/(\d+)\/rematch$/,
+  );
   if (rematchMatch && method === 'POST') {
     const importId = Number(rematchMatch[1]);
-    const batch = state.broadcastImportBatches.find((item) => item.id === importId);
+    const batch = state.broadcastImportBatches.find(
+      (item) => item.id === importId,
+    );
     if (!batch) {
-      return fulfillError(route, 404, 'BROADCAST_IMPORT_NOT_FOUND', '当前导入批次不存在或已被删除');
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_IMPORT_NOT_FOUND',
+        '当前导入批次不存在或已被删除',
+      );
     }
     batch.status = 'matched';
     batch.drafts_stale = true;
     batch.updated_at = now();
     syncDraftStaleFlags(state, importId);
-    const rows = state.broadcastImportRows.filter((item) => item.import_batch_id === importId);
+    const rows = state.broadcastImportRows.filter(
+      (item) => item.import_batch_id === importId,
+    );
     return fulfillJson(route, {
       ...batch,
       rows,
+      page: 1,
+      page_size: rows.length || 50,
+      total: rows.length,
+      total_pages: rows.length === 0 ? 0 : 1,
     });
   }
 
-  const generateDraftsMatch = path.match(/^\/api\/v1\/broadcast\/imports\/(\d+)\/generate-drafts$/);
+  const generateDraftsMatch = path.match(
+    /^\/api\/v1\/broadcast\/imports\/(\d+)\/generate-drafts$/,
+  );
   if (generateDraftsMatch && method === 'POST') {
     const importId = Number(generateDraftsMatch[1]);
     const body = parseJsonBody(route);
     const templateId = Number(body.template_id || 0);
-    const template = state.broadcastTemplates.find((item) => item.id === templateId);
-    const batch = state.broadcastImportBatches.find((item) => item.id === importId);
+    const template = state.broadcastTemplates.find(
+      (item) => item.id === templateId,
+    );
+    const batch = state.broadcastImportBatches.find(
+      (item) => item.id === importId,
+    );
     if (!template || !batch) {
-      return fulfillError(route, 404, 'BROADCAST_TEMPLATE_NOT_FOUND', '当前模板不存在或已被删除');
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_TEMPLATE_NOT_FOUND',
+        '当前模板不存在或已被删除',
+      );
     }
-    const rows = state.broadcastImportRows.filter((item) => item.import_batch_id === importId);
-    state.broadcastDrafts = state.broadcastDrafts.filter((item) => item.import_batch_id !== importId);
+    const rows = state.broadcastImportRows.filter(
+      (item) => item.import_batch_id === importId,
+    );
+    state.broadcastDrafts = state.broadcastDrafts.filter(
+      (item) => item.import_batch_id !== importId,
+    );
     const drafts: BroadcastDraftMock[] = rows
       .slice()
       .sort((left, right) => {
@@ -1437,27 +1545,32 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         return leftRank - rightRank;
       })
       .map((row) => {
-      const valid = row.match_status === 'matched';
-      return {
-        id: Number(nextId(state, 'broadcast-draft').split('-').pop()),
-        bot_uuid: batch.bot_uuid,
-        connector_id: batch.connector_id,
-        import_batch_id: importId,
-        group_value: row.group_value || `invalid-${row.source_row_number}`,
-        target_conversation_name: row.matched_conversation_name,
-        template_id: template.id,
-        template_name_snapshot: template.name,
-        template_content_snapshot: template.content,
-        render_variables: {
-          customer_name: row.group_value || '',
-        },
-        draft_text: valid ? template.content.replace('{{customer_name}}', row.group_value || '') : '',
-        status: valid ? 'pending_review' : 'invalid',
-        error_message: valid ? null : row.error_message || '未匹配到群聊',
-        drafts_stale: false,
-        created_at: now(),
-        updated_at: now(),
-      };
+        const valid = row.match_status === 'matched';
+        return {
+          id: Number(nextId(state, 'broadcast-draft').split('-').pop()),
+          bot_uuid: batch.bot_uuid,
+          connector_id: batch.connector_id,
+          import_batch_id: importId,
+          group_value: row.group_value || `invalid-${row.source_row_number}`,
+          target_conversation_name: row.matched_conversation_name,
+          template_id: template.id,
+          template_name_snapshot: template.name,
+          template_content_snapshot: template.content,
+          render_variables: {
+            customer_name: row.group_value || '',
+          },
+          draft_text: valid
+            ? template.content.replace(
+                '{{customer_name}}',
+                row.group_value || '',
+              )
+            : '',
+          status: valid ? 'pending_review' : 'invalid',
+          error_message: valid ? null : row.error_message || '未匹配到群聊',
+          drafts_stale: false,
+          created_at: now(),
+          updated_at: now(),
+        };
       });
     state.broadcastDrafts = [...drafts, ...state.broadcastDrafts];
     batch.status = 'drafts_generated';
@@ -1465,12 +1578,15 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     batch.updated_at = now();
     return fulfillJson(route, {
       total_group_count: drafts.length,
-      pending_review_count: drafts.filter((item) => item.status === 'pending_review').length,
+      pending_review_count: drafts.filter(
+        (item) => item.status === 'pending_review',
+      ).length,
       invalid_count: drafts.filter((item) => item.status === 'invalid').length,
-      unmatched_group_count: drafts.filter((item) => item.error_message === '未匹配到群聊').length,
+      unmatched_group_count: drafts.filter(
+        (item) => item.error_message === '未匹配到群聊',
+      ).length,
     });
   }
-
 
   if (path === '/api/v1/broadcast/executions') {
     const botUuid = url.searchParams.get('bot_uuid');
@@ -1478,7 +1594,10 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
 
     if (method === 'GET') {
       const batches = state.broadcastExecutionBatches
-        .filter((item) => item.bot_uuid === botUuid && item.connector_id === connectorId)
+        .filter(
+          (item) =>
+            item.bot_uuid === botUuid && item.connector_id === connectorId,
+        )
         .sort((left, right) => right.id - left.id);
       return fulfillJson(route, batches);
     }
@@ -1486,17 +1605,29 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     if (method === 'POST') {
       const body = parseJsonBody(route);
       const draftIds = Array.isArray(body.draft_ids)
-        ? body.draft_ids.map((item) => Number(item)).filter((item) => Number.isFinite(item))
+        ? body.draft_ids
+            .map((item) => Number(item))
+            .filter((item) => Number.isFinite(item))
         : [];
       const drafts = draftIds
-        .map((draftId) => state.broadcastDrafts.find((item) => item.id === draftId) || null)
+        .map(
+          (draftId) =>
+            state.broadcastDrafts.find((item) => item.id === draftId) || null,
+        )
         .filter((draft): draft is BroadcastDraftMock => draft != null);
       if (drafts.length === 0 || drafts.length !== draftIds.length) {
-        return fulfillError(route, 404, 'BROADCAST_DRAFT_NOT_FOUND', '????????????');
+        return fulfillError(
+          route,
+          404,
+          'BROADCAST_DRAFT_NOT_FOUND',
+          '????????????',
+        );
       }
       const mode = body.mode === 'send' ? 'send' : 'paste_only';
       const timestamp = now();
-      const batchId = Number(nextId(state, 'broadcast-execution-batch').split('-').pop());
+      const batchId = Number(
+        nextId(state, 'broadcast-execution-batch').split('-').pop(),
+      );
       const batch: BroadcastExecutionBatchMock = {
         id: batchId,
         bot_uuid: String(body.bot_uuid || ''),
@@ -1522,7 +1653,9 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         cancelled_at: null,
       };
       const tasks = drafts.map((draft, index) => {
-        const taskId = Number(nextId(state, 'broadcast-execution-task').split('-').pop());
+        const taskId = Number(
+          nextId(state, 'broadcast-execution-task').split('-').pop(),
+        );
         const task: BroadcastExecutionTaskMock = {
           id: taskId,
           execution_batch_id: batchId,
@@ -1551,7 +1684,9 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       });
       state.broadcastExecutionBatches = [
         batch,
-        ...state.broadcastExecutionBatches.filter((item) => item.id !== batchId),
+        ...state.broadcastExecutionBatches.filter(
+          (item) => item.id !== batchId,
+        ),
       ];
       state.broadcastExecutionTasks = [
         ...tasks,
@@ -1577,14 +1712,25 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     });
   }
 
-  const executionDetailMatch = path.match(/^\/api\/v1\/broadcast\/executions\/(\d+)$/);
+  const executionDetailMatch = path.match(
+    /^\/api\/v1\/broadcast\/executions\/(\d+)$/,
+  );
   if (executionDetailMatch && method === 'GET') {
     const batchId = Number(executionDetailMatch[1]);
-    const batch = state.broadcastExecutionBatches.find((item) => item.id === batchId);
+    const batch = state.broadcastExecutionBatches.find(
+      (item) => item.id === batchId,
+    );
     if (!batch) {
-      return fulfillError(route, 404, 'BROADCAST_EXECUTION_BATCH_NOT_FOUND', '??????????????');
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_EXECUTION_BATCH_NOT_FOUND',
+        '??????????????',
+      );
     }
-    const tasks = state.broadcastExecutionTasks.filter((item) => item.execution_batch_id === batchId);
+    const tasks = state.broadcastExecutionTasks.filter(
+      (item) => item.execution_batch_id === batchId,
+    );
     return fulfillJson(route, {
       ...batch,
       tasks,
@@ -1599,14 +1745,21 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     const action = executionBatchActionMatch[2];
     const batch = findExecutionBatch(state, batchId);
     if (!batch) {
-      return fulfillError(route, 404, 'BROADCAST_EXECUTION_BATCH_NOT_FOUND', '??????????????');
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_EXECUTION_BATCH_NOT_FOUND',
+        '??????????????',
+      );
     }
     const body = parseJsonBody(route);
     const tasks = state.broadcastExecutionTasks
       .filter((item) => item.execution_batch_id === batchId)
       .sort((left, right) => left.sequence_no - right.sequence_no);
     const timestamp = now();
-    batch.last_action_by = String(body.operator || batch.last_action_by || 'tester@example.com');
+    batch.last_action_by = String(
+      body.operator || batch.last_action_by || 'tester@example.com',
+    );
 
     if (action === 'start') {
       batch.started_at = batch.started_at || timestamp;
@@ -1665,55 +1818,94 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
 
     return fulfillJson(route, {
       ...batch,
-      tasks: state.broadcastExecutionTasks.filter((item) => item.execution_batch_id === batchId),
+      tasks: state.broadcastExecutionTasks.filter(
+        (item) => item.execution_batch_id === batchId,
+      ),
     });
   }
 
-  const executionTaskAttemptsMatch = path.match(/^\/api\/v1\/broadcast\/execution-tasks\/(\d+)\/attempts$/);
+  const executionTaskAttemptsMatch = path.match(
+    /^\/api\/v1\/broadcast\/execution-tasks\/(\d+)\/attempts$/,
+  );
   if (executionTaskAttemptsMatch && method === 'GET') {
     const taskId = Number(executionTaskAttemptsMatch[1]);
-    return fulfillJson(route, state.broadcastExecutionAttempts.filter((item) => item.execution_task_id === taskId));
+    return fulfillJson(
+      route,
+      state.broadcastExecutionAttempts.filter(
+        (item) => item.execution_task_id === taskId,
+      ),
+    );
   }
 
-  const executionTaskDetailMatch = path.match(/^\/api\/v1\/broadcast\/execution-tasks\/(\d+)$/);
+  const executionTaskDetailMatch = path.match(
+    /^\/api\/v1\/broadcast\/execution-tasks\/(\d+)$/,
+  );
   if (executionTaskDetailMatch && method === 'GET') {
     const taskId = Number(executionTaskDetailMatch[1]);
     const task = findExecutionTask(state, taskId);
     if (!task) {
-      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_EXECUTION_TASK_NOT_FOUND',
+        '??????????????',
+      );
     }
     return fulfillJson(route, task);
   }
 
-  const executionTaskStartMatch = path.match(/^\/api\/v1\/broadcast\/execution-tasks\/(\d+)\/start$/);
+  const executionTaskStartMatch = path.match(
+    /^\/api\/v1\/broadcast\/execution-tasks\/(\d+)\/start$/,
+  );
   if (executionTaskStartMatch && method === 'POST') {
     const taskId = Number(executionTaskStartMatch[1]);
     const task = findExecutionTask(state, taskId);
     if (!task) {
-      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_EXECUTION_TASK_NOT_FOUND',
+        '??????????????',
+      );
     }
     const batch = findExecutionBatch(state, task.execution_batch_id);
     if (!batch) {
-      return fulfillError(route, 404, 'BROADCAST_EXECUTION_BATCH_NOT_FOUND', '??????????????');
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_EXECUTION_BATCH_NOT_FOUND',
+        '??????????????',
+      );
     }
     batch.started_at = batch.started_at || now();
     createExecutionAttempt(state, task, {
       status: 'succeeded',
       action: task.action,
-      runtime_state: task.action === 'send_message' ? 'send_verified' : 'pasted_to_input',
+      runtime_state:
+        task.action === 'send_message' ? 'send_verified' : 'pasted_to_input',
       send_triggered: task.action === 'send_message',
-      evidence_summary: task.action === 'send_message' ? 'Message sent' : 'Draft written to input',
+      evidence_summary:
+        task.action === 'send_message'
+          ? 'Message sent'
+          : 'Draft written to input',
     });
     syncExecutionBatchCounts(state, batch.id);
     return fulfillJson(route, task);
   }
 
-  const executionTaskRetryMatch = path.match(/^\/api\/v1\/broadcast\/execution-tasks\/(\d+)\/retry$/);
+  const executionTaskRetryMatch = path.match(
+    /^\/api\/v1\/broadcast\/execution-tasks\/(\d+)\/retry$/,
+  );
   if (executionTaskRetryMatch && method === 'POST') {
     const taskId = Number(executionTaskRetryMatch[1]);
     const task = findExecutionTask(state, taskId);
     if (!task) {
-      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_EXECUTION_TASK_NOT_FOUND',
+        '??????????????',
+      );
     }
     task.status = 'pending';
     task.error_code = null;
@@ -1732,15 +1924,27 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     return fulfillJson(route, task);
   }
 
-  const executionTaskSendMatch = path.match(/^\/api\/v1\/broadcast\/execution-tasks\/(\d+)\/send$/);
+  const executionTaskSendMatch = path.match(
+    /^\/api\/v1\/broadcast\/execution-tasks\/(\d+)\/send$/,
+  );
   if (executionTaskSendMatch && method === 'POST') {
     const taskId = Number(executionTaskSendMatch[1]);
     const task = findExecutionTask(state, taskId);
     if (!task) {
-      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_EXECUTION_TASK_NOT_FOUND',
+        '??????????????',
+      );
     }
     if (!state.broadcastSendEnabled) {
-      return fulfillError(route, 409, 'BROADCAST_EXECUTION_SEND_DISABLED', 'Real send is disabled');
+      return fulfillError(
+        route,
+        409,
+        'BROADCAST_EXECUTION_SEND_DISABLED',
+        'Real send is disabled',
+      );
     }
     const body = parseJsonBody(route);
     const token = String(body.confirmation_token || '');
@@ -1748,10 +1952,20 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       (item) => item.execution_task_id === taskId && item.token === token,
     );
     if (!confirmation) {
-      return fulfillError(route, 409, 'BROADCAST_EXECUTION_CONFIRMATION_INVALID', 'Invalid confirmation token');
+      return fulfillError(
+        route,
+        409,
+        'BROADCAST_EXECUTION_CONFIRMATION_INVALID',
+        'Invalid confirmation token',
+      );
     }
     if (confirmation.used_at) {
-      return fulfillError(route, 409, 'BROADCAST_EXECUTION_CONFIRMATION_INVALID', 'Confirmation token already used');
+      return fulfillError(
+        route,
+        409,
+        'BROADCAST_EXECUTION_CONFIRMATION_INVALID',
+        'Confirmation token already used',
+      );
     }
     confirmation.used_at = now();
     createExecutionAttempt(state, task, {
@@ -1770,12 +1984,24 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     const taskId = Number(body.execution_task_id || 0);
     const task = findExecutionTask(state, taskId);
     if (!task) {
-      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_EXECUTION_TASK_NOT_FOUND',
+        '??????????????',
+      );
     }
     if (!state.broadcastSendEnabled) {
-      return fulfillError(route, 409, 'BROADCAST_EXECUTION_SEND_DISABLED', 'Real send is disabled');
+      return fulfillError(
+        route,
+        409,
+        'BROADCAST_EXECUTION_SEND_DISABLED',
+        'Real send is disabled',
+      );
     }
-    const confirmationId = Number(nextId(state, 'broadcast-send-confirmation').split('-').pop());
+    const confirmationId = Number(
+      nextId(state, 'broadcast-send-confirmation').split('-').pop(),
+    );
     const token = `confirm-${confirmationId}`;
     const confirmation: BroadcastSendConfirmationMock = {
       id: confirmationId,
@@ -1787,7 +2013,9 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     };
     state.broadcastSendConfirmations = [
       confirmation,
-      ...state.broadcastSendConfirmations.filter((item) => item.id !== confirmationId),
+      ...state.broadcastSendConfirmations.filter(
+        (item) => item.id !== confirmationId,
+      ),
     ];
     return fulfillJson(route, {
       id: confirmation.id,
@@ -1834,22 +2062,40 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     });
   }
 
-  const executionAttemptDetailMatch = path.match(/^\/api\/v1\/broadcast\/execution-attempts\/(\d+)$/);
+  const executionAttemptDetailMatch = path.match(
+    /^\/api\/v1\/broadcast\/execution-attempts\/(\d+)$/,
+  );
   if (executionAttemptDetailMatch && method === 'GET') {
     const attemptId = Number(executionAttemptDetailMatch[1]);
-    const attempt = state.broadcastExecutionAttempts.find((item) => item.id === attemptId);
+    const attempt = state.broadcastExecutionAttempts.find(
+      (item) => item.id === attemptId,
+    );
     if (!attempt) {
-      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_EXECUTION_TASK_NOT_FOUND',
+        '??????????????',
+      );
     }
     return fulfillJson(route, attempt);
   }
 
-  const executionEvidenceMatch = path.match(/^\/api\/v1\/broadcast\/execution-attempts\/(\d+)\/evidence$/);
+  const executionEvidenceMatch = path.match(
+    /^\/api\/v1\/broadcast\/execution-attempts\/(\d+)\/evidence$/,
+  );
   if (executionEvidenceMatch && method === 'GET') {
     const attemptId = Number(executionEvidenceMatch[1]);
-    const evidence = state.broadcastExecutionEvidence.find((item) => item.execution_attempt_id === attemptId);
+    const evidence = state.broadcastExecutionEvidence.find(
+      (item) => item.execution_attempt_id === attemptId,
+    );
     if (!evidence) {
-      return fulfillError(route, 404, 'BROADCAST_EXECUTION_TASK_NOT_FOUND', '??????????????');
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_EXECUTION_TASK_NOT_FOUND',
+        '??????????????',
+      );
     }
     return fulfillJson(route, evidence);
   }
@@ -1857,7 +2103,9 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
   if (path === '/api/v1/broadcast/drafts' && method === 'GET') {
     const importBatchId = Number(url.searchParams.get('import_batch_id') || 0);
     const status = url.searchParams.get('status');
-    const keyword = (url.searchParams.get('keyword') || '').trim().toLowerCase();
+    const keyword = (url.searchParams.get('keyword') || '')
+      .trim()
+      .toLowerCase();
     const seededDrafts =
       state.broadcastDrafts.length > 0
         ? state.broadcastDrafts
@@ -1928,7 +2176,11 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         return false;
       }
       if (keyword) {
-        return [item.group_value, item.target_conversation_name || '', item.draft_text]
+        return [
+          item.group_value,
+          item.target_conversation_name || '',
+          item.draft_text,
+        ]
           .join(' ')
           .toLowerCase()
           .includes(keyword);
@@ -1943,7 +2195,12 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     const draftId = Number(draftDetailMatch[1]);
     const draft = state.broadcastDrafts.find((item) => item.id === draftId);
     if (!draft) {
-      return fulfillError(route, 404, 'BROADCAST_DRAFT_NOT_FOUND', '当前草稿不存在或已被删除');
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_DRAFT_NOT_FOUND',
+        '当前草稿不存在或已被删除',
+      );
     }
     if (method === 'GET') {
       return fulfillJson(route, draft);
@@ -1951,20 +2208,26 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     if (method === 'PUT') {
       const body = parseJsonBody(route);
       const nextText = String(body.draft_text || '');
-      const nextStatus = draft.status === 'ready' ? 'pending_review' : draft.status;
+      const nextStatus =
+        draft.status === 'ready' ? 'pending_review' : draft.status;
       draft.draft_text = nextText;
       draft.status = nextStatus;
       draft.updated_at = now();
       return fulfillJson(route, {
         ...draft,
-        message: draft.status === 'pending_review' ? '草稿内容已修改，请重新确认' : null,
+        message:
+          draft.status === 'pending_review'
+            ? '草稿内容已修改，请重新确认'
+            : null,
       });
     }
   }
 
   if (path === '/api/v1/broadcast/drafts/batch-status' && method === 'POST') {
     const body = parseJsonBody(route);
-    const draftIds = Array.isArray(body.draft_ids) ? body.draft_ids.map((item) => Number(item)) : [];
+    const draftIds = Array.isArray(body.draft_ids)
+      ? body.draft_ids.map((item) => Number(item))
+      : [];
     const status = String(body.status || '') as BroadcastDraftMock['status'];
     let updatedCount = 0;
     state.broadcastDrafts = state.broadcastDrafts.map((draft) => {

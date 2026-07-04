@@ -1,9 +1,10 @@
 ﻿from __future__ import annotations
 
 import json
-import re
 import hashlib
+import math
 import os
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -475,7 +476,10 @@ class BroadcastService:
             )
             await self.repository.replace_import_rows(conn, import_batch_id=import_id, rows=classified_rows)
 
-        return await self.get_import_detail(import_id, validated_scope, {})
+        batch = await self.repository.get_import_batch(import_id, **validated_scope)
+        if batch is None:
+            raise BroadcastError(BROADCAST_IMPORT_NOT_FOUND, '当前导入批次不存在或已被删除')
+        return self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastImportBatch, batch)
 
     async def list_import_batches(self, scope: dict[str, Any]) -> list[dict[str, Any]]:
         validated_scope = await self.validate_scope(scope)
@@ -493,8 +497,19 @@ class BroadcastService:
         if batch is None:
             raise BroadcastError(BROADCAST_IMPORT_NOT_FOUND, '褰撳墠瀵煎叆鎵规涓嶅瓨鍦ㄦ垨宸茶鍒犻櫎')
 
-        page = filters.get('page')
-        page_size = filters.get('page_size')
+        page = int(filters.get('page') or 1)
+        page_size = int(filters.get('page_size') or 50)
+        if page < 1:
+            raise BroadcastError(BROADCAST_IMPORT_FILE_INVALID, '分页参数 page 必须大于或等于 1')
+        if page_size < 1 or page_size > 200:
+            raise BroadcastError(BROADCAST_IMPORT_FILE_INVALID, '分页参数 page_size 必须在 1 到 200 之间')
+        total = await self.repository.count_import_rows(
+            import_batch_id=import_id,
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+            match_status=filters.get('match_status'),
+            keyword=filters.get('keyword'),
+        )
         rows = await self.repository.list_import_rows(
             import_batch_id=import_id,
             bot_uuid=validated_scope['bot_uuid'],
@@ -508,6 +523,10 @@ class BroadcastService:
         data['rows'] = [
             self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastImportRow, row) for row in rows
         ]
+        data['page'] = page
+        data['page_size'] = page_size
+        data['total'] = total
+        data['total_pages'] = 0 if total == 0 else math.ceil(total / page_size)
         return data
 
     async def delete_import(self, import_id: int, scope: dict[str, Any]) -> dict[str, bool]:

@@ -1106,6 +1106,7 @@ async def test_upload_import_creates_first_match_results_immediately(service_fix
     assert result['unmatched_rows'] == 0
     assert result['invalid_rows'] == 1
     assert result['matched_rows'] + result['unmatched_rows'] + result['invalid_rows'] == result['total_rows']
+    assert 'rows' not in result
 
     detail = await service.get_import_detail(result['id'], _scope(), {})
     assert [row['match_status'] for row in detail['rows']] == ['matched', 'matched', 'invalid']
@@ -1113,6 +1114,92 @@ async def test_upload_import_creates_first_match_results_immediately(service_fix
     assert detail['rows'][1]['matched_conversation_name'] == 'Northwind Team'
     assert detail['rows'][1]['matched_rule_id'] is None
     assert detail['rows'][2]['group_value'] is None
+    assert detail['page'] == 1
+    assert detail['page_size'] == 50
+    assert detail['total'] == 3
+    assert detail['total_pages'] == 1
+
+
+async def test_get_import_detail_applies_default_pagination_and_second_page(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': (
+                '客户名称\n'
+                'Acme\n'
+                'Northwind\n'
+                'Globex\n'
+            ).encode('utf-8'),
+        },
+    )
+
+    first_page = await service.get_import_detail(created['id'], _scope(), {})
+    assert first_page['page'] == 1
+    assert first_page['page_size'] == 50
+    assert first_page['total'] == 3
+    assert first_page['total_pages'] == 1
+    assert [row['source_row_number'] for row in first_page['rows']] == [2, 3, 4]
+
+    second_page = await service.get_import_detail(
+        created['id'],
+        _scope(),
+        {'page': 2, 'page_size': 2},
+    )
+    assert second_page['page'] == 2
+    assert second_page['page_size'] == 2
+    assert second_page['total'] == 3
+    assert second_page['total_pages'] == 2
+    assert [row['source_row_number'] for row in second_page['rows']] == [4]
+
+
+async def test_get_import_detail_rejects_page_size_larger_than_200(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nAcme\n'.encode('utf-8'),
+        },
+    )
+
+    with pytest.raises(BroadcastError):
+        await service.get_import_detail(
+            created['id'],
+            _scope(),
+            {'page': 1, 'page_size': 201},
+        )
 
 
 async def test_upload_import_uses_parser_outside_transaction_and_persists_after_refresh(service_fixture):

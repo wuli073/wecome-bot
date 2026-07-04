@@ -733,6 +733,7 @@ class TestBroadcastApi:
         assert upload_payload['data']['matched_rows'] == 2
         assert upload_payload['data']['unmatched_rows'] == 0
         assert upload_payload['data']['invalid_rows'] == 1
+        assert 'rows' not in upload_payload['data']
         assert (
             upload_payload['data']['matched_rows']
             + upload_payload['data']['unmatched_rows']
@@ -753,10 +754,25 @@ class TestBroadcastApi:
             headers=_auth_headers(),
         )
         detail_payload = await detail_response.get_json()
+        assert detail_payload['data']['page'] == 1
+        assert detail_payload['data']['page_size'] == 50
+        assert detail_payload['data']['total'] == 3
+        assert detail_payload['data']['total_pages'] == 1
         assert [row['match_status'] for row in detail_payload['data']['rows']] == ['matched', 'matched', 'invalid']
         assert detail_payload['data']['rows'][0]['matched_conversation_name'] == 'Acme Group'
         assert detail_payload['data']['rows'][1]['matched_conversation_name'] == 'Northwind Team'
         assert detail_payload['data']['rows'][1]['matched_rule_id'] is None
+
+        second_page_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}?{_query_scope()}&page=2&page_size=2',
+            headers=_auth_headers(),
+        )
+        second_page_payload = await second_page_response.get_json()
+        assert second_page_payload['data']['page'] == 2
+        assert second_page_payload['data']['page_size'] == 2
+        assert second_page_payload['data']['total'] == 3
+        assert second_page_payload['data']['total_pages'] == 2
+        assert [row['source_row_number'] for row in second_page_payload['data']['rows']] == [4]
 
     @pytest.mark.asyncio
     async def test_import_upload_rejects_missing_required_fields_with_chinese_error(self, quart_test_client):

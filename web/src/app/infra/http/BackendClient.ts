@@ -2127,13 +2127,12 @@ export class BackendClient extends BaseHttpClient {
   public uploadBroadcastImport(
     scope: ApiBroadcastScope,
     file: File,
-  ): Promise<ApiBroadcastImportDetail> {
+  ): Promise<ApiBroadcastImportBatch> {
     const formData = new FormData();
     formData.append('bot_uuid', scope.bot_uuid);
     formData.append('connector_id', scope.connector_id);
     formData.append('file', file);
-
-    return this.requestBroadcast<ApiBroadcastImportDetail>({
+    return this.requestBroadcast<ApiBroadcastImportBatch>({
       method: 'post',
       url: '/api/v1/broadcast/imports',
       data: formData,
@@ -2402,7 +2401,10 @@ export class BackendClient extends BaseHttpClient {
     scope: ApiBroadcastScope,
     taskId: number,
   ): Promise<ApiBroadcastExecutionAttempt[]> {
-    return this.get(`/api/v1/broadcast/execution-tasks/${taskId}/attempts`, scope);
+    return this.get(
+      `/api/v1/broadcast/execution-tasks/${taskId}/attempts`,
+      scope,
+    );
   }
 
   public getBroadcastExecutionAttemptDetail(
@@ -2416,7 +2418,10 @@ export class BackendClient extends BaseHttpClient {
     scope: ApiBroadcastScope,
     attemptId: number,
   ): Promise<ApiBroadcastExecutionEvidence> {
-    return this.get(`/api/v1/broadcast/execution-attempts/${attemptId}/evidence`, scope);
+    return this.get(
+      `/api/v1/broadcast/execution-attempts/${attemptId}/evidence`,
+      scope,
+    );
   }
 
   public getBroadcastExecutorCapabilities(
@@ -2437,7 +2442,12 @@ export class BackendClient extends BaseHttpClient {
       execution_task_id: number;
       operator: string;
     },
-  ): Promise<{ id: number; token: string; expires_at: string | null; execution_task_id: number }> {
+  ): Promise<{
+    id: number;
+    token: string;
+    expires_at: string | null;
+    execution_task_id: number;
+  }> {
     return this.requestBroadcast({
       method: 'post',
       url: '/api/v1/broadcast/send-confirmations',

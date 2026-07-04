@@ -2008,10 +2008,12 @@ const zhHans = {
     },
     rules: {
       variablePool: '变量池',
-      variablePoolDescription: '这里展示当前可用的消息变量，只有有效规则才会出现在这里。',
+      variablePoolDescription:
+        '这里展示当前可用的消息变量，只有有效规则才会出现在这里。',
       variablePoolEmpty: '当前还没有可用变量，请先添加有效规则。',
       preview: '示例消息预览',
-      previewDescription: '根据当前规则自动生成示例消息，方便检查变量替换效果。',
+      previewDescription:
+        '根据当前规则自动生成示例消息，方便检查变量替换效果。',
       templatePreview: '消息预览',
       templatePreviewHint: '填写模板后，这里会显示替换变量后的示例内容。',
       availableVariables: '可用变量',
@@ -2023,7 +2025,8 @@ const zhHans = {
       groupBucketsDescription: '集中维护可选群聊，方便规则配置时直接复用。',
       variableMapping: {
         title: '变量对应表',
-        description: '先把表格字段和消息变量对应起来，系统才能正确生成群发内容。',
+        description:
+          '先把表格字段和消息变量对应起来，系统才能正确生成群发内容。',
       },
       templates: {
         title: '消息模板',
@@ -2038,7 +2041,44 @@ const zhHans = {
     },
     import: {
       title: '导入匹配',
-      description: '查看导入后的客户、模板和群聊匹配结果，确认哪些记录还需要处理。',
+      description:
+        '查看导入后的客户、模板和群聊匹配结果，确认哪些记录还需要处理。',
+      uploadButton: '上传 CSV / XLSX',
+      batchSummary: '共 {{totalRows}} 行 / 已匹配 {{matchedRows}}',
+      emptyBatches: '暂无导入批次',
+      detailTitle: '导入详情',
+      detailHint: '上传成功后立即展示真实匹配结果，无需先点击重新匹配。',
+      worksheetName: '工作表：{{name}}',
+      rematchButton: '重新匹配',
+      deleteBatchButton: '删除批次',
+      templatePlaceholder: '选择模板',
+      generateDraftsButton: '生成草稿',
+      draftsStale: '草稿已过期，请重新生成',
+      emptyRows: '暂无导入明细',
+      tableHeaders: {
+        sourceRowNumber: '行号',
+        groupValue: '客户/分组',
+        matchedConversationName: '匹配群聊',
+        matchStatus: '结果',
+        errorMessage: '原因',
+      },
+      statusLabels: {
+        matched: '已匹配',
+        unmatched: '未匹配',
+        invalid: '无效',
+      },
+      stats: {
+        totalRows: '总行数',
+        matchedRows: '已匹配',
+        unmatchedRows: '未匹配',
+        invalidRows: '无效',
+      },
+      pagination: {
+        totalItems: '共 {{total}} 条',
+        previous: '上一页',
+        next: '下一页',
+        pageStatus: '第 {{page}} / {{totalPages}} 页',
+      },
       summary: {
         rows: '预览行数',
         ready: '可用',
@@ -2082,11 +2122,13 @@ const zhHans = {
       staleWarning: '草稿已过期，请重新生成',
       pasteHint: '这里只会将草稿写入输入框，不会自动发送消息。',
       pasteDialogTitle: '确认写入输入框',
-      pasteDialogDescription: '请再次确认目标群聊和草稿内容。本操作仅写入输入框，不会自动发送。',
+      pasteDialogDescription:
+        '请再次确认目标群聊和草稿内容。本操作仅写入输入框，不会自动发送。',
       realSend: '真实发送',
       sendLoading: '发送中...',
       sendDialogTitle: '确认真实发送',
-      sendDialogDescription: '请再次核对目标群聊和完整正文。本操作会触发真实发送。',
+      sendDialogDescription:
+        '请再次核对目标群聊和完整正文。本操作会触发真实发送。',
       sendWarning: '本操作将真实发送消息，发送后无法自动撤回。',
       sendCountdown: '请等待 {{count}} 秒后再进行最终确认。',
       sendAcknowledge: '我已确认目标群聊和正文无误，并理解这将真实发送消息。',
@@ -2161,7 +2203,8 @@ const zhHans = {
       groupRuleSaved: '群匹配规则已保存',
       groupRuleDeleted: '群匹配规则已删除',
       groupNamesSaved: '群名称已保存',
-      groupNamesSynced: '群列表已刷新：扫描 {{scanned}}，新增 {{inserted}}，更新 {{updated}}，未变更 {{unchanged}}',
+      groupNamesSynced:
+        '群列表已刷新：扫描 {{scanned}}，新增 {{inserted}}，更新 {{updated}}，未变更 {{unchanged}}',
       groupNameDeleted: '群名称已删除',
     },
   },

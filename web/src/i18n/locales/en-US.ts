@@ -2084,7 +2084,8 @@ const enUS = {
       noMatch: 'No matching rule',
     },
     hints: {
-      templateEnabled: 'Disabled templates stay saved but are not used by later matching flows.',
+      templateEnabled:
+        'Disabled templates stay saved but are not used by later matching flows.',
     },
     actions: {
       newTemplate: 'New template',
@@ -2145,6 +2146,43 @@ const enUS = {
       title: 'Import Matching',
       description:
         'Review imported rows, matched conversations, and template readiness using mock preview data.',
+      uploadButton: 'Upload CSV / XLSX',
+      batchSummary: '{{totalRows}} rows total / {{matchedRows}} matched',
+      emptyBatches: 'No import batches yet',
+      detailTitle: 'Import Details',
+      detailHint:
+        'Show real matching results immediately after upload without requiring a rematch first.',
+      worksheetName: 'Worksheet: {{name}}',
+      rematchButton: 'Rematch',
+      deleteBatchButton: 'Delete Batch',
+      templatePlaceholder: 'Select a template',
+      generateDraftsButton: 'Generate Drafts',
+      draftsStale: 'Drafts are stale. Please regenerate them.',
+      emptyRows: 'No import rows yet',
+      tableHeaders: {
+        sourceRowNumber: 'Row',
+        groupValue: 'Customer / Group',
+        matchedConversationName: 'Matched Conversation',
+        matchStatus: 'Result',
+        errorMessage: 'Reason',
+      },
+      statusLabels: {
+        matched: 'Matched',
+        unmatched: 'Unmatched',
+        invalid: 'Invalid',
+      },
+      stats: {
+        totalRows: 'Total Rows',
+        matchedRows: 'Matched',
+        unmatchedRows: 'Unmatched',
+        invalidRows: 'Invalid',
+      },
+      pagination: {
+        totalItems: '{{total}} items total',
+        previous: 'Previous',
+        next: 'Next',
+        pageStatus: 'Page {{page}} / {{totalPages}}',
+      },
       summary: {
         rows: 'Preview Rows',
         ready: 'Ready',
@@ -2187,7 +2225,8 @@ const enUS = {
       selectDraft: 'Select draft {{id}}',
       staleBadge: 'stale',
       staleWarning: 'Draft is stale. Please regenerate it.',
-      pasteHint: 'This action only writes text into the input box and never sends the message.',
+      pasteHint:
+        'This action only writes text into the input box and never sends the message.',
       pasteDialogTitle: 'Confirm writing to input box',
       pasteDialogDescription:
         'Please confirm the target conversation and draft content again. This action only writes to the input box and will not send.',
@@ -2196,8 +2235,10 @@ const enUS = {
       sendDialogTitle: 'Confirm real send',
       sendDialogDescription:
         'Review the target conversation and full message body again. This action will perform a real send.',
-      sendWarning: 'This action will send a real message and cannot be automatically undone.',
-      sendCountdown: 'Please wait {{count}} second(s) before the final confirmation.',
+      sendWarning:
+        'This action will send a real message and cannot be automatically undone.',
+      sendCountdown:
+        'Please wait {{count}} second(s) before the final confirmation.',
       sendAcknowledge:
         'I have verified the conversation and content, and I understand this will send a real message.',
       cancelAction: 'Cancel',
@@ -2271,7 +2312,8 @@ const enUS = {
       groupRuleSaved: 'Group rule saved',
       groupRuleDeleted: 'Group rule deleted',
       groupNamesSaved: 'Group names saved',
-      groupNamesSynced: 'Group list refreshed: scanned {{scanned}}, inserted {{inserted}}, updated {{updated}}, unchanged {{unchanged}}',
+      groupNamesSynced:
+        'Group list refreshed: scanned {{scanned}}, inserted {{inserted}}, updated {{updated}}, unchanged {{unchanged}}',
       groupNameDeleted: 'Group name deleted',
     },
   },
