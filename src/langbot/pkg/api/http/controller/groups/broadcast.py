@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import quart
+from werkzeug.exceptions import BadRequest
 
 from .. import group
 from .....broadcast.errors import (
@@ -184,11 +185,24 @@ class BroadcastRouterGroup(group.RouterGroup):
                     }
                 )
                 file = files.get('file')
-                payload = {
-                    'filename': getattr(file, 'filename', ''),
-                    'body': file.read() if file is not None else b'',
-                }
+                payload = self._build_upload_file_payload(file)
                 data = await self.ap.broadcast_service.upload_import(scope, payload)
+                return self.success(data=data)
+            except BadRequest:
+                return self._broadcast_error_response(
+                    BroadcastError(
+                        BROADCAST_IMPORT_FILE_INVALID,
+                        '导入请求格式无效，请重新选择 CSV/XLSX 文件后重试。',
+                    )
+                )
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/group-names/sync', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def sync_group_names() -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                data = await self.ap.broadcast_service.sync_group_names_from_conversations(scope)
                 return self.success(data=data)
             except BroadcastError as exc:
                 return self._broadcast_error_response(exc)
@@ -523,3 +537,31 @@ class BroadcastRouterGroup(group.RouterGroup):
         }:
             return 409
         return 400
+
+    @staticmethod
+    def _build_upload_file_payload(file) -> dict[str, bytes | str]:
+        if file is None:
+            return {
+                'filename': '',
+                'body': b'',
+            }
+
+        stream = getattr(file, 'stream', None)
+        if stream is not None:
+            seek = getattr(stream, 'seek', None)
+            if callable(seek):
+                seek(0)
+            body = stream.read()
+        else:
+            read = getattr(file, 'read', None)
+            body = read() if callable(read) else b''
+
+        if body is None:
+            body = b''
+        if isinstance(body, str):
+            body = body.encode('utf-8')
+
+        return {
+            'filename': getattr(file, 'filename', ''),
+            'body': body,
+        }

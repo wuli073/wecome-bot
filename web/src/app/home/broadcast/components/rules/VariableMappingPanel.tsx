@@ -24,6 +24,7 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 
 import type {
+  BroadcastImportDetail,
   BroadcastMessageTemplate,
   BroadcastMergeMode,
   BroadcastVariableMappingRule,
@@ -36,10 +37,12 @@ import {
   reindexMappingRules,
   validateAndNormalizeVariableProfile,
 } from '../../utils';
+import { markBroadcastRender } from '../../diagnostics';
 
 interface VariableMappingPanelProps {
   variableProfile: BroadcastVariableProfile;
   templates: BroadcastMessageTemplate[];
+  importDetail?: BroadcastImportDetail | null;
   loading: boolean;
   saving: boolean;
   error: string | null;
@@ -63,11 +66,13 @@ function nextRuleOrder(rules: BroadcastVariableMappingRule[]): number {
 export default function VariableMappingPanel({
   variableProfile,
   templates,
+  importDetail = null,
   loading,
   saving,
   error,
   onSave,
 }: VariableMappingPanelProps) {
+  markBroadcastRender('VariableMappingPanel');
   const { t } = useTranslation();
   const [draft, setDraft] = useState<BroadcastVariableProfile>(variableProfile);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -78,8 +83,8 @@ export default function VariableMappingPanel({
   }, [variableProfile]);
 
   const mappings = useMemo(
-    () => buildVariableMappings(draft, templates),
-    [draft, templates],
+    () => buildVariableMappings(draft, templates, importDetail),
+    [draft, templates, importDetail],
   );
 
   const previewText = useMemo(() => {

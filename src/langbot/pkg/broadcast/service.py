@@ -34,6 +34,7 @@ from .errors import (
     BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED,
     BROADCAST_EXECUTION_TASK_NOT_FOUND,
     BROADCAST_EXECUTION_TASK_STATUS_INVALID,
+    BROADCAST_EXECUTION_HEALTH_CHECK_FAILED,
     BROADCAST_IMPORT_FIELDS_MISSING,
     BROADCAST_IMPORT_FILE_INVALID,
     BROADCAST_IMPORT_GROUP_FIELD_REQUIRED,
@@ -209,14 +210,12 @@ class BroadcastService:
     async def list_group_rules(self, scope: dict[str, Any]) -> list[dict[str, Any]]:
         validated_scope = await self.validate_scope(scope)
         rows = await self.repository.list_group_rules(**validated_scope)
-        return [
-            self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, row)
-            for row in rows
-        ]
+        return [self._serialize_group_rule(row) for row in rows]
 
     async def create_group_rule(self, scope: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         validated_scope = await self.validate_scope(scope)
         normalized = self._normalize_group_rule_payload(payload)
+        await self._validate_group_rule_target(validated_scope, normalized['target_conversation_name'])
         try:
             async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
                 rule_id = await self.repository.create_group_rule(
@@ -229,7 +228,7 @@ class BroadcastService:
         except IntegrityError as exc:
             raise self._map_integrity_error(exc) from exc
         rule = await self.repository.get_group_rule(rule_id, **validated_scope)
-        return self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, rule)
+        return self._serialize_group_rule(rule)
 
     async def update_group_rule(
         self,
@@ -239,6 +238,7 @@ class BroadcastService:
     ) -> dict[str, Any]:
         validated_scope = await self.validate_scope(scope)
         normalized = self._normalize_group_rule_payload(payload)
+        await self._validate_group_rule_target(validated_scope, normalized['target_conversation_name'])
         try:
             async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
                 updated = await self.repository.update_group_rule(
@@ -252,7 +252,7 @@ class BroadcastService:
             raise self._map_integrity_error(exc) from exc
         if updated is None:
             raise BroadcastError(BROADCAST_GROUP_RULE_NOT_FOUND)
-        return self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, updated)
+        return self._serialize_group_rule(updated)
 
     async def delete_group_rule(self, rule_id: int, scope: dict[str, Any]) -> dict[str, bool]:
         validated_scope = await self.validate_scope(scope)
@@ -279,7 +279,7 @@ class BroadcastService:
             }
 
         rows = await self.repository.list_group_rules(**validated_scope)
-        for row in rows:
+        for row in self._iter_matchable_group_rules(rows):
             if not bool(row.enabled):
                 continue
             if self._rule_matches(row.match_type, row.match_expression, source_value):
@@ -332,6 +332,7 @@ class BroadcastService:
                         {
                             **validated_scope,
                             'name': name,
+                            'external_conversation_id': None,
                         },
                     )
         except IntegrityError as exc:
@@ -340,6 +341,66 @@ class BroadcastService:
         return {
             'group_names': await self.list_group_names(validated_scope),
         }
+
+    async def sync_group_names_from_conversations(self, scope: dict[str, Any]) -> dict[str, Any]:
+        validated_scope = await self.validate_scope(scope)
+        conversations = await self.repository.list_database_conversations_for_group_sync(
+            connector_id=validated_scope['connector_id']
+        )
+        stats = {
+            'scanned': 0,
+            'inserted': 0,
+            'updated': 0,
+            'unchanged': 0,
+            'skipped': 0,
+            'errors': [],
+        }
+
+        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            for conversation in conversations:
+                if str(conversation.conversation_type) != 'group':
+                    stats['skipped'] += 1
+                    continue
+
+                external_conversation_id = str(conversation.external_conversation_id or '').strip()
+                conversation_name = str(conversation.conversation_name or '').strip()
+                if not external_conversation_id or not conversation_name:
+                    stats['skipped'] += 1
+                    continue
+
+                stats['scanned'] += 1
+                existing = await self.repository.get_group_name_by_external_conversation_id(
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                    external_conversation_id=external_conversation_id,
+                    conn=conn,
+                )
+                if existing is None:
+                    await self.repository.create_group_name(
+                        conn,
+                        {
+                            **validated_scope,
+                            'name': conversation_name,
+                            'external_conversation_id': external_conversation_id,
+                        },
+                    )
+                    stats['inserted'] += 1
+                    continue
+
+                if str(existing.name) != conversation_name:
+                    await self.repository.update_group_name(
+                        int(existing.id),
+                        bot_uuid=validated_scope['bot_uuid'],
+                        connector_id=validated_scope['connector_id'],
+                        updates={'name': conversation_name},
+                        conn=conn,
+                    )
+                    stats['updated'] += 1
+                    continue
+
+                stats['unchanged'] += 1
+
+        return stats
 
     async def delete_group_name(self, group_name_id: int, scope: dict[str, Any]) -> dict[str, bool]:
         validated_scope = await self.validate_scope(scope)
@@ -383,13 +444,17 @@ class BroadcastService:
             raise self._map_import_processor_error(exc) from exc
 
         rules = await self.repository.list_group_rules(**validated_scope)
+        serialized_rules = [
+            self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, row)
+            for row in self._iter_matchable_group_rules(rules)
+        ]
         group_names = [item.name for item in await self.repository.list_group_names(**validated_scope)]
         classified_rows = classify_import_rows(
             rows=list(parsed['rows']),
             group_field=str(variable_profile.group_field),
             match_resolver=lambda group_value: match_group(
                 group_value=group_value,
-                rules=[self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, row) for row in rules],
+                rules=serialized_rules,
                 group_names=group_names,
             ),
         )
@@ -495,6 +560,10 @@ class BroadcastService:
             raise self._map_import_processor_error(exc) from exc
 
         rules = await self.repository.list_group_rules(**validated_scope)
+        serialized_rules = [
+            self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, row)
+            for row in self._iter_matchable_group_rules(rules)
+        ]
         group_names = [item.name for item in await self.repository.list_group_names(**validated_scope)]
         classified_rows = classify_import_rows(
             rows=[
@@ -507,7 +576,7 @@ class BroadcastService:
             group_field=str(variable_profile.group_field),
             match_resolver=lambda group_value: match_group(
                 group_value=group_value,
-                rules=[self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, row) for row in rules],
+                rules=serialized_rules,
                 group_names=group_names,
             ),
         )
@@ -1073,6 +1142,17 @@ class BroadcastService:
                 task_status = 'failed'
                 error_code = BROADCAST_EXECUTION_SEND_TRIGGERED
                 error_message = '检测到发送动作，已按安全失败处理'
+            elif not bool(evidence.get('content_verified', False)):
+                task_status = 'interrupted'
+                error_code = (
+                    str(runtime_result.get('errorCode') or runtime_result.get('error_code') or '').strip()
+                    or 'PASTE_VERIFICATION_FAILED'
+                )
+                error_message = (
+                    'Paste completed but input content could not be verified'
+                    if error_code == 'PASTE_VERIFICATION_UNAVAILABLE'
+                    else 'Paste completed but input content does not match expected text'
+                )
             else:
                 runtime_status = str(runtime_result.get('status') or '')
                 task_status = self._coerce_terminal_task_status(runtime_status)
@@ -1412,19 +1492,34 @@ class BroadcastService:
         gateway = self._get_runtime_gateway()
         executor = build_executor('wxwork_database', gateway)
         capability = executor.validate_capability('paste_draft')
-        health = await gateway.health_check()
-        runtime_status = await gateway.get_capabilities()
-        return {
-            'channel': 'wxwork_database',
-            'status': str(health.get('status') or 'unknown'),
-            'protocol_version': health.get('protocolVersion'),
-            'runtime_version': health.get('runtimeVersion'),
-            'capability': {
-                **capability,
-                'supports_send': bool(capability.get('supports_send', False)) and self._is_send_enabled(validated_scope),
-            },
-            'runtime_status': self._sanitize_runtime_result(runtime_status),
+        capability_payload = {
+            **capability,
+            'supports_send': bool(capability.get('supports_send', False)) and self._is_send_enabled(validated_scope),
         }
+        try:
+            health = await gateway.health_check()
+            runtime_status = await gateway.get_capabilities()
+            return {
+                'channel': 'wxwork_database',
+                'available': True,
+                'status': str(health.get('status') or 'unknown'),
+                'protocol_version': health.get('protocolVersion'),
+                'runtime_version': health.get('runtimeVersion'),
+                'capability': capability_payload,
+                'runtime_status': self._sanitize_runtime_result(runtime_status),
+                'error_message': None,
+            }
+        except Exception as exc:
+            return {
+                'channel': 'wxwork_database',
+                'available': False,
+                'status': 'unavailable',
+                'protocol_version': None,
+                'runtime_version': None,
+                'capability': capability_payload,
+                'runtime_status': None,
+                'error_message': str(exc) or BROADCAST_EXECUTION_HEALTH_CHECK_FAILED,
+            }
 
     async def issue_send_confirmation(self, scope: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         validated_scope = await self.validate_scope(scope)
@@ -1771,6 +1866,14 @@ class BroadcastService:
         target_conversation_name = str(payload.get('target_conversation_name') or '').strip()
         if match_type not in VALID_MATCH_TYPES or not source_value or not target_conversation_name:
             raise BroadcastError(BROADCAST_GROUP_RULE_REGEX_INVALID)
+        if self._is_placeholder_group_rule(
+            source_value=source_value,
+            target_conversation_name=target_conversation_name,
+        ):
+            raise BroadcastError(
+                BROADCAST_GROUP_RULE_REGEX_INVALID,
+                '群规则无效：请填写真实用户名和真实目标群名称，不能保存占位历史规则。',
+            )
         if match_type == 'regex':
             try:
                 re.compile(expression)
@@ -1792,6 +1895,56 @@ class BroadcastService:
             'priority': priority,
             'enabled': bool(payload.get('enabled', True)),
         }
+
+    def _serialize_group_rule(self, row) -> dict[str, Any]:
+        payload = self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, row)
+        invalid_legacy = self._is_placeholder_group_rule(
+            source_value=str(row.source_value or ''),
+            target_conversation_name=str(row.target_conversation_name or ''),
+        )
+        payload['invalid_legacy'] = invalid_legacy
+        payload['invalid_reason'] = '无效历史规则，不参与匹配。' if invalid_legacy else None
+        return payload
+
+    def _is_placeholder_group_rule(self, *, source_value: str, target_conversation_name: str) -> bool:
+        normalized_source = str(source_value or '').strip()
+        normalized_target = str(target_conversation_name or '').strip()
+        return (
+            not normalized_source
+            or not normalized_target
+            or normalized_source == '??'
+            or normalized_target == '??'
+        )
+
+    def _iter_matchable_group_rules(self, rows: list[Any]) -> list[Any]:
+        return [
+            row
+            for row in rows
+            if not self._is_placeholder_group_rule(
+                source_value=str(getattr(row, 'source_value', '') or ''),
+                target_conversation_name=str(getattr(row, 'target_conversation_name', '') or ''),
+            )
+        ]
+
+    async def _validate_group_rule_target(
+        self,
+        scope: dict[str, str],
+        target_conversation_name: str,
+    ) -> None:
+        normalized_target = str(target_conversation_name or '').strip()
+        if not normalized_target:
+            raise BroadcastError(BROADCAST_GROUP_RULE_REGEX_INVALID)
+
+        group_names = await self.repository.list_group_names(**scope)
+        if not group_names:
+            return
+
+        exists = any(str(item.name or '') == normalized_target for item in group_names)
+        if not exists:
+            raise BroadcastError(
+                BROADCAST_GROUP_RULE_REGEX_INVALID,
+                '目标群不存在，或不属于当前 Bot / Connector。',
+            )
 
     def _serialize_template(self, row) -> dict[str, Any]:
         return self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastTemplate, row)
@@ -1859,7 +2012,7 @@ class BroadcastService:
         return self._serialize_execution_batch(updated)
 
     def _get_runtime_gateway(self) -> BroadcastRuntimeGateway:
-        return BroadcastRuntimeGateway(self.ap.desktop_automation_service.runtime_client)
+        return BroadcastRuntimeGateway(self.ap.desktop_automation_service)
 
     def _wake_worker(self) -> None:
         worker = getattr(self.ap, 'broadcast_execution_worker', None)
@@ -1936,7 +2089,16 @@ class BroadcastService:
             return None
 
         redacted: dict[str, Any] = {}
-        allowed_text_keys = {'runtime_task_id', 'stage', 'status', 'error_code'}
+        allowed_text_keys = {
+            'runtime_task_id',
+            'stage',
+            'status',
+            'error_code',
+            'verification_method',
+            'verification_error_code',
+            'expected_digest',
+            'actual_digest',
+        }
 
         for key, value in technical_details.items():
             lowered = str(key).lower()
@@ -1944,7 +2106,7 @@ class BroadcastService:
                 continue
             if 'path' in lowered:
                 continue
-            if key in allowed_text_keys:
+            if key in allowed_text_keys or isinstance(value, (int, float, bool)) or value is None:
                 redacted[key] = value
         return redacted or None
 

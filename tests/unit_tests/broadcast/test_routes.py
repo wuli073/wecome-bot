@@ -36,9 +36,11 @@ pytestmark = pytest.mark.asyncio
 async def _make_client():
     app = quart.Quart(__name__)
     ap = SimpleNamespace(
+        instance_config=SimpleNamespace(data={'api': {'global_api_key': ''}}),
         user_service=SimpleNamespace(
             verify_jwt_token=AsyncMock(return_value='user@example.com'),
             get_user_by_email=AsyncMock(return_value=SimpleNamespace(user='user@example.com')),
+            get_first_user=AsyncMock(return_value=SimpleNamespace(user='user@example.com')),
         ),
         broadcast_service=SimpleNamespace(
             validate_scope=AsyncMock(
@@ -111,6 +113,16 @@ async def _make_client():
             ),
             list_group_names=AsyncMock(return_value=[]),
             create_group_names=AsyncMock(return_value={'group_names': []}),
+            sync_group_names_from_conversations=AsyncMock(
+                return_value={
+                    'scanned': 1,
+                    'inserted': 1,
+                    'updated': 0,
+                    'unchanged': 0,
+                    'skipped': 0,
+                    'errors': [],
+                }
+            ),
             delete_group_name=AsyncMock(return_value={'deleted': True}),
             upload_import=AsyncMock(
                 return_value={
@@ -339,6 +351,22 @@ async def test_upload_import_uses_multipart_and_body_scope():
         {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'}
     )
     ap.broadcast_service.upload_import.assert_awaited_once()
+
+
+async def test_sync_group_names_uses_query_scope():
+    client, ap = await _make_client()
+
+    response = await client.post(
+        '/api/v1/broadcast/group-names/sync?bot_uuid=bot-1&connector_id=wxwork-local',
+        headers={'Authorization': 'Bearer valid-user-token'},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload['data']['inserted'] == 1
+    ap.broadcast_service.sync_group_names_from_conversations.assert_awaited_once_with(
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'}
+    )
 
 
 async def test_get_import_detail_uses_query_scope_and_filters():
@@ -581,3 +609,16 @@ async def test_execution_attempt_and_evidence_routes_use_scope_and_map_service_c
         501,
         {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
     )
+
+
+async def test_upload_import_reads_bytes_from_file_stream_when_filestorage_has_no_read():
+    stream = BytesIO('客户,运单号\n小满,TEST-20260704-001\n'.encode('utf-8'))
+    pseudo_file = SimpleNamespace(
+        filename='customers.csv',
+        stream=stream,
+    )
+
+    payload = BroadcastRouterGroup._build_upload_file_payload(pseudo_file)
+
+    assert payload['filename'] == 'customers.csv'
+    assert payload['body'] == '客户,运单号\n小满,TEST-20260704-001\n'.encode('utf-8')

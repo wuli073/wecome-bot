@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import hashlib
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -14,6 +15,7 @@ from langbot.pkg.entity.persistence import bot as persistence_bot
 from langbot.pkg.entity.persistence import broadcast as persistence_broadcast
 from langbot.pkg.entity.persistence import database_mode as persistence_database_mode
 from langbot.pkg.broadcast.errors import (
+    BROADCAST_GROUP_RULE_REGEX_INVALID,
     BROADCAST_VARIABLE_PROFILE_INVALID,
     BroadcastError,
 )
@@ -62,6 +64,7 @@ class _MiniPersistenceManager:
             await conn.run_sync(persistence_bot.Bot.__table__.create)
             await conn.run_sync(persistence_database_mode.ChannelAccount.__table__.create)
             await conn.run_sync(persistence_database_mode.BotChannelBinding.__table__.create)
+            await conn.run_sync(persistence_database_mode.DatabaseConversation.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastTemplate.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastVariableProfile.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastGroupRule.__table__.create)
@@ -120,8 +123,53 @@ class _FakeRuntimeClient:
             'result': {
                 'messageSent': False,
                 'clipboardRestoreFailed': False,
+                'contentVerified': True,
+                'draftWritten': True,
+                'inputLocated': True,
             },
         }
+
+
+class _DeferredRuntimeDesktopAutomationService:
+    def __init__(self) -> None:
+        self.runtime_client = None
+        self.ensure_client_calls = 0
+        self.health_calls = 0
+        self.capability_calls = 0
+        self.create_task_calls: list[dict[str, object]] = []
+
+    async def ensure_runtime_client(self):
+        self.ensure_client_calls += 1
+        if self.runtime_client is None:
+            self.runtime_client = _FakeRuntimeClient()
+        return self.runtime_client
+
+    async def runtime_health(self):
+        self.health_calls += 1
+        client = await self.ensure_runtime_client()
+        payload = await client.health()
+        return {
+            **payload,
+            'runtimeVersion': '0.1.0',
+        }
+
+    async def runtime_capabilities(self):
+        self.capability_calls += 1
+        client = await self.ensure_runtime_client()
+        return await client.capabilities()
+
+    async def runtime_create_task(self, request):
+        client = await self.ensure_runtime_client()
+        self.create_task_calls.append(dict(request))
+        return await client.create_task(request=request)
+
+    async def runtime_get_task(self, runtime_task_id: str):
+        client = await self.ensure_runtime_client()
+        return await client.get_task(runtime_task_id)
+
+    async def runtime_cancel_task(self, runtime_task_id: str):
+        client = await self.ensure_runtime_client()
+        return await client.cancel_task(runtime_task_id)
 
 
 @pytest.fixture
@@ -133,6 +181,7 @@ async def service_fixture():
 
     ap = SimpleNamespace(
         persistence_mgr=persistence_mgr,
+        instance_config=SimpleNamespace(data={'broadcast': {}, 'desktop_automation': {'stale_run_seconds': 300}}),
         bot_service=SimpleNamespace(
             get_bot=AsyncMock(
                 side_effect=lambda bot_uuid, include_secret=False: {
@@ -468,6 +517,226 @@ async def test_group_names_are_trimmed_deduped_and_persisted(service_fixture):
     assert [item['name'] for item in listed] == ['Acme Group', 'Northwind Group']
 
 
+async def test_sync_group_names_imports_only_bound_group_conversations_idempotently(service_fixture):
+    service, persistence_mgr = service_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        await conn.execute(
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                [
+                    {
+                        'connector_id': 'wxwork-local',
+                        'source': 'wxwork',
+                        'external_conversation_id': 'group-1',
+                        'conversation_name': '小满',
+                        'conversation_type': 'group',
+                    },
+                    {
+                        'connector_id': 'wxwork-local',
+                        'source': 'wxwork',
+                        'external_conversation_id': 'direct-1',
+                        'conversation_name': '杨炳恒',
+                        'conversation_type': 'direct',
+                    },
+                    {
+                        'connector_id': 'wxwork-other',
+                        'source': 'wxwork',
+                        'external_conversation_id': 'other-group',
+                        'conversation_name': '其他群',
+                        'conversation_type': 'group',
+                    },
+                ]
+            )
+        )
+
+    first = await service.sync_group_names_from_conversations(_scope())
+    assert first == {
+        'scanned': 1,
+        'inserted': 1,
+        'updated': 0,
+        'unchanged': 0,
+        'skipped': 1,
+        'errors': [],
+    }
+
+    listed = await service.list_group_names(_scope())
+    assert len(listed) == 1
+    assert listed[0]['name'] == '小满'
+    assert listed[0]['external_conversation_id'] == 'group-1'
+
+    second = await service.sync_group_names_from_conversations(_scope())
+    assert second == {
+        'scanned': 1,
+        'inserted': 0,
+        'updated': 0,
+        'unchanged': 1,
+        'skipped': 1,
+        'errors': [],
+    }
+
+
+async def test_sync_group_names_updates_name_by_external_conversation_id_without_deleting_old_rows(service_fixture):
+    service, persistence_mgr = service_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        await conn.execute(
+            sqlalchemy.insert(persistence_broadcast.BroadcastGroupName).values(
+                {
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'name': '旧群名',
+                    'external_conversation_id': 'group-1',
+                }
+            )
+        )
+        await conn.execute(
+            sqlalchemy.insert(persistence_broadcast.BroadcastGroupName).values(
+                {
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'name': '历史孤儿群',
+                    'external_conversation_id': 'legacy-group',
+                }
+            )
+        )
+        await conn.execute(
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'group-1',
+                    'conversation_name': '新群名',
+                    'conversation_type': 'group',
+                }
+            )
+        )
+
+    result = await service.sync_group_names_from_conversations(_scope())
+    assert result == {
+        'scanned': 1,
+        'inserted': 0,
+        'updated': 1,
+        'unchanged': 0,
+        'skipped': 0,
+        'errors': [],
+    }
+
+    listed = await service.list_group_names(_scope())
+    assert [item['name'] for item in listed] == ['历史孤儿群', '新群名']
+    assert {item['external_conversation_id'] for item in listed} == {'group-1', 'legacy-group'}
+
+
+async def test_match_group_rule_ignores_invalid_placeholder_history_rule(service_fixture):
+    service, persistence_mgr = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '用户名',
+            'mapping_rules': [
+                {
+                    'source_field': '运单号',
+                    'variable_key': '运单号',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+
+    async with persistence_mgr.engine.begin() as conn:
+        await conn.execute(
+            sqlalchemy.insert(persistence_broadcast.BroadcastGroupRule).values(
+                {
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'source_value': '??',
+                    'match_type': 'exact',
+                    'match_expression': '??',
+                    'target_conversation_name': '??',
+                    'priority': 100,
+                    'enabled': True,
+                }
+            )
+        )
+        await conn.execute(
+            sqlalchemy.insert(persistence_broadcast.BroadcastGroupName).values(
+                {
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'name': '小满',
+                    'external_conversation_id': 'group-1',
+                }
+            )
+        )
+
+    unmatched = await service.match_group_rule(_scope(), {'source_value': '??'})
+    assert unmatched == {
+        'matched': False,
+        'rule_id': None,
+        'target_conversation_name': None,
+        'match_type': None,
+    }
+
+    imported = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'users.csv',
+            'body': '用户名,运单号\n??,WB-001\n小满,WB-002\n'.encode('utf-8'),
+        },
+    )
+    detail = await service.get_import_detail(imported['id'], _scope(), {})
+    rows = {row['group_value']: row for row in detail['rows']}
+    assert rows['??']['match_status'] == 'unmatched'
+    assert rows['??']['matched_conversation_name'] is None
+    assert rows['小满']['match_status'] == 'matched'
+    assert rows['小满']['matched_conversation_name'] == '小满'
+
+
+async def test_create_group_rule_rejects_placeholder_and_unknown_target_group(service_fixture):
+    service, persistence_mgr = service_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        await conn.execute(
+            sqlalchemy.insert(persistence_broadcast.BroadcastGroupName).values(
+                {
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'name': '小满',
+                    'external_conversation_id': 'group-1',
+                }
+            )
+        )
+
+    with pytest.raises(BroadcastError) as placeholder_error:
+        await service.create_group_rule(
+            _scope(),
+            {
+                'source_value': '??',
+                'match_type': 'exact',
+                'match_expression': '??',
+                'target_conversation_name': '??',
+                'priority': 1,
+                'enabled': True,
+            },
+        )
+    assert placeholder_error.value.code == BROADCAST_GROUP_RULE_REGEX_INVALID
+
+    with pytest.raises(BroadcastError) as unknown_target_error:
+        await service.create_group_rule(
+            _scope(),
+            {
+                'source_value': '小满',
+                'match_type': 'exact',
+                'match_expression': '小满',
+                'target_conversation_name': '不存在的群',
+                'priority': 1,
+                'enabled': True,
+            },
+        )
+    assert unknown_target_error.value.code == BROADCAST_GROUP_RULE_REGEX_INVALID
+
+
 async def test_validate_scope_rejects_connector_mismatch(service_fixture):
     service, _ = service_fixture
 
@@ -533,6 +802,128 @@ async def test_template_crud_extracts_variables_and_rejects_duplicate_names(serv
 
     await service.delete_template(created['id'], _scope())
     assert await service.list_templates(_scope()) == []
+
+
+async def test_upload_import_keeps_existing_batches_when_new_upload_validation_fails(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户',
+            'mapping_rules': [
+                {
+                    'source_field': '客户',
+                    'variable_key': '客户',
+                    'merge_mode': 'first',
+                    'order': 1,
+                },
+                {
+                    'source_field': '运单号',
+                    'variable_key': '运单号',
+                    'merge_mode': 'first',
+                    'order': 2,
+                },
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': '小满',
+            'match_type': 'exact',
+            'match_expression': '小满',
+            'target_conversation_name': '小满',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'ok.csv',
+            'body': '客户,运单号\n小满,TEST-20260704-001\n'.encode('utf-8'),
+        },
+    )
+    before_batches = await service.list_import_batches(_scope())
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.upload_import(
+            _scope(),
+            {
+                'filename': 'bad.csv',
+                'body': '客户\n小满\n'.encode('utf-8'),
+            },
+        )
+
+    assert exc_info.value.code == 'BROADCAST_IMPORT_FIELDS_MISSING'
+    after_batches = await service.list_import_batches(_scope())
+    assert [item['id'] for item in after_batches] == [item['id'] for item in before_batches]
+    detail = await service.get_import_detail(created['id'], _scope(), {})
+    assert detail['rows'][0]['raw_data']['运单号'] == 'TEST-20260704-001'
+
+
+async def test_generate_import_drafts_renders_chinese_variable_values(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户',
+            'mapping_rules': [
+                {
+                    'source_field': '客户',
+                    'variable_key': '客户',
+                    'merge_mode': 'first',
+                    'order': 1,
+                },
+                {
+                    'source_field': '运单号',
+                    'variable_key': '运单号',
+                    'merge_mode': 'first',
+                    'order': 2,
+                },
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': '小满',
+            'match_type': 'exact',
+            'match_expression': '小满',
+            'target_conversation_name': '小满',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '\ufeff 客户 , 运单号 \n 小满 , TEST-20260704-001 \n'.encode('utf-8'),
+        },
+    )
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': '查验通知',
+            'content': '查验通知：\n\n涉及单号如下：\n{{运单号}}',
+            'enabled': True,
+        },
+    )
+
+    result = await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {'template_id': template['id']},
+    )
+
+    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
+    assert result['total_group_count'] == 1
+    assert drafts[0]['draft_text'] == '查验通知：\n\n涉及单号如下：\nTEST-20260704-001'
+    assert drafts[0]['render_variables']['运单号'] == 'TEST-20260704-001'
 
 
 async def test_group_rule_crud_match_and_scope_isolation(service_fixture):
@@ -1209,6 +1600,7 @@ async def test_start_execution_task_creates_attempt_and_evidence_and_updates_bat
     evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
     assert evidence['action'] == 'paste_draft'
     assert evidence['draft_written'] is True
+    assert evidence['technical_details']
     assert evidence['send_triggered'] is False
     assert evidence['clipboard_restored'] is True
 
@@ -1433,6 +1825,121 @@ async def test_start_execution_task_treats_send_triggered_as_security_failure(
     assert evidence['send_triggered'] is True
 
 
+async def test_start_execution_task_does_not_mark_succeeded_when_content_verification_fails(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def create_unverified_task(*, request):
+        runtime_client.requests.append(request)
+        return {
+            'id': 'runtime-unverified',
+            'status': 'succeeded',
+            'stage': 'pasted_to_input',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+                'contentVerified': False,
+                'verificationFailed': True,
+                'draftWritten': False,
+                'inputLocated': True,
+            },
+        }
+
+    runtime_client.create_task = create_unverified_task
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+
+    assert started['status'] == 'interrupted'
+    assert started['error_code'] == 'PASTE_VERIFICATION_FAILED'
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+    assert evidence['draft_written'] is False
+    technical_details = json.loads(evidence['technical_details'])
+    assert technical_details['content_verified'] is False
+
+
+async def test_start_execution_task_persists_mismatch_diagnostics_and_error_code(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def create_mismatch_task(*, request):
+        runtime_client.requests.append(request)
+        return {
+            'id': 'runtime-mismatch',
+            'status': 'interrupted',
+            'stage': 'paste_content_mismatch',
+            'errorCode': 'PASTE_CONTENT_MISMATCH',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+                'contentVerified': False,
+                'verificationFailed': True,
+                'draftWritten': True,
+                'inputLocated': True,
+                'clipboardRoundtripVerified': True,
+                'verificationMethod': 'uia_value_pattern',
+                'verificationErrorCode': 'PASTE_CONTENT_MISMATCH',
+                'expectedTextLength': 12,
+                'actualTextLength': 11,
+                'expectedDigest': 'digest-expected',
+                'actualDigest': 'digest-actual',
+                'expectedLineCount': 4,
+                'actualLineCount': 3,
+            },
+        }
+
+    runtime_client.create_task = create_mismatch_task
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+
+    assert started['status'] == 'interrupted'
+    assert started['error_code'] == 'PASTE_CONTENT_MISMATCH'
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+    assert evidence['draft_written'] is True
+    assert evidence['input_located'] is True
+    technical_details = json.loads(evidence['technical_details'])
+    assert technical_details['verification_method'] == 'uia_value_pattern'
+    assert technical_details['verification_error_code'] == 'PASTE_CONTENT_MISMATCH'
+    assert technical_details['clipboard_roundtrip_verified'] is True
+    assert technical_details['expected_text_length'] == 12
+    assert technical_details['actual_text_length'] == 11
+
+
 async def test_concurrent_start_execution_task_creates_one_attempt_and_one_runtime_call(
     service_fixture,
     monkeypatch,
@@ -1466,6 +1973,9 @@ async def test_concurrent_start_execution_task_creates_one_attempt_and_one_runti
             'result': {
                 'messageSent': False,
                 'clipboardRestoreFailed': False,
+                'contentVerified': True,
+                'draftWritten': True,
+                'inputLocated': True,
             },
         }
 
@@ -1619,6 +2129,9 @@ async def test_start_execution_task_redacts_sensitive_response_summary_and_evide
             'result': {
                 'messageSent': False,
                 'clipboardRestoreFailed': False,
+                'contentVerified': True,
+                'draftWritten': True,
+                'inputLocated': True,
             },
             'technical_details': {
                 'Authorization': 'Bearer secret-token',
@@ -1655,6 +2168,8 @@ async def test_start_execution_task_redacts_sensitive_response_summary_and_evide
                 'action': 'paste_draft',
                 'input_located': True,
                 'draft_written': True,
+                'content_verified': True,
+                'verification_failed': False,
                 'send_triggered': False,
                 'clipboard_restored': True,
                 'runtime_state': 'pasted_to_input',
@@ -1716,6 +2231,9 @@ async def test_start_execution_task_rejects_duplicate_runtime_task_id_across_bat
             'result': {
                 'messageSent': False,
                 'clipboardRestoreFailed': False,
+                'contentVerified': True,
+                'draftWritten': True,
+                'inputLocated': True,
             },
         }
 
@@ -1752,3 +2270,47 @@ async def test_start_execution_task_rejects_duplicate_runtime_task_id_across_bat
     assert len(second_attempts) == 1
     assert second_attempts[0]['status'] == 'failed'
     assert second_attempts[0]['error_code'] == 'BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT'
+
+
+async def test_get_executor_health_uses_public_runtime_interface_when_runtime_client_is_none(service_fixture):
+    service, _ = service_fixture
+    deferred_runtime = _DeferredRuntimeDesktopAutomationService()
+    service.ap.desktop_automation_service = deferred_runtime
+
+    health = await service.get_executor_health(_scope())
+
+    assert health['status'] == 'ready'
+    assert health['protocol_version'] == '1'
+    assert health['runtime_version'] == '0.1.0'
+    assert health['runtime_status']['supportsPaste'] is True
+    assert deferred_runtime.ensure_client_calls >= 2
+    assert deferred_runtime.health_calls == 1
+    assert deferred_runtime.capability_calls == 1
+
+
+async def test_start_execution_task_uses_public_runtime_interface_when_runtime_client_is_none(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+    deferred_runtime = _DeferredRuntimeDesktopAutomationService()
+    service.ap.desktop_automation_service = deferred_runtime
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+
+    assert started['status'] == 'succeeded'
+    assert len(deferred_runtime.create_task_calls) == 1
+    assert deferred_runtime.create_task_calls[0]['action'] == 'paste_draft'

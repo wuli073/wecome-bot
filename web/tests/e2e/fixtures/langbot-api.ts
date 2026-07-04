@@ -126,6 +126,7 @@ interface BroadcastGroupNameMock {
   bot_uuid: string;
   connector_id: string;
   name: string;
+  external_conversation_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1257,6 +1258,7 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         bot_uuid,
         connector_id,
         name,
+        external_conversation_id: null,
         created_at: now(),
         updated_at: now(),
       }));
@@ -1562,6 +1564,17 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         tasks,
       });
     }
+  }
+
+  if (path === '/api/v1/broadcast/group-names/sync' && method === 'POST') {
+    return fulfillJson(route, {
+      scanned: 1,
+      inserted: 1,
+      updated: 0,
+      unchanged: 0,
+      skipped: 0,
+      errors: [],
+    });
   }
 
   const executionDetailMatch = path.match(/^\/api\/v1\/broadcast\/executions\/(\d+)$/);

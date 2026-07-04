@@ -8,6 +8,10 @@ import {
 } from '@tanstack/react-table';
 
 import {
+  Alert,
+  AlertDescription,
+} from '@/components/ui/alert';
+import {
   Card,
   CardContent,
   CardDescription,
@@ -40,6 +44,7 @@ import type {
   BroadcastImportPreviewRow,
   BroadcastMessageTemplate,
 } from '../../types';
+import { markBroadcastRender } from '../../diagnostics';
 
 interface ImportMatchingPanelProps {
   batches: BroadcastImportBatch[];
@@ -48,6 +53,7 @@ interface ImportMatchingPanelProps {
   templates: BroadcastMessageTemplate[];
   loading?: boolean;
   busy?: boolean;
+  error?: string | null;
   onUpload: (file: File) => Promise<void>;
   onSelectBatch: (batchId: number) => Promise<void>;
   onDeleteBatch: (batchId: number) => Promise<void>;
@@ -68,12 +74,14 @@ export default function ImportMatchingPanel({
   templates,
   loading = false,
   busy = false,
+  error = null,
   onUpload,
   onSelectBatch,
   onDeleteBatch,
   onRematch,
   onGenerateDrafts,
 }: ImportMatchingPanelProps) {
+  markBroadcastRender('ImportMatchingPanel');
   const { t } = useTranslation();
   const uploadRef = useRef<HTMLInputElement | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
@@ -131,6 +139,11 @@ export default function ImportMatchingPanel({
           <CardDescription>{t('broadcast.import.description')}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {error ? (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : null}
           <input
             ref={uploadRef}
             data-testid="broadcast-import-upload-input"
@@ -142,10 +155,13 @@ export default function ImportMatchingPanel({
               if (!file) {
                 return;
               }
-              await onUpload(file);
               const input = event.target;
-              if (input) {
-                input.value = '';
+              try {
+                await onUpload(file);
+              } finally {
+                if (input) {
+                  input.value = '';
+                }
               }
             }}
           />

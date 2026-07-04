@@ -47,6 +47,7 @@ interface GroupMatchingPanelProps {
   onDeleteRule: (ruleId: number) => Promise<void>;
   onMatchRule: (sourceValue: string) => Promise<BroadcastGroupMatchResult>;
   onCreateGroupNames: (names: string[]) => Promise<void>;
+  onSyncGroupNames: () => Promise<void>;
   onDeleteGroupName: (groupNameId: number) => Promise<void>;
 }
 
@@ -85,6 +86,7 @@ export default function GroupMatchingPanel({
   onDeleteRule,
   onMatchRule,
   onCreateGroupNames,
+  onSyncGroupNames,
   onDeleteGroupName,
 }: GroupMatchingPanelProps) {
   const { t } = useTranslation();
@@ -159,6 +161,11 @@ export default function GroupMatchingPanel({
               <div className="mt-1 text-xs text-muted-foreground">
                 {rule.targetConversationName}
               </div>
+              {rule.invalidLegacy ? (
+                <div className="mt-1 text-xs text-amber-600">
+                  {rule.invalidReason || '无效历史规则，不参与匹配。'}
+                </div>
+              ) : null}
             </button>
           ))}
         </CardContent>
@@ -405,6 +412,14 @@ export default function GroupMatchingPanel({
                   }}
                 >
                   {t('broadcast.actions.addGroupNames')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={saving}
+                  onClick={() => void onSyncGroupNames()}
+                >
+                  {t('broadcast.actions.refreshGroupNames')}
                 </Button>
               </div>
             </div>

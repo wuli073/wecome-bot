@@ -18,6 +18,12 @@ import {
   applyRulesDataToSnapshot,
   createBroadcastDataSource,
 } from '../datasources/BroadcastDataSource';
+import {
+  BROADCAST_DIAGNOSTICS_VERSION,
+  getBroadcastDiagnostics,
+  markBroadcastRender,
+} from '../diagnostics';
+import { buildVariableMappings } from '../utils';
 import type {
   BroadcastDraft,
   BroadcastExecutionBatchSummary,
@@ -51,11 +57,11 @@ function getErrorMessage(error: unknown, fallback: string): string {
     typeof (error as { data?: unknown }).data === 'object'
   ) {
     const details = (error as { data: { details?: unknown; message?: unknown } }).data;
-    if (Array.isArray(details.details) && details.details.length > 0) {
-      return String(details.details[0]);
-    }
     if (typeof details.message === 'string' && details.message.trim()) {
       return details.message;
+    }
+    if (Array.isArray(details.details) && details.details.length > 0) {
+      return String(details.details[0]);
     }
   }
   if (error && typeof error === 'object' && 'msg' in error) {
@@ -82,7 +88,29 @@ function isBroadcastDatabaseBot(bot: Bot): boolean {
   return Boolean(getConnectorId(bot.adapter_config));
 }
 
+function toImportBatchSummary(
+  detail: BroadcastImportDetail,
+): BroadcastImportBatch {
+  return {
+    id: detail.id,
+    originalFileName: detail.originalFileName,
+    fileType: detail.fileType,
+    worksheetName: detail.worksheetName,
+    status: detail.status,
+    draftsStale: detail.draftsStale,
+    totalRows: detail.totalRows,
+    validRows: detail.validRows,
+    invalidRows: detail.invalidRows,
+    matchedRows: detail.matchedRows,
+    unmatchedRows: detail.unmatchedRows,
+    createdAt: detail.createdAt,
+    updatedAt: detail.updatedAt,
+  };
+}
+
 export default function BroadcastWorkspace() {
+  markBroadcastRender('BroadcastWorkspace');
+  const diagnostics = getBroadcastDiagnostics();
   const { t } = useTranslation();
   const dataSource = useMemo(() => createBroadcastDataSource(), []);
   const initialSnapshot = useMemo(() => dataSource.loadSnapshot(), [dataSource]);
@@ -109,6 +137,7 @@ export default function BroadcastWorkspace() {
   const [selectedImportId, setSelectedImportId] = useState<number | null>(null);
   const [selectedImportDetail, setSelectedImportDetail] =
     useState<BroadcastImportDetail | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [draftBusy, setDraftBusy] = useState(false);
   const [sendBusy, setSendBusy] = useState(false);
@@ -230,6 +259,14 @@ export default function BroadcastWorkspace() {
     }
   }, [selectedDraftId, snapshot.drafts]);
 
+  useEffect(() => {
+    diagnostics?.recordSelectedImportIdChange(selectedImportId);
+  }, [diagnostics, selectedImportId]);
+
+  useEffect(() => {
+    diagnostics?.recordImportBusyChange(importBusy);
+  }, [diagnostics, importBusy]);
+
   const refreshExecutorState = async (nextScope: BroadcastScope = scope) => {
     try {
       const [capability, health] = await Promise.all([
@@ -247,53 +284,115 @@ export default function BroadcastWorkspace() {
   const refreshRules = async (nextScope: BroadcastScope = scope) => {
     const rulesData = await dataSource.loadRulesData(nextScope);
     setScope(nextScope);
-    setSnapshot((current) => applyRulesDataToSnapshot(current, rulesData));
+    setSnapshot((current) =>
+      applyRulesDataToSnapshot(current, rulesData, selectedImportDetail),
+    );
   };
 
-  const refreshImports = async (nextScope: BroadcastScope = scope) => {
-    const batches = await dataSource.listImportBatches(nextScope);
-    setImportBatches(batches);
+  const refreshImports = async (
+    nextScope: BroadcastScope = scope,
+    preferredImportId?: number | null,
+  ) => {
+    const execute = async () => {
+      const batches = await dataSource.listImportBatches(nextScope);
+      setImportBatches(batches);
 
-    const nextImportId =
-      selectedImportId && batches.some((item) => item.id === selectedImportId)
-        ? selectedImportId
-        : batches[0]?.id ?? null;
-    setSelectedImportId(nextImportId);
+      const nextImportId =
+        preferredImportId != null && batches.some((item) => item.id === preferredImportId)
+          ? preferredImportId
+          : selectedImportId && batches.some((item) => item.id === selectedImportId)
+            ? selectedImportId
+            : batches[0]?.id ?? null;
+      setSelectedImportId(nextImportId);
 
-    if (nextImportId) {
-      const detail = await dataSource.getImportDetail(nextScope, nextImportId);
-      setSelectedImportDetail(detail);
-    } else {
-      setSelectedImportDetail(null);
+      if (nextImportId) {
+        const detail = await dataSource.getImportDetail(nextScope, nextImportId);
+        setSelectedImportDetail(detail);
+        setImportError(null);
+        setSnapshot((current) => ({
+          ...current,
+          variableMappings: buildVariableMappings(
+            current.variableProfile,
+            current.templates,
+            detail,
+          ),
+        }));
+      } else {
+        setSelectedImportDetail(null);
+        setImportError(null);
+        setSnapshot((current) => ({
+          ...current,
+          variableMappings: buildVariableMappings(
+            current.variableProfile,
+            current.templates,
+            null,
+          ),
+        }));
+      }
+    };
+
+    if (!diagnostics) {
+      await execute();
+      return;
     }
+
+    await diagnostics.measure('refreshImports', execute, {
+      timingBucket: 'refreshImports',
+      stack: new Error().stack,
+      meta: {
+        preferredImportId,
+        selectedImportId,
+        botUuid: nextScope.botUuid,
+        connectorId: nextScope.connectorId,
+      },
+    });
   };
 
   const refreshDrafts = async (
     nextScope: BroadcastScope = scope,
     focusImportBatchId?: number | null,
   ) => {
-    const drafts = await dataSource.listDrafts(nextScope, {
-      status: statusFilter === 'all' ? 'all' : statusFilter,
-      keyword: searchTerm || undefined,
-    });
-    setSnapshot((current) => ({
-      ...current,
-      drafts,
-    }));
+    const execute = async () => {
+      const drafts = await dataSource.listDrafts(nextScope, {
+        status: statusFilter === 'all' ? 'all' : statusFilter,
+        keyword: searchTerm || undefined,
+      });
+      setSnapshot((current) => ({
+        ...current,
+        drafts,
+      }));
 
-    if (focusImportBatchId !== undefined) {
-      setDraftImportBatchId(focusImportBatchId);
-      setSelectedDraftId(
-        drafts.find((draft) => draft.importBatchId === focusImportBatchId)?.id ??
-          drafts[0]?.id ??
-          null,
+      if (focusImportBatchId !== undefined) {
+        setDraftImportBatchId(focusImportBatchId);
+        setSelectedDraftId(
+          drafts.find((draft) => draft.importBatchId === focusImportBatchId)?.id ??
+            drafts[0]?.id ??
+            null,
+        );
+        return;
+      }
+
+      setSelectedDraftId((current) =>
+        drafts.some((draft) => draft.id === current) ? current : drafts[0]?.id ?? null,
       );
+    };
+
+    if (!diagnostics) {
+      await execute();
       return;
     }
 
-    setSelectedDraftId((current) =>
-      drafts.some((draft) => draft.id === current) ? current : drafts[0]?.id ?? null,
-    );
+    await diagnostics.measure('refreshDrafts', execute, {
+      timingBucket: 'refreshDrafts',
+      stack: new Error().stack,
+      meta: {
+        focusImportBatchId,
+        statusFilter,
+        searchTerm,
+        botUuid: nextScope.botUuid,
+        connectorId: nextScope.connectorId,
+      },
+    });
   };
 
   const refreshExecutionState = async (nextScope: BroadcastScope = scope) => {
@@ -338,7 +437,6 @@ export default function BroadcastWorkspace() {
           return;
         }
         setScope(resolvedScope);
-        setSnapshot((current) => applyRulesDataToSnapshot(current, rulesData));
         const batches = await dataSource.listImportBatches(resolvedScope);
         if (cancelled) {
           return;
@@ -355,18 +453,30 @@ export default function BroadcastWorkspace() {
           const drafts = await dataSource.listDrafts(resolvedScope);
           if (!cancelled) {
             setDraftImportBatchId(nextImportId);
-            setSnapshot((current) => ({
-              ...current,
-              drafts,
-            }));
+            setSnapshot((current) =>
+              applyRulesDataToSnapshot(
+                {
+                  ...current,
+                  drafts,
+                },
+                rulesData,
+                detail,
+              ),
+            );
           }
         } else {
           setSelectedImportDetail(null);
           setDraftImportBatchId(null);
-          setSnapshot((current) => ({
-            ...current,
-            drafts: [],
-          }));
+          setSnapshot((current) =>
+            applyRulesDataToSnapshot(
+              {
+                ...current,
+                drafts: [],
+              },
+              rulesData,
+              null,
+            ),
+          );
         }
 
         if (!cancelled) {
@@ -723,7 +833,12 @@ export default function BroadcastWorkspace() {
   };
 
   return (
-    <div className="flex min-h-full flex-col gap-4 pb-4">
+    <div
+      className="flex min-h-full flex-col gap-4 pb-4"
+      data-broadcast-diagnostics={
+        import.meta.env.DEV ? BROADCAST_DIAGNOSTICS_VERSION : undefined
+      }
+    >
       <BroadcastHeader
         snapshot={snapshot}
         scope={scope}
@@ -750,6 +865,7 @@ export default function BroadcastWorkspace() {
               <VariableMappingPanel
                 variableProfile={snapshot.variableProfile}
                 templates={snapshot.templates}
+                importDetail={selectedImportDetail}
                 loading={rulesLoading}
                 saving={rulesSaving}
                 error={rulesError}
@@ -860,6 +976,22 @@ export default function BroadcastWorkspace() {
                     t('broadcast.toasts.groupNamesSaved'),
                   )
                 }
+                onSyncGroupNames={() =>
+                  runRulesMutation(
+                    async () => {
+                      const result = await dataSource.syncGroupNames(scope);
+                      toast.success(
+                        t('broadcast.toasts.groupNamesSynced', {
+                          scanned: result.scanned,
+                          inserted: result.inserted,
+                          updated: result.updated,
+                          unchanged: result.unchanged,
+                        }),
+                      );
+                    },
+                    t('broadcast.toasts.groupNamesSaved'),
+                  )
+                }
                 onDeleteGroupName={(groupNameId) =>
                   runRulesMutation(
                     async () => {
@@ -881,64 +1013,107 @@ export default function BroadcastWorkspace() {
             templates={snapshot.templates}
             loading={rulesLoading}
             busy={importBusy}
+            error={importError}
             onUpload={async (file) => {
               setImportBusy(true);
+              setImportError(null);
               try {
                 const detail = await dataSource.uploadImport(scope, file);
-                await refreshImports();
-                await refreshDrafts(scope, detail.id);
+                setImportBatches((current) => {
+                  const nextBatch = toImportBatchSummary(detail);
+                  return [
+                    nextBatch,
+                    ...current.filter((batch) => batch.id !== nextBatch.id),
+                  ];
+                });
                 setSelectedImportId(detail.id);
                 setSelectedImportDetail(detail);
+                setSnapshot((current) => ({
+                  ...current,
+                  variableMappings: buildVariableMappings(
+                    current.variableProfile,
+                    current.templates,
+                    detail,
+                  ),
+                }));
                 toast.success(
                   t('broadcast.toasts.importUploaded', {
                     fileName: detail.originalFileName,
                   }),
                 );
               } catch (error) {
-                toast.error(getErrorMessage(error, t('common.error')));
+                const message = getErrorMessage(error, t('common.error'));
+                setImportError(message);
+                toast.error(message);
               } finally {
                 setImportBusy(false);
               }
             }}
             onSelectBatch={async (batchId) => {
               setSelectedImportId(batchId);
+              setImportError(null);
               try {
                 const detail = await dataSource.getImportDetail(scope, batchId);
                 setSelectedImportDetail(detail);
+                setSnapshot((current) => ({
+                  ...current,
+                  variableMappings: buildVariableMappings(
+                    current.variableProfile,
+                    current.templates,
+                    detail,
+                  ),
+                }));
                 await refreshDrafts(scope, batchId);
               } catch (error) {
-                toast.error(getErrorMessage(error, t('common.error')));
+                const message = getErrorMessage(error, t('common.error'));
+                setImportError(message);
+                toast.error(message);
               }
             }}
             onDeleteBatch={async (batchId) => {
               setImportBusy(true);
+              setImportError(null);
               try {
                 await dataSource.deleteImport(scope, batchId);
                 await refreshImports();
                 await refreshDrafts();
                 toast.success(t('broadcast.toasts.importDeleted'));
               } catch (error) {
-                toast.error(getErrorMessage(error, t('common.error')));
+                const message = getErrorMessage(error, t('common.error'));
+                setImportError(message);
+                toast.error(message);
               } finally {
                 setImportBusy(false);
               }
             }}
             onRematch={async (batchId) => {
               setImportBusy(true);
+              setImportError(null);
               try {
                 const detail = await dataSource.rematchImport(scope, batchId);
-                await refreshImports();
+                await refreshImports(scope, batchId);
                 await refreshDrafts(scope, batchId);
                 setSelectedImportDetail(detail);
+                setSnapshot((current) => ({
+                  ...current,
+                  variableMappings: buildVariableMappings(
+                    current.variableProfile,
+                    current.templates,
+                    detail,
+                  ),
+                }));
                 toast.success(t('broadcast.toasts.importRematched'));
               } catch (error) {
-                toast.error(getErrorMessage(error, t('common.error')));
+                const message = getErrorMessage(error, t('common.error'));
+                setImportError(message);
+                toast.error(message);
               } finally {
                 setImportBusy(false);
               }
             }}
             onGenerateDrafts={async (batchId, templateId) => {
               setImportBusy(true);
+              setImportError(null);
               try {
                 const result = await dataSource.generateImportDrafts(
                   scope,
@@ -953,7 +1128,9 @@ export default function BroadcastWorkspace() {
                   }),
                 );
               } catch (error) {
-                toast.error(getErrorMessage(error, t('common.error')));
+                const message = getErrorMessage(error, t('common.error'));
+                setImportError(message);
+                toast.error(message);
               } finally {
                 setImportBusy(false);
               }

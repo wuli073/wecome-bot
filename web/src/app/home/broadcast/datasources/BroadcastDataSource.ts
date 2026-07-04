@@ -7,6 +7,7 @@ import type {
   ApiBroadcastExecutionTask,
   ApiBroadcastGroupMatchResult,
   ApiBroadcastGroupName,
+  ApiBroadcastGroupNameSyncResult,
   ApiBroadcastGroupRule,
   ApiBroadcastImportBatch,
   ApiBroadcastImportDetail,
@@ -38,6 +39,7 @@ import type {
   BroadcastDraftStatusUpdateResult,
   BroadcastGroupMatchResult,
   BroadcastGroupName,
+  BroadcastGroupNameSyncResult,
   BroadcastGroupRule,
   BroadcastGroupRuleDraft,
   BroadcastImportBatch,
@@ -125,6 +127,8 @@ function fromApiGroupRule(rule: ApiBroadcastGroupRule): BroadcastGroupRule {
     targetConversationName: rule.target_conversation_name,
     priority: rule.priority,
     enabled: rule.enabled,
+    invalidLegacy: rule.invalid_legacy ?? false,
+    invalidReason: rule.invalid_reason ?? null,
     updatedAt: rule.updated_at,
   };
 }
@@ -155,6 +159,7 @@ function fromApiGroupName(groupName: ApiBroadcastGroupName): BroadcastGroupName 
   return {
     id: groupName.id,
     name: groupName.name,
+    externalConversationId: groupName.external_conversation_id ?? null,
     updatedAt: groupName.updated_at,
   };
 }
@@ -400,6 +405,9 @@ export interface BroadcastDataSource {
     scope: BroadcastScope,
     names: string[],
   ) => Promise<BroadcastGroupName[]>;
+  syncGroupNames: (
+    scope: BroadcastScope,
+  ) => Promise<BroadcastGroupNameSyncResult>;
   deleteGroupName: (
     scope: BroadcastScope,
     groupNameId: number,
@@ -633,6 +641,8 @@ export function createBroadcastDataSource(): BroadcastDataSource {
       );
       return response.group_names.map(fromApiGroupName);
     },
+    syncGroupNames: async (scope) =>
+      await backendClient.syncBroadcastGroupNames(toApiScope(scope)),
     deleteGroupName: async (scope, groupNameId) => {
       await backendClient.deleteBroadcastGroupName(
         toApiScope(scope),
@@ -857,10 +867,16 @@ export const broadcastPasteOnlyAdapter: BroadcastPasteOnlyAdapter = {
 export function applyRulesDataToSnapshot(
   snapshot: BroadcastWorkspaceSnapshot,
   rulesData: BroadcastRulesData,
+  importDetail?: BroadcastImportDetail | null,
 ): BroadcastWorkspaceSnapshot {
   const seedDraft = snapshot.drafts[0];
   const template = rulesData.templates[0];
-  const variableMap = buildTemplatePreviewVariables(rulesData.variableMappings);
+  const variableMappings = buildVariableMappings(
+    rulesData.variableProfile,
+    rulesData.templates,
+    importDetail,
+  );
+  const variableMap = buildTemplatePreviewVariables(variableMappings);
 
   const hydratedDrafts = snapshot.drafts.map((draft) => ({
     ...draft,
@@ -881,7 +897,7 @@ export function applyRulesDataToSnapshot(
     scope: rulesData.scope,
     templates: rulesData.templates,
     variableProfile: rulesData.variableProfile,
-    variableMappings: rulesData.variableMappings,
+    variableMappings,
     groupRules: rulesData.groupRules,
     groupNames: rulesData.groupNames,
     drafts: hydratedDrafts,

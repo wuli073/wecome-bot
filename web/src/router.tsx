@@ -7,24 +7,25 @@ import ResetPasswordLayout from '@/app/reset-password/layout';
 import HomeLayout from '@/app/home/layout';
 
 // Pages
-import RegisterPage from '@/app/register/page';
-import ResetPasswordPage from '@/app/reset-password/page';
-import WizardPage from '@/app/wizard/page';
-import SpaceCallbackPage from '@/app/auth/space/callback/page';
-import MonitoringPage from '@/app/home/monitoring/page';
-import BotsPage from '@/app/home/bots/page';
-import PipelinesPage from '@/app/home/pipelines/page';
-import PluginsPage from '@/app/home/plugins/page';
-import AddExtensionPage from '@/app/home/add-extension/page';
-import MCPPage from '@/app/home/mcp/page';
-import KnowledgePage from '@/app/home/knowledge/page';
-import SkillsPage from '@/app/home/skills/page';
-import BroadcastPage from '@/app/home/broadcast/page';
-import DatabaseModeRedirect from '@/app/home/database-mode/redirect';
 import ErrorPage from '@/components/ErrorPage';
 import BackendUnavailablePage from '@/components/BackendUnavailablePage';
-import PluginPagesPage from '@/app/home/plugin-pages/page';
 import RootLayout from '@/app/RootLayout';
+
+const RegisterPage = React.lazy(() => import('@/app/register/page'));
+const ResetPasswordPage = React.lazy(() => import('@/app/reset-password/page'));
+const WizardPage = React.lazy(() => import('@/app/wizard/page'));
+const SpaceCallbackPage = React.lazy(() => import('@/app/auth/space/callback/page'));
+const MonitoringPage = React.lazy(() => import('@/app/home/monitoring/page'));
+const BotsPage = React.lazy(() => import('@/app/home/bots/page'));
+const PipelinesPage = React.lazy(() => import('@/app/home/pipelines/page'));
+const PluginsPage = React.lazy(() => import('@/app/home/plugins/page'));
+const AddExtensionPage = React.lazy(() => import('@/app/home/add-extension/page'));
+const MCPPage = React.lazy(() => import('@/app/home/mcp/page'));
+const KnowledgePage = React.lazy(() => import('@/app/home/knowledge/page'));
+const SkillsPage = React.lazy(() => import('@/app/home/skills/page'));
+const BroadcastPage = React.lazy(() => import('@/app/home/broadcast/page'));
+const DatabaseModeRedirect = React.lazy(() => import('@/app/home/database-mode/redirect'));
+const PluginPagesPage = React.lazy(() => import('@/app/home/plugin-pages/page'));
 
 const Loading = () => <div>Loading...</div>;
 

@@ -64,6 +64,7 @@ import {
   ApiBroadcastGroupMatchResult,
   ApiBroadcastGroupName,
   ApiBroadcastGroupNamesResponse,
+  ApiBroadcastGroupNameSyncResult,
   ApiBroadcastGroupRule,
   ApiBroadcastDraft,
   ApiBroadcastDraftStatus,
@@ -2099,6 +2100,18 @@ export class BackendClient extends BaseHttpClient {
     });
   }
 
+  public syncBroadcastGroupNames(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastGroupNameSyncResult> {
+    return this.requestBroadcast<ApiBroadcastGroupNameSyncResult>({
+      method: 'post',
+      url: `/api/v1/broadcast/group-names/sync?${this.toSearchParams({
+        bot_uuid: scope.bot_uuid,
+        connector_id: scope.connector_id,
+      })}`,
+    });
+  }
+
   public deleteBroadcastGroupName(
     scope: ApiBroadcastScope,
     groupNameId: number,
@@ -2124,9 +2137,6 @@ export class BackendClient extends BaseHttpClient {
       method: 'post',
       url: '/api/v1/broadcast/imports',
       data: formData,
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
     });
   }
 

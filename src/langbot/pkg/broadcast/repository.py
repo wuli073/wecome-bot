@@ -6,6 +6,7 @@ from typing import Any
 import sqlalchemy
 
 from ..entity.persistence import broadcast as persistence_broadcast
+from ..entity.persistence import database_mode as persistence_database_mode
 
 
 class BroadcastRepository:
@@ -322,12 +323,93 @@ class BroadcastRepository:
         )
         return self._all_models(result)
 
+    async def get_group_name_by_external_conversation_id(
+        self,
+        *,
+        bot_uuid: str,
+        connector_id: str,
+        external_conversation_id: str,
+        conn=None,
+    ):
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_broadcast.BroadcastGroupName).where(
+                persistence_broadcast.BroadcastGroupName.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastGroupName.connector_id == connector_id,
+                persistence_broadcast.BroadcastGroupName.external_conversation_id == external_conversation_id,
+            ),
+            conn=conn,
+        )
+        return self._first_model(result)
+
+    async def get_group_name_by_name(
+        self,
+        *,
+        bot_uuid: str,
+        connector_id: str,
+        name: str,
+        conn=None,
+    ):
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_broadcast.BroadcastGroupName).where(
+                persistence_broadcast.BroadcastGroupName.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastGroupName.connector_id == connector_id,
+                persistence_broadcast.BroadcastGroupName.name == name,
+            ),
+            conn=conn,
+        )
+        return self._first_model(result)
+
+    async def update_group_name(
+        self,
+        group_name_id: int,
+        *,
+        bot_uuid: str,
+        connector_id: str,
+        updates: dict[str, Any],
+        conn=None,
+    ):
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastGroupName)
+            .where(
+                persistence_broadcast.BroadcastGroupName.id == group_name_id,
+                persistence_broadcast.BroadcastGroupName.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastGroupName.connector_id == connector_id,
+            )
+            .values(updates),
+            conn=conn,
+        )
+        if not result.rowcount:
+            return None
+        follow_up = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_broadcast.BroadcastGroupName).where(
+                persistence_broadcast.BroadcastGroupName.id == group_name_id,
+                persistence_broadcast.BroadcastGroupName.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastGroupName.connector_id == connector_id,
+            ),
+            conn=conn,
+        )
+        return self._first_model(follow_up)
+
     async def create_group_name(self, conn, payload: dict[str, Any]) -> int:
         result = await self.persistence_mgr.execute_async(
             sqlalchemy.insert(persistence_broadcast.BroadcastGroupName).values(payload),
             conn=conn,
         )
         return int(result.inserted_primary_key[0])
+
+    async def list_database_conversations_for_group_sync(
+        self,
+        *,
+        connector_id: str,
+        conn=None,
+    ):
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_database_mode.DatabaseConversation).where(
+                persistence_database_mode.DatabaseConversation.connector_id == connector_id,
+            ),
+            conn=conn,
+        )
+        return self._all_models(result)
 
     async def delete_group_name(self, group_name_id: int, *, bot_uuid: str, connector_id: str, conn=None) -> bool:
         result = await self.persistence_mgr.execute_async(

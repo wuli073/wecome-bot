@@ -789,6 +789,8 @@ export interface ApiBroadcastGroupRule {
   target_conversation_name: string;
   priority: number;
   enabled: boolean;
+  invalid_legacy?: boolean;
+  invalid_reason?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -805,12 +807,22 @@ export interface ApiBroadcastGroupName {
   bot_uuid: string;
   connector_id: string;
   name: string;
+  external_conversation_id?: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface ApiBroadcastGroupNamesResponse {
   group_names: ApiBroadcastGroupName[];
+}
+
+export interface ApiBroadcastGroupNameSyncResult {
+  scanned: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  errors: string[];
 }
 
 export type ApiBroadcastImportBatchStatus =

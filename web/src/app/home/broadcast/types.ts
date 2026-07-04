@@ -46,9 +46,12 @@ export interface BroadcastVariableProfile {
   mappingRules: BroadcastVariableMappingRule[];
 }
 
+export type BroadcastVariableSampleState = 'no_import' | 'no_value' | 'ready';
+
 export interface BroadcastVariableMapping extends BroadcastVariableMappingRule {
   id: number;
   sampleValue: string;
+  sampleState: BroadcastVariableSampleState;
   required: boolean;
 }
 
@@ -83,6 +86,8 @@ export interface BroadcastGroupRule {
   targetConversationName: string;
   priority: number;
   enabled: boolean;
+  invalidLegacy?: boolean;
+  invalidReason?: string | null;
   updatedAt: string;
 }
 
@@ -106,7 +111,17 @@ export interface BroadcastGroupMatchResult {
 export interface BroadcastGroupName {
   id: number;
   name: string;
+  externalConversationId?: string | null;
   updatedAt: string;
+}
+
+export interface BroadcastGroupNameSyncResult {
+  scanned: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  errors: string[];
 }
 
 export interface BroadcastImportPreviewRow {

@@ -97,12 +97,19 @@ class BroadcastGroupName(Base):
             'name',
             name='uq_broadcast_group_names_scope_name',
         ),
+        sqlalchemy.UniqueConstraint(
+            'bot_uuid',
+            'connector_id',
+            'external_conversation_id',
+            name='uq_broadcast_group_names_scope_external_id',
+        ),
     )
 
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True, autoincrement=True)
     bot_uuid = sqlalchemy.Column(sqlalchemy.String(255), nullable=False, index=True)
     connector_id = sqlalchemy.Column(sqlalchemy.String(255), nullable=False, index=True)
     name = sqlalchemy.Column(sqlalchemy.String(255), nullable=False, index=True)
+    external_conversation_id = sqlalchemy.Column(sqlalchemy.String(255), nullable=True, index=True)
     created_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False, server_default=sqlalchemy.func.now())
     updated_at = sqlalchemy.Column(
         sqlalchemy.DateTime,

@@ -24,6 +24,7 @@ import type {
   BroadcastTemplateRenderResult,
   BroadcastVariableMapping,
 } from '../../types';
+import { markBroadcastRender } from '../../diagnostics';
 
 interface TemplatePanelProps {
   scope: BroadcastScope;
@@ -69,6 +70,7 @@ export default function TemplatePanel({
   onDelete,
   onRenderPreview,
 }: TemplatePanelProps) {
+  markBroadcastRender('TemplatePanel');
   const { t } = useTranslation();
   const [activeTemplateId, setActiveTemplateId] = useState<number | 'new'>(
     templates[0]?.id ?? 'new',
@@ -88,6 +90,10 @@ export default function TemplatePanel({
         acc[mapping.variableKey] = mapping.sampleValue;
         return acc;
       }, {}),
+    [mappings],
+  );
+  const mappingsByKey = useMemo(
+    () => new Map(mappings.map((mapping) => [mapping.variableKey, mapping])),
     [mappings],
   );
 
@@ -342,25 +348,39 @@ export default function TemplatePanel({
         </CardHeader>
         <CardContent className="space-y-3">
           {(preview?.requiredVariables ?? []).map((variableKey) => (
-            <div key={variableKey} className="rounded-lg border p-3">
-              <div className="flex items-center justify-between gap-2">
-                <Badge variant="secondary">{variableKey}</Badge>
-                <Badge
-                  variant={
-                    preview?.missingVariables.includes(variableKey)
-                      ? 'destructive'
-                      : 'outline'
-                  }
-                >
-                  {preview?.missingVariables.includes(variableKey)
-                    ? t('broadcast.labels.missing')
-                    : t('broadcast.labels.ready')}
-                </Badge>
-              </div>
-              <div className="mt-2 text-xs text-muted-foreground">
-                {`{{${variableKey}}}`} → {variableValues[variableKey] || '暂无示例值'}
-              </div>
-            </div>
+            (() => {
+              const mapping = mappingsByKey.get(variableKey);
+              const badgeVariant = !mapping
+                ? 'destructive'
+                : mapping.sampleState === 'ready'
+                  ? 'outline'
+                  : 'secondary';
+              const badgeLabel = !mapping
+                ? t('broadcast.labels.missing')
+                : mapping.sampleState === 'ready'
+                  ? t('broadcast.labels.ready')
+                  : mapping.sampleState === 'no_value'
+                    ? t('broadcast.labels.noValidValue')
+                    : t('broadcast.labels.configured');
+              const sampleText = !mapping
+                ? t('broadcast.labels.noSampleValue')
+                : variableValues[variableKey] ||
+                  (mapping.sampleState === 'no_value'
+                    ? t('broadcast.labels.noValidValue')
+                    : t('broadcast.labels.noSampleValue'));
+
+              return (
+                <div key={variableKey} className="rounded-lg border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <Badge variant="secondary">{variableKey}</Badge>
+                    <Badge variant={badgeVariant}>{badgeLabel}</Badge>
+                  </div>
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    {`{{${variableKey}}}`} → {sampleText}
+                  </div>
+                </div>
+              );
+            })()
           ))}
         </CardContent>
       </Card>

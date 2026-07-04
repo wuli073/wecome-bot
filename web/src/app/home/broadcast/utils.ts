@@ -1,12 +1,15 @@
 import type {
+  BroadcastImportDetail,
   BroadcastGroupMatchType,
   BroadcastMessageTemplate,
   BroadcastMergeMode,
   BroadcastStatus,
   BroadcastVariableMapping,
+  BroadcastVariableSampleState,
   BroadcastVariableMappingRule,
   BroadcastVariableProfile,
 } from './types';
+import { getBroadcastDiagnostics } from './diagnostics';
 
 export const BROADCAST_MERGE_MODE_LABELS: Record<BroadcastMergeMode, string> = {
   first: '只取第一条',
@@ -46,6 +49,23 @@ export interface BroadcastVariableProfileValidationResult {
 
 function normalizeWhitespace(value: string | null | undefined): string {
   return String(value ?? '').trim();
+}
+
+function normalizeFieldName(value: string | null | undefined): string {
+  return normalizeWhitespace(value).replace(/^\uFEFF/, '');
+}
+
+function findRawFieldValue(
+  row: { rawData: Record<string, string> },
+  sourceField: string,
+): string {
+  const normalizedSourceField = normalizeFieldName(sourceField);
+  for (const [key, value] of Object.entries(row.rawData || {})) {
+    if (normalizeFieldName(key) === normalizedSourceField) {
+      return normalizeWhitespace(value);
+    }
+  }
+  return '';
 }
 
 export function reindexMappingRules(
@@ -151,24 +171,65 @@ export function validateAndNormalizeVariableProfile(
 export function buildVariableMappings(
   profile: BroadcastVariableProfile,
   templates: BroadcastMessageTemplate[],
+  importDetail?: BroadcastImportDetail | null,
 ): BroadcastVariableMapping[] {
-  const requiredVariables = new Set(
-    templates.flatMap((template) => template.variableKeys),
-  );
+  const diagnostics = getBroadcastDiagnostics();
+  const execute = () => {
+    const requiredVariables = new Set(
+      templates.flatMap((template) => template.variableKeys),
+    );
+    const rows = importDetail?.rows ?? [];
 
-  return profile.mappingRules
-    .slice()
-    .sort((left, right) => left.order - right.order)
-    .filter((rule) => normalizeWhitespace(rule.variableKey) !== '')
-    .map((rule, index) => ({
-      id: index + 1,
-      sourceField: rule.sourceField,
-      variableKey: rule.variableKey,
-      mergeMode: rule.mergeMode,
-      order: rule.order,
-      sampleValue: '',
-      required: requiredVariables.has(rule.variableKey),
-    }));
+    return profile.mappingRules
+      .slice()
+      .sort((left, right) => left.order - right.order)
+      .filter((rule) => normalizeWhitespace(rule.variableKey) !== '')
+      .map((rule, index) => {
+        const sampleValue = rows.reduce<string>((current, row) => {
+          if (current) {
+            return current;
+          }
+          return findRawFieldValue(row, rule.sourceField);
+        }, '');
+
+        const sampleState: BroadcastVariableSampleState =
+          rows.length === 0 ? 'no_import' : sampleValue ? 'ready' : 'no_value';
+
+        return {
+          id: index + 1,
+          sourceField: rule.sourceField,
+          variableKey: rule.variableKey,
+          mergeMode: rule.mergeMode,
+          order: rule.order,
+          sampleValue,
+          sampleState,
+          required: requiredVariables.has(rule.variableKey),
+        };
+      });
+  };
+
+  if (!diagnostics) {
+    return execute();
+  }
+
+  let result: BroadcastVariableMapping[] = [];
+  void diagnostics.measure(
+    'buildVariableMappings',
+    () => {
+      result = execute();
+      return result;
+    },
+    {
+      timingBucket: 'buildVariableMappings',
+      stack: new Error().stack,
+      meta: {
+        templateCount: templates.length,
+        rowCount: importDetail?.rows?.length ?? 0,
+        mappingRuleCount: profile.mappingRules.length,
+      },
+    },
+  );
+  return result;
 }
 
 export function buildTemplatePreviewVariables(

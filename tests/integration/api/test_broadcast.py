@@ -216,6 +216,26 @@ async def fake_broadcast_app():
                 }
             )
         )
+        await conn.execute(
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                [
+                    {
+                        'connector_id': 'wxwork-local',
+                        'source': 'wxwork',
+                        'external_conversation_id': 'direct-1',
+                        'conversation_name': '杨炳恒',
+                        'conversation_type': 'direct',
+                    },
+                    {
+                        'connector_id': 'wxwork-local',
+                        'source': 'wxwork',
+                        'external_conversation_id': 'group-1',
+                        'conversation_name': '小满',
+                        'conversation_type': 'group',
+                    },
+                ]
+            )
+        )
 
     app.bot_service = SimpleNamespace(
         get_bot=AsyncMock(
@@ -575,12 +595,45 @@ class TestBroadcastApi:
         assert duplicate_name_response.status_code == 409
         assert duplicate_name_payload['msg'] == 'BROADCAST_GROUP_NAME_DUPLICATE'
 
+        sync_names_response = await quart_test_client.post(
+            f'/api/v1/broadcast/group-names/sync?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        sync_names_payload = await sync_names_response.get_json()
+        assert sync_names_response.status_code == 200
+        assert sync_names_payload['data'] == {
+            'scanned': 1,
+            'inserted': 1,
+            'updated': 0,
+            'unchanged': 0,
+            'skipped': 1,
+            'errors': [],
+        }
+
+        synced_names_response = await quart_test_client.get(
+            f'/api/v1/broadcast/group-names?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        synced_names_payload = (await synced_names_response.get_json())['data']
+        assert [item['name'] for item in synced_names_payload] == [
+            'Acme Group',
+            'Northwind Group',
+            '小满',
+        ]
+        assert next(
+            item for item in synced_names_payload if item['name'] == '小满'
+        )['external_conversation_id'] == 'group-1'
+
         list_names_response = await quart_test_client.get(
             f'/api/v1/broadcast/group-names?{_query_scope()}',
             headers=_auth_headers(),
         )
         list_names_payload = (await list_names_response.get_json())['data']
-        assert [item['name'] for item in list_names_payload] == ['Acme Group', 'Northwind Group']
+        assert [item['name'] for item in list_names_payload] == [
+            'Acme Group',
+            'Northwind Group',
+            '小满',
+        ]
 
         delete_name_wrong_scope = await quart_test_client.delete(
             f"/api/v1/broadcast/group-names/{list_names_payload[0]['id']}?{_query_scope(bot_uuid='bot-2', connector_id='wxwork-other')}",
@@ -749,6 +802,92 @@ class TestBroadcastApi:
 
         assert response.status_code == 400
         assert payload['message'] == '导入文件缺少以下字段：订单号'
+
+    @pytest.mark.asyncio
+    async def test_import_generate_drafts_renders_chinese_variable_from_uploaded_value(self, quart_test_client):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户',
+                        'variable_key': '客户',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    },
+                    {
+                        'source_field': '运单号',
+                        'variable_key': '运单号',
+                        'merge_mode': 'first',
+                        'order': 2,
+                    },
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': '小满',
+                'match_type': 'exact',
+                'match_expression': '小满',
+                'target_conversation_name': '小满',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('\ufeff 客户 , 运单号 \n 小满 , TEST-20260704-001 \n'.encode('utf-8')),
+                    filename='customers.csv',
+                )
+            },
+        )
+        upload_payload = await upload_response.get_json()
+        assert upload_response.status_code == 200
+        import_id = upload_payload['data']['id']
+
+        template_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': '查验通知',
+                'content': '查验通知：\n\n涉及单号如下：\n{{运单号}}',
+                'enabled': True,
+            },
+        )
+        template_id = (await template_response.get_json())['data']['id']
+
+        generate_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'template_id': template_id,
+            },
+        )
+        assert generate_response.status_code == 200
+
+        drafts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+            headers=_auth_headers(),
+        )
+        drafts = (await drafts_response.get_json())['data']
+        assert drafts[0]['draft_text'] == '查验通知：\n\n涉及单号如下：\nTEST-20260704-001'
 
     @pytest.mark.asyncio
     async def test_drafts_list_edit_ready_rollback_and_invalid_confirm_forbidden(self, quart_test_client):
