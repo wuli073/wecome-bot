@@ -79,15 +79,35 @@ class WeComDraftExecutor(ConversationDraftExecutor):
         stage = str(result.get('stage') or status)
         action = str(result.get('action') or payload.get('action') or '')
         normalized_action = 'send_message' if action == 'send_message' or stage.startswith('sent') else 'paste_draft'
+        content_verified = bool(payload.get('contentVerified', False))
+        input_located = bool(payload.get('inputLocated', status in {'queued', 'running', 'succeeded', 'succeeded_with_warning'}))
+        draft_written = bool(payload.get('draftWritten', content_verified))
+        verification_failed = bool(payload.get('verificationFailed', not content_verified and normalized_action == 'paste_draft'))
         return {
             'window_title': None,
             'target_conversation': None,
             'action': normalized_action,
-            'input_located': status in {'queued', 'running', 'succeeded', 'succeeded_with_warning'},
-            'draft_written': stage in {'pasted_to_input', 'succeeded'} or status == 'succeeded',
+            'input_located': input_located,
+            'draft_written': draft_written,
+            'content_verified': content_verified,
+            'verification_failed': verification_failed,
             'send_triggered': bool(payload.get('messageSent', False)) or stage in {'sent', 'message_sent'},
             'clipboard_restored': not bool(payload.get('clipboardRestoreFailed', False)),
             'runtime_state': stage,
             'evidence_summary': stage,
-            'technical_details': None,
+            'technical_details': {
+                'stage': stage,
+                'status': status,
+                'content_verified': content_verified,
+                'verification_failed': verification_failed,
+                'verification_method': payload.get('verificationMethod'),
+                'verification_error_code': payload.get('verificationErrorCode'),
+                'clipboard_roundtrip_verified': payload.get('clipboardRoundtripVerified'),
+                'expected_text_length': payload.get('expectedTextLength'),
+                'actual_text_length': payload.get('actualTextLength'),
+                'expected_digest': payload.get('expectedDigest'),
+                'actual_digest': payload.get('actualDigest'),
+                'expected_line_count': payload.get('expectedLineCount'),
+                'actual_line_count': payload.get('actualLineCount'),
+            },
         }

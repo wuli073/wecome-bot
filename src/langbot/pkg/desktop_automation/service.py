@@ -215,6 +215,45 @@ class DesktopAutomationService:
             'send_enabled': False,
         }
 
+    async def ensure_runtime_client(self):
+        if self.runtime_client is not None:
+            return self.runtime_client
+        if self.runtime_process_manager is None or not hasattr(self.runtime_process_manager, 'ensure_started'):
+            raise DesktopAutomationError(RPA_RUNTIME_NOT_AVAILABLE, 'RPA runtime is not configured')
+        runtime_info = await self.runtime_process_manager.ensure_started()
+        runtime_client = getattr(self.runtime_process_manager, 'client', None)
+        if runtime_client is None:
+            if self.runtime_client_factory is None:
+                raise DesktopAutomationError(RPA_RUNTIME_NOT_AVAILABLE, 'RPA runtime client factory is not configured')
+            runtime_client = self.runtime_client_factory(runtime_info)
+            if hasattr(self.runtime_process_manager, 'client'):
+                self.runtime_process_manager.client = runtime_client
+        self.runtime_client = runtime_client
+        return runtime_client
+
+    async def get_runtime_client(self):
+        return await self.ensure_runtime_client()
+
+    async def runtime_health(self) -> dict[str, Any]:
+        client = await self.ensure_runtime_client()
+        return await client.health()
+
+    async def runtime_capabilities(self) -> dict[str, Any]:
+        client = await self.ensure_runtime_client()
+        return await client.capabilities()
+
+    async def runtime_create_task(self, request: dict[str, Any]) -> dict[str, Any]:
+        client = await self.ensure_runtime_client()
+        return await client.create_task(request=request)
+
+    async def runtime_get_task(self, runtime_task_id: str) -> dict[str, Any]:
+        client = await self.ensure_runtime_client()
+        return await client.get_task(runtime_task_id)
+
+    async def runtime_cancel_task(self, runtime_task_id: str) -> dict[str, Any]:
+        client = await self.ensure_runtime_client()
+        return await client.cancel_task(runtime_task_id)
+
     async def shutdown(self) -> None:
         if self.runtime_process_manager is not None and hasattr(self.runtime_process_manager, 'stop'):
             await self.runtime_process_manager.stop()
@@ -321,16 +360,7 @@ class DesktopAutomationService:
         return self._serialize_run(updated)
 
     async def _get_runtime_client(self):
-        if self.runtime_client is not None:
-            return self.runtime_client
-        if self.runtime_process_manager is None or not hasattr(self.runtime_process_manager, 'ensure_started'):
-            raise DesktopAutomationError(RPA_RUNTIME_NOT_AVAILABLE, 'RPA runtime is not configured')
-        runtime_info = await self.runtime_process_manager.ensure_started()
-        if getattr(self.runtime_process_manager, 'client', None) is not None:
-            return self.runtime_process_manager.client
-        if self.runtime_client_factory is None:
-            raise DesktopAutomationError(RPA_RUNTIME_NOT_AVAILABLE, 'RPA runtime client factory is not configured')
-        return self.runtime_client_factory(runtime_info)
+        return await self.ensure_runtime_client()
 
     def _validate_context(self, context: dict[str, Any], draft_id: int) -> None:
         draft = context.get('draft')

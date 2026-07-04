@@ -31,6 +31,29 @@ class _FakeRuntimeClient:
         return {'id': task_id, 'status': 'cancelled', 'stage': 'cancelled'}
 
 
+class _FakeDesktopAutomationService:
+    def __init__(self) -> None:
+        self.requests: list[dict] = []
+        self.cancelled_task_ids: list[str] = []
+
+    async def runtime_health(self):
+        return {'status': 'ready', 'protocolVersion': '1', 'runtimeVersion': '0.1.0'}
+
+    async def runtime_capabilities(self):
+        return {'supportsPaste': True, 'supportsSend': False}
+
+    async def runtime_create_task(self, request):
+        self.requests.append(request)
+        return {'id': 'task-1', 'status': 'queued', 'stage': 'queued', 'result': {'ok': True}}
+
+    async def runtime_get_task(self, task_id: str):
+        return {'id': task_id, 'status': 'queued', 'stage': 'queued'}
+
+    async def runtime_cancel_task(self, task_id: str):
+        self.cancelled_task_ids.append(task_id)
+        return {'id': task_id, 'status': 'cancelled', 'stage': 'cancelled'}
+
+
 async def test_runtime_gateway_reuses_paste_contract_payload():
     from langbot.pkg.broadcast.runtime_gateway import BroadcastRuntimeGateway
 
@@ -109,3 +132,37 @@ async def test_runtime_gateway_exposes_query_and_cancel_task():
     assert task['id'] == 'runtime-1'
     assert cancelled['status'] == 'cancelled'
     assert runtime_client.cancelled_task_ids == ['runtime-1']
+
+
+async def test_runtime_gateway_uses_desktop_automation_service_public_runtime_interface():
+    from langbot.pkg.broadcast.runtime_gateway import BroadcastRuntimeGateway
+
+    desktop_automation_service = _FakeDesktopAutomationService()
+    gateway = BroadcastRuntimeGateway(desktop_automation_service)
+
+    health = await gateway.health_check()
+    capabilities = await gateway.get_capabilities()
+    created = await gateway.create_paste_task(
+        conversation_name='Acme Group',
+        draft_text='Hello Acme',
+        idempotency_key='broadcast:1:1',
+        request_digest='digest-1',
+    )
+    queried = await gateway.query_task('runtime-1')
+    cancelled = await gateway.cancel_task('runtime-1')
+
+    assert health['status'] == 'ready'
+    assert capabilities['supportsPaste'] is True
+    assert created['id'] == 'task-1'
+    assert queried['id'] == 'runtime-1'
+    assert cancelled['status'] == 'cancelled'
+    assert desktop_automation_service.requests == [
+        {
+            'action': 'paste_draft',
+            'conversationName': 'Acme Group',
+            'draftText': 'Hello Acme',
+            'idempotencyKey': 'broadcast:1:1',
+            'requestDigest': 'digest-1',
+        }
+    ]
+    assert desktop_automation_service.cancelled_task_ids == ['runtime-1']

@@ -20,7 +20,13 @@ class _FakeGateway:
             'status': 'succeeded',
             'stage': 'pasted_to_input',
             'action': 'paste_draft',
-            'result': {'messageSent': False, 'clipboardRestoreFailed': False},
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+                'contentVerified': True,
+                'draftWritten': True,
+                'inputLocated': True,
+            },
         }
 
     async def create_send_task(self, **kwargs):
@@ -59,6 +65,7 @@ async def test_wecom_executor_exposes_capabilities_and_normalizes_paste_evidence
     assert evidence['action'] == 'paste_draft'
     assert evidence['send_triggered'] is False
     assert evidence['draft_written'] is True
+    assert evidence['content_verified'] is True
 
 
 async def test_wecom_executor_supports_isolated_send_message_path():
@@ -90,3 +97,30 @@ async def test_wecom_executor_supports_isolated_send_message_path():
     ]
     assert evidence['action'] == 'send_message'
     assert evidence['send_triggered'] is True
+
+
+async def test_wecom_executor_requires_positive_content_verification_for_paste_success():
+    from langbot.pkg.broadcast.executors.wecom import WeComDraftExecutor
+
+    gateway = _FakeGateway()
+    executor = WeComDraftExecutor(gateway)
+
+    result = {
+        'id': 'runtime-task-1',
+        'status': 'succeeded',
+        'stage': 'pasted_to_input',
+        'action': 'paste_draft',
+        'result': {
+            'messageSent': False,
+            'clipboardRestoreFailed': False,
+            'contentVerified': True,
+            'draftWritten': True,
+            'inputLocated': True,
+        },
+    }
+
+    evidence = executor.normalize_evidence(result)
+
+    assert evidence['input_located'] is True
+    assert evidence['draft_written'] is True
+    assert evidence['content_verified'] is True

@@ -78,6 +78,11 @@ export class ClipboardController {
     return this.snapshot?.data.text ?? this.effectiveAdapter().readText()
   }
 
+  systemText(): string {
+    if (this.memoryOnly) return this.snapshot?.data.text ?? ''
+    return this.effectiveAdapter().readText()
+  }
+
   private effectiveAdapter(): ClipboardAdapter {
     return this.adapter ?? getClipboard()
   }

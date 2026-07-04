@@ -182,8 +182,8 @@ test('paste_only executes fixed keyboard sequence exactly once and never sends',
     sleep: async (ms) => { sleeps.push(ms) },
   })
 
-  assert.equal(result.status, 'succeeded')
-  assert.equal(result.stage, 'pasted_to_input')
+  assert.equal(result.status, 'interrupted')
+  assert.equal(result.stage, 'paste_verification_unavailable')
   assert.deepEqual(sleeps, [400, 400, 1000])
   assert.deepEqual(input.events, [
     { type: 'hotkey', payload: ['Control', 'F'] },
@@ -197,6 +197,9 @@ test('paste_only executes fixed keyboard sequence exactly once and never sends',
   assert.equal(result.draftPasteCount, 1)
   assert.equal(result.sendKeyCount, 0)
   assert.equal(result.messageSent, false)
+  assert.equal(result.contentVerified, false)
+  assert.equal(result.verificationFailed, true)
+  assert.equal(result.draftWritten, false)
   assert.equal(clipboard.currentText(), 'old clipboard')
   assert.equal(result.conversationName, undefined)
   assert.equal(result.draftText, undefined)
@@ -410,6 +413,12 @@ test('paste_only returns warning when successful paste cannot restore clipboard'
     findTargetWindow: async () => ({ ok: true, window: wxworkWindow }),
     activateTargetWindow: async () => ({ ok: true, window: wxworkWindow }),
     sleep: async () => undefined,
+    verifyPasteContent: async () => ({
+      ok: true,
+      inputLocated: true,
+      draftWritten: true,
+      contentVerified: true,
+    }),
   })
 
   assert.equal(result.status, 'succeeded_with_warning')
@@ -440,6 +449,44 @@ test('paste_only preserves original failure when restore also fails', async () =
   assert.equal(result.status, 'failed')
   assert.equal(result.errorCode, 'WINDOW_ACTIVATION_FAILED')
   assert.equal(result.clipboardRestoreFailed, true)
+})
+
+test('paste_only only returns succeeded after explicit content verification passes', async () => {
+  const input = new RecordingInputDriver()
+  const clipboard = new ClipboardController(undefined, fakeClipboardAdapter(['text/plain'], { text: 'old clipboard' }))
+
+  const result = await runPasteOnlyTask({
+    action: 'paste_draft',
+    idempotencyKey: 'p4',
+    requestDigest: 'd4',
+    conversationName: 'Customer A',
+    draftText: 'hello draft',
+  }, {
+    input,
+    clipboard,
+    findTargetWindow: async () => ({ ok: true, window: wxworkWindow }),
+    activateTargetWindow: async () => ({ ok: true, window: wxworkWindow }),
+    sleep: async () => undefined,
+    verifyPasteContent: async () => ({
+      ok: true,
+      inputLocated: true,
+      draftWritten: true,
+      contentVerified: true,
+    }),
+  } as never)
+
+  assert.equal(result.status, 'succeeded')
+  assert.equal(result.stage, 'pasted_to_input')
+  assert.equal(result.inputLocated, true)
+  assert.equal(result.draftWritten, true)
+  assert.equal(result.contentVerified, true)
+  assert.equal(result.verificationFailed, false)
+  assert.deepEqual(input.events, [
+    { type: 'hotkey', payload: ['Control', 'F'] },
+    { type: 'hotkey', payload: ['Control', 'V'] },
+    { type: 'hotkey', payload: ['Enter'] },
+    { type: 'hotkey', payload: ['Control', 'V'] },
+  ])
 })
 
 test('runtime host reuses idempotency key and does not repeat paste task', async () => {

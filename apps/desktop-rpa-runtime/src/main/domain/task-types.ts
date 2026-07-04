@@ -1,4 +1,4 @@
-export type TaskStatus = 'queued' | 'running' | 'succeeded' | 'succeeded_with_warning' | 'blocked' | 'failed' | 'cancelled' | 'timed_out'
+export type TaskStatus = 'queued' | 'running' | 'succeeded' | 'succeeded_with_warning' | 'blocked' | 'failed' | 'cancelled' | 'timed_out' | 'interrupted'
 export type TaskAction = 'paste_draft' | 'send_draft' | 'send_message' | 'diagnose' | 'conversation_search' | 'history_search' | 'quote_reply'
 export type SendStrategy = 'enter' | 'ctrl_enter' | 'click_send_button'
 
