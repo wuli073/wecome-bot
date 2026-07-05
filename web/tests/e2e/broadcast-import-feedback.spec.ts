@@ -33,6 +33,50 @@ function makeImportPage<T extends Record<string, unknown>>(
   };
 }
 
+function makeGroupPage<T extends Record<string, unknown>>(
+  batch: T,
+  rows: Array<{
+    id: number;
+    source_row_number: number;
+    group_value: string | null;
+    matched_conversation_name: string | null;
+    match_status: string;
+    error_message: string | null;
+    raw_data: Record<string, string>;
+  }>,
+  page = 1,
+  pageSize = 50,
+) {
+  const groups = rows.map((row) => ({
+    group_key: `group-${row.id}`,
+    group_value: row.group_value ?? `invalid-${row.id}`,
+    raw_row_count: 1,
+    distinct_order_number_count: 1,
+    matched_conversation_name: row.matched_conversation_name,
+    match_status: row.match_status,
+    reason: row.error_message,
+    attachment_count: 0,
+    attachments: [],
+    expandable: true,
+    first_source_row_number: row.source_row_number,
+  }));
+  const total = Number(batch.total_rows ?? groups.length);
+  return {
+    page,
+    page_size: pageSize,
+    total,
+    total_pages: total === 0 ? 0 : Math.ceil(total / pageSize),
+    raw_row_total: Number(batch.total_rows ?? rows.length),
+    group_total: Number(batch.total_rows ?? rows.length),
+    matched_group_total: Number(batch.matched_rows ?? 0),
+    unmatched_group_total: Number(batch.unmatched_rows ?? 0),
+    invalid_group_total: Number(batch.invalid_rows ?? 0),
+    conflict_group_total: 0,
+    order_number_field_configured: true,
+    groups,
+  };
+}
+
 test.describe('broadcast import feedback', () => {
   test('shows worksheet name for uploaded xlsx batch', async ({ page }) => {
     await installLangBotApiMocks(page, {
@@ -55,7 +99,6 @@ test.describe('broadcast import feedback', () => {
 
     await page.goto('/home/broadcast');
     await expect(page).toHaveURL(/\/home\/broadcast$/);
-
     await page.locator('[role="tab"]').nth(1).click();
     await expect(
       page.getByRole('button', { name: '上传 CSV / XLSX' }),
@@ -352,14 +395,32 @@ test.describe('broadcast import feedback', () => {
         return;
       }
       const url = new URL(route.request().url());
-      const pageNumber = Number(url.searchParams.get('page') || '1');
-      const pageSize = Number(url.searchParams.get('page_size') || '50');
-      importDetailRequests.push({ page: pageNumber, pageSize });
-      if (pageNumber === 3) {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      } else if (pageNumber === 1 && importDetailRequests.length > 3) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
+      if (url.pathname === '/api/v1/broadcast/imports/9/groups') {
+        const pageNumber = Number(url.searchParams.get('page') || '1');
+        const pageSize = Number(url.searchParams.get('page_size') || '50');
+        importDetailRequests.push({ page: pageNumber, pageSize });
+        if (pageNumber === 3) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        } else if (pageNumber === 1 && importDetailRequests.length > 3) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(
+            ok(
+              makeGroupPage(
+                batch,
+                rows.slice((pageNumber - 1) * 50, pageNumber * 50),
+                pageNumber,
+                50,
+              ),
+            ),
+          ),
+        });
+        return;
       }
+      const pageNumber = Number(url.searchParams.get('page') || '1');
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -442,7 +503,7 @@ test.describe('broadcast import feedback', () => {
       const url = new URL(request.url());
       return (
         request.method() === 'GET' &&
-        url.pathname === '/api/v1/broadcast/imports/9' &&
+        url.pathname === '/api/v1/broadcast/imports/9/groups' &&
         url.searchParams.get('page') === '1' &&
         url.searchParams.get('page_size') === '50'
       );
@@ -486,7 +547,7 @@ test.describe('broadcast import feedback', () => {
       const url = new URL(request.url());
       return (
         request.method() === 'GET' &&
-        url.pathname === '/api/v1/broadcast/imports/9' &&
+        url.pathname === '/api/v1/broadcast/imports/9/groups' &&
         url.searchParams.get('page') === '2' &&
         url.searchParams.get('page_size') === '50'
       );
@@ -510,7 +571,7 @@ test.describe('broadcast import feedback', () => {
       const url = new URL(request.url());
       return (
         request.method() === 'GET' &&
-        url.pathname === '/api/v1/broadcast/imports/9' &&
+        url.pathname === '/api/v1/broadcast/imports/9/groups' &&
         url.searchParams.get('page') === '3' &&
         url.searchParams.get('page_size') === '50'
       );
@@ -519,7 +580,7 @@ test.describe('broadcast import feedback', () => {
       const url = new URL(request.url());
       return (
         request.method() === 'GET' &&
-        url.pathname === '/api/v1/broadcast/imports/9' &&
+        url.pathname === '/api/v1/broadcast/imports/9/groups' &&
         url.searchParams.get('page') === '1' &&
         url.searchParams.get('page_size') === '50'
       );
@@ -555,7 +616,7 @@ test.describe('broadcast import feedback', () => {
     ).toContainText('user-1');
     await expect(
       page.locator('[data-testid="broadcast-import-table"]'),
-    ).not.toContainText('user-101');
+    ).not.toContainText('user-151');
 
     expect(postCount).toBe(1);
     expect(deleteCount).toBe(0);
@@ -715,8 +776,26 @@ test.describe('broadcast import feedback', () => {
       }
       broadcastApiRequestCount += 1;
       const url = new URL(request.url());
+      if (url.pathname === '/api/v1/broadcast/imports/12/groups') {
+        const pageNumber = Number(url.searchParams.get('page') || '1');
+        detailRequestLog.push({ importId: 12, page: pageNumber });
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(
+            ok(
+              makeGroupPage(
+                batchB,
+                batchBRows.slice((pageNumber - 1) * 50, pageNumber * 50),
+                pageNumber,
+                50,
+              ),
+            ),
+          ),
+        });
+        return;
+      }
       const pageNumber = Number(url.searchParams.get('page') || '1');
-      detailRequestLog.push({ importId: 12, page: pageNumber });
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -814,7 +893,7 @@ test.describe('broadcast import feedback', () => {
       const url = new URL(request.url());
       return (
         request.method() === 'GET' &&
-        url.pathname === `/api/v1/broadcast/imports/${batchB.id}` &&
+        url.pathname === `/api/v1/broadcast/imports/${batchB.id}/groups` &&
         url.searchParams.get('page') === '1' &&
         url.searchParams.get('page_size') === '50'
       );
@@ -849,7 +928,7 @@ test.describe('broadcast import feedback', () => {
 
     const newBatchPageRequest = await newBatchPageRequestPromise;
     expect(new URL(newBatchPageRequest.url()).pathname).toBe(
-      `/api/v1/broadcast/imports/${postResponseBatchId}`,
+      `/api/v1/broadcast/imports/${postResponseBatchId}/groups`,
     );
 
     await expect(page.locator('body')).toContainText('batch-b.xlsx');
@@ -889,7 +968,7 @@ test.describe('broadcast import feedback', () => {
       const url = new URL(request.url());
       return (
         request.method() === 'GET' &&
-        url.pathname === `/api/v1/broadcast/imports/${batchB.id}` &&
+        url.pathname === `/api/v1/broadcast/imports/${batchB.id}/groups` &&
         url.searchParams.get('page') === '2' &&
         url.searchParams.get('page_size') === '50'
       );
@@ -943,5 +1022,151 @@ test.describe('broadcast import feedback', () => {
       })
       .toBeLessThanOrEqual(broadcastApiRequestCountBaseline + 1);
     await expect(page.locator('body')).not.toContainText('暂无导入批次');
+  });
+
+  test('successful upload loads detail without runtime page errors', async ({
+    page,
+  }) => {
+    await installLangBotApiMocks(page, {
+      authenticated: true,
+      storage: {
+        langbot_language: 'zh-Hans',
+      },
+      bots: [
+        {
+          uuid: 'bot-1',
+          name: 'Broadcast Bot A',
+          enable: true,
+          adapter: 'wxwork_database',
+          adapter_config: {
+            connector_id: 'wxwork-local',
+          },
+        },
+      ],
+    });
+
+    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => {
+      pageErrors.push(String(error));
+    });
+
+    const batch = {
+      id: 21,
+      bot_uuid: 'bot-1',
+      connector_id: 'wxwork-local',
+      original_file_name: 'uploaded.xlsx',
+      file_type: 'xlsx',
+      worksheet_name: 'Sheet1',
+      status: 'imported',
+      drafts_stale: false,
+      total_rows: 1,
+      valid_rows: 1,
+      invalid_rows: 0,
+      matched_rows: 1,
+      unmatched_rows: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    const detail = makeImportPage(
+      batch,
+      [
+        {
+          id: 2101,
+          import_batch_id: 21,
+          source_row_number: 2,
+          raw_data: {
+            customer_name: 'Acme',
+          },
+          group_value: 'Acme',
+          matched_conversation_name: 'Acme Group',
+          matched_rule_id: 1,
+          match_status: 'matched',
+          error_message: null,
+          created_at: new Date().toISOString(),
+        },
+      ],
+      1,
+      50,
+    );
+    const groups = makeGroupPage(
+      batch,
+      [
+        {
+          id: 2101,
+          source_row_number: 2,
+          group_value: 'Acme',
+          matched_conversation_name: 'Acme Group',
+          match_status: 'matched',
+          error_message: null,
+          raw_data: { customer_name: 'Acme' },
+        },
+      ],
+      1,
+      50,
+    );
+
+    await page.route('**/api/v1/broadcast/imports*', async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (
+        request.method() === 'POST' &&
+        url.pathname === '/api/v1/broadcast/imports'
+      ) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(ok(batch)),
+        });
+        return;
+      }
+      if (
+        request.method() === 'GET' &&
+        url.pathname === '/api/v1/broadcast/imports'
+      ) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(ok([batch])),
+        });
+        return;
+      }
+      if (
+        request.method() === 'GET' &&
+        url.pathname === '/api/v1/broadcast/imports/21'
+      ) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(ok(detail)),
+        });
+        return;
+      }
+      if (
+        request.method() === 'GET' &&
+        url.pathname === '/api/v1/broadcast/imports/21/groups'
+      ) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(ok(groups)),
+        });
+        return;
+      }
+      await route.fallback();
+    });
+
+    await page.goto('/home/broadcast');
+    await expect(page).toHaveURL(/\/home\/broadcast$/);
+    await page.locator('[role="tab"]').nth(1).click();
+    await page.getByTestId('broadcast-import-upload-input').setInputFiles({
+      name: 'uploaded.xlsx',
+      mimeType:
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      buffer: Buffer.from('uploaded-xlsx', 'utf-8'),
+    });
+
+    await expect(page.locator('body')).toContainText('uploaded.xlsx');
+    await expect(page.locator('body')).toContainText('Sheet1');
+    expect(pageErrors).toEqual([]);
   });
 });

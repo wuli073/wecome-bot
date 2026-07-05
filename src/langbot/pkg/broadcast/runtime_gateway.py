@@ -43,6 +43,8 @@ class BroadcastRuntimeGateway:
         draft_text: str,
         idempotency_key: str,
         request_digest: str,
+        attachment_root: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         request = {
             'action': 'paste_draft',
@@ -50,7 +52,10 @@ class BroadcastRuntimeGateway:
             'draftText': draft_text,
             'idempotencyKey': idempotency_key,
             'requestDigest': request_digest,
+            'attachments': attachments or [],
         }
+        if attachment_root:
+            request['attachmentRoot'] = attachment_root
         if hasattr(self.runtime_provider, 'runtime_create_task'):
             return await self.runtime_provider.runtime_create_task(request)
         client = self._get_direct_client()

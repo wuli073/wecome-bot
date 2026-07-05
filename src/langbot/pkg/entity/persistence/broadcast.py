@@ -216,6 +216,12 @@ class BroadcastDraft(Base):
     draft_text = sqlalchemy.Column(sqlalchemy.Text, nullable=False)
     status = sqlalchemy.Column(sqlalchemy.String(32), nullable=False, index=True)
     error_message = sqlalchemy.Column(sqlalchemy.Text, nullable=True)
+    attachments_stale = sqlalchemy.Column(
+        sqlalchemy.Boolean,
+        nullable=False,
+        server_default=sqlalchemy.false(),
+        default=False,
+    )
     created_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False, server_default=sqlalchemy.func.now())
     updated_at = sqlalchemy.Column(
         sqlalchemy.DateTime,
@@ -340,6 +346,135 @@ class BroadcastExecutionAttempt(Base):
     error_message = sqlalchemy.Column(sqlalchemy.Text, nullable=True)
     started_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False, server_default=sqlalchemy.func.now())
     finished_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
+
+
+class BroadcastAttachmentAsset(Base):
+    __tablename__ = 'broadcast_attachment_assets'
+    __table_args__ = (
+        sqlalchemy.Index('ix_broadcast_attachment_assets_scope', 'bot_uuid', 'connector_id'),
+        sqlalchemy.UniqueConstraint(
+            'sha256',
+            'size_bytes',
+            'stored_name',
+            name='uq_broadcast_attachment_assets_storage',
+        ),
+    )
+
+    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True, autoincrement=True)
+    bot_uuid = sqlalchemy.Column(sqlalchemy.String(255), nullable=False, index=True)
+    connector_id = sqlalchemy.Column(sqlalchemy.String(255), nullable=False, index=True)
+    original_name = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
+    stored_name = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
+    stored_path = sqlalchemy.Column(sqlalchemy.Text, nullable=False)
+    relative_path = sqlalchemy.Column(sqlalchemy.Text, nullable=True)
+    size_bytes = sqlalchemy.Column(sqlalchemy.BigInteger, nullable=False)
+    sha256 = sqlalchemy.Column(sqlalchemy.String(64), nullable=False, index=True)
+    extension = sqlalchemy.Column(sqlalchemy.String(32), nullable=False)
+    mime_type = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
+    status = sqlalchemy.Column(sqlalchemy.String(32), nullable=False, server_default='ready', default='ready')
+    created_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False, server_default=sqlalchemy.func.now())
+
+
+class BroadcastImportGroupAttachment(Base):
+    __tablename__ = 'broadcast_import_group_attachments'
+    __table_args__ = (
+        sqlalchemy.Index(
+            'ix_broadcast_import_group_attachments_batch_group',
+            'batch_id',
+            'group_key',
+            'sort_order',
+        ),
+        sqlalchemy.UniqueConstraint(
+            'batch_id',
+            'group_key',
+            'attachment_asset_id',
+            name='uq_broadcast_import_group_attachments_group_asset',
+        ),
+    )
+
+    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True, autoincrement=True)
+    batch_id = sqlalchemy.Column(
+        sqlalchemy.Integer,
+        sqlalchemy.ForeignKey('broadcast_import_batches.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    group_key = sqlalchemy.Column(sqlalchemy.String(128), nullable=False, index=True)
+    group_value_snapshot = sqlalchemy.Column(sqlalchemy.String(255), nullable=True)
+    attachment_asset_id = sqlalchemy.Column(
+        sqlalchemy.Integer,
+        sqlalchemy.ForeignKey('broadcast_attachment_assets.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    sort_order = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, server_default='0', default=0)
+    created_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False, server_default=sqlalchemy.func.now())
+
+
+class BroadcastDraftAttachment(Base):
+    __tablename__ = 'broadcast_draft_attachments'
+    __table_args__ = (
+        sqlalchemy.Index('ix_broadcast_draft_attachments_draft', 'draft_id', 'sort_order'),
+        sqlalchemy.UniqueConstraint(
+            'draft_id',
+            'attachment_asset_id',
+            name='uq_broadcast_draft_attachments_draft_asset',
+        ),
+    )
+
+    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True, autoincrement=True)
+    draft_id = sqlalchemy.Column(
+        sqlalchemy.Integer,
+        sqlalchemy.ForeignKey('broadcast_drafts.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    attachment_asset_id = sqlalchemy.Column(
+        sqlalchemy.Integer,
+        sqlalchemy.ForeignKey('broadcast_attachment_assets.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    original_name_snapshot = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
+    size_bytes_snapshot = sqlalchemy.Column(sqlalchemy.BigInteger, nullable=False)
+    sha256_snapshot = sqlalchemy.Column(sqlalchemy.String(64), nullable=False)
+    sort_order = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, server_default='0', default=0)
+    created_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False, server_default=sqlalchemy.func.now())
+
+
+class BroadcastExecutionTaskAttachment(Base):
+    __tablename__ = 'broadcast_execution_task_attachments'
+    __table_args__ = (
+        sqlalchemy.Index(
+            'ix_broadcast_execution_task_attachments_task',
+            'execution_task_id',
+            'sort_order',
+        ),
+        sqlalchemy.UniqueConstraint(
+            'execution_task_id',
+            'attachment_asset_id',
+            name='uq_broadcast_execution_task_attachments_task_asset',
+        ),
+    )
+
+    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True, autoincrement=True)
+    execution_task_id = sqlalchemy.Column(
+        sqlalchemy.Integer,
+        sqlalchemy.ForeignKey('broadcast_execution_tasks.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    attachment_asset_id = sqlalchemy.Column(
+        sqlalchemy.Integer,
+        sqlalchemy.ForeignKey('broadcast_attachment_assets.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    original_name_snapshot = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
+    size_bytes_snapshot = sqlalchemy.Column(sqlalchemy.BigInteger, nullable=False)
+    sha256_snapshot = sqlalchemy.Column(sqlalchemy.String(64), nullable=False)
+    sort_order = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, server_default='0', default=0)
+    created_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False, server_default=sqlalchemy.func.now())
 
 
 class BroadcastExecutionEvidence(Base):

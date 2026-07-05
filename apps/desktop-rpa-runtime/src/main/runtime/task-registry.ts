@@ -1,7 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import type { RuntimeTask, RuntimeTaskRequest } from '../domain/task-types'
 
 export class TaskRegistry {
-  private nextId = 1
   private readonly tasks = new Map<string, RuntimeTask>()
   private readonly idempotency = new Map<string, string>()
 
@@ -13,7 +13,7 @@ export class TaskRegistry {
     }
     const now = new Date().toISOString()
     const task: RuntimeTask = {
-      id: `task-${this.nextId++}`,
+      id: `task-${randomUUID()}`,
       action: request.action,
       idempotencyKey: request.idempotencyKey,
       requestDigest: request.requestDigest,

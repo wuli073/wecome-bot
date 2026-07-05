@@ -5,6 +5,16 @@ from werkzeug.exceptions import BadRequest
 
 from .. import group
 from .....broadcast.errors import (
+    ATTACHMENT_COUNT_EXCEEDED,
+    ATTACHMENT_EMPTY,
+    ATTACHMENT_FILE_MISSING,
+    ATTACHMENT_FILE_TOO_LARGE,
+    ATTACHMENT_HASH_MISMATCH,
+    ATTACHMENT_NOT_FOUND,
+    ATTACHMENT_PATH_OUTSIDE_ROOT,
+    ATTACHMENT_STORAGE_FAILED,
+    ATTACHMENT_TOTAL_TOO_LARGE,
+    ATTACHMENT_UNSUPPORTED_TYPE,
     BROADCAST_DRAFT_BODY_EMPTY,
     BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN,
     BROADCAST_DRAFT_NOT_FOUND,
@@ -19,6 +29,7 @@ from .....broadcast.errors import (
     BROADCAST_EXECUTION_DRAFT_LIMIT_EXCEEDED,
     BROADCAST_EXECUTION_DRAFT_NOT_READY,
     BROADCAST_EXECUTION_DRAFT_STALE,
+    BROADCAST_EXECUTION_EVIDENCE_NOT_AVAILABLE,
     BROADCAST_EXECUTION_MODE_INVALID,
     BROADCAST_EXECUTION_SEND_DISABLED,
     BROADCAST_EXECUTION_SCOPE_MISMATCH,
@@ -26,6 +37,7 @@ from .....broadcast.errors import (
     BROADCAST_EXECUTION_TASK_STATUS_INVALID,
     BROADCAST_IMPORT_FIELDS_MISSING,
     BROADCAST_IMPORT_FILE_INVALID,
+    BROADCAST_IMPORT_GROUP_NOT_FOUND,
     BROADCAST_IMPORT_GROUP_FIELD_REQUIRED,
     BROADCAST_IMPORT_NOT_FOUND,
     BROADCAST_IMPORT_READY_DRAFT_EXISTS,
@@ -239,6 +251,73 @@ class BroadcastRouterGroup(group.RouterGroup):
             except BroadcastError as exc:
                 return self._broadcast_error_response(exc)
 
+        @self.route('/imports/<int:import_id>/groups', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
+        async def import_groups(import_id: int) -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                filters = {
+                    'match_status': str(quart.request.args.get('match_status') or '').strip() or None,
+                    'keyword': str(quart.request.args.get('keyword') or '').strip() or None,
+                    'page': int(quart.request.args.get('page')) if quart.request.args.get('page') else None,
+                    'page_size': int(quart.request.args.get('page_size')) if quart.request.args.get('page_size') else None,
+                }
+                data = await self.ap.broadcast_service.list_import_groups(import_id, scope, filters)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/imports/<int:import_id>/groups/<string:group_key>/rows', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
+        async def import_group_rows(import_id: int, group_key: str) -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                filters = {
+                    'page': int(quart.request.args.get('page')) if quart.request.args.get('page') else None,
+                    'page_size': int(quart.request.args.get('page_size')) if quart.request.args.get('page_size') else None,
+                }
+                data = await self.ap.broadcast_service.list_import_group_rows(import_id, group_key, scope, filters)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/imports/<int:import_id>/groups/<string:group_key>/attachments', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def import_group_attachments_create(import_id: int, group_key: str) -> str:
+            try:
+                form = await quart.request.form
+                files = await quart.request.files
+                scope = await self.ap.broadcast_service.validate_scope(
+                    {
+                        'bot_uuid': str(form.get('bot_uuid') or '').strip(),
+                        'connector_id': str(form.get('connector_id') or '').strip(),
+                    }
+                )
+                payloads = [
+                    self._build_upload_file_payload(file)
+                    for file in [*files.getlist('files[]'), *files.getlist('files')]
+                ]
+                data = await self.ap.broadcast_service.add_import_group_attachments(
+                    import_id,
+                    group_key,
+                    scope,
+                    payloads,
+                )
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/imports/<int:import_id>/groups/<string:group_key>/attachments/<int:attachment_id>', methods=['DELETE'], auth_type=group.AuthType.USER_TOKEN)
+        async def import_group_attachment_delete(import_id: int, group_key: str, attachment_id: int) -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                data = await self.ap.broadcast_service.delete_import_group_attachment(
+                    import_id,
+                    group_key,
+                    attachment_id,
+                    scope,
+                )
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
         @self.route('/imports/<int:import_id>/generate-drafts', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
         async def generate_import_drafts(import_id: int) -> str:
             payload = await quart.request.get_json(silent=True) or {}
@@ -276,6 +355,43 @@ class BroadcastRouterGroup(group.RouterGroup):
                 payload = await quart.request.get_json(silent=True) or {}
                 scope = await self.validate_scope(from_query=False, payload=payload)
                 data = await self.ap.broadcast_service.update_draft_text(draft_id, scope, payload)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/drafts/<int:draft_id>/attachments', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def draft_attachments_create(draft_id: int) -> str:
+            try:
+                form = await quart.request.form
+                files = await quart.request.files
+                scope = await self.ap.broadcast_service.validate_scope(
+                    {
+                        'bot_uuid': str(form.get('bot_uuid') or '').strip(),
+                        'connector_id': str(form.get('connector_id') or '').strip(),
+                    }
+                )
+                payloads = [
+                    self._build_upload_file_payload(file)
+                    for file in [*files.getlist('files[]'), *files.getlist('files')]
+                ]
+                data = await self.ap.broadcast_service.add_draft_attachments(
+                    draft_id,
+                    scope,
+                    payloads,
+                )
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/drafts/<int:draft_id>/attachments/<int:attachment_id>', methods=['DELETE'], auth_type=group.AuthType.USER_TOKEN)
+        async def draft_attachment_delete(draft_id: int, attachment_id: int) -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                data = await self.ap.broadcast_service.delete_draft_attachment(
+                    draft_id,
+                    attachment_id,
+                    scope,
+                )
                 return self.success(data=data)
             except BroadcastError as exc:
                 return self._broadcast_error_response(exc)
@@ -498,6 +614,7 @@ class BroadcastRouterGroup(group.RouterGroup):
             BROADCAST_IMPORT_FIELDS_MISSING,
             BROADCAST_IMPORT_REMATCH_FIELDS_MISSING,
             BROADCAST_IMPORT_READY_DRAFT_EXISTS,
+            BROADCAST_IMPORT_GROUP_NOT_FOUND,
             BROADCAST_DRAFT_BODY_EMPTY,
             BROADCAST_DRAFT_STATUS_INVALID,
             BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN,
@@ -518,6 +635,15 @@ class BroadcastRouterGroup(group.RouterGroup):
             BROADCAST_VARIABLE_PROFILE_INVALID,
             BROADCAST_GROUP_RULE_REGEX_INVALID,
             TEMPLATE_RENDER_INPUT_INVALID,
+            ATTACHMENT_UNSUPPORTED_TYPE,
+            ATTACHMENT_FILE_TOO_LARGE,
+            ATTACHMENT_TOTAL_TOO_LARGE,
+            ATTACHMENT_COUNT_EXCEEDED,
+            ATTACHMENT_EMPTY,
+            ATTACHMENT_HASH_MISMATCH,
+            ATTACHMENT_STORAGE_FAILED,
+            ATTACHMENT_FILE_MISSING,
+            ATTACHMENT_PATH_OUTSIDE_ROOT,
         }:
             return 400
         if code in {
@@ -528,6 +654,8 @@ class BroadcastRouterGroup(group.RouterGroup):
             BROADCAST_GROUP_NAME_NOT_FOUND,
             BROADCAST_EXECUTION_BATCH_NOT_FOUND,
             BROADCAST_EXECUTION_TASK_NOT_FOUND,
+            BROADCAST_EXECUTION_EVIDENCE_NOT_AVAILABLE,
+            ATTACHMENT_NOT_FOUND,
         }:
             return 404
         if code in {
@@ -564,4 +692,5 @@ class BroadcastRouterGroup(group.RouterGroup):
         return {
             'filename': getattr(file, 'filename', ''),
             'body': body,
+            'content_type': getattr(file, 'content_type', '') or '',
         }

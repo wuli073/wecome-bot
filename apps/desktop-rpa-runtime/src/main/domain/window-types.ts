@@ -9,6 +9,7 @@ export interface WindowDescriptor {
   appType: string
   windowId: string
   ownerWindowId?: string | null
+  rootWindowId?: string | null
   title: string
   executablePath: string
   processName: string
@@ -19,4 +20,6 @@ export interface WindowDescriptor {
   scaleFactor: number
   isVisible: boolean
   isMinimized: boolean
+  className?: string | null
+  source?: string | null
 }

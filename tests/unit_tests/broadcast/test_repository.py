@@ -33,8 +33,12 @@ class _RawConnectionPersistenceManager:
             await conn.run_sync(persistence_broadcast.BroadcastImportBatch.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastImportRow.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastDraft.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastAttachmentAsset.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastImportGroupAttachment.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastDraftAttachment.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastExecutionBatch.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastExecutionTask.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastExecutionTaskAttachment.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastExecutionAttempt.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastExecutionEvidence.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastSendConfirmation.__table__.create)
@@ -1467,3 +1471,267 @@ async def test_execution_attempt_runtime_task_id_is_unique(repository_fixture):
                     'error_message': None,
                 },
             )
+
+
+async def test_recompute_execution_batch_counts_treats_succeeded_with_warning_as_terminal_success(
+    repository_fixture,
+):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id = await repository.create_execution_batch(
+            conn,
+            {
+                **_scope(),
+                'channel': 'wecom',
+                'mode': 'paste_only',
+                'status': 'running',
+                'total_tasks': 1,
+                'pending_tasks': 0,
+                'running_tasks': 1,
+                'succeeded_tasks': 0,
+                'failed_tasks': 0,
+                'cancelled_tasks': 0,
+                'interrupted_tasks': 0,
+                'created_by': 'tester',
+                'last_action_by': 'tester',
+                'error_message': None,
+                'version': 1,
+            },
+        )
+        await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': batch_id,
+                'draft_id': None,
+                'draft_text_snapshot': 'body',
+                'target_conversation_snapshot': 'Acme Group',
+                'channel': 'wecom',
+                'action': 'paste_draft',
+                'status': 'succeeded_with_warning',
+                'sequence_no': 1,
+                'attempt_count': 1,
+                'max_attempts': 1,
+                'idempotency_key': 'broadcast:warning:1',
+                'request_digest': 'digest-warning',
+                'runtime_task_id': 'runtime-warning',
+                'error_code': None,
+                'error_message': None,
+                'operator_note': None,
+            },
+        )
+
+        batch = await repository.recompute_execution_batch_counts(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+
+    assert batch is not None
+    assert batch.status == 'completed'
+    assert batch.succeeded_tasks == 0
+    assert batch.failed_tasks == 0
+    assert batch.interrupted_tasks == 0
+
+
+async def test_execution_attempt_terminal_update_and_evidence_insert_are_visible_in_same_transaction(
+    repository_fixture,
+):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id = await repository.create_execution_batch(
+            conn,
+            {
+                **_scope(),
+                'channel': 'wecom',
+                'mode': 'paste_only',
+                'status': 'running',
+                'total_tasks': 1,
+                'pending_tasks': 0,
+                'running_tasks': 1,
+                'succeeded_tasks': 0,
+                'failed_tasks': 0,
+                'cancelled_tasks': 0,
+                'interrupted_tasks': 0,
+                'created_by': 'tester',
+                'last_action_by': 'tester',
+                'error_message': None,
+                'version': 1,
+            },
+        )
+        task_id = await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': batch_id,
+                'draft_id': None,
+                'draft_text_snapshot': 'body',
+                'target_conversation_snapshot': 'Acme Group',
+                'channel': 'wecom',
+                'action': 'paste_draft',
+                'status': 'running',
+                'sequence_no': 1,
+                'attempt_count': 1,
+                'max_attempts': 1,
+                'idempotency_key': 'broadcast:txn:1',
+                'request_digest': 'digest-txn',
+                'runtime_task_id': None,
+                'error_code': None,
+                'error_message': None,
+                'operator_note': None,
+            },
+        )
+        attempt_id = await repository.create_execution_attempt(
+            conn,
+            {
+                'execution_task_id': task_id,
+                'attempt_no': 1,
+                'idempotency_key': 'broadcast:txn:1',
+                'request_digest': 'digest-txn',
+                'runtime_task_id': 'runtime-txn',
+                'request_summary': 'request-summary',
+                'response_summary': None,
+                'status': 'running',
+                'error_code': None,
+                'error_message': None,
+            },
+        )
+
+        await repository.update_execution_attempt(
+            attempt_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            updates={
+                'status': 'interrupted',
+                'response_summary': 'response-summary',
+                'error_code': 'PASTE_VERIFICATION_UNAVAILABLE',
+                'error_message': 'UI Automation verifier was unavailable before paste',
+                'finished_at': sqlalchemy.func.now(),
+            },
+            conn=conn,
+        )
+        await repository.create_execution_evidence(
+            conn,
+            {
+                'execution_attempt_id': attempt_id,
+                'window_title': 'WeCom',
+                'target_conversation': 'Acme Group',
+                'action': 'paste_draft',
+                'input_located': False,
+                'draft_written': False,
+                'send_triggered': False,
+                'clipboard_restored': True,
+                'runtime_state': 'paste_verification_unavailable',
+                'evidence_summary': 'before-paste unavailable',
+                'technical_details': '{"diagnostic_stage":"capability_probe"}',
+            },
+        )
+        await repository.update_execution_task(
+            task_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            updates={
+                'status': 'interrupted',
+                'runtime_task_id': 'runtime-txn',
+                'error_code': 'PASTE_VERIFICATION_UNAVAILABLE',
+                'error_message': 'UI Automation verifier was unavailable before paste',
+                'finished_at': sqlalchemy.func.now(),
+            },
+            conn=conn,
+        )
+
+        attempt = await repository.get_execution_attempt(
+            attempt_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+        evidence = await repository.get_execution_evidence(
+            attempt_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+
+    assert attempt is not None
+    assert attempt.status == 'interrupted'
+    assert evidence is not None
+    assert evidence.evidence_summary == 'before-paste unavailable'
+
+
+async def test_attachment_asset_relative_path_is_visible_in_attachment_queries(repository_fixture):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        import_batch_id = await repository.create_import_batch(
+            conn,
+            {
+                **_scope(),
+                'original_file_name': 'customers.csv',
+                'file_type': 'csv',
+                'worksheet_name': None,
+                'status': 'imported',
+                'drafts_stale': False,
+                'total_rows': 1,
+                'valid_rows': 1,
+                'invalid_rows': 0,
+                'matched_rows': 1,
+                'unmatched_rows': 0,
+            },
+        )
+        draft_id = (
+            await conn.execute(
+                sqlalchemy.insert(persistence_broadcast.BroadcastDraft).values(
+                    {
+                        **_scope(),
+                        'import_batch_id': import_batch_id,
+                        'group_value': 'Acme',
+                        'target_conversation_name': 'Acme Group',
+                        'template_id': None,
+                        'template_name_snapshot': 'Arrival Reminder',
+                        'template_content_snapshot': 'Hello {{customer_name}}',
+                        'render_variables': {'customer_name': 'Acme'},
+                        'draft_text': 'Hello Acme',
+                        'status': 'ready',
+                        'attachments_stale': False,
+                        'error_message': None,
+                    }
+                )
+            )
+        ).inserted_primary_key[0]
+        asset_id = await repository.create_attachment_asset(
+            conn,
+            {
+                **_scope(),
+                'original_name': 'quote.pdf',
+                'stored_name': 'stored-quote.pdf',
+                'stored_path': 'C:/runtime/broadcast_attachments/bot-1/drafts/1/stored-quote.pdf',
+                'relative_path': 'bot-1/drafts/1/stored-quote.pdf',
+                'size_bytes': 8,
+                'sha256': 'hash-quote',
+                'extension': 'pdf',
+                'mime_type': 'application/pdf',
+                'status': 'ready',
+            },
+        )
+        await repository.create_draft_attachment(
+            conn,
+            {
+                'draft_id': draft_id,
+                'attachment_asset_id': asset_id,
+                'original_name_snapshot': 'quote.pdf',
+                'size_bytes_snapshot': 8,
+                'sha256_snapshot': 'hash-quote',
+                'sort_order': 0,
+            },
+        )
+
+    attachments = await repository.list_draft_attachments(
+        draft_id,
+        bot_uuid='bot-1',
+        connector_id='wxwork-local',
+    )
+
+    assert len(attachments) == 1
+    assert attachments[0]['relative_path'] == 'bot-1/drafts/1/stored-quote.pdf'

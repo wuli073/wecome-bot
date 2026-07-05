@@ -75,8 +75,50 @@ async def test_runtime_gateway_reuses_paste_contract_payload():
             'draftText': 'Hello Acme',
             'idempotencyKey': 'broadcast:1:1',
             'requestDigest': 'digest-1',
+            'attachments': [],
         }
     ]
+
+
+async def test_runtime_gateway_sends_task_level_attachment_root_and_attachment_relative_paths():
+    from langbot.pkg.broadcast.runtime_gateway import BroadcastRuntimeGateway
+
+    runtime_client = _FakeRuntimeClient()
+    gateway = BroadcastRuntimeGateway(runtime_client)
+
+    await gateway.create_paste_task(
+        conversation_name='Acme Group',
+        draft_text='Hello Acme',
+        idempotency_key='broadcast:1:3',
+        request_digest='digest-3',
+        attachment_root='C:/runtime/broadcast_attachments',
+        attachments=[
+            {
+                'relativePath': 'bot-1/drafts/1/quote.pdf',
+                'filename': 'quote.pdf',
+                'size': 8,
+                'sha256': 'digest-quote',
+            }
+        ],
+    )
+
+    assert runtime_client.requests[-1] == {
+        'action': 'paste_draft',
+        'conversationName': 'Acme Group',
+        'draftText': 'Hello Acme',
+        'idempotencyKey': 'broadcast:1:3',
+        'requestDigest': 'digest-3',
+        'attachmentRoot': 'C:/runtime/broadcast_attachments',
+        'attachments': [
+            {
+                'relativePath': 'bot-1/drafts/1/quote.pdf',
+                'filename': 'quote.pdf',
+                'size': 8,
+                'sha256': 'digest-quote',
+            }
+        ],
+    }
+    assert 'localPath' not in runtime_client.requests[-1]['attachments'][0]
 
 
 async def test_runtime_gateway_keeps_send_contract_separate():
@@ -163,6 +205,7 @@ async def test_runtime_gateway_uses_desktop_automation_service_public_runtime_in
             'draftText': 'Hello Acme',
             'idempotencyKey': 'broadcast:1:1',
             'requestDigest': 'digest-1',
+            'attachments': [],
         }
     ]
     assert desktop_automation_service.cancelled_task_ids == ['runtime-1']

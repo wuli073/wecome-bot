@@ -1,5 +1,6 @@
 import { backendClient } from '@/app/infra/http';
 import type {
+  ApiBroadcastAttachment,
   ApiBroadcastDraft,
   ApiBroadcastExecutionAttempt,
   ApiBroadcastExecutionBatch,
@@ -10,6 +11,9 @@ import type {
   ApiBroadcastGroupRule,
   ApiBroadcastImportBatch,
   ApiBroadcastImportDetail,
+  ApiBroadcastImportGroupRowsResponse,
+  ApiBroadcastImportGroupsResponse,
+  ApiBroadcastImportGroupSummary,
   ApiBroadcastImportRow,
   ApiBroadcastScope,
   ApiBroadcastTemplate,
@@ -24,6 +28,7 @@ import {
   buildVariableMappings,
 } from '../utils';
 import type {
+  BroadcastAttachment,
   BroadcastDraft,
   BroadcastDraftDetail,
   BroadcastExecutionBatchSummary,
@@ -44,6 +49,9 @@ import type {
   BroadcastImportDetail,
   BroadcastImportDraftGenerationResult,
   BroadcastImportFilters,
+  BroadcastImportGroupList,
+  BroadcastImportGroupRowsPage,
+  BroadcastImportGroupSummary,
   BroadcastMessageTemplate,
   BroadcastPasteDraftRequest,
   BroadcastPasteOnlyAdapter,
@@ -67,6 +75,15 @@ function toApiScope(scope: BroadcastScope): ApiBroadcastScope {
     connector_id: scope.connectorId,
   };
 }
+
+const TERMINAL_ATTEMPT_STATUSES = new Set([
+  'succeeded',
+  'succeeded_with_warning',
+  'failed',
+  'cancelled',
+  'timed_out',
+  'interrupted',
+]);
 
 function fromApiTemplate(
   template: ApiBroadcastTemplate,
@@ -241,6 +258,72 @@ function fromApiImportDetail(
   };
 }
 
+function fromApiAttachment(
+  attachment: ApiBroadcastAttachment,
+): BroadcastAttachment {
+  return {
+    id: attachment.id,
+    attachmentAssetId: attachment.attachment_asset_id,
+    originalName:
+      attachment.original_name_snapshot ?? attachment.original_name ?? '',
+    sizeBytes: attachment.size_bytes_snapshot ?? attachment.size_bytes ?? 0,
+    sha256: attachment.sha256_snapshot ?? attachment.sha256 ?? '',
+    extension: attachment.extension,
+    mimeType: attachment.mime_type,
+    sortOrder: attachment.sort_order,
+  };
+}
+
+function fromApiImportGroupSummary(
+  summary: ApiBroadcastImportGroupSummary,
+): BroadcastImportGroupSummary {
+  return {
+    groupKey: summary.group_key,
+    groupValue: summary.group_value,
+    rawRowCount: summary.raw_row_count,
+    distinctOrderNumberCount: summary.distinct_order_number_count,
+    matchedConversationName: summary.matched_conversation_name,
+    matchStatus: summary.match_status,
+    reason: summary.reason,
+    attachmentCount: summary.attachment_count,
+    expandable: summary.expandable,
+    firstSourceRowNumber: summary.first_source_row_number,
+  };
+}
+
+function fromApiImportGroups(
+  detail: ApiBroadcastImportGroupsResponse,
+): BroadcastImportGroupList {
+  return {
+    page: detail.page,
+    pageSize: detail.page_size,
+    total: detail.total,
+    totalPages: detail.total_pages,
+    rawRowTotal: detail.raw_row_total,
+    groupTotal: detail.group_total,
+    matchedGroupTotal: detail.matched_group_total,
+    unmatchedGroupTotal: detail.unmatched_group_total,
+    invalidGroupTotal: detail.invalid_group_total,
+    conflictGroupTotal: detail.conflict_group_total,
+    orderNumberFieldConfigured: detail.order_number_field_configured,
+    groups: detail.groups.map(fromApiImportGroupSummary),
+  };
+}
+
+function fromApiImportGroupRows(
+  detail: ApiBroadcastImportGroupRowsResponse,
+): BroadcastImportGroupRowsPage {
+  return {
+    groupKey: detail.group_key,
+    groupValue: detail.group_value,
+    page: detail.page,
+    pageSize: detail.page_size,
+    total: detail.total,
+    totalPages: detail.total_pages,
+    rows: detail.rows.map(fromApiImportRow),
+  };
+}
+
 function fromApiDraft(draft: ApiBroadcastDraft): BroadcastDraftDetail {
   return {
     id: draft.id,
@@ -258,6 +341,8 @@ function fromApiDraft(draft: ApiBroadcastDraft): BroadcastDraftDetail {
     status: draft.status,
     errorMessage: draft.error_message,
     draftsStale: draft.drafts_stale,
+    attachmentsStale: draft.attachments_stale ?? false,
+    attachments: (draft.attachments ?? []).map(fromApiAttachment),
     updatedAt: draft.updated_at,
     createdAt: draft.created_at,
     message: draft.message ?? null,
@@ -286,6 +371,7 @@ function fromApiExecutionTask(
     startedAt: task.started_at,
     finishedAt: task.finished_at,
     updatedAt: task.updated_at,
+    attachments: (task.attachments ?? []).map(fromApiAttachment),
   };
 }
 
@@ -318,13 +404,23 @@ function fromApiExecutorCapability(
   return {
     channel: String(payload.channel || 'wxwork_database'),
     supports_paste: Boolean(payload.supports_paste),
+    supports_paste_verification: Boolean(payload.supports_paste_verification),
     supports_send: Boolean(payload.supports_send),
     supports_cancel: Boolean(payload.supports_cancel),
     supports_status_query: Boolean(payload.supports_status_query),
     supports_clipboard_restore: Boolean(payload.supports_clipboard_restore),
     supports_evidence: Boolean(payload.supports_evidence),
+    requires_manual_conversation_open: Boolean(
+      payload.requires_manual_conversation_open,
+    ),
     executor_version: String(payload.executor_version || ''),
     runtime_min_version: String(payload.runtime_min_version || ''),
+    conversation_locator:
+      payload.conversation_locator === 'keyboard_search'
+        ? 'keyboard_search'
+        : 'keyboard_search',
+    content_verification:
+      payload.content_verification === 'disabled' ? 'disabled' : 'disabled',
   };
 }
 
@@ -368,6 +464,15 @@ function toExecutionLog(
   evidence: ApiBroadcastExecutionEvidence | null,
   draft?: BroadcastDraft | null,
 ): BroadcastExecutionLog {
+  const technicalDetails =
+    evidence?.technical_details &&
+    typeof evidence.technical_details === 'object'
+      ? (evidence.technical_details as Record<string, unknown>)
+      : null;
+  const contentVerified =
+    technicalDetails && 'content_verified' in technicalDetails
+      ? Boolean(technicalDetails.content_verified)
+      : false;
   return {
     id: attempt.id,
     batchId: batch.id,
@@ -389,8 +494,50 @@ function toExecutionLog(
     sendTriggered: evidence?.send_triggered || false,
     inputLocated: evidence?.input_located || false,
     draftWritten: evidence?.draft_written || false,
+    contentVerified,
+    textContentVerified: contentVerified,
     clipboardRestored: evidence?.clipboard_restored || false,
-    technicalDetails: evidence?.technical_details || null,
+    attachmentCount:
+      technicalDetails && 'attachment_count' in technicalDetails
+        ? Number(technicalDetails.attachment_count || 0)
+        : 0,
+    attachmentNames:
+      technicalDetails && Array.isArray(technicalDetails.attachment_names)
+        ? technicalDetails.attachment_names
+            .map((item) => String(item))
+            .filter((item) => item.trim().length > 0)
+        : [],
+    attachmentsPrepared:
+      technicalDetails && 'attachments_prepared' in technicalDetails
+        ? Boolean(technicalDetails.attachments_prepared)
+        : false,
+    attachmentPasteRequested:
+      technicalDetails && 'attachment_paste_requested' in technicalDetails
+        ? Boolean(technicalDetails.attachment_paste_requested)
+        : false,
+    attachmentsVerified:
+      technicalDetails && 'attachments_verified' in technicalDetails
+        ? Boolean(technicalDetails.attachments_verified)
+        : false,
+    warning:
+      technicalDetails && 'warning' in technicalDetails
+        ? technicalDetails.warning == null
+          ? null
+          : String(technicalDetails.warning)
+        : null,
+    errorCode:
+      technicalDetails && 'error_code' in technicalDetails
+        ? technicalDetails.error_code == null
+          ? null
+          : String(technicalDetails.error_code)
+        : attempt.error_code || task.errorCode || null,
+    stage:
+      technicalDetails && 'stage' in technicalDetails
+        ? technicalDetails.stage == null
+          ? null
+          : String(technicalDetails.stage)
+        : evidence?.runtime_state || null,
+    technicalDetails,
     timestamp: attempt.finished_at || attempt.started_at,
   };
 }
@@ -467,6 +614,29 @@ export interface BroadcastDataSource {
     importId: number,
     filters?: BroadcastImportFilters,
   ) => Promise<BroadcastImportDetail>;
+  getImportGroups: (
+    scope: BroadcastScope,
+    importId: number,
+    filters?: BroadcastImportFilters,
+  ) => Promise<BroadcastImportGroupList>;
+  getImportGroupRows: (
+    scope: BroadcastScope,
+    importId: number,
+    groupKey: string,
+    filters?: { page?: number; pageSize?: number },
+  ) => Promise<BroadcastImportGroupRowsPage>;
+  uploadImportGroupAttachments: (
+    scope: BroadcastScope,
+    importId: number,
+    groupKey: string,
+    files: File[],
+  ) => Promise<BroadcastAttachment[]>;
+  deleteImportGroupAttachment: (
+    scope: BroadcastScope,
+    importId: number,
+    groupKey: string,
+    attachmentId: number,
+  ) => Promise<BroadcastAttachment[]>;
   deleteImport: (scope: BroadcastScope, importId: number) => Promise<void>;
   rematchImport: (
     scope: BroadcastScope,
@@ -484,6 +654,16 @@ export interface BroadcastDataSource {
   getDraftDetail: (
     scope: BroadcastScope,
     draftId: number,
+  ) => Promise<BroadcastDraftDetail>;
+  uploadDraftAttachments: (
+    scope: BroadcastScope,
+    draftId: number,
+    files: File[],
+  ) => Promise<BroadcastDraftDetail>;
+  deleteDraftAttachment: (
+    scope: BroadcastScope,
+    draftId: number,
+    attachmentId: number,
   ) => Promise<BroadcastDraftDetail>;
   updateDraftText: (
     scope: BroadcastScope,
@@ -559,6 +739,16 @@ export interface BroadcastDataSource {
     scope: BroadcastScope,
     taskId: number,
   ) => Promise<BroadcastExecutionTaskSummary>;
+  getExecutionLogsForBatch: (
+    scope: BroadcastScope,
+    batch: BroadcastExecutionBatchSummary,
+    drafts: BroadcastDraft[],
+    options?: {
+      attemptsCache?: Map<number, ApiBroadcastExecutionAttempt[]>;
+      evidenceCache?: Map<number, ApiBroadcastExecutionEvidence | null>;
+      forceRefresh?: boolean;
+    },
+  ) => Promise<BroadcastExecutionLog[]>;
   listExecutionLogs: (
     scope: BroadcastScope,
     drafts: BroadcastDraft[],
@@ -567,6 +757,69 @@ export interface BroadcastDataSource {
 
 export function createBroadcastDataSource(): BroadcastDataSource {
   const seed = createBroadcastWorkspaceSnapshot();
+  const getExecutionLogsForBatch = async (
+    scope: BroadcastScope,
+    batch: BroadcastExecutionBatchSummary,
+    drafts: BroadcastDraft[],
+    options?: {
+      attemptsCache?: Map<number, ApiBroadcastExecutionAttempt[]>;
+      evidenceCache?: Map<number, ApiBroadcastExecutionEvidence | null>;
+      forceRefresh?: boolean;
+    },
+  ) => {
+    const attemptsCache = options?.attemptsCache;
+    const evidenceCache = options?.evidenceCache;
+    const forceRefresh = options?.forceRefresh ?? false;
+
+    const logs = await Promise.all(
+      batch.tasks.map(async (task) => {
+        const cachedAttempts = attemptsCache?.get(task.id);
+        const attempts =
+          cachedAttempts && !forceRefresh
+            ? cachedAttempts
+            : await backendClient.getBroadcastExecutionAttempts(
+                toApiScope(scope),
+                task.id,
+              );
+        attemptsCache?.set(task.id, attempts);
+
+        return Promise.all(
+          attempts.map(async (attempt) => {
+            let evidence: ApiBroadcastExecutionEvidence | null = null;
+            const hasCachedEvidence = evidenceCache?.has(attempt.id) ?? false;
+            const attemptTerminal = TERMINAL_ATTEMPT_STATUSES.has(
+              String(attempt.status || '').toLowerCase(),
+            );
+
+            if (hasCachedEvidence && !forceRefresh) {
+              evidence = evidenceCache?.get(attempt.id) ?? null;
+            } else if (!attemptTerminal) {
+              evidence = null;
+              evidenceCache?.set(attempt.id, null);
+            } else {
+              try {
+                evidence = await backendClient.getBroadcastExecutionEvidence(
+                  toApiScope(scope),
+                  attempt.id,
+                );
+              } catch {
+                evidence = null;
+              }
+              evidenceCache?.set(attempt.id, evidence);
+            }
+
+            const draft =
+              drafts.find((item) => item.id === task.draftId) ?? null;
+            return toExecutionLog(batch, task, attempt, evidence, draft);
+          }),
+        );
+      }),
+    );
+
+    return logs
+      .flat()
+      .sort((left, right) => right.timestamp.localeCompare(left.timestamp));
+  };
 
   return {
     loadSnapshot: () => cloneValue(seed),
@@ -722,6 +975,24 @@ export function createBroadcastDataSource(): BroadcastDataSource {
           importId,
           {
             match_status:
+              filters?.matchStatus &&
+              filters.matchStatus !== 'all' &&
+              filters.matchStatus !== 'conflict'
+                ? filters.matchStatus
+                : undefined,
+            keyword: filters?.keyword,
+            page: filters?.page,
+            page_size: filters?.pageSize,
+          },
+        ),
+      ),
+    getImportGroups: async (scope, importId, filters) =>
+      fromApiImportGroups(
+        await backendClient.getBroadcastImportGroups(
+          toApiScope(scope),
+          importId,
+          {
+            match_status:
               filters?.matchStatus && filters.matchStatus !== 'all'
                 ? filters.matchStatus
                 : undefined,
@@ -731,6 +1002,41 @@ export function createBroadcastDataSource(): BroadcastDataSource {
           },
         ),
       ),
+    getImportGroupRows: async (scope, importId, groupKey, filters) =>
+      fromApiImportGroupRows(
+        await backendClient.getBroadcastImportGroupRows(
+          toApiScope(scope),
+          importId,
+          groupKey,
+          {
+            page: filters?.page,
+            page_size: filters?.pageSize,
+          },
+        ),
+      ),
+    uploadImportGroupAttachments: async (scope, importId, groupKey, files) =>
+      (
+        (await backendClient.uploadBroadcastImportGroupAttachments(
+          toApiScope(scope),
+          importId,
+          groupKey,
+          files,
+        )) ?? []
+      ).map(fromApiAttachment),
+    deleteImportGroupAttachment: async (
+      scope,
+      importId,
+      groupKey,
+      attachmentId,
+    ) =>
+      (
+        (await backendClient.deleteBroadcastImportGroupAttachment(
+          toApiScope(scope),
+          importId,
+          groupKey,
+          attachmentId,
+        )) ?? []
+      ).map(fromApiAttachment),
     deleteImport: async (scope, importId) => {
       await backendClient.deleteBroadcastImport(toApiScope(scope), importId);
     },
@@ -765,6 +1071,22 @@ export function createBroadcastDataSource(): BroadcastDataSource {
     getDraftDetail: async (scope, draftId) =>
       fromApiDraft(
         await backendClient.getBroadcastDraftDetail(toApiScope(scope), draftId),
+      ),
+    uploadDraftAttachments: async (scope, draftId, files) =>
+      fromApiDraft(
+        await backendClient.uploadBroadcastDraftAttachments(
+          toApiScope(scope),
+          draftId,
+          files,
+        ),
+      ),
+    deleteDraftAttachment: async (scope, draftId, attachmentId) =>
+      fromApiDraft(
+        await backendClient.deleteBroadcastDraftAttachment(
+          toApiScope(scope),
+          draftId,
+          attachmentId,
+        ),
       ),
     updateDraftText: async (scope, draftId, draftText) =>
       fromApiDraft(
@@ -884,6 +1206,7 @@ export function createBroadcastDataSource(): BroadcastDataSource {
           taskId,
         ),
       ),
+    getExecutionLogsForBatch,
     listExecutionLogs: async (scope, drafts) => {
       const batchSummaries = await backendClient.getBroadcastExecutionBatches(
         toApiScope(scope),
@@ -898,34 +1221,21 @@ export function createBroadcastDataSource(): BroadcastDataSource {
           ),
         ),
       );
+      const attemptsCache = new Map<number, ApiBroadcastExecutionAttempt[]>();
+      const evidenceCache = new Map<
+        number,
+        ApiBroadcastExecutionEvidence | null
+      >();
       const logs = await Promise.all(
-        batches.flatMap((batch) =>
-          batch.tasks.map(async (task) => {
-            const attempts = await backendClient.getBroadcastExecutionAttempts(
-              toApiScope(scope),
-              task.id,
-            );
-            return Promise.all(
-              attempts.map(async (attempt) => {
-                let evidence: ApiBroadcastExecutionEvidence | null = null;
-                try {
-                  evidence = await backendClient.getBroadcastExecutionEvidence(
-                    toApiScope(scope),
-                    attempt.id,
-                  );
-                } catch {
-                  evidence = null;
-                }
-                const draft =
-                  drafts.find((item) => item.id === task.draftId) ?? null;
-                return toExecutionLog(batch, task, attempt, evidence, draft);
-              }),
-            );
+        batches.map((batch) =>
+          getExecutionLogsForBatch(scope, batch, drafts, {
+            attemptsCache,
+            evidenceCache,
           }),
         ),
       );
       return logs
-        .flat(2)
+        .flat()
         .sort((left, right) => right.timestamp.localeCompare(left.timestamp));
     },
   };

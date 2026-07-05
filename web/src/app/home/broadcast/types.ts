@@ -8,6 +8,9 @@ export type BroadcastImportBatchStatus =
   | 'drafts_generated';
 
 export type BroadcastImportMatchStatus = 'matched' | 'unmatched' | 'invalid';
+export type BroadcastImportGroupMatchStatus =
+  | BroadcastImportMatchStatus
+  | 'conflict';
 
 export type BroadcastDraftStatus = 'pending_review' | 'ready' | 'invalid';
 
@@ -165,8 +168,58 @@ export interface BroadcastImportDetail extends BroadcastImportBatch {
   totalPages: number;
 }
 
+export interface BroadcastAttachment {
+  id: number;
+  attachmentAssetId: number;
+  originalName: string;
+  sizeBytes: number;
+  sha256: string;
+  extension: string;
+  mimeType: string;
+  sortOrder: number;
+}
+
+export interface BroadcastImportGroupSummary {
+  groupKey: string;
+  groupValue: string;
+  rawRowCount: number;
+  distinctOrderNumberCount: number;
+  matchedConversationName: string | null;
+  matchStatus: BroadcastImportGroupMatchStatus;
+  reason: string | null;
+  attachmentCount: number;
+  expandable: boolean;
+  firstSourceRowNumber: number;
+  attachments?: BroadcastAttachment[];
+}
+
+export interface BroadcastImportGroupRowsPage {
+  groupKey: string;
+  groupValue: string | null;
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  rows: BroadcastImportPreviewRow[];
+}
+
+export interface BroadcastImportGroupList {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  rawRowTotal: number;
+  groupTotal: number;
+  matchedGroupTotal: number;
+  unmatchedGroupTotal: number;
+  invalidGroupTotal: number;
+  conflictGroupTotal: number;
+  orderNumberFieldConfigured: boolean;
+  groups: BroadcastImportGroupSummary[];
+}
+
 export interface BroadcastImportFilters {
-  matchStatus?: BroadcastImportMatchStatus | 'all';
+  matchStatus?: BroadcastImportGroupMatchStatus | 'all';
   keyword?: string;
   page?: number;
   pageSize?: number;
@@ -195,6 +248,8 @@ export interface BroadcastDraft {
   draftText: string;
   errorMessage?: string | null;
   draftsStale?: boolean;
+  attachmentsStale?: boolean;
+  attachments?: BroadcastAttachment[];
   updatedAt: string;
   progressLabel: string;
   operator: string;
@@ -232,8 +287,18 @@ export interface BroadcastExecutionLog {
   sendTriggered: boolean;
   inputLocated: boolean;
   draftWritten: boolean;
+  contentVerified?: boolean;
+  textContentVerified?: boolean;
   clipboardRestored: boolean;
-  technicalDetails: string | null;
+  attachmentCount?: number;
+  attachmentNames?: string[];
+  attachmentsPrepared?: boolean;
+  attachmentPasteRequested?: boolean;
+  attachmentsVerified?: boolean;
+  warning?: string | null;
+  errorCode?: string | null;
+  stage?: string | null;
+  technicalDetails: Record<string, unknown> | null;
   timestamp: string;
 }
 
@@ -254,6 +319,7 @@ export interface BroadcastExecutionTaskSummary {
   startedAt: string | null;
   finishedAt: string | null;
   updatedAt: string;
+  attachments: BroadcastAttachment[];
 }
 
 export interface BroadcastExecutionBatchSummary {
@@ -278,13 +344,17 @@ export interface BroadcastExecutionBatchSummary {
 export interface BroadcastExecutorCapability {
   channel: string;
   supports_paste: boolean;
+  supports_paste_verification?: boolean;
   supports_send: boolean;
   supports_cancel: boolean;
   supports_status_query: boolean;
   supports_clipboard_restore: boolean;
   supports_evidence: boolean;
+  requires_manual_conversation_open?: boolean;
   executor_version: string;
   runtime_min_version: string;
+  conversation_locator?: 'keyboard_search';
+  content_verification?: 'disabled';
 }
 
 export interface BroadcastExecutorHealth {

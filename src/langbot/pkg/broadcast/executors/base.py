@@ -19,6 +19,8 @@ class ConversationDraftExecutor:
         draft_text: str,
         idempotency_key: str,
         request_digest: str,
+        attachment_root: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 

@@ -81,7 +81,24 @@ function isWxWorkActiveWindow(window: WindowDescriptor | null | undefined): wind
   return Boolean(window) && matchesWxWorkWindow(window)
 }
 
+function normalizeExecutablePath(value: string | null | undefined): string {
+  return String(value ?? '').trim().replace(/\\/g, '/').toLowerCase()
+}
+
+function matchesActivationTarget(
+  activeDescriptor: WindowDescriptor | null | undefined,
+  target: WindowDescriptor,
+): activeDescriptor is WindowDescriptor {
+  if (!activeDescriptor || !matchesWxWorkWindow(activeDescriptor)) {
+    return false
+  }
+  return String(activeDescriptor.windowId) === String(target.windowId)
+    && Number(activeDescriptor.processId) === Number(target.processId)
+    && normalizeExecutablePath(activeDescriptor.executablePath) === normalizeExecutablePath(target.executablePath)
+}
+
 async function findMatchingActiveWindow(
+  target: WindowDescriptor,
   getActiveDescriptor: () => Promise<WindowDescriptor | null>,
   sleep: (ms: number) => Promise<void>,
 ): Promise<WindowDescriptor | null> {
@@ -90,7 +107,7 @@ async function findMatchingActiveWindow(
       await sleep(ACTIVATION_POLL_MS)
     }
     const activeDescriptor = await getActiveDescriptor()
-    const matched = isWxWorkActiveWindow(activeDescriptor)
+    const matched = matchesActivationTarget(activeDescriptor, target)
     logActivationPoll(attempt, activeDescriptor, matched)
     if (matched) {
       return activeDescriptor
@@ -128,14 +145,14 @@ export async function activateManagedWindow(
   const sleep = deps.sleep ?? defaultSleep
   const getActiveDescriptor = deps.getActiveWindowDescriptor ?? getActiveWindowDescriptor
   const activeBeforeActivation = await getActiveDescriptor()
-  if (isWxWorkActiveWindow(activeBeforeActivation)) {
+  if (matchesActivationTarget(activeBeforeActivation, _target)) {
     logActivationPoll(0, activeBeforeActivation, true)
     return { ok: true, window: activeBeforeActivation }
   }
 
   const availableWindow = nativeWindow
   runActivationSteps(availableWindow)
-  const matchedWindow = await findMatchingActiveWindow(getActiveDescriptor, sleep)
+  const matchedWindow = await findMatchingActiveWindow(_target, getActiveDescriptor, sleep)
 
   if (!matchedWindow) {
     return { ok: false, errorCode: 'WINDOW_ACTIVATION_FAILED' }

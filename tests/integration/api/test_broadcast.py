@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock
@@ -1143,6 +1144,289 @@ class TestBroadcastApi:
         assert task_payload['data']['id'] == task_id
 
     @pytest.mark.asyncio
+    async def test_executor_capabilities_and_health_routes_return_stable_verification_codes(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        class _FakeRuntimeClient:
+            async def health(self):
+                return {
+                    'status': 'ready',
+                    'protocolVersion': '1',
+                    'runtimeVersion': '0.1.0-test',
+                }
+
+            async def capabilities(self):
+                return {
+                    'windowingAvailable': True,
+                    'captureAvailable': True,
+                    'inputAvailable': True,
+                    'providerHubReady': True,
+                    'activeTaskCount': 0,
+                    'lastErrorCode': None,
+                    'pasteVerification': {
+                        'available': True,
+                        'reason': None,
+                        'method': 'windows_uia',
+                        'requiresManualConversationOpen': True,
+                        'supportedErrorCodes': [
+                            'TARGET_WINDOW_CHANGED',
+                            'CONVERSATION_MISMATCH',
+                            'INPUT_NOT_LOCATED',
+                            'PASTE_CONTENT_MISMATCH',
+                            'PASTE_VERIFICATION_UNAVAILABLE',
+                        ],
+                    },
+                    'displaySummary': [],
+                }
+
+        fake_broadcast_app.desktop_automation_service = SimpleNamespace(
+            runtime_client=_FakeRuntimeClient(),
+        )
+
+        capability_response = await quart_test_client.get(
+            f'/api/v1/broadcast/executors/capabilities?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        capability_raw = await capability_response.get_data(as_text=True)
+        capability_payload = await capability_response.get_json()
+        assert capability_response.status_code == 200
+        assert capability_payload['data']['supports_paste_verification'] is False
+        assert capability_payload['data']['requires_manual_conversation_open'] is False
+        assert '"supports_paste_verification":false' in capability_raw
+
+        health_response = await quart_test_client.get(
+            f'/api/v1/broadcast/executors/health?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        health_raw = await health_response.get_data(as_text=True)
+        health_payload = await health_response.get_json()
+        assert health_response.status_code == 200
+        assert health_payload['data']['runtime_version'] == '0.1.0-test'
+        assert health_payload['data']['runtime_status']['pasteVerification'] == {
+            'available': True,
+            'reason': None,
+            'method': 'windows_uia',
+            'requiresManualConversationOpen': True,
+            'supportedErrorCodes': [
+                'TARGET_WINDOW_CHANGED',
+                'CONVERSATION_MISMATCH',
+                'INPUT_NOT_LOCATED',
+                'PASTE_CONTENT_MISMATCH',
+                'PASTE_VERIFICATION_UNAVAILABLE',
+            ],
+        }
+        assert '"method":"windows_uia"' in health_raw
+
+    @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_execution_attempt_evidence_route_returns_specific_not_available_code(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        from langbot.pkg.broadcast.errors import BroadcastError
+
+        async def missing_evidence(_attempt_id, _scope):
+            raise BroadcastError('BROADCAST_EXECUTION_EVIDENCE_NOT_AVAILABLE', 'execution evidence not available')
+
+        fake_broadcast_app.broadcast_service.get_execution_evidence = missing_evidence
+
+        response = await quart_test_client.get(
+            f'/api/v1/broadcast/execution-attempts/123/evidence?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 404
+        assert payload['msg'] == 'BROADCAST_EXECUTION_EVIDENCE_NOT_AVAILABLE'
+
+
+    async def test_execution_task_start_route_preserves_succeeded_with_warning_status(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+        monkeypatch,
+    ):
+        monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+        class _WarningRuntimeClient:
+            async def create_task(self, *, request):
+                return {
+                    'id': 'runtime-warning',
+                    'status': 'succeeded_with_warning',
+                    'stage': 'attachments_pasted_unverified',
+                    'result': {
+                        'messageSent': False,
+                        'clipboardRestoreFailed': False,
+                        'warning': 'PASTE_RESULT_NOT_VERIFIED',
+                        'contentVerified': False,
+                        'draftWritten': True,
+                        'inputLocated': False,
+                        'attachmentsPrepared': True,
+                        'attachmentPasteRequested': True,
+                        'attachmentsVerified': False,
+                        'attachmentCount': 1,
+                        'observationAvailable': False,
+                        'attachments': [{'name': 'quote.pdf'}],
+                    },
+                }
+
+            async def health(self):
+                return {
+                    'status': 'ready',
+                    'protocolVersion': '1',
+                    'runtimeVersion': '0.1.0-test',
+                }
+
+            async def capabilities(self):
+                return {
+                    'windowingAvailable': True,
+                    'captureAvailable': True,
+                    'inputAvailable': True,
+                    'providerHubReady': True,
+                    'activeTaskCount': 0,
+                    'lastErrorCode': None,
+                    'pasteVerification': {
+                        'available': True,
+                        'reason': None,
+                        'method': 'windows_uia',
+                        'requiresManualConversationOpen': True,
+                        'supportedErrorCodes': [],
+                    },
+                    'displaySummary': [],
+                }
+
+        fake_broadcast_app.desktop_automation_service = SimpleNamespace(
+            runtime_client=_WarningRuntimeClient(),
+        )
+
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Acme Group',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        template_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Arrival Reminder',
+                'content': 'Hello {{customer_name}}',
+                'enabled': True,
+            },
+        )
+        template_id = (await template_response.get_json())['data']['id']
+        await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'template_id': template_id,
+            },
+        )
+        drafts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+            headers=_auth_headers(),
+        )
+        draft = (await drafts_response.get_json())['data'][0]
+        await quart_test_client.post(
+            '/api/v1/broadcast/drafts/batch-status',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'status': 'ready',
+            },
+        )
+        create_response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'mode': 'paste_only',
+                'operator': 'tester@example.com',
+            },
+        )
+        task_id = (await create_response.get_json())['data']['tasks'][0]['id']
+
+        start_response = await quart_test_client.post(
+            f'/api/v1/broadcast/execution-tasks/{task_id}/start',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'operator': 'tester@example.com',
+            },
+        )
+        start_payload = await start_response.get_json()
+
+        assert start_response.status_code == 200
+        assert start_payload['data']['status'] == 'succeeded_with_warning'
+
+        attempts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/execution-tasks/{task_id}/attempts?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        attempts_payload = await attempts_response.get_json()
+        assert attempts_payload['data'][0]['status'] == 'succeeded_with_warning'
+
+        evidence_response = await quart_test_client.get(
+            f"/api/v1/broadcast/execution-attempts/{attempts_payload['data'][0]['id']}/evidence?{_query_scope()}",
+            headers=_auth_headers(),
+        )
+        evidence_payload = await evidence_response.get_json()
+        assert evidence_payload['data']['evidence_summary'] == '已写入，附件待人工确认'
+        technical_details = json.loads(evidence_payload['data']['technical_details'])
+        assert technical_details['warning'] == 'PASTE_RESULT_NOT_VERIFIED'
+        assert technical_details['attachment_count'] == 1
+        assert technical_details['attachment_names'] == ['quote.pdf']
+
+    @pytest.mark.asyncio
     async def test_execution_batch_rejects_pending_review_draft(self, quart_test_client):
         await quart_test_client.put(
             '/api/v1/broadcast/variable-profile',
@@ -1228,3 +1512,232 @@ class TestBroadcastApi:
         create_payload = await create_response.get_json()
         assert create_response.status_code == 400
         assert create_payload['msg'] == 'BROADCAST_EXECUTION_DRAFT_NOT_READY'
+
+    @pytest.mark.asyncio
+    async def test_execution_evidence_keeps_selected_window_and_task_verification_diagnostic(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+        monkeypatch,
+    ):
+        monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+        class _InputNotLocatedRuntimeClient:
+            def __init__(self) -> None:
+                self.requests = []
+
+            async def create_task(self, *, request):
+                self.requests.append(request)
+                return {
+                    'id': 'runtime-api-input-not-located',
+                    'status': 'interrupted',
+                    'stage': 'input_not_located',
+                    'errorCode': 'INPUT_NOT_LOCATED',
+                    'result': {
+                        'messageSent': False,
+                        'clipboardRestoreFailed': False,
+                        'contentVerified': False,
+                        'verificationFailed': True,
+                        'draftWritten': False,
+                        'inputLocated': False,
+                        'windowTitle': '企业微信',
+                        'candidateCountBeforeFilter': 3,
+                        'candidateCountAfterFilter': 1,
+                        'canonicalCandidateCount': 2,
+                        'rejectedCandidateCount': 2,
+                        'selectedWindow': {
+                            'hwnd': '1769682',
+                            'rootHwnd': '1769682',
+                            'ownerHwnd': '0',
+                            'processId': 5516,
+                            'processName': 'wxwork.exe',
+                            'executableName': 'wxwork.exe',
+                            'title': '企业微信',
+                            'className': 'Qt51514QWindowIcon',
+                            'visible': True,
+                            'minimized': False,
+                            'source': 'node-window-manager',
+                            'accepted': True,
+                            'rejectionReason': None,
+                        },
+                        'taskVerificationDiagnostic': {
+                            'scriptKind': 'input_inspection',
+                            'spawnSucceeded': True,
+                            'timedOut': False,
+                            'exitCode': 0,
+                            'stdoutJsonFound': True,
+                            'stderrCategory': 'none',
+                            'tempFileCreated': True,
+                            'tempFileCleanupSucceeded': True,
+                            'failureStep': 'INPUT_LOOKUP',
+                            'windowFound': True,
+                            'conversationObserved': True,
+                            'conversationMatched': True,
+                            'inputElementFound': False,
+                            'valuePatternAvailable': False,
+                            'textPatternAvailable': False,
+                            'textObserved': False,
+                        },
+                    },
+                }
+
+            async def health(self):
+                return {
+                    'status': 'ready',
+                    'protocolVersion': '1',
+                    'runtimeVersion': '0.1.0-test',
+                }
+
+            async def capabilities(self):
+                return {
+                    'windowingAvailable': True,
+                    'captureAvailable': True,
+                    'inputAvailable': True,
+                    'providerHubReady': True,
+                    'activeTaskCount': 0,
+                    'lastErrorCode': None,
+                    'pasteVerification': {
+                        'available': True,
+                        'reason': None,
+                        'method': 'windows_uia',
+                        'requiresManualConversationOpen': True,
+                        'supportedErrorCodes': [
+                            'TARGET_WINDOW_CHANGED',
+                            'CONVERSATION_MISMATCH',
+                            'INPUT_NOT_LOCATED',
+                            'PASTE_CONTENT_MISMATCH',
+                            'UIA_TASK_SCRIPT_FAILED',
+                            'PASTE_VERIFICATION_UNAVAILABLE',
+                        ],
+                    },
+                    'displaySummary': [],
+                }
+
+        fake_broadcast_app.desktop_automation_service = SimpleNamespace(
+            runtime_client=_InputNotLocatedRuntimeClient(),
+        )
+
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Acme Group',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                )
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        template_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Arrival Reminder',
+                'content': 'Hello {{customer_name}}',
+                'enabled': True,
+            },
+        )
+        template_id = (await template_response.get_json())['data']['id']
+        await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'template_id': template_id,
+            },
+        )
+        drafts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+            headers=_auth_headers(),
+        )
+        draft = (await drafts_response.get_json())['data'][0]
+        await quart_test_client.post(
+            '/api/v1/broadcast/drafts/batch-status',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'status': 'ready',
+            },
+        )
+
+        create_response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'mode': 'paste_only',
+                'operator': 'tester@example.com',
+            },
+        )
+        task_id = (await create_response.get_json())['data']['tasks'][0]['id']
+
+        start_response = await quart_test_client.post(
+            f'/api/v1/broadcast/execution-tasks/{task_id}/start',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'operator': 'tester@example.com',
+            },
+        )
+        start_payload = await start_response.get_json()
+        assert start_response.status_code == 200
+        assert start_payload['data']['error_code'] == 'INPUT_NOT_LOCATED'
+
+        attempts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/execution-tasks/{task_id}/attempts?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        attempts_payload = await attempts_response.get_json()
+        attempt_id = attempts_payload['data'][0]['id']
+
+        evidence_response = await quart_test_client.get(
+            f'/api/v1/broadcast/execution-attempts/{attempt_id}/evidence?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        evidence_payload = await evidence_response.get_json()
+        assert evidence_response.status_code == 200
+        assert evidence_payload['data']['window_title'] == '企业微信'
+        technical_details = json.loads(evidence_payload['data']['technical_details'])
+        assert technical_details['error_code'] == 'INPUT_NOT_LOCATED'
+        assert technical_details['selected_window']['hwnd'] == '1769682'
+        assert technical_details['task_verification_diagnostic']['failureStep'] == 'INPUT_LOOKUP'

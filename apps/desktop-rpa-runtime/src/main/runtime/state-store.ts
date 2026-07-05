@@ -41,6 +41,20 @@ export class RuntimeStateStore {
       providerHubReady: true,
       activeTaskCount: 0,
       lastErrorCode: this.lastErrorCode,
+      pasteVerification: {
+        available: false,
+        reason: 'PASTE_VERIFICATION_DISABLED',
+        diagnosticCode: null,
+        capabilityCheckedAt: null,
+        capabilityExpiresAt: null,
+        capabilityAgeMs: null,
+        capabilityProbeCount: 0,
+        capabilityProbeSpawnCount: 0,
+        lastCapabilityDiagnosticCode: null,
+        method: 'unavailable',
+        requiresManualConversationOpen: false,
+        supportedErrorCodes: [],
+      },
       displaySummary: safeDisplaySummary(),
     }
   }

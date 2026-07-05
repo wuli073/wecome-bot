@@ -38,6 +38,10 @@ interface ExecutionLogPanelProps {
   latestBatch?: BroadcastExecutionBatchSummary | null;
   executorCapability?: BroadcastExecutorCapability | null;
   executorHealth?: BroadcastExecutorHealth | null;
+  pasteVerificationAvailable?: boolean;
+  pasteVerificationMethod?: 'windows_uia' | 'unavailable';
+  requiresManualConversationOpen?: boolean;
+  pasteActionDisabledReason?: string | null;
   busy?: boolean;
   onStartBatch?: () => void;
   onPauseBatch?: () => void;
@@ -55,15 +59,27 @@ function isRetryableTask(task: BroadcastExecutionTaskSummary) {
 }
 
 function isBatchTerminal(status: string) {
-  return ['completed', 'partially_failed', 'failed', 'cancelled', 'interrupted'].includes(status);
+  return [
+    'completed',
+    'partially_failed',
+    'failed',
+    'cancelled',
+    'interrupted',
+  ].includes(status);
 }
 
 function getLogStatusLabel(
   log: BroadcastExecutionLog,
   t: ReturnType<typeof useTranslation>['t'],
 ) {
+  if (log.taskStatus === 'succeeded_with_warning') {
+    return t('broadcast.logs.statusWarning');
+  }
   if (log.action === 'send_message' && log.sendTriggered) {
     return t('broadcast.logs.statusSendTriggered');
+  }
+  if (log.contentVerified) {
+    return t('broadcast.logs.statusPasteVerified');
   }
   if (log.draftWritten && !log.sendTriggered) {
     return t('broadcast.logs.statusDraftWritten');
@@ -71,11 +87,101 @@ function getLogStatusLabel(
   return log.taskStatus;
 }
 
+function getLogBadgeVariant(
+  log: BroadcastExecutionLog,
+): 'outline' | 'secondary' {
+  return log.taskStatus === 'succeeded_with_warning' ? 'secondary' : 'outline';
+}
+
+function getBooleanLabel(
+  value: boolean | undefined,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  return value ? t('broadcast.logs.booleanYes') : t('broadcast.logs.booleanNo');
+}
+
+function getAttachmentNames(log: BroadcastExecutionLog) {
+  return (log.attachmentNames || []).filter((item) => item.trim().length > 0);
+}
+
+function hasAttachmentSection(log: BroadcastExecutionLog) {
+  return (log.attachmentCount || 0) > 0 || getAttachmentNames(log).length > 0;
+}
+
+function renderLogEvidence(
+  log: BroadcastExecutionLog,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  const items: Array<{ label: string; value: string }> = [];
+  if (hasAttachmentSection(log)) {
+    items.push({
+      label: t('broadcast.logs.fields.attachmentCount'),
+      value: String(log.attachmentCount || 0),
+    });
+    const names = getAttachmentNames(log);
+    if (names.length > 0) {
+      items.push({
+        label: t('broadcast.logs.fields.attachmentNames'),
+        value: names.join(', '),
+      });
+    }
+  }
+  items.push({
+    label: t('broadcast.logs.fields.textContentVerified'),
+    value: getBooleanLabel(log.textContentVerified, t),
+  });
+  items.push({
+    label: t('broadcast.logs.fields.attachmentsPrepared'),
+    value: getBooleanLabel(log.attachmentsPrepared, t),
+  });
+  items.push({
+    label: t('broadcast.logs.fields.attachmentPasteRequested'),
+    value: getBooleanLabel(log.attachmentPasteRequested, t),
+  });
+  items.push({
+    label: t('broadcast.logs.fields.attachmentsVerified'),
+    value: getBooleanLabel(log.attachmentsVerified, t),
+  });
+  if (log.warning) {
+    items.push({
+      label: t('broadcast.logs.fields.warning'),
+      value: t(`broadcast.logs.warningCodes.${log.warning}`, log.warning),
+    });
+  }
+  if (log.errorCode) {
+    items.push({
+      label: t('broadcast.logs.fields.errorCode'),
+      value: t(`broadcast.logs.errorCodes.${log.errorCode}`, log.errorCode),
+    });
+  }
+  if (log.stage) {
+    items.push({
+      label: t('broadcast.logs.fields.stage'),
+      value: log.stage,
+    });
+  }
+
+  return (
+    <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+      {items.map((item) => (
+        <div key={`${item.label}-${item.value}`} className="break-all">
+          <span className="font-medium text-foreground">{item.label}: </span>
+          <span>{item.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function ExecutionLogPanel({
   logs,
   latestBatch,
   executorCapability,
   executorHealth,
+  pasteVerificationAvailable = false,
+  pasteVerificationMethod: _pasteVerificationMethod = 'unavailable',
+  requiresManualConversationOpen: _requiresManualConversationOpen = false,
+  pasteActionDisabledReason = null,
   busy = false,
   onStartBatch,
   onPauseBatch,
@@ -112,7 +218,9 @@ export default function ExecutionLogPanel({
         accessorKey: 'taskStatus',
         header: t('broadcast.fields.status'),
         cell: ({ row }) => (
-          <Badge variant="outline">{getLogStatusLabel(row.original, t)}</Badge>
+          <Badge variant={getLogBadgeVariant(row.original)}>
+            {getLogStatusLabel(row.original, t)}
+          </Badge>
         ),
       },
     ],
@@ -126,10 +234,26 @@ export default function ExecutionLogPanel({
   });
 
   const batchStatus = latestBatch?.status || '';
-  const canStart = Boolean(onStartBatch) && latestBatch != null && ['created', 'paused'].includes(batchStatus);
-  const canPause = Boolean(onPauseBatch) && latestBatch != null && ['queued', 'running'].includes(batchStatus);
-  const canResume = Boolean(onResumeBatch) && latestBatch != null && ['paused', 'partially_failed', 'interrupted'].includes(batchStatus);
-  const canCancel = Boolean(onCancelBatch) && latestBatch != null && !isBatchTerminal(batchStatus);
+  const canRunLatestPasteBatch =
+    latestBatch?.mode === 'paste_only' ? pasteVerificationAvailable : true;
+  const canStart =
+    Boolean(onStartBatch) &&
+    latestBatch != null &&
+    ['created', 'paused'].includes(batchStatus) &&
+    canRunLatestPasteBatch;
+  const canPause =
+    Boolean(onPauseBatch) &&
+    latestBatch != null &&
+    ['queued', 'running'].includes(batchStatus);
+  const canResume =
+    Boolean(onResumeBatch) &&
+    latestBatch != null &&
+    ['paused', 'partially_failed', 'interrupted'].includes(batchStatus) &&
+    canRunLatestPasteBatch;
+  const canCancel =
+    Boolean(onCancelBatch) &&
+    latestBatch != null &&
+    !isBatchTerminal(batchStatus);
 
   return (
     <Card className="gap-4">
@@ -142,46 +266,99 @@ export default function ExecutionLogPanel({
           className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]"
           data-testid="broadcast-executor-status-cards"
         >
-          <div className="rounded-xl border bg-muted/10 p-4" data-testid="broadcast-executor-capability-card">
-            <div className="text-sm font-medium">{t('broadcast.logs.executorCapabilitiesTitle')}</div>
+          <div
+            className="rounded-xl border bg-muted/10 p-4"
+            data-testid="broadcast-executor-capability-card"
+          >
+            <div className="text-sm font-medium">
+              {t('broadcast.logs.executorCapabilitiesTitle')}
+            </div>
             <div className="mt-3 flex flex-wrap gap-2 text-xs">
               <Badge variant="outline">
-                {t('broadcast.logs.capabilityPaste')}: {executorCapability?.supports_paste ? 'yes' : 'no'}
+                {t('broadcast.logs.capabilityPaste')}:{' '}
+                {executorCapability?.supports_paste
+                  ? t('broadcast.logs.capabilityBooleanYes')
+                  : t('broadcast.logs.capabilityBooleanNo')}
               </Badge>
-              <Badge variant="outline" data-testid="broadcast-executor-send-capability">
-                {t('broadcast.logs.capabilitySend')}: {executorCapability?.supports_send ? 'yes' : 'no'}
+              <Badge
+                variant="outline"
+                data-testid="broadcast-executor-send-capability"
+              >
+                {t('broadcast.logs.capabilitySend')}:{' '}
+                {executorCapability?.supports_send
+                  ? t('broadcast.logs.capabilityBooleanYes')
+                  : t('broadcast.logs.capabilityBooleanNo')}
               </Badge>
               <Badge variant="outline">
-                {t('broadcast.logs.capabilityCancel')}: {executorCapability?.supports_cancel ? 'yes' : 'no'}
+                {t('broadcast.logs.capabilityCancel')}:{' '}
+                {executorCapability?.supports_cancel
+                  ? t('broadcast.logs.capabilityBooleanYes')
+                  : t('broadcast.logs.capabilityBooleanNo')}
               </Badge>
               <Badge variant="outline">
-                {t('broadcast.logs.capabilityStatusQuery')}: {executorCapability?.supports_status_query ? 'yes' : 'no'}
+                {t('broadcast.logs.capabilityStatusQuery')}:{' '}
+                {executorCapability?.supports_status_query
+                  ? t('broadcast.logs.capabilityBooleanYes')
+                  : t('broadcast.logs.capabilityBooleanNo')}
+              </Badge>
+              <Badge variant="outline">
+                {t('broadcast.logs.capabilityPasteVerification')}:{' '}
+                {t('broadcast.logs.capabilityBooleanNo')}
+              </Badge>
+              <Badge variant="outline">
+                {t('broadcast.logs.capabilityConversationLocator')}:{' '}
+                {t('broadcast.logs.conversationLocatorKeyboardSearch')}
+              </Badge>
+              <Badge variant="outline">
+                {t('broadcast.logs.pasteVerificationMethod')}:{' '}
+                {t('broadcast.logs.pasteVerificationUnavailable')}
+              </Badge>
+              <Badge
+                variant={pasteVerificationAvailable ? 'outline' : 'secondary'}
+                data-testid="broadcast-executor-paste-verification-status"
+              >
+                {t('broadcast.logs.pasteVerificationStatus')}:{' '}
+                {t('broadcast.logs.pasteVerificationUnavailable')}
               </Badge>
             </div>
             <div className="mt-3 text-xs text-muted-foreground">
-              {t('broadcast.logs.executorVersion')}: {executorCapability?.executor_version || '-'} ·
+              {t('broadcast.logs.executorVersion')}:{' '}
+              {executorCapability?.executor_version || '-'} ·
               {` ${t('broadcast.logs.runtimeMinVersion')}: ${executorCapability?.runtime_min_version || '-'}`}
             </div>
           </div>
 
-          <div className="rounded-xl border bg-muted/10 p-4" data-testid="broadcast-executor-health-card">
-            <div className="text-sm font-medium">{t('broadcast.logs.executorHealthTitle')}</div>
+          <div
+            className="rounded-xl border bg-muted/10 p-4"
+            data-testid="broadcast-executor-health-card"
+          >
+            <div className="text-sm font-medium">
+              {t('broadcast.logs.executorHealthTitle')}
+            </div>
             <div className="mt-3 flex items-center gap-2">
-              <Badge variant="outline" data-testid="broadcast-executor-health-status">
+              <Badge
+                variant="outline"
+                data-testid="broadcast-executor-health-status"
+              >
                 {executorHealth?.status || 'unknown'}
               </Badge>
               <span className="text-xs text-muted-foreground">
-                {t('broadcast.logs.runtimeVersion')}: {executorHealth?.runtime_version || '-'}
+                {t('broadcast.logs.runtimeVersion')}:{' '}
+                {executorHealth?.runtime_version || '-'}
               </span>
             </div>
             <div className="mt-3 text-xs text-muted-foreground">
-              {t('broadcast.logs.protocolVersion')}: {executorHealth?.protocol_version || '-'}
+              {t('broadcast.logs.protocolVersion')}:{' '}
+              {executorHealth?.protocol_version || '-'}
             </div>
           </div>
         </div>
 
         {latestBatch ? (
-          <div className="rounded-xl border bg-muted/10 p-4" data-testid="broadcast-latest-execution-batch">
+          <div
+            className="rounded-xl border bg-muted/10 p-4"
+            data-testid="broadcast-latest-execution-batch"
+          >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="space-y-1">
                 <div className="text-sm font-medium">
@@ -239,7 +416,16 @@ export default function ExecutionLogPanel({
               </div>
             </div>
 
-            <div className="mt-4 overflow-x-auto" data-testid="broadcast-latest-execution-tasks">
+            {latestBatch.mode === 'paste_only' && pasteActionDisabledReason ? (
+              <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800">
+                {pasteActionDisabledReason}
+              </div>
+            ) : null}
+
+            <div
+              className="mt-4 overflow-x-auto"
+              data-testid="broadcast-latest-execution-tasks"
+            >
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -248,12 +434,17 @@ export default function ExecutionLogPanel({
                     <TableHead>{t('broadcast.fields.conversation')}</TableHead>
                     <TableHead>{t('broadcast.fields.status')}</TableHead>
                     <TableHead>{t('broadcast.logs.attemptCount')}</TableHead>
-                    <TableHead className="text-right">{t('broadcast.logs.taskActions')}</TableHead>
+                    <TableHead className="text-right">
+                      {t('broadcast.logs.taskActions')}
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {latestBatch.tasks.map((task) => (
-                    <TableRow key={task.id} data-testid={`broadcast-execution-task-row-${task.id}`}>
+                    <TableRow
+                      key={task.id}
+                      data-testid={`broadcast-execution-task-row-${task.id}`}
+                    >
                       <TableCell>#{task.id}</TableCell>
                       <TableCell>{task.action}</TableCell>
                       <TableCell>{task.targetConversationSnapshot}</TableCell>
@@ -273,7 +464,9 @@ export default function ExecutionLogPanel({
                             {t('broadcast.logs.retryTask')}
                           </Button>
                         ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
+                          <span className="text-xs text-muted-foreground">
+                            —
+                          </span>
                         )}
                       </TableCell>
                     </TableRow>
@@ -293,7 +486,10 @@ export default function ExecutionLogPanel({
                     <TableHead key={header.id}>
                       {header.isPlaceholder
                         ? null
-                        : flexRender(header.column.columnDef.header, header.getContext())}
+                        : flexRender(
+                            header.column.columnDef.header,
+                            header.getContext(),
+                          )}
                     </TableHead>
                   ))}
                 </TableRow>
@@ -305,16 +501,34 @@ export default function ExecutionLogPanel({
                   <TableRow key={row.id}>
                     {row.getVisibleCells().map((cell) => (
                       <TableCell key={cell.id}>
-                        {cell.column.columnDef.cell
-                          ? flexRender(cell.column.columnDef.cell, cell.getContext())
-                          : String(cell.getValue() ?? '')}
+                        {cell.column.id === 'message' ? (
+                          <div>
+                            {cell.column.columnDef.cell
+                              ? flexRender(
+                                  cell.column.columnDef.cell,
+                                  cell.getContext(),
+                                )
+                              : String(cell.getValue() ?? '')}
+                            {renderLogEvidence(row.original, t)}
+                          </div>
+                        ) : cell.column.columnDef.cell ? (
+                          flexRender(
+                            cell.column.columnDef.cell,
+                            cell.getContext(),
+                          )
+                        ) : (
+                          String(cell.getValue() ?? '')
+                        )}
                       </TableCell>
                     ))}
                   </TableRow>
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={columns.length} className="text-center text-muted-foreground">
+                  <TableCell
+                    colSpan={columns.length}
+                    className="text-center text-muted-foreground"
+                  >
                     {t('broadcast.logs.empty')}
                   </TableCell>
                 </TableRow>

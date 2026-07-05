@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { type MouseEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -19,7 +19,6 @@ import { Textarea } from '@/components/ui/textarea';
 
 import type {
   BroadcastMessageTemplate,
-  BroadcastScope,
   BroadcastTemplateDraft,
   BroadcastTemplateRenderResult,
   BroadcastVariableMapping,
@@ -27,14 +26,16 @@ import type {
 import { markBroadcastRender } from '../../diagnostics';
 
 interface TemplatePanelProps {
-  scope: BroadcastScope;
   templates: BroadcastMessageTemplate[];
   mappings: BroadcastVariableMapping[];
   loading: boolean;
   saving: boolean;
   error: string | null;
   onCreate: (draft: BroadcastTemplateDraft) => Promise<void>;
-  onUpdate: (templateId: number, draft: BroadcastTemplateDraft) => Promise<void>;
+  onUpdate: (
+    templateId: number,
+    draft: BroadcastTemplateDraft,
+  ) => Promise<void>;
   onDelete: (templateId: number) => Promise<void>;
   onRenderPreview: (payload: {
     templateId?: number;
@@ -42,7 +43,9 @@ interface TemplatePanelProps {
   }) => Promise<BroadcastTemplateRenderResult>;
 }
 
-function toDraft(template: BroadcastMessageTemplate | null): BroadcastTemplateDraft {
+function toDraft(
+  template: BroadcastMessageTemplate | null,
+): BroadcastTemplateDraft {
   if (!template) {
     return {
       name: '',
@@ -59,7 +62,6 @@ function toDraft(template: BroadcastMessageTemplate | null): BroadcastTemplateDr
 }
 
 export default function TemplatePanel({
-  scope,
   templates,
   mappings,
   loading,
@@ -83,6 +85,9 @@ export default function TemplatePanel({
   );
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const pendingCursorRef = useRef<number | null>(null);
+  const selectionRef = useRef<{ start: number; end: number } | null>(null);
 
   const variableValues = useMemo(
     () =>
@@ -96,11 +101,61 @@ export default function TemplatePanel({
     () => new Map(mappings.map((mapping) => [mapping.variableKey, mapping])),
     [mappings],
   );
+  const variableCards = useMemo(() => {
+    const orderedKeys: string[] = [];
+    const seen = new Set<string>();
+
+    for (const mapping of mappings) {
+      if (seen.has(mapping.variableKey)) {
+        continue;
+      }
+      seen.add(mapping.variableKey);
+      orderedKeys.push(mapping.variableKey);
+    }
+
+    for (const variableKey of preview?.requiredVariables ?? []) {
+      if (seen.has(variableKey)) {
+        continue;
+      }
+      seen.add(variableKey);
+      orderedKeys.push(variableKey);
+    }
+
+    return orderedKeys.map((variableKey) => {
+      const mapping = mappingsByKey.get(variableKey) ?? null;
+      const badgeVariant: 'destructive' | 'outline' | 'secondary' = !mapping
+        ? 'destructive'
+        : mapping.sampleState === 'ready'
+          ? 'outline'
+          : 'secondary';
+      const badgeLabel = !mapping
+        ? t('broadcast.labels.missing')
+        : mapping.sampleState === 'ready'
+          ? t('broadcast.labels.ready')
+          : mapping.sampleState === 'no_value'
+            ? t('broadcast.labels.noValidValue')
+            : t('broadcast.labels.configured');
+      const sampleText = !mapping
+        ? t('broadcast.labels.noSampleValue')
+        : variableValues[variableKey] ||
+          (mapping.sampleState === 'no_value'
+            ? t('broadcast.labels.noValidValue')
+            : t('broadcast.labels.noSampleValue'));
+
+      return {
+        variableKey,
+        badgeVariant,
+        badgeLabel,
+        sampleText,
+      };
+    });
+  }, [mappings, mappingsByKey, preview?.requiredVariables, t, variableValues]);
 
   const activeTemplate =
     activeTemplateId === 'new'
       ? null
-      : templates.find((template) => template.id === activeTemplateId) ?? null;
+      : (templates.find((template) => template.id === activeTemplateId) ??
+        null);
 
   useEffect(() => {
     if (activeTemplateId === 'new') {
@@ -131,9 +186,7 @@ export default function TemplatePanel({
       }
 
       try {
-        const result = activeTemplate
-          ? await onRenderPreview({ templateId: activeTemplate.id })
-          : await onRenderPreview({ content: draft.body });
+        const result = await onRenderPreview({ content: draft.body });
         if (!cancelled) {
           setPreview(result);
           setPreviewError(null);
@@ -156,6 +209,68 @@ export default function TemplatePanel({
       cancelled = true;
     };
   }, [activeTemplate, draft.body, onRenderPreview, t]);
+
+  useEffect(() => {
+    const nextCursor = pendingCursorRef.current;
+    const textarea = textareaRef.current;
+    if (nextCursor == null || !textarea) {
+      return;
+    }
+
+    pendingCursorRef.current = null;
+    const animationFrameId = window.requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(nextCursor, nextCursor);
+      selectionRef.current = {
+        start: nextCursor,
+        end: nextCursor,
+      };
+    });
+
+    return () => {
+      window.cancelAnimationFrame(animationFrameId);
+    };
+  }, [draft.body]);
+
+  const rememberSelection = (
+    target: HTMLTextAreaElement | EventTarget | null,
+  ) => {
+    if (!(target instanceof HTMLTextAreaElement)) {
+      return;
+    }
+    selectionRef.current = {
+      start: target.selectionStart ?? 0,
+      end: target.selectionEnd ?? 0,
+    };
+  };
+
+  const handleInsertVariable = (variableKey: string) => {
+    const token = `{{${variableKey}}}`;
+    const textarea = textareaRef.current;
+    const body = draft.body;
+    const hasFocusedSelection =
+      textarea != null &&
+      document.activeElement === textarea &&
+      selectionRef.current != null;
+    const start = hasFocusedSelection
+      ? Math.min(selectionRef.current?.start ?? 0, body.length)
+      : body.length;
+    const end = hasFocusedSelection
+      ? Math.min(selectionRef.current?.end ?? start, body.length)
+      : start;
+    const nextBody = body.slice(0, start) + token + body.slice(end);
+    const nextCursor = start + token.length;
+
+    pendingCursorRef.current = nextCursor;
+    setDraft((current) => ({
+      ...current,
+      body: nextBody,
+    }));
+  };
+
+  const handleVariableMouseDown = (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+  };
 
   const handleSave = async () => {
     if (activeTemplate) {
@@ -194,9 +309,7 @@ export default function TemplatePanel({
                 key={template.id}
                 onClick={() => setActiveTemplateId(template.id)}
                 className={`w-full rounded-xl border p-3 text-left transition-colors ${
-                  isActive
-                    ? 'border-blue-500 bg-blue-50'
-                    : 'hover:bg-muted/40'
+                  isActive ? 'border-blue-500 bg-blue-50' : 'hover:bg-muted/40'
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
@@ -263,6 +376,8 @@ export default function TemplatePanel({
             </Label>
             <Textarea
               id="broadcast-template-body"
+              ref={textareaRef}
+              data-testid="broadcast-template-body"
               value={draft.body}
               onChange={(event) =>
                 setDraft((current) => ({
@@ -270,6 +385,10 @@ export default function TemplatePanel({
                   body: event.target.value,
                 }))
               }
+              onSelect={(event) => rememberSelection(event.target)}
+              onClick={(event) => rememberSelection(event.target)}
+              onKeyUp={(event) => rememberSelection(event.target)}
+              onFocus={(event) => rememberSelection(event.target)}
               className="min-h-48"
             />
           </div>
@@ -295,7 +414,11 @@ export default function TemplatePanel({
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Button type="button" disabled={saving} onClick={() => void handleSave()}>
+            <Button
+              type="button"
+              disabled={saving}
+              onClick={() => void handleSave()}
+            >
               {activeTemplate
                 ? t('broadcast.actions.saveTemplate')
                 : t('broadcast.actions.createTemplate')}
@@ -332,7 +455,8 @@ export default function TemplatePanel({
               </Alert>
             ) : (
               <pre className="whitespace-pre-wrap rounded-lg border bg-muted/20 p-4 text-sm leading-6">
-                {preview?.renderedText || t('broadcast.rules.templatePreviewHint')}
+                {preview?.renderedText ||
+                  t('broadcast.rules.templatePreviewHint')}
               </pre>
             )}
           </div>
@@ -347,41 +471,29 @@ export default function TemplatePanel({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {(preview?.requiredVariables ?? []).map((variableKey) => (
-            (() => {
-              const mapping = mappingsByKey.get(variableKey);
-              const badgeVariant = !mapping
-                ? 'destructive'
-                : mapping.sampleState === 'ready'
-                  ? 'outline'
-                  : 'secondary';
-              const badgeLabel = !mapping
-                ? t('broadcast.labels.missing')
-                : mapping.sampleState === 'ready'
-                  ? t('broadcast.labels.ready')
-                  : mapping.sampleState === 'no_value'
-                    ? t('broadcast.labels.noValidValue')
-                    : t('broadcast.labels.configured');
-              const sampleText = !mapping
-                ? t('broadcast.labels.noSampleValue')
-                : variableValues[variableKey] ||
-                  (mapping.sampleState === 'no_value'
-                    ? t('broadcast.labels.noValidValue')
-                    : t('broadcast.labels.noSampleValue'));
-
-              return (
-                <div key={variableKey} className="rounded-lg border p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <Badge variant="secondary">{variableKey}</Badge>
-                    <Badge variant={badgeVariant}>{badgeLabel}</Badge>
-                  </div>
-                  <div className="mt-2 text-xs text-muted-foreground">
-                    {`{{${variableKey}}}`} → {sampleText}
-                  </div>
+          {variableCards.map(
+            ({ badgeLabel, badgeVariant, sampleText, variableKey }) => (
+              <button
+                key={variableKey}
+                type="button"
+                data-testid={`broadcast-template-variable-${variableKey}`}
+                aria-label={t('broadcast.rules.insertVariableAria', {
+                  name: variableKey,
+                })}
+                className="w-full rounded-lg border p-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                onMouseDown={handleVariableMouseDown}
+                onClick={() => handleInsertVariable(variableKey)}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <Badge variant="secondary">{variableKey}</Badge>
+                  <Badge variant={badgeVariant}>{badgeLabel}</Badge>
                 </div>
-              );
-            })()
-          ))}
+                <div className="mt-2 text-xs text-muted-foreground">
+                  {`{{${variableKey}}}`} · {sampleText}
+                </div>
+              </button>
+            ),
+          )}
         </CardContent>
       </Card>
     </div>

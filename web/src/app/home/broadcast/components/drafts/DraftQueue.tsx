@@ -36,6 +36,7 @@ interface DraftQueueProps {
   selectedDraftId: number | null;
   selectedDraftIds: number[];
   busy?: boolean;
+  canCreateExecutionBatch?: boolean;
   onImportBatchChange: (importBatchId: number | null) => void;
   onSearchTermChange: (value: string) => void;
   onStatusFilterChange: (value: BroadcastStatusFilter) => void;
@@ -67,6 +68,7 @@ export default function DraftQueue({
   selectedDraftId,
   selectedDraftIds,
   busy = false,
+  canCreateExecutionBatch = true,
   onImportBatchChange,
   onSearchTermChange,
   onStatusFilterChange,
@@ -81,7 +83,12 @@ export default function DraftQueue({
     () =>
       drafts
         .flatMap((group) => group.drafts)
-        .filter((draft) => draft.status !== 'invalid' && !draft.draftsStale)
+        .filter(
+          (draft) =>
+            draft.status !== 'invalid' &&
+            !draft.draftsStale &&
+            !draft.attachmentsStale,
+        )
         .map((draft) => draft.id),
     [drafts],
   );
@@ -115,7 +122,9 @@ export default function DraftQueue({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">{t('broadcast.drafts.allBatches')}</SelectItem>
+              <SelectItem value="all">
+                {t('broadcast.drafts.allBatches')}
+              </SelectItem>
               {importBatches.map((batch) => (
                 <SelectItem key={batch.id} value={String(batch.id)}>
                   {batch.originalFileName}
@@ -139,12 +148,18 @@ export default function DraftQueue({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">{t('broadcast.drafts.allStatuses')}</SelectItem>
+              <SelectItem value="all">
+                {t('broadcast.drafts.allStatuses')}
+              </SelectItem>
               <SelectItem value="pending_review">
                 {t('broadcast.drafts.statusPendingReview')}
               </SelectItem>
-              <SelectItem value="ready">{t('broadcast.drafts.statusReady')}</SelectItem>
-              <SelectItem value="invalid">{t('broadcast.drafts.statusInvalid')}</SelectItem>
+              <SelectItem value="ready">
+                {t('broadcast.drafts.statusReady')}
+              </SelectItem>
+              <SelectItem value="invalid">
+                {t('broadcast.drafts.statusInvalid')}
+              </SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -165,7 +180,9 @@ export default function DraftQueue({
                   }}
                 />
                 <div>
-                  <div className="text-sm font-medium">{t('broadcast.drafts.batchToolbar')}</div>
+                  <div className="text-sm font-medium">
+                    {t('broadcast.drafts.batchToolbar')}
+                  </div>
                   <div className="text-xs text-muted-foreground">
                     {t('broadcast.drafts.selectedCount', {
                       count: eligibleSelectedCount,
@@ -186,7 +203,11 @@ export default function DraftQueue({
                 data-testid="broadcast-draft-create-execution-batch-button"
                 variant="outline"
                 onClick={onCreateExecutionBatch}
-                disabled={eligibleSelectedCount === 0 || busy}
+                disabled={
+                  eligibleSelectedCount === 0 ||
+                  busy ||
+                  !canCreateExecutionBatch
+                }
               >
                 {t('broadcast.drafts.createExecutionBatch')}
               </Button>
@@ -211,7 +232,9 @@ export default function DraftQueue({
                   {group.drafts.map((draft) => {
                     const isActive = selectedDraftId === draft.id;
                     const selectionDisabled =
-                      draft.status === 'invalid' || Boolean(draft.draftsStale);
+                      draft.status === 'invalid' ||
+                      Boolean(draft.draftsStale) ||
+                      Boolean(draft.attachmentsStale);
                     return (
                       <div
                         key={draft.id}
@@ -222,7 +245,9 @@ export default function DraftQueue({
                       >
                         <div className="flex items-start gap-3">
                           <Checkbox
-                            aria-label={t('broadcast.drafts.selectDraft', { id: draft.id })}
+                            aria-label={t('broadcast.drafts.selectDraft', {
+                              id: draft.id,
+                            })}
                             checked={selectedDraftIds.includes(draft.id)}
                             disabled={selectionDisabled || busy}
                             data-testid={`broadcast-draft-select-${draft.id}`}
@@ -235,13 +260,22 @@ export default function DraftQueue({
                             className="min-w-0 flex-1 text-left"
                             onClick={() => onSelectDraft(draft.id)}
                           >
-                            <div className="truncate font-medium">{draft.customerName}</div>
+                            <div className="truncate font-medium">
+                              {draft.customerName}
+                            </div>
                             <div className="truncate text-xs text-muted-foreground">
                               {draft.conversationName}
                             </div>
                             <div className="mt-2 text-xs text-muted-foreground">
-                              {getStatusLabel(draft.status as BroadcastDraftStatus, t)}
-                              {draft.draftsStale ? ` · ${t('broadcast.drafts.staleBadge')}` : ''}
+                              {getStatusLabel(
+                                draft.status as BroadcastDraftStatus,
+                                t,
+                              )}
+                              {draft.draftsStale
+                                ? ` · ${t('broadcast.drafts.staleBadge')}`
+                                : draft.attachmentsStale
+                                  ? ` · ${t('broadcast.drafts.attachmentsStaleBadge')}`
+                                : ''}
                             </div>
                           </button>
                         </div>

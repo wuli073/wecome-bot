@@ -31,6 +31,20 @@ class BroadcastRepository:
             persistence_broadcast.BroadcastExecutionBatch.connector_id == connector_id,
         )
 
+    @staticmethod
+    def _group_value_token_expr():
+        return sqlalchemy.func.coalesce(
+            persistence_broadcast.BroadcastImportRow.group_value,
+            sqlalchemy.literal('__invalid__'),
+        )
+
+    @staticmethod
+    def _order_value_expr(source_field: str | None):
+        if not source_field:
+            return sqlalchemy.literal(None)
+        raw_value = persistence_broadcast.BroadcastImportRow.raw_data[source_field].as_string()
+        return sqlalchemy.func.nullif(sqlalchemy.func.trim(sqlalchemy.func.coalesce(raw_value, '')), '')
+
     async def list_import_batches(self, *, bot_uuid: str, connector_id: str):
         result = await self.persistence_mgr.execute_async(
             sqlalchemy.select(persistence_broadcast.BroadcastImportBatch)
@@ -448,6 +462,7 @@ class BroadcastRepository:
         keyword: str | None = None,
         page: int | None = None,
         page_size: int | None = None,
+        conn=None,
     ):
         stmt = (
             sqlalchemy.select(persistence_broadcast.BroadcastImportRow)
@@ -474,7 +489,7 @@ class BroadcastRepository:
             )
         if page and page_size:
             stmt = stmt.offset((page - 1) * page_size).limit(page_size)
-        result = await self.persistence_mgr.execute_async(stmt)
+        result = await self.persistence_mgr.execute_async(stmt, conn=conn)
         return self._all_models(result)
 
     async def count_import_rows(
@@ -512,6 +527,254 @@ class BroadcastRepository:
         result = await self.persistence_mgr.execute_async(stmt)
         return int(result.scalar_one() or 0)
 
+    async def update_import_row_match_result(
+        self,
+        import_row_id: int,
+        *,
+        bot_uuid: str,
+        connector_id: str,
+        updates: dict[str, Any],
+        conn=None,
+    ):
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastImportRow)
+            .where(
+                persistence_broadcast.BroadcastImportRow.id == import_row_id,
+                persistence_broadcast.BroadcastImportRow.import_batch_id.in_(
+                    self._scoped_import_batch_ids(
+                        sqlalchemy.select(persistence_broadcast.BroadcastImportRow.import_batch_id)
+                        .where(persistence_broadcast.BroadcastImportRow.id == import_row_id)
+                        .scalar_subquery(),
+                        bot_uuid=bot_uuid,
+                        connector_id=connector_id,
+                    )
+                ),
+            )
+            .values(updates),
+            conn=conn,
+        )
+        return bool(result.rowcount)
+
+    def _build_import_group_summary_stmt(
+        self,
+        *,
+        import_batch_id: int,
+        bot_uuid: str,
+        connector_id: str,
+        order_number_source_field: str | None,
+        keyword: str | None = None,
+    ):
+        order_value_expr = self._order_value_expr(order_number_source_field)
+        matched_conversation_expr = sqlalchemy.func.nullif(
+            sqlalchemy.func.trim(
+                sqlalchemy.func.coalesce(
+                    persistence_broadcast.BroadcastImportRow.matched_conversation_name,
+                    '',
+                )
+            ),
+            '',
+        )
+        stmt = (
+            sqlalchemy.select(
+                persistence_broadcast.BroadcastImportRow.group_value.label('group_value'),
+                sqlalchemy.func.min(
+                    persistence_broadcast.BroadcastImportRow.source_row_number
+                ).label('first_source_row_number'),
+                sqlalchemy.func.count(
+                    persistence_broadcast.BroadcastImportRow.id
+                ).label('raw_row_count'),
+                sqlalchemy.func.count(
+                    sqlalchemy.distinct(order_value_expr)
+                ).label('distinct_order_number_count'),
+                sqlalchemy.func.min(
+                    persistence_broadcast.BroadcastImportRow.match_status
+                ).label('single_match_status'),
+                sqlalchemy.func.count(
+                    sqlalchemy.distinct(
+                        persistence_broadcast.BroadcastImportRow.match_status
+                    )
+                ).label('match_status_count'),
+                sqlalchemy.func.min(
+                    matched_conversation_expr
+                ).label('matched_conversation_name'),
+                sqlalchemy.func.count(
+                    sqlalchemy.distinct(matched_conversation_expr)
+                ).label('matched_conversation_name_count'),
+                sqlalchemy.func.min(
+                    persistence_broadcast.BroadcastImportRow.error_message
+                ).label('first_error_message'),
+            )
+            .select_from(persistence_broadcast.BroadcastImportRow)
+            .join(
+                persistence_broadcast.BroadcastImportBatch,
+                persistence_broadcast.BroadcastImportBatch.id
+                == persistence_broadcast.BroadcastImportRow.import_batch_id,
+            )
+            .where(
+                persistence_broadcast.BroadcastImportRow.import_batch_id
+                == import_batch_id,
+                persistence_broadcast.BroadcastImportBatch.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastImportBatch.connector_id
+                == connector_id,
+            )
+            .group_by(persistence_broadcast.BroadcastImportRow.group_value)
+        )
+        if keyword:
+            like_value = f'%{keyword}%'
+            stmt = stmt.where(
+                sqlalchemy.or_(
+                    persistence_broadcast.BroadcastImportRow.group_value.ilike(
+                        like_value
+                    ),
+                    persistence_broadcast.BroadcastImportRow.matched_conversation_name.ilike(
+                        like_value
+                    ),
+                )
+            )
+        return stmt
+
+    async def list_import_group_summaries(
+        self,
+        *,
+        import_batch_id: int,
+        bot_uuid: str,
+        connector_id: str,
+        order_number_source_field: str | None,
+        page: int | None = None,
+        page_size: int | None = None,
+        keyword: str | None = None,
+        conn=None,
+    ) -> list[dict[str, Any]]:
+        stmt = self._build_import_group_summary_stmt(
+            import_batch_id=import_batch_id,
+            bot_uuid=bot_uuid,
+            connector_id=connector_id,
+            order_number_source_field=order_number_source_field,
+            keyword=keyword,
+        ).order_by(
+            sqlalchemy.asc(sqlalchemy.literal_column('first_source_row_number')),
+            sqlalchemy.asc(sqlalchemy.func.coalesce(sqlalchemy.literal_column('group_value'), '')),
+        )
+        if page and page_size:
+            stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+        result = await self.persistence_mgr.execute_async(stmt, conn=conn)
+        return [dict(row._mapping) for row in result.all()]
+
+    async def list_all_import_group_summaries(
+        self,
+        *,
+        import_batch_id: int,
+        bot_uuid: str,
+        connector_id: str,
+        order_number_source_field: str | None,
+        keyword: str | None = None,
+        conn=None,
+    ) -> list[dict[str, Any]]:
+        result = await self.persistence_mgr.execute_async(
+            self._build_import_group_summary_stmt(
+                import_batch_id=import_batch_id,
+                bot_uuid=bot_uuid,
+                connector_id=connector_id,
+                order_number_source_field=order_number_source_field,
+                keyword=keyword,
+            ),
+            conn=conn,
+        )
+        return [dict(row._mapping) for row in result.all()]
+
+    async def count_import_groups(
+        self,
+        *,
+        import_batch_id: int,
+        bot_uuid: str,
+        connector_id: str,
+        order_number_source_field: str | None,
+        keyword: str | None = None,
+        conn=None,
+    ) -> int:
+        subquery = self._build_import_group_summary_stmt(
+            import_batch_id=import_batch_id,
+            bot_uuid=bot_uuid,
+            connector_id=connector_id,
+            order_number_source_field=order_number_source_field,
+            keyword=keyword,
+        ).subquery()
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(sqlalchemy.func.count()).select_from(subquery),
+            conn=conn,
+        )
+        return int(result.scalar_one() or 0)
+
+    async def list_import_rows_for_group(
+        self,
+        *,
+        import_batch_id: int,
+        bot_uuid: str,
+        connector_id: str,
+        group_value: str | None,
+        page: int | None = None,
+        page_size: int | None = None,
+        conn=None,
+    ):
+        stmt = (
+            sqlalchemy.select(persistence_broadcast.BroadcastImportRow)
+            .join(
+                persistence_broadcast.BroadcastImportBatch,
+                persistence_broadcast.BroadcastImportBatch.id
+                == persistence_broadcast.BroadcastImportRow.import_batch_id,
+            )
+            .where(
+                persistence_broadcast.BroadcastImportRow.import_batch_id
+                == import_batch_id,
+                persistence_broadcast.BroadcastImportBatch.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastImportBatch.connector_id
+                == connector_id,
+                persistence_broadcast.BroadcastImportRow.group_value.is_(None)
+                if group_value is None
+                else persistence_broadcast.BroadcastImportRow.group_value
+                == group_value,
+            )
+            .order_by(
+                persistence_broadcast.BroadcastImportRow.source_row_number.asc()
+            )
+        )
+        if page and page_size:
+            stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+        result = await self.persistence_mgr.execute_async(stmt, conn=conn)
+        return self._all_models(result)
+
+    async def count_import_rows_for_group(
+        self,
+        *,
+        import_batch_id: int,
+        bot_uuid: str,
+        connector_id: str,
+        group_value: str | None,
+        conn=None,
+    ) -> int:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(sqlalchemy.func.count())
+            .select_from(persistence_broadcast.BroadcastImportRow)
+            .join(
+                persistence_broadcast.BroadcastImportBatch,
+                persistence_broadcast.BroadcastImportBatch.id
+                == persistence_broadcast.BroadcastImportRow.import_batch_id,
+            )
+            .where(
+                persistence_broadcast.BroadcastImportRow.import_batch_id
+                == import_batch_id,
+                persistence_broadcast.BroadcastImportBatch.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastImportBatch.connector_id
+                == connector_id,
+                persistence_broadcast.BroadcastImportRow.group_value.is_(None)
+                if group_value is None
+                else persistence_broadcast.BroadcastImportRow.group_value
+                == group_value,
+            ),
+            conn=conn,
+        )
+        return int(result.scalar_one() or 0)
+
     async def replace_drafts(
         self,
         conn,
@@ -544,6 +807,7 @@ class BroadcastRepository:
         import_batch_id: int | None = None,
         status: str | None = None,
         keyword: str | None = None,
+        conn=None,
     ):
         stmt = sqlalchemy.select(persistence_broadcast.BroadcastDraft).where(
             persistence_broadcast.BroadcastDraft.bot_uuid == bot_uuid,
@@ -566,7 +830,7 @@ class BroadcastRepository:
             persistence_broadcast.BroadcastDraft.created_at.asc(),
             persistence_broadcast.BroadcastDraft.id.asc(),
         )
-        result = await self.persistence_mgr.execute_async(stmt)
+        result = await self.persistence_mgr.execute_async(stmt, conn=conn)
         return self._all_models(result)
 
     async def get_draft(self, draft_id: int, *, bot_uuid: str, connector_id: str, conn=None):
@@ -603,6 +867,357 @@ class BroadcastRepository:
             return None
         return await self.get_draft(draft_id, bot_uuid=bot_uuid, connector_id=connector_id, conn=conn)
 
+    async def create_attachment_asset(self, conn, payload: dict[str, Any]) -> int:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.insert(persistence_broadcast.BroadcastAttachmentAsset).values(payload),
+            conn=conn,
+        )
+        return int(result.inserted_primary_key[0])
+
+    async def get_attachment_asset(
+        self,
+        asset_id: int,
+        *,
+        bot_uuid: str,
+        connector_id: str,
+        conn=None,
+    ):
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_broadcast.BroadcastAttachmentAsset).where(
+                persistence_broadcast.BroadcastAttachmentAsset.id == asset_id,
+                persistence_broadcast.BroadcastAttachmentAsset.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastAttachmentAsset.connector_id == connector_id,
+            ),
+            conn=conn,
+        )
+        return self._first_model(result)
+
+    async def delete_attachment_asset(
+        self,
+        asset_id: int,
+        *,
+        bot_uuid: str,
+        connector_id: str,
+        conn=None,
+    ) -> bool:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.delete(persistence_broadcast.BroadcastAttachmentAsset).where(
+                persistence_broadcast.BroadcastAttachmentAsset.id == asset_id,
+                persistence_broadcast.BroadcastAttachmentAsset.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastAttachmentAsset.connector_id == connector_id,
+            ),
+            conn=conn,
+        )
+        return bool(result.rowcount)
+
+    async def list_import_group_attachments(
+        self,
+        *,
+        import_batch_id: int,
+        bot_uuid: str,
+        connector_id: str,
+        group_key: str | None = None,
+        conn=None,
+    ) -> list[dict[str, Any]]:
+        stmt = (
+            sqlalchemy.select(
+                persistence_broadcast.BroadcastImportGroupAttachment.id.label('relation_id'),
+                persistence_broadcast.BroadcastImportGroupAttachment.group_key.label('group_key'),
+                persistence_broadcast.BroadcastImportGroupAttachment.group_value_snapshot.label('group_value_snapshot'),
+                persistence_broadcast.BroadcastImportGroupAttachment.sort_order.label('sort_order'),
+                persistence_broadcast.BroadcastAttachmentAsset.id.label('asset_id'),
+                persistence_broadcast.BroadcastAttachmentAsset.original_name.label('original_name'),
+                persistence_broadcast.BroadcastAttachmentAsset.stored_name.label('stored_name'),
+                persistence_broadcast.BroadcastAttachmentAsset.stored_path.label('stored_path'),
+                persistence_broadcast.BroadcastAttachmentAsset.relative_path.label('relative_path'),
+                persistence_broadcast.BroadcastAttachmentAsset.size_bytes.label('size_bytes'),
+                persistence_broadcast.BroadcastAttachmentAsset.sha256.label('sha256'),
+                persistence_broadcast.BroadcastAttachmentAsset.extension.label('extension'),
+                persistence_broadcast.BroadcastAttachmentAsset.mime_type.label('mime_type'),
+            )
+            .join(
+                persistence_broadcast.BroadcastImportBatch,
+                persistence_broadcast.BroadcastImportBatch.id
+                == persistence_broadcast.BroadcastImportGroupAttachment.batch_id,
+            )
+            .join(
+                persistence_broadcast.BroadcastAttachmentAsset,
+                persistence_broadcast.BroadcastAttachmentAsset.id
+                == persistence_broadcast.BroadcastImportGroupAttachment.attachment_asset_id,
+            )
+            .where(
+                persistence_broadcast.BroadcastImportGroupAttachment.batch_id
+                == import_batch_id,
+                persistence_broadcast.BroadcastImportBatch.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastImportBatch.connector_id
+                == connector_id,
+            )
+            .order_by(
+                persistence_broadcast.BroadcastImportGroupAttachment.sort_order.asc(),
+                persistence_broadcast.BroadcastImportGroupAttachment.id.asc(),
+            )
+        )
+        if group_key is not None:
+            stmt = stmt.where(
+                persistence_broadcast.BroadcastImportGroupAttachment.group_key
+                == group_key
+            )
+        result = await self.persistence_mgr.execute_async(stmt, conn=conn)
+        return [dict(row._mapping) for row in result.all()]
+
+    async def create_import_group_attachment(self, conn, payload: dict[str, Any]) -> int:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.insert(persistence_broadcast.BroadcastImportGroupAttachment).values(payload),
+            conn=conn,
+        )
+        return int(result.inserted_primary_key[0])
+
+    async def delete_import_group_attachment(
+        self,
+        attachment_relation_id: int,
+        *,
+        import_batch_id: int,
+        bot_uuid: str,
+        connector_id: str,
+        conn=None,
+    ) -> dict[str, Any] | None:
+        relation = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(
+                persistence_broadcast.BroadcastImportGroupAttachment,
+                persistence_broadcast.BroadcastAttachmentAsset.id.label('asset_id'),
+            )
+            .join(
+                persistence_broadcast.BroadcastImportBatch,
+                persistence_broadcast.BroadcastImportBatch.id
+                == persistence_broadcast.BroadcastImportGroupAttachment.batch_id,
+            )
+            .join(
+                persistence_broadcast.BroadcastAttachmentAsset,
+                persistence_broadcast.BroadcastAttachmentAsset.id
+                == persistence_broadcast.BroadcastImportGroupAttachment.attachment_asset_id,
+            )
+            .where(
+                persistence_broadcast.BroadcastImportGroupAttachment.id
+                == attachment_relation_id,
+                persistence_broadcast.BroadcastImportGroupAttachment.batch_id
+                == import_batch_id,
+                persistence_broadcast.BroadcastImportBatch.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastImportBatch.connector_id
+                == connector_id,
+            ),
+            conn=conn,
+        )
+        row = relation.first()
+        if row is None:
+            return None
+        mapping = dict(row._mapping)
+        await self.persistence_mgr.execute_async(
+            sqlalchemy.delete(persistence_broadcast.BroadcastImportGroupAttachment).where(
+                persistence_broadcast.BroadcastImportGroupAttachment.id
+                == attachment_relation_id
+            ),
+            conn=conn,
+        )
+        return mapping
+
+    async def list_draft_attachments(
+        self,
+        draft_id: int,
+        *,
+        bot_uuid: str,
+        connector_id: str,
+        conn=None,
+    ) -> list[dict[str, Any]]:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(
+                persistence_broadcast.BroadcastDraftAttachment.id.label('relation_id'),
+                persistence_broadcast.BroadcastDraftAttachment.draft_id.label('draft_id'),
+                persistence_broadcast.BroadcastDraftAttachment.attachment_asset_id.label('attachment_asset_id'),
+                persistence_broadcast.BroadcastDraftAttachment.original_name_snapshot.label('original_name_snapshot'),
+                persistence_broadcast.BroadcastDraftAttachment.size_bytes_snapshot.label('size_bytes_snapshot'),
+                persistence_broadcast.BroadcastDraftAttachment.sha256_snapshot.label('sha256_snapshot'),
+                persistence_broadcast.BroadcastDraftAttachment.sort_order.label('sort_order'),
+                persistence_broadcast.BroadcastAttachmentAsset.id.label('asset_id'),
+                persistence_broadcast.BroadcastAttachmentAsset.original_name.label('original_name'),
+                persistence_broadcast.BroadcastAttachmentAsset.stored_name.label('stored_name'),
+                persistence_broadcast.BroadcastAttachmentAsset.stored_path.label('stored_path'),
+                persistence_broadcast.BroadcastAttachmentAsset.relative_path.label('relative_path'),
+                persistence_broadcast.BroadcastAttachmentAsset.size_bytes.label('size_bytes'),
+                persistence_broadcast.BroadcastAttachmentAsset.sha256.label('sha256'),
+                persistence_broadcast.BroadcastAttachmentAsset.extension.label('extension'),
+                persistence_broadcast.BroadcastAttachmentAsset.mime_type.label('mime_type'),
+            )
+            .join(
+                persistence_broadcast.BroadcastDraft,
+                persistence_broadcast.BroadcastDraft.id
+                == persistence_broadcast.BroadcastDraftAttachment.draft_id,
+            )
+            .join(
+                persistence_broadcast.BroadcastAttachmentAsset,
+                persistence_broadcast.BroadcastAttachmentAsset.id
+                == persistence_broadcast.BroadcastDraftAttachment.attachment_asset_id,
+            )
+            .where(
+                persistence_broadcast.BroadcastDraftAttachment.draft_id == draft_id,
+                persistence_broadcast.BroadcastDraft.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastDraft.connector_id == connector_id,
+            )
+            .order_by(
+                persistence_broadcast.BroadcastDraftAttachment.sort_order.asc(),
+                persistence_broadcast.BroadcastDraftAttachment.id.asc(),
+            ),
+            conn=conn,
+        )
+        return [dict(row._mapping) for row in result.all()]
+
+    async def create_draft_attachment(self, conn, payload: dict[str, Any]) -> int:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.insert(persistence_broadcast.BroadcastDraftAttachment).values(payload),
+            conn=conn,
+        )
+        return int(result.inserted_primary_key[0])
+
+    async def replace_draft_attachments(self, conn, *, draft_id: int, attachments: list[dict[str, Any]]) -> None:
+        await self.persistence_mgr.execute_async(
+            sqlalchemy.delete(persistence_broadcast.BroadcastDraftAttachment).where(
+                persistence_broadcast.BroadcastDraftAttachment.draft_id == draft_id,
+            ),
+            conn=conn,
+        )
+        if not attachments:
+            return
+        await self.persistence_mgr.execute_async(
+            sqlalchemy.insert(persistence_broadcast.BroadcastDraftAttachment).values(attachments),
+            conn=conn,
+        )
+
+    async def delete_draft_attachment(
+        self,
+        relation_id: int,
+        *,
+        bot_uuid: str,
+        connector_id: str,
+        conn=None,
+    ) -> dict[str, Any] | None:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(
+                persistence_broadcast.BroadcastDraftAttachment,
+                persistence_broadcast.BroadcastAttachmentAsset.id.label('asset_id'),
+            )
+            .join(
+                persistence_broadcast.BroadcastDraft,
+                persistence_broadcast.BroadcastDraft.id
+                == persistence_broadcast.BroadcastDraftAttachment.draft_id,
+            )
+            .join(
+                persistence_broadcast.BroadcastAttachmentAsset,
+                persistence_broadcast.BroadcastAttachmentAsset.id
+                == persistence_broadcast.BroadcastDraftAttachment.attachment_asset_id,
+            )
+            .where(
+                persistence_broadcast.BroadcastDraftAttachment.id == relation_id,
+                persistence_broadcast.BroadcastDraft.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastDraft.connector_id == connector_id,
+            ),
+            conn=conn,
+        )
+        row = result.first()
+        if row is None:
+            return None
+        mapping = dict(row._mapping)
+        await self.persistence_mgr.execute_async(
+            sqlalchemy.delete(persistence_broadcast.BroadcastDraftAttachment).where(
+                persistence_broadcast.BroadcastDraftAttachment.id == relation_id
+            ),
+            conn=conn,
+        )
+        return mapping
+
+    async def list_execution_task_attachments(
+        self,
+        execution_task_id: int,
+        *,
+        bot_uuid: str,
+        connector_id: str,
+        conn=None,
+    ) -> list[dict[str, Any]]:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(
+                persistence_broadcast.BroadcastExecutionTaskAttachment.id.label('relation_id'),
+                persistence_broadcast.BroadcastExecutionTaskAttachment.execution_task_id.label('execution_task_id'),
+                persistence_broadcast.BroadcastExecutionTaskAttachment.attachment_asset_id.label('attachment_asset_id'),
+                persistence_broadcast.BroadcastExecutionTaskAttachment.original_name_snapshot.label('original_name_snapshot'),
+                persistence_broadcast.BroadcastExecutionTaskAttachment.size_bytes_snapshot.label('size_bytes_snapshot'),
+                persistence_broadcast.BroadcastExecutionTaskAttachment.sha256_snapshot.label('sha256_snapshot'),
+                persistence_broadcast.BroadcastExecutionTaskAttachment.sort_order.label('sort_order'),
+                persistence_broadcast.BroadcastAttachmentAsset.id.label('asset_id'),
+                persistence_broadcast.BroadcastAttachmentAsset.original_name.label('original_name'),
+                persistence_broadcast.BroadcastAttachmentAsset.stored_name.label('stored_name'),
+                persistence_broadcast.BroadcastAttachmentAsset.stored_path.label('stored_path'),
+                persistence_broadcast.BroadcastAttachmentAsset.relative_path.label('relative_path'),
+                persistence_broadcast.BroadcastAttachmentAsset.size_bytes.label('size_bytes'),
+                persistence_broadcast.BroadcastAttachmentAsset.sha256.label('sha256'),
+                persistence_broadcast.BroadcastAttachmentAsset.extension.label('extension'),
+                persistence_broadcast.BroadcastAttachmentAsset.mime_type.label('mime_type'),
+            )
+            .join(
+                persistence_broadcast.BroadcastExecutionTask,
+                persistence_broadcast.BroadcastExecutionTask.id
+                == persistence_broadcast.BroadcastExecutionTaskAttachment.execution_task_id,
+            )
+            .join(
+                persistence_broadcast.BroadcastExecutionBatch,
+                persistence_broadcast.BroadcastExecutionBatch.id
+                == persistence_broadcast.BroadcastExecutionTask.execution_batch_id,
+            )
+            .join(
+                persistence_broadcast.BroadcastAttachmentAsset,
+                persistence_broadcast.BroadcastAttachmentAsset.id
+                == persistence_broadcast.BroadcastExecutionTaskAttachment.attachment_asset_id,
+            )
+            .where(
+                persistence_broadcast.BroadcastExecutionTaskAttachment.execution_task_id
+                == execution_task_id,
+                persistence_broadcast.BroadcastExecutionBatch.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastExecutionBatch.connector_id
+                == connector_id,
+            )
+            .order_by(
+                persistence_broadcast.BroadcastExecutionTaskAttachment.sort_order.asc(),
+                persistence_broadcast.BroadcastExecutionTaskAttachment.id.asc(),
+            ),
+            conn=conn,
+        )
+        return [dict(row._mapping) for row in result.all()]
+
+    async def create_execution_task_attachment(self, conn, payload: dict[str, Any]) -> int:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.insert(persistence_broadcast.BroadcastExecutionTaskAttachment).values(payload),
+            conn=conn,
+        )
+        return int(result.inserted_primary_key[0])
+
+    async def count_attachment_references(
+        self,
+        asset_id: int,
+        *,
+        conn=None,
+    ) -> int:
+        total = 0
+        for model, field_name in [
+            (persistence_broadcast.BroadcastImportGroupAttachment, 'attachment_asset_id'),
+            (persistence_broadcast.BroadcastDraftAttachment, 'attachment_asset_id'),
+            (persistence_broadcast.BroadcastExecutionTaskAttachment, 'attachment_asset_id'),
+        ]:
+            result = await self.persistence_mgr.execute_async(
+                sqlalchemy.select(sqlalchemy.func.count())
+                .select_from(model)
+                .where(getattr(model, field_name) == asset_id),
+                conn=conn,
+            )
+            total += int(result.scalar_one() or 0)
+        return total
+
     async def update_draft_statuses(
         self,
         *,
@@ -637,6 +1252,30 @@ class BroadcastRepository:
                 persistence_broadcast.BroadcastDraft.connector_id == connector_id,
             )
             .values({'status': status}),
+            conn=conn,
+        )
+        return int(result.rowcount or 0)
+
+    async def update_drafts_attachment_stale(
+        self,
+        *,
+        import_batch_id: int,
+        group_value: str,
+        bot_uuid: str,
+        connector_id: str,
+        attachments_stale: bool,
+        conn=None,
+    ) -> int:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastDraft)
+            .where(
+                persistence_broadcast.BroadcastDraft.import_batch_id
+                == import_batch_id,
+                persistence_broadcast.BroadcastDraft.group_value == group_value,
+                persistence_broadcast.BroadcastDraft.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastDraft.connector_id == connector_id,
+            )
+            .values({'attachments_stale': attachments_stale}),
             conn=conn,
         )
         return int(result.rowcount or 0)
@@ -943,6 +1582,7 @@ class BroadcastRepository:
             'pending_tasks': 0,
             'running_tasks': 0,
             'succeeded_tasks': 0,
+            'succeeded_with_warning_tasks': 0,
             'failed_tasks': 0,
             'cancelled_tasks': 0,
             'interrupted_tasks': 0,
@@ -963,16 +1603,40 @@ class BroadcastRepository:
         elif summary['pending_tasks'] > 0:
             current_status = str(batch.status) if batch is not None else 'queued'
             status = 'paused' if current_status == 'paused' else 'queued'
-        elif summary['succeeded_tasks'] == total:
+        elif summary['succeeded_tasks'] + summary['succeeded_with_warning_tasks'] == total:
             status = 'completed'
         elif summary['cancelled_tasks'] == total:
             status = 'cancelled'
-        elif summary['failed_tasks'] > 0 and summary['failed_tasks'] + summary['succeeded_tasks'] == total:
-            status = 'failed' if summary['succeeded_tasks'] == 0 else 'partially_failed'
-        elif summary['interrupted_tasks'] > 0 and summary['interrupted_tasks'] + summary['succeeded_tasks'] == total:
-            status = 'interrupted' if summary['succeeded_tasks'] == 0 else 'partially_failed'
+        elif (
+            summary['failed_tasks'] > 0
+            and summary['failed_tasks']
+            + summary['succeeded_tasks']
+            + summary['succeeded_with_warning_tasks']
+            == total
+        ):
+            status = (
+                'failed'
+                if summary['succeeded_tasks'] == 0
+                and summary['succeeded_with_warning_tasks'] == 0
+                else 'partially_failed'
+            )
+        elif (
+            summary['interrupted_tasks'] > 0
+            and summary['interrupted_tasks']
+            + summary['succeeded_tasks']
+            + summary['succeeded_with_warning_tasks']
+            == total
+        ):
+            status = (
+                'interrupted'
+                if summary['succeeded_tasks'] == 0
+                and summary['succeeded_with_warning_tasks'] == 0
+                else 'partially_failed'
+            )
         else:
             status = 'partially_failed'
+
+        summary.pop('succeeded_with_warning_tasks', None)
 
         return await self.update_execution_batch(
             execution_batch_id,

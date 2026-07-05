@@ -28,7 +28,356 @@ function makeImportPage<T extends Record<string, unknown>>(
   };
 }
 
+function makeGroupPage<T extends Record<string, unknown>>(
+  batch: T,
+  rows: Array<{
+    id: number;
+    source_row_number: number;
+    group_value: string | null;
+    matched_conversation_name: string | null;
+    match_status: string;
+    error_message: string | null;
+  }>,
+  page = 1,
+  pageSize = 50,
+) {
+  const groups = rows.map((row) => ({
+    group_key: `group-${row.id}`,
+    group_value: row.group_value ?? `invalid-${row.id}`,
+    raw_row_count: 1,
+    distinct_order_number_count: 1,
+    matched_conversation_name: row.matched_conversation_name,
+    match_status: row.match_status,
+    reason: row.error_message,
+    attachment_count: 0,
+    attachments: [],
+    expandable: true,
+    first_source_row_number: row.source_row_number,
+  }));
+  return {
+    page,
+    page_size: pageSize,
+    total: groups.length,
+    total_pages: groups.length === 0 ? 0 : Math.ceil(groups.length / pageSize),
+    raw_row_total: Number(batch.total_rows ?? rows.length),
+    group_total: groups.length,
+    matched_group_total: Number(batch.matched_rows ?? 0),
+    unmatched_group_total: Number(batch.unmatched_rows ?? 0),
+    invalid_group_total: Number(batch.invalid_rows ?? 0),
+    conflict_group_total: 0,
+    order_number_field_configured: true,
+    groups,
+  };
+}
+
 test.describe('broadcast variable preview', () => {
+  test('clicking available variables inserts placeholder tokens into the template body', async ({
+    page,
+  }) => {
+    await installLangBotApiMocks(page, {
+      authenticated: true,
+      storage: {
+        langbot_language: 'en-US',
+      },
+      bots: [
+        {
+          uuid: 'bot-1',
+          name: 'Broadcast Bot A',
+          enable: true,
+          adapter: 'wxwork_database',
+          adapter_config: {
+            connector_id: 'wxwork-local',
+          },
+        },
+      ],
+    });
+
+    const template = {
+      id: 11,
+      bot_uuid: 'bot-1',
+      connector_id: 'wxwork-local',
+      name: 'Delivery Notice',
+      content: 'Hello {{customer_name}}',
+      variables: ['customer_name'],
+      enabled: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    const variableProfile = {
+      group_field: 'customer_name',
+      mapping_rules: [
+        {
+          source_field: 'Order No',
+          variable_key: 'order_no',
+          merge_mode: 'first',
+          order: 1,
+        },
+        {
+          source_field: 'Customer Name',
+          variable_key: 'customer_name',
+          merge_mode: 'first',
+          order: 2,
+        },
+      ],
+    };
+
+    await page.route('**/api/v1/broadcast/templates*', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(ok([template])),
+      });
+    });
+
+    await page.route('**/api/v1/broadcast/variable-profile*', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(ok(variableProfile)),
+      });
+    });
+
+    await page.route('**/api/v1/broadcast/imports*', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(ok([])),
+      });
+    });
+
+    await page.route('**/api/v1/broadcast/templates/render', async (route) => {
+      const body = route.request().postDataJSON() as {
+        content?: string;
+        template_id?: number;
+        variables?: Record<string, string>;
+      };
+      const content =
+        body.content ?? (body.template_id ? template.content : '');
+      const variables = body.variables ?? {};
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          ok({
+            rendered_text: content.replace(
+              /{{\s*([A-Za-z0-9_\-]+)\s*}}/g,
+              (token, key: string) => variables[key] || token,
+            ),
+            required_variables: Array.from(
+              content.matchAll(/{{\s*([A-Za-z0-9_\-]+)\s*}}/g),
+              (match) => match[1],
+            ),
+            missing_variables: Array.from(
+              content.matchAll(/{{\s*([A-Za-z0-9_\-]+)\s*}}/g),
+              (match) => match[1],
+            ).filter((key) => !variables[key]),
+            valid: false,
+          }),
+        ),
+      });
+    });
+
+    await page.goto('/home/broadcast');
+    await expect(page).toHaveURL(/\/home\/broadcast$/);
+
+    await page
+      .locator('[role="tablist"]')
+      .nth(1)
+      .getByRole('tab')
+      .nth(1)
+      .click();
+
+    const textarea = page.getByTestId('broadcast-template-body');
+    await expect(textarea).toBeVisible();
+
+    await textarea.fill('ABCDEF');
+    await textarea.evaluate((element) => {
+      const input = element as HTMLTextAreaElement;
+      input.focus();
+      input.setSelectionRange(3, 3);
+    });
+    await page.getByTestId('broadcast-template-variable-order_no').click();
+
+    await expect(textarea).toHaveValue('ABC{{order_no}}DEF');
+    await expect
+      .poll(async () =>
+        textarea.evaluate((element) => ({
+          focused: document.activeElement === element,
+          start: (element as HTMLTextAreaElement).selectionStart,
+          end: (element as HTMLTextAreaElement).selectionEnd,
+        })),
+      )
+      .toEqual({
+        focused: true,
+        start: 'ABC{{order_no}}'.length,
+        end: 'ABC{{order_no}}'.length,
+      });
+
+    await textarea.fill('Order: 123456');
+    await textarea.evaluate((element) => {
+      const input = element as HTMLTextAreaElement;
+      input.focus();
+      input.setSelectionRange('Order: '.length, 'Order: 123456'.length);
+    });
+    await page.getByTestId('broadcast-template-variable-order_no').click();
+    await expect(textarea).toHaveValue('Order: {{order_no}}');
+
+    await textarea.evaluate((element) => {
+      (element as HTMLTextAreaElement).blur();
+    });
+    await page.getByTestId('broadcast-template-variable-order_no').click();
+    await page.getByTestId('broadcast-template-variable-customer_name').click();
+    await expect(textarea).toHaveValue(
+      'Order: {{order_no}}{{order_no}}{{customer_name}}',
+    );
+  });
+
+  test('broadcast workspace uses a real vertical scroll container on template surfaces', async ({
+    page,
+  }) => {
+    await installLangBotApiMocks(page, {
+      authenticated: true,
+      storage: {
+        langbot_language: 'en-US',
+      },
+      bots: [
+        {
+          uuid: 'bot-1',
+          name: 'Broadcast Bot A',
+          enable: true,
+          adapter: 'wxwork_database',
+          adapter_config: {
+            connector_id: 'wxwork-local',
+          },
+        },
+      ],
+    });
+
+    const mappingRules = Array.from({ length: 32 }, (_, index) => ({
+      source_field: `Field ${index + 1}`,
+      variable_key: `field_${index + 1}`,
+      merge_mode: 'first' as const,
+      order: index + 1,
+    }));
+
+    const template = {
+      id: 11,
+      bot_uuid: 'bot-1',
+      connector_id: 'wxwork-local',
+      name: 'Scrollable Template',
+      content: mappingRules
+        .slice(0, 12)
+        .map((rule) => `{{${rule.variable_key}}}`)
+        .join('\n'),
+      variables: mappingRules.slice(0, 12).map((rule) => rule.variable_key),
+      enabled: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    await page.route('**/api/v1/broadcast/templates*', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(ok([template])),
+      });
+    });
+
+    await page.route('**/api/v1/broadcast/variable-profile*', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          ok({
+            group_field: 'customer_name',
+            mapping_rules: mappingRules,
+          }),
+        ),
+      });
+    });
+
+    await page.route('**/api/v1/broadcast/imports*', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(ok([])),
+      });
+    });
+
+    await page.route('**/api/v1/broadcast/templates/render', async (route) => {
+      const body = route.request().postDataJSON() as {
+        content?: string;
+        template_id?: number;
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          ok({
+            rendered_text: body.content ?? template.content,
+            required_variables: template.variables,
+            missing_variables: template.variables,
+            valid: false,
+          }),
+        ),
+      });
+    });
+
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto('/home/broadcast');
+    await expect(page).toHaveURL(/\/home\/broadcast$/);
+
+    await page
+      .locator('[role="tablist"]')
+      .nth(1)
+      .getByRole('tab')
+      .nth(1)
+      .click();
+
+    const scrollContainer = page.getByTestId('broadcast-workspace-scroll');
+    const before = await scrollContainer.evaluate(
+      (element) => element.scrollTop,
+    );
+    await scrollContainer.hover();
+    await page.mouse.wheel(0, 900);
+
+    await expect
+      .poll(() =>
+        scrollContainer.evaluate((element) => ({
+          top: element.scrollTop,
+          horizontal: element.scrollWidth > element.clientWidth,
+        })),
+      )
+      .toEqual({
+        top: before + 900,
+        horizontal: false,
+      });
+  });
+
   test('shows configured status instead of missing when mapping exists but no import batch exists', async ({
     page,
   }) => {
@@ -272,6 +621,15 @@ test.describe('broadcast variable preview', () => {
     await page.route('**/api/v1/broadcast/imports/1**', async (route) => {
       if (route.request().method() !== 'GET') {
         await route.fallback();
+        return;
+      }
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/v1/broadcast/imports/1/groups') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(ok(makeGroupPage(batch, [row]))),
+        });
         return;
       }
       await route.fulfill({

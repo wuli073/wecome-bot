@@ -14,6 +14,21 @@ export interface RuntimeStatusPayload {
   providerHubReady: boolean
   activeTaskCount: number
   lastErrorCode: string | null
+  pasteVerification: {
+    available: boolean
+    reason: string | null
+    providerInstanceId?: string
+    diagnosticCode?: string | null
+    capabilityCheckedAt?: string | null
+    capabilityExpiresAt?: string | null
+    capabilityAgeMs?: number | null
+    capabilityProbeCount?: number
+    capabilityProbeSpawnCount?: number
+    lastCapabilityDiagnosticCode?: string | null
+    method: string
+    requiresManualConversationOpen: boolean
+    supportedErrorCodes: string[]
+  }
   displaySummary: Array<{
     id: string | number
     scaleFactor: number

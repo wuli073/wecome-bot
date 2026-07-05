@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import importlib
+import os
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,10 @@ def _dt(value: str) -> datetime.datetime:
 
 def _get_revision_script(revision: str) -> Path:
     return Path(_ALEMBIC_DIR) / 'versions' / f'{revision}.py'
+
+
+def _broadcast_attachment_root() -> Path:
+    return Path(__file__).resolve().parents[3] / 'runtime' / 'broadcast_attachments'
 
 
 def _sqlite_engine(url: str):
@@ -434,6 +439,120 @@ class TestSQLiteMigrationUpgrade:
         assert 'broadcast_execution_attempts' in created_tables
         assert 'broadcast_execution_evidence' in created_tables
         assert 'broadcast_send_confirmations' in created_tables
+
+    @pytest.mark.asyncio
+    async def test_broadcast_attachment_relative_path_migration_repairs_already_applied_0017_db(self, sqlite_engine):
+        """A DB stamped at 0017 without relative_path should still be repaired by head upgrade."""
+        attachment_root = _broadcast_attachment_root()
+        inside_dir = attachment_root / 'migration-tests' / 'inside'
+        inside_dir.mkdir(parents=True, exist_ok=True)
+        inside_file = inside_dir / 'quote.pdf'
+        inside_file.write_bytes(b'quote-pdf')
+
+        outside_dir = attachment_root.parent / 'migration-tests-outside'
+        outside_dir.mkdir(parents=True, exist_ok=True)
+        outside_file = outside_dir / 'outside.pdf'
+        outside_file.write_bytes(b'outside-pdf')
+
+        missing_file = attachment_root / 'migration-tests' / 'missing' / 'missing.pdf'
+
+        try:
+            async with sqlite_engine.begin() as conn:
+                def setup_legacy_0017(sync_conn):
+                    sync_conn.exec_driver_sql(
+                        """
+                        CREATE TABLE alembic_version (
+                            version_num VARCHAR(32) NOT NULL
+                        )
+                        """
+                    )
+                    sync_conn.exec_driver_sql(
+                        "INSERT INTO alembic_version (version_num) VALUES ('0017_broadcast_attach')"
+                    )
+                    sync_conn.exec_driver_sql(
+                        """
+                        CREATE TABLE broadcast_attachment_assets (
+                            id INTEGER NOT NULL PRIMARY KEY,
+                            bot_uuid VARCHAR(255) NOT NULL,
+                            connector_id VARCHAR(255) NOT NULL,
+                            original_name VARCHAR(255) NOT NULL,
+                            stored_name VARCHAR(255) NOT NULL,
+                            stored_path TEXT NOT NULL,
+                            size_bytes BIGINT NOT NULL,
+                            sha256 VARCHAR(64) NOT NULL,
+                            extension VARCHAR(32) NOT NULL,
+                            mime_type VARCHAR(255) NOT NULL,
+                            status VARCHAR(32) NOT NULL DEFAULT 'ready',
+                            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                    sync_conn.exec_driver_sql(
+                        """
+                        INSERT INTO broadcast_attachment_assets (
+                            id, bot_uuid, connector_id, original_name, stored_name, stored_path,
+                            size_bytes, sha256, extension, mime_type, status
+                        ) VALUES
+                            (1, 'bot-1', 'wxwork-local', 'quote.pdf', 'quote.pdf', :inside_path, 9, 'sha-inside', 'pdf', 'application/pdf', 'ready'),
+                            (2, 'bot-1', 'wxwork-local', 'outside.pdf', 'outside.pdf', :outside_path, 11, 'sha-outside', 'pdf', 'application/pdf', 'ready'),
+                            (3, 'bot-1', 'wxwork-local', 'missing.pdf', 'missing.pdf', :missing_path, 13, 'sha-missing', 'pdf', 'application/pdf', 'ready')
+                        """,
+                        {
+                            'inside_path': str(inside_file),
+                            'outside_path': str(outside_file),
+                            'missing_path': str(missing_file),
+                        },
+                    )
+
+                await conn.run_sync(setup_legacy_0017)
+
+            await run_alembic_upgrade(sqlite_engine, 'head')
+            await run_alembic_upgrade(sqlite_engine, 'head')
+
+            async with sqlite_engine.begin() as conn:
+                def inspect_repaired_schema(sync_conn):
+                    inspector = sa.inspect(sync_conn)
+                    columns = {column['name'] for column in inspector.get_columns('broadcast_attachment_assets')}
+                    rows = sync_conn.execute(
+                        sa.text(
+                            """
+                            SELECT id, stored_path, relative_path
+                            FROM broadcast_attachment_assets
+                            ORDER BY id
+                            """
+                        )
+                    ).mappings().all()
+                    return columns, [dict(row) for row in rows]
+
+                columns, rows = await conn.run_sync(inspect_repaired_schema)
+
+            assert 'relative_path' in columns
+            assert rows[0]['relative_path'] == 'migration-tests/inside/quote.pdf'
+            assert rows[1]['relative_path'] is None
+            assert rows[2]['relative_path'] is None
+            rev = await get_alembic_current(sqlite_engine)
+            assert rev == _get_script_head()
+        finally:
+            inside_file.unlink(missing_ok=True)
+            outside_file.unlink(missing_ok=True)
+            for directory in [inside_dir, outside_dir, missing_file.parent]:
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_broadcast_attachment_relative_path_revision_metadata_is_correct(self, sqlite_engine):
+        """Attachment relative-path patch migration exists, is short enough, and chains from 0017."""
+        del sqlite_engine
+        script_path = _get_revision_script('0018_broadcast_attachment_relative_path')
+        assert script_path.exists(), 'Expected 0018_broadcast_attachment_relative_path migration script to exist'
+
+        module = importlib.import_module(
+            'langbot.pkg.persistence.alembic.versions.0018_broadcast_attachment_relative_path'
+        )
+        assert len(module.revision) <= 32
+        assert module.down_revision == '0017_broadcast_attach'
 
     @pytest.mark.asyncio
     async def test_deleting_batch_cascades_to_execution_children(self, sqlite_engine):

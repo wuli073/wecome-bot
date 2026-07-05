@@ -3,16 +3,37 @@
 import json
 import hashlib
 import math
+import mimetypes
 import os
 import re
 import secrets
+import tempfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import sqlalchemy
 from sqlalchemy.exc import IntegrityError
 
+from ..entity.persistence import broadcast as persistence_broadcast
 from .errors import (
+    ATTACHMENT_COUNT_EXCEEDED,
+    ATTACHMENT_EMPTY,
+    ATTACHMENT_FILE_MISSING,
+    ATTACHMENT_FILE_TOO_LARGE,
+    ATTACHMENT_HASH_MISMATCH,
+    ATTACHMENT_NOT_FOUND,
+    ATTACHMENT_PASTE_FAILED,
+    ATTACHMENT_PATH_OUTSIDE_ROOT,
+    ATTACHMENT_STORAGE_FAILED,
+    ATTACHMENT_TOTAL_TOO_LARGE,
+    ATTACHMENT_UNSUPPORTED_TYPE,
+    FILE_CLIPBOARD_COUNT_MISMATCH,
+    FILE_CLIPBOARD_HELPER_FAILED,
+    FILE_CLIPBOARD_HELPER_SPAWN_FAILED,
+    FILE_CLIPBOARD_HELPER_TIMEOUT,
+    FILE_CLIPBOARD_OUTPUT_INVALID,
+    FILE_CLIPBOARD_PATH_MISMATCH,
     BROADCAST_DRAFT_BODY_EMPTY,
     BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN,
     BROADCAST_DRAFT_NOT_FOUND,
@@ -27,6 +48,7 @@ from .errors import (
     BROADCAST_EXECUTION_DRAFT_LIMIT_EXCEEDED,
     BROADCAST_EXECUTION_DRAFT_NOT_READY,
     BROADCAST_EXECUTION_DRAFT_STALE,
+    BROADCAST_EXECUTION_EVIDENCE_NOT_AVAILABLE,
     BROADCAST_EXECUTION_MODE_INVALID,
     BROADCAST_EXECUTION_SCOPE_MISMATCH,
     BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT,
@@ -38,6 +60,7 @@ from .errors import (
     BROADCAST_EXECUTION_HEALTH_CHECK_FAILED,
     BROADCAST_IMPORT_FIELDS_MISSING,
     BROADCAST_IMPORT_FILE_INVALID,
+    BROADCAST_IMPORT_GROUP_NOT_FOUND,
     BROADCAST_IMPORT_GROUP_FIELD_REQUIRED,
     BROADCAST_IMPORT_NOT_FOUND,
     BROADCAST_IMPORT_READY_DRAFT_EXISTS,
@@ -54,6 +77,7 @@ from .errors import (
     BROADCAST_TEMPLATE_NOT_FOUND,
     BROADCAST_VARIABLE_PROFILE_INVALID,
     TEMPLATE_RENDER_INPUT_INVALID,
+    TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE,
     BroadcastError,
 )
 from .draft_generator import generate_group_draft
@@ -71,6 +95,29 @@ from .repository import BroadcastRepository
 from .runtime_gateway import BroadcastRuntimeGateway
 from .schemas import VALID_MATCH_TYPES, VALID_MERGE_MODES
 from .template_engine import extract_variables, render_template as safe_render_template
+
+ATTACHMENT_MAX_COUNT = 9
+ATTACHMENT_MAX_FILE_SIZE = 50 * 1024 * 1024
+ATTACHMENT_MAX_TOTAL_SIZE = 200 * 1024 * 1024
+ATTACHMENT_ALLOWED_EXTENSIONS = {
+    'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv',
+    'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp',
+    'mp4', 'mov', 'avi', 'mkv', 'wmv',
+    'mp3', 'wav', 'm4a', 'aac', 'flac',
+    'zip', 'rar', '7z',
+}
+
+FAILED_RUNTIME_PASTE_ERROR_CODES = {
+    ATTACHMENT_PATH_OUTSIDE_ROOT,
+    FILE_CLIPBOARD_HELPER_SPAWN_FAILED,
+    FILE_CLIPBOARD_HELPER_TIMEOUT,
+    FILE_CLIPBOARD_HELPER_FAILED,
+    FILE_CLIPBOARD_OUTPUT_INVALID,
+    FILE_CLIPBOARD_COUNT_MISMATCH,
+    FILE_CLIPBOARD_PATH_MISMATCH,
+    TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE,
+    ATTACHMENT_PASTE_FAILED,
+}
 
 
 class BroadcastService:
@@ -529,6 +576,130 @@ class BroadcastService:
         data['total_pages'] = 0 if total == 0 else math.ceil(total / page_size)
         return data
 
+    async def list_import_groups(
+        self,
+        import_id: int,
+        scope: dict[str, Any],
+        filters: dict[str, Any],
+    ) -> dict[str, Any]:
+        validated_scope = await self.validate_scope(scope)
+        batch = await self.repository.get_import_batch(import_id, **validated_scope)
+        if batch is None:
+            raise BroadcastError(BROADCAST_IMPORT_NOT_FOUND, '当前导入批次不存在或已被删除')
+
+        page = int(filters.get('page') or 1)
+        page_size = int(filters.get('page_size') or 50)
+        if page < 1:
+            raise BroadcastError(BROADCAST_IMPORT_FILE_INVALID, '分页参数 page 必须大于或等于 1')
+        if page_size < 1 or page_size > 200:
+            raise BroadcastError(BROADCAST_IMPORT_FILE_INVALID, '分页参数 page_size 必须在 1 到 200 之间')
+
+        variable_profile = await self.repository.get_variable_profile(**validated_scope)
+        order_number_source_field = self._resolve_order_number_source_field(variable_profile)
+        attachment_rows = await self.repository.list_import_group_attachments(
+            import_batch_id=import_id,
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+        )
+        attachment_count_by_group_key: dict[str, int] = {}
+        for item in attachment_rows:
+            group_key = str(item['group_key'])
+            attachment_count_by_group_key[group_key] = attachment_count_by_group_key.get(group_key, 0) + 1
+
+        summaries = await self.repository.list_all_import_group_summaries(
+            import_batch_id=import_id,
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+            order_number_source_field=order_number_source_field,
+            keyword=str(filters.get('keyword') or '').strip() or None,
+        )
+        groups = [
+            self._build_import_group_summary(
+                import_id=import_id,
+                summary=item,
+                attachment_count=attachment_count_by_group_key.get(
+                    self._build_import_group_key(import_id, item.get('group_value')),
+                    0,
+                ),
+            )
+            for item in summaries
+        ]
+        match_status = str(filters.get('match_status') or '').strip() or None
+        if match_status and match_status != 'all':
+            groups = [item for item in groups if item['match_status'] == match_status]
+
+        total = len(groups)
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_groups = groups[start:end]
+        return {
+            'page': page,
+            'page_size': page_size,
+            'total': total,
+            'total_pages': 0 if total == 0 else math.ceil(total / page_size),
+            'raw_row_total': int(batch.total_rows or 0),
+            'group_total': len(groups),
+            'matched_group_total': sum(1 for item in groups if item['match_status'] == 'matched'),
+            'unmatched_group_total': sum(1 for item in groups if item['match_status'] == 'unmatched'),
+            'invalid_group_total': sum(1 for item in groups if item['match_status'] == 'invalid'),
+            'conflict_group_total': sum(1 for item in groups if item['match_status'] == 'conflict'),
+            'order_number_field_configured': order_number_source_field is not None,
+            'groups': page_groups,
+        }
+
+    async def list_import_group_rows(
+        self,
+        import_id: int,
+        group_key: str,
+        scope: dict[str, Any],
+        filters: dict[str, Any],
+    ) -> dict[str, Any]:
+        validated_scope = await self.validate_scope(scope)
+        batch = await self.repository.get_import_batch(import_id, **validated_scope)
+        if batch is None:
+            raise BroadcastError(BROADCAST_IMPORT_NOT_FOUND, '当前导入批次不存在或已被删除')
+        page = int(filters.get('page') or 1)
+        page_size = int(filters.get('page_size') or 50)
+        if page < 1:
+            raise BroadcastError(BROADCAST_IMPORT_FILE_INVALID, '分页参数 page 必须大于或等于 1')
+        if page_size < 1 or page_size > 200:
+            raise BroadcastError(BROADCAST_IMPORT_FILE_INVALID, '分页参数 page_size 必须在 1 到 200 之间')
+
+        group_value = await self._resolve_group_value_by_group_key(
+            import_id,
+            group_key,
+            validated_scope,
+        )
+        rows = await self.repository.list_import_rows_for_group(
+            import_batch_id=import_id,
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+            group_value=group_value,
+            page=page,
+            page_size=page_size,
+        )
+        total = await self.repository.count_import_rows_for_group(
+            import_batch_id=import_id,
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+            group_value=group_value,
+        )
+        return {
+            'group_key': group_key,
+            'group_value': group_value,
+            'page': page,
+            'page_size': page_size,
+            'total': total,
+            'total_pages': 0 if total == 0 else math.ceil(total / page_size),
+            'rows': [
+                self.ap.persistence_mgr.serialize_model(
+                    persistence_broadcast.BroadcastImportRow,
+                    row,
+                )
+                for row in rows
+            ],
+        }
+
     async def delete_import(self, import_id: int, scope: dict[str, Any]) -> dict[str, bool]:
         validated_scope = await self.validate_scope(scope)
         async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
@@ -658,7 +829,7 @@ class BroadcastService:
         )
         grouped_rows: dict[str, list[Any]] = {}
         for row in rows:
-            key = row.group_value or f'__invalid__:{row.source_row_number}'
+            key = row.group_value or '__invalid__'
             grouped_rows.setdefault(key, []).append(row)
 
         drafts = []
@@ -668,7 +839,7 @@ class BroadcastService:
         for group_key, group_rows in grouped_rows.items():
             first_row = group_rows[0]
             draft = generate_group_draft(
-                group_value=first_row.group_value or group_key,
+                group_value=self._display_group_value(first_row.group_value),
                 rows=[{'raw_data': row.raw_data} for row in group_rows],
                 mapping_rules=list(variable_profile.mapping_rules or []),
                 matched_conversation_name=first_row.matched_conversation_name,
@@ -713,6 +884,48 @@ class BroadcastService:
                 updates={'status': 'drafts_generated', 'drafts_stale': False},
                 conn=conn,
             )
+            stored_drafts = await self.repository.list_drafts(
+                bot_uuid=validated_scope['bot_uuid'],
+                connector_id=validated_scope['connector_id'],
+                import_batch_id=import_id,
+                conn=conn,
+            )
+            for stored_draft in stored_drafts:
+                group_key = self._build_import_group_key(
+                    import_id,
+                    None
+                    if str(stored_draft.group_value) == self._display_group_value(None)
+                    else str(stored_draft.group_value),
+                )
+                attachments = await self.repository.list_import_group_attachments(
+                    import_batch_id=import_id,
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                    group_key=group_key,
+                    conn=conn,
+                )
+                await self.repository.replace_draft_attachments(
+                    conn,
+                    draft_id=int(stored_draft.id),
+                    attachments=[
+                        {
+                            'draft_id': int(stored_draft.id),
+                            'attachment_asset_id': int(item['asset_id']),
+                            'original_name_snapshot': str(item['original_name']),
+                            'size_bytes_snapshot': int(item['size_bytes']),
+                            'sha256_snapshot': str(item['sha256']),
+                            'sort_order': int(item['sort_order']),
+                        }
+                        for item in attachments
+                    ],
+                )
+                await self.repository.update_draft(
+                    int(stored_draft.id),
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                    updates={'attachments_stale': False},
+                    conn=conn,
+                )
 
         return {
             'total_group_count': len(grouped_rows),
@@ -738,6 +951,229 @@ class BroadcastService:
         if draft is None:
             raise BroadcastError(BROADCAST_DRAFT_NOT_FOUND, '褰撳墠鑽夌涓嶅瓨鍦ㄦ垨宸茶鍒犻櫎')
         return await self._serialize_draft(draft)
+
+    async def add_import_group_attachments(
+        self,
+        import_id: int,
+        group_key: str,
+        scope: dict[str, Any],
+        files: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        validated_scope = await self.validate_scope(scope)
+        group_value = await self._resolve_group_value_by_group_key(
+            import_id,
+            group_key,
+            validated_scope,
+        )
+        existing = await self.repository.list_import_group_attachments(
+            import_batch_id=import_id,
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+            group_key=group_key,
+        )
+        prepared = [
+            self._prepare_attachment_payload(
+                file,
+                storage_parts=[
+                    validated_scope['bot_uuid'],
+                    str(import_id),
+                    group_key,
+                ],
+            )
+            for file in files
+        ]
+        self._validate_attachment_limits(existing_count=len(existing), existing_total_size=sum(int(item['size_bytes']) for item in existing), prepared_files=prepared)
+
+        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            next_sort_order = len(existing)
+            for prepared_file in prepared:
+                asset_id = await self.repository.create_attachment_asset(
+                    conn,
+                    {
+                        **validated_scope,
+                        **prepared_file['asset_payload'],
+                    },
+                )
+                await self.repository.create_import_group_attachment(
+                    conn,
+                    {
+                        'batch_id': import_id,
+                        'group_key': group_key,
+                        'group_value_snapshot': group_value,
+                        'attachment_asset_id': asset_id,
+                        'sort_order': next_sort_order,
+                    },
+                )
+                next_sort_order += 1
+            if group_value is not None:
+                await self.repository.update_drafts_attachment_stale(
+                    import_batch_id=import_id,
+                    group_value=self._display_group_value(group_value),
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                    attachments_stale=True,
+                    conn=conn,
+                )
+
+        attachments = await self.repository.list_import_group_attachments(
+            import_batch_id=import_id,
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+            group_key=group_key,
+        )
+        return [self._serialize_attachment_bundle(item) for item in attachments]
+
+    async def delete_import_group_attachment(
+        self,
+        import_id: int,
+        group_key: str,
+        attachment_id: int,
+        scope: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        validated_scope = await self.validate_scope(scope)
+        group_value = await self._resolve_group_value_by_group_key(
+            import_id,
+            group_key,
+            validated_scope,
+        )
+        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            deleted = await self.repository.delete_import_group_attachment(
+                attachment_id,
+                import_batch_id=import_id,
+                bot_uuid=validated_scope['bot_uuid'],
+                connector_id=validated_scope['connector_id'],
+                conn=conn,
+            )
+            if deleted is None:
+                raise BroadcastError(ATTACHMENT_NOT_FOUND, '附件不存在或已被删除')
+            if group_value is not None:
+                await self.repository.update_drafts_attachment_stale(
+                    import_batch_id=import_id,
+                    group_value=self._display_group_value(group_value),
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                    attachments_stale=True,
+                    conn=conn,
+                )
+            await self._cleanup_orphan_asset(
+                int(deleted['asset_id']),
+                validated_scope,
+                conn=conn,
+            )
+
+        attachments = await self.repository.list_import_group_attachments(
+            import_batch_id=import_id,
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+            group_key=group_key,
+        )
+        return [self._serialize_attachment_bundle(item) for item in attachments]
+
+    async def add_draft_attachments(
+        self,
+        draft_id: int,
+        scope: dict[str, Any],
+        files: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        validated_scope = await self.validate_scope(scope)
+        draft = await self.repository.get_draft(draft_id, **validated_scope)
+        if draft is None:
+            raise BroadcastError(BROADCAST_DRAFT_NOT_FOUND, '当前草稿不存在或已被删除')
+        existing = await self.repository.list_draft_attachments(
+            draft_id,
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+        )
+        prepared = [
+            self._prepare_attachment_payload(
+                file,
+                storage_parts=[
+                    validated_scope['bot_uuid'],
+                    'drafts',
+                    str(draft_id),
+                ],
+            )
+            for file in files
+        ]
+        self._validate_attachment_limits(existing_count=len(existing), existing_total_size=sum(int(item['size_bytes_snapshot']) for item in existing), prepared_files=prepared)
+
+        message = None
+        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            next_sort_order = len(existing)
+            for prepared_file in prepared:
+                asset_id = await self.repository.create_attachment_asset(
+                    conn,
+                    {
+                        **validated_scope,
+                        **prepared_file['asset_payload'],
+                    },
+                )
+                await self.repository.create_draft_attachment(
+                    conn,
+                    {
+                        'draft_id': draft_id,
+                        'attachment_asset_id': asset_id,
+                        'original_name_snapshot': prepared_file['asset_payload']['original_name'],
+                        'size_bytes_snapshot': prepared_file['asset_payload']['size_bytes'],
+                        'sha256_snapshot': prepared_file['asset_payload']['sha256'],
+                        'sort_order': next_sort_order,
+                    },
+                )
+                next_sort_order += 1
+            updates = {'attachments_stale': False}
+            if str(draft.status) == 'ready':
+                updates['status'] = 'pending_review'
+                message = '附件已变更，请重新审核'
+            await self.repository.update_draft(
+                draft_id,
+                bot_uuid=validated_scope['bot_uuid'],
+                connector_id=validated_scope['connector_id'],
+                updates=updates,
+                conn=conn,
+            )
+        result = await self.get_draft_detail(draft_id, validated_scope)
+        result['message'] = message
+        return result
+
+    async def delete_draft_attachment(
+        self,
+        draft_id: int,
+        attachment_id: int,
+        scope: dict[str, Any],
+    ) -> dict[str, Any]:
+        validated_scope = await self.validate_scope(scope)
+        draft = await self.repository.get_draft(draft_id, **validated_scope)
+        if draft is None:
+            raise BroadcastError(BROADCAST_DRAFT_NOT_FOUND, '当前草稿不存在或已被删除')
+        message = None
+        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            deleted = await self.repository.delete_draft_attachment(
+                attachment_id,
+                bot_uuid=validated_scope['bot_uuid'],
+                connector_id=validated_scope['connector_id'],
+                conn=conn,
+            )
+            if deleted is None:
+                raise BroadcastError(ATTACHMENT_NOT_FOUND, '附件不存在或已被删除')
+            updates = {'attachments_stale': False}
+            if str(draft.status) == 'ready':
+                updates['status'] = 'pending_review'
+                message = '附件已变更，请重新审核'
+            await self.repository.update_draft(
+                draft_id,
+                bot_uuid=validated_scope['bot_uuid'],
+                connector_id=validated_scope['connector_id'],
+                updates=updates,
+                conn=conn,
+            )
+            await self._cleanup_orphan_asset(
+                int(deleted['asset_id']),
+                validated_scope,
+                conn=conn,
+            )
+        result = await self.get_draft_detail(draft_id, validated_scope)
+        result['message'] = message
+        return result
 
     async def update_draft_text(
         self,
@@ -813,6 +1249,11 @@ class BroadcastService:
                     raise BroadcastError(
                         BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN,
                         '当前草稿已过期，请重新生成草稿后再确认。',
+                    )
+                if bool(getattr(draft, 'attachments_stale', False)):
+                    raise BroadcastError(
+                        BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN,
+                        '客户分组附件已变更，请重新审核草稿附件后再确认。',
                     )
 
         async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
@@ -914,6 +1355,24 @@ class BroadcastService:
                     updates={'idempotency_key': f'broadcast:{task_id}:1'},
                     conn=conn,
                 )
+                draft_attachments = await self.repository.list_draft_attachments(
+                    int(draft.id),
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                    conn=conn,
+                )
+                for attachment in draft_attachments:
+                    await self.repository.create_execution_task_attachment(
+                        conn,
+                        {
+                            'execution_task_id': task_id,
+                            'attachment_asset_id': int(attachment['attachment_asset_id']),
+                            'original_name_snapshot': str(attachment['original_name_snapshot']),
+                            'size_bytes_snapshot': int(attachment['size_bytes_snapshot']),
+                            'sha256_snapshot': str(attachment['sha256_snapshot']),
+                            'sort_order': int(attachment['sort_order']),
+                        },
+                    )
         return await self.get_execution_batch_detail(batch_id, validated_scope)
 
     async def list_execution_batches(self, scope: dict[str, Any]) -> list[dict[str, Any]]:
@@ -928,7 +1387,7 @@ class BroadcastService:
             raise BroadcastError(BROADCAST_EXECUTION_BATCH_NOT_FOUND, '鎵ц鎵规涓嶅瓨鍦ㄦ垨宸茶鍒犻櫎')
         tasks = await self.repository.list_execution_tasks(batch_id, **validated_scope)
         data = self._serialize_execution_batch(batch)
-        data['tasks'] = [self._serialize_execution_task(row) for row in tasks]
+        data['tasks'] = [await self._serialize_execution_task(row) for row in tasks]
         return data
 
     async def get_execution_task_detail(self, task_id: int, scope: dict[str, Any]) -> dict[str, Any]:
@@ -936,7 +1395,7 @@ class BroadcastService:
         task = await self.repository.get_execution_task(task_id, **validated_scope)
         if task is None:
             raise BroadcastError(BROADCAST_EXECUTION_TASK_NOT_FOUND, '鎵ц浠诲姟涓嶅瓨鍦ㄦ垨宸茶鍒犻櫎')
-        return self._serialize_execution_task(task)
+        return await self._serialize_execution_task(task)
     async def start_execution_batch(
         self,
         batch_id: int,
@@ -1094,94 +1553,143 @@ class BroadcastService:
                 task = await self.repository.get_execution_task(task_id, **validated_scope, conn=conn)
 
         gateway = self._get_runtime_gateway()
-        gateway.assert_force_disable_send()
-        executor = build_executor(str(task.channel), gateway)
-        executor.validate_capability(str(task.action))
-        attempt_no = int(task.attempt_count or 0) + 1
-        idempotency_key = f'broadcast:{task_id}:{attempt_no}'
+        try:
+            gateway.assert_force_disable_send()
+            executor = build_executor(str(task.channel), gateway)
+            executor.validate_capability(str(task.action))
+            attempt_no = int(task.attempt_count or 0) + 1
+            idempotency_key = f'broadcast:{task_id}:{attempt_no}'
 
-        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
-            updated = await self.repository.update_execution_task(
-                task_id,
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
-                updates={
-                    'attempt_count': attempt_no,
-                    'idempotency_key': idempotency_key,
-                    'error_code': None,
-                    'error_message': None,
-                    'runtime_task_id': None,
-                    'started_at': sqlalchemy.func.now(),
-                },
-                conn=conn,
+            async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+                updated = await self.repository.update_execution_task(
+                    task_id,
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                    updates={
+                        'attempt_count': attempt_no,
+                        'idempotency_key': idempotency_key,
+                        'error_code': None,
+                        'error_message': None,
+                        'runtime_task_id': None,
+                        'started_at': sqlalchemy.func.now(),
+                    },
+                    conn=conn,
+                )
+                attempt_id = await self.repository.create_execution_attempt(
+                    conn,
+                    {
+                        'execution_task_id': task_id,
+                        'attempt_no': attempt_no,
+                        'idempotency_key': idempotency_key,
+                        'request_digest': str(task.request_digest),
+                        'runtime_task_id': None,
+                        'request_summary': json.dumps(
+                            {
+                                'action': str(task.action),
+                                'channel': str(task.channel),
+                                'target_conversation': str(task.target_conversation_snapshot),
+                            },
+                            ensure_ascii=False,
+                        ),
+                        'response_summary': None,
+                        'status': 'running',
+                        'error_code': None,
+                        'error_message': None,
+                        'finished_at': None,
+                    },
+                )
+                await self.repository.recompute_execution_batch_counts(
+                    int(task.execution_batch_id),
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                    conn=conn,
+                )
+        except Exception as exc:
+            recovered = await self._mark_execution_task_terminal_without_attempt(
+                task_id=task_id,
+                scope=validated_scope,
+                batch_id=int(task.execution_batch_id),
+                exc=exc,
             )
-            attempt_id = await self.repository.create_execution_attempt(
-                conn,
-                {
-                    'execution_task_id': task_id,
-                    'attempt_no': attempt_no,
-                    'idempotency_key': idempotency_key,
-                    'request_digest': str(task.request_digest),
-                    'runtime_task_id': None,
-                    'request_summary': json.dumps(
-                        {
-                            'action': str(task.action),
-                            'channel': str(task.channel),
-                            'target_conversation': str(task.target_conversation_snapshot),
-                        },
-                        ensure_ascii=False,
-                    ),
-                    'response_summary': None,
-                    'status': 'running',
-                    'error_code': None,
-                    'error_message': None,
-                    'finished_at': None,
-                },
-            )
-            await self.repository.recompute_execution_batch_counts(
-                int(task.execution_batch_id),
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
-                conn=conn,
-            )
+            if claimed:
+                return recovered
+            raise
 
         runtime_result = None
         task_status = 'interrupted'
         error_code = None
         error_message = None
         try:
-            runtime_result = await executor.paste_draft(
-                conversation_name=str(task.target_conversation_snapshot),
-                draft_text=str(task.draft_text_snapshot),
-                idempotency_key=idempotency_key,
-                request_digest=str(task.request_digest),
+            task_attachments = await self.repository.list_execution_task_attachments(
+                task_id,
+                bot_uuid=validated_scope['bot_uuid'],
+                connector_id=validated_scope['connector_id'],
             )
+            paste_kwargs = {
+                'conversation_name': str(task.target_conversation_snapshot),
+                'draft_text': str(task.draft_text_snapshot),
+                'idempotency_key': idempotency_key,
+                'request_digest': str(task.request_digest),
+            }
+            if task_attachments:
+                paste_kwargs['attachment_root'] = str(self._attachments_root())
+                paste_kwargs['attachments'] = [
+                    {
+                        'relativePath': self._resolve_attachment_relative_path(item),
+                        'filename': str(item['original_name_snapshot']),
+                        'size': int(item['size_bytes_snapshot']),
+                        'sha256': str(item['sha256_snapshot']),
+                    }
+                    for item in task_attachments
+                ]
+            runtime_result = await executor.paste_draft(**paste_kwargs)
             evidence = executor.normalize_evidence(runtime_result)
+            runtime_error_code = (
+                str(runtime_result.get('errorCode') or runtime_result.get('error_code') or '').strip()
+                or None
+            )
+            runtime_error_message = (
+                str(runtime_result.get('errorMessage') or runtime_result.get('error_message') or '').strip()
+                or None
+            )
             if bool(evidence.get('send_triggered', False)):
                 task_status = 'failed'
                 error_code = BROADCAST_EXECUTION_SEND_TRIGGERED
                 error_message = '检测到发送动作，已按安全失败处理'
+            elif runtime_error_code in FAILED_RUNTIME_PASTE_ERROR_CODES:
+                task_status = 'failed'
+                error_code = runtime_error_code
+                error_message = runtime_error_message or runtime_error_code
+            elif str(runtime_result.get('status') or '').strip().lower() == 'succeeded_with_warning':
+                runtime_status = str(runtime_result.get('status') or '')
+                task_status = self._coerce_terminal_task_status(runtime_status)
+                error_code = runtime_error_code
+                error_message = runtime_error_message
             elif not bool(evidence.get('content_verified', False)):
                 task_status = 'interrupted'
-                error_code = (
-                    str(runtime_result.get('errorCode') or runtime_result.get('error_code') or '').strip()
-                    or 'PASTE_VERIFICATION_FAILED'
-                )
-                error_message = (
-                    'Paste completed but input content could not be verified'
-                    if error_code == 'PASTE_VERIFICATION_UNAVAILABLE'
-                    else 'Paste completed but input content does not match expected text'
-                )
+                error_code = runtime_error_code or 'PASTE_VERIFICATION_FAILED'
+                draft_written = bool(evidence.get('draft_written', False))
+                if error_code == 'PASTE_VERIFICATION_UNAVAILABLE' and not draft_written:
+                    error_message = 'UI Automation verifier was unavailable before paste'
+                elif error_code == 'INPUT_NOT_LOCATED':
+                    error_message = 'Message input box could not be located'
+                elif error_code == 'CONVERSATION_MISMATCH':
+                    error_message = 'Active conversation does not match requested target'
+                elif error_code == 'TARGET_WINDOW_CHANGED':
+                    error_message = 'Target window changed before paste verification'
+                elif error_code == 'UIA_TASK_SCRIPT_FAILED':
+                    error_message = 'UI Automation task script failed before content verification'
+                else:
+                    error_message = (
+                        'Paste completed but input content could not be verified'
+                        if error_code == 'PASTE_VERIFICATION_UNAVAILABLE'
+                        else 'Paste completed but input content does not match expected text'
+                    )
             else:
                 runtime_status = str(runtime_result.get('status') or '')
                 task_status = self._coerce_terminal_task_status(runtime_status)
-                error_code = (
-                    str(runtime_result.get('errorCode') or runtime_result.get('error_code') or '').strip() or None
-                )
-                error_message = (
-                    str(runtime_result.get('errorMessage') or runtime_result.get('error_message') or '').strip()
-                    or None
-                )
+                error_code = runtime_error_code
+                error_message = runtime_error_message
         except BroadcastError as exc:
             task_status = 'failed'
             error_code = exc.code
@@ -1192,6 +1700,8 @@ class BroadcastService:
             error_message = str(exc)
 
         runtime_task_id = str(runtime_result.get('id') or '').strip() or None if runtime_result else None
+        persistence_error_code = None
+        persistence_error_message = None
         if runtime_task_id:
             existing_attempt = await self.repository.get_execution_attempt_by_runtime_task_id(
                 runtime_task_id,
@@ -1200,19 +1710,25 @@ class BroadcastService:
             )
             if existing_attempt is not None and int(existing_attempt.execution_task_id) != int(task_id):
                 task_status = 'failed'
-                error_code = BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT
-                error_message = 'Runtime task ID 与其他执行任务冲突'
-        persisted_runtime_task_id = (
-            None if error_code == BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT else runtime_task_id
-        )
+                persistence_error_code = BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT
+                persistence_error_message = 'Runtime task ID 与其他执行任务冲突'
+                if error_code is None:
+                    error_code = BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT
+                if error_message is None:
+                    error_message = persistence_error_message
+        persisted_runtime_task_id = None if persistence_error_code else runtime_task_id
 
         sanitized_runtime_result = self._sanitize_runtime_result(runtime_result)
         sanitized_evidence = None
         if runtime_result is not None:
             evidence = executor.normalize_evidence(runtime_result)
+            technical_details = dict(evidence.get('technical_details') or {})
+            if persistence_error_code:
+                technical_details['persistence_error_code'] = persistence_error_code
+                technical_details['persistence_error_message'] = persistence_error_message
             sanitized_evidence = {
                 **evidence,
-                'technical_details': self._sanitize_technical_details(evidence.get('technical_details')),
+                'technical_details': self._sanitize_technical_details(technical_details),
             }
 
         async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
@@ -1310,7 +1826,8 @@ class BroadcastService:
                     connector_id=validated_scope['connector_id'],
                     conn=conn,
                 )
-        return self._serialize_execution_task(updated)
+        return await self._serialize_execution_task(updated)
+
     async def cancel_execution_task(
         self,
         task_id: int,
@@ -1342,7 +1859,7 @@ class BroadcastService:
                 connector_id=validated_scope['connector_id'],
                 conn=conn,
             )
-        return self._serialize_execution_task(updated)
+        return await self._serialize_execution_task(updated)
 
     async def retry_execution_task(
         self,
@@ -1394,7 +1911,7 @@ class BroadcastService:
                 conn=conn,
             )
         self._wake_worker()
-        return self._serialize_execution_task(updated)
+        return await self._serialize_execution_task(updated)
 
     async def list_execution_attempts(self, task_id: int, scope: dict[str, Any]) -> list[dict[str, Any]]:
         validated_scope = await self.validate_scope(scope)
@@ -1492,7 +2009,7 @@ class BroadcastService:
             raise BroadcastError(BROADCAST_EXECUTION_TASK_NOT_FOUND, '执行尝试不存在或已被删除')
         evidence = await self.repository.get_execution_evidence(attempt_id, **validated_scope)
         if evidence is None:
-            raise BroadcastError(BROADCAST_EXECUTION_TASK_NOT_FOUND, '执行证据不存在或已被删除')
+            raise BroadcastError(BROADCAST_EXECUTION_EVIDENCE_NOT_AVAILABLE, '执行证据暂不可用')
         return self._serialize_execution_evidence(evidence)
 
     async def get_executor_capabilities(self, scope: dict[str, Any]) -> dict[str, Any]:
@@ -1529,6 +2046,11 @@ class BroadcastService:
                 'error_message': None,
             }
         except Exception as exc:
+            error_code = getattr(exc, 'error_code', None)
+            if error_code is None and isinstance(exc, BroadcastError):
+                error_code = exc.code
+            if error_code is None:
+                error_code = exc.__class__.__name__
             return {
                 'channel': 'wxwork_database',
                 'available': False,
@@ -1537,7 +2059,7 @@ class BroadcastService:
                 'runtime_version': None,
                 'capability': capability_payload,
                 'runtime_status': None,
-                'error_message': str(exc) or BROADCAST_EXECUTION_HEALTH_CHECK_FAILED,
+                'error_message': error_code or BROADCAST_EXECUTION_HEALTH_CHECK_FAILED,
             }
 
     async def issue_send_confirmation(self, scope: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -1782,7 +2304,7 @@ class BroadcastService:
                 connector_id=validated_scope['connector_id'],
                 conn=conn,
             )
-        return self._serialize_execution_task(updated)
+        return await self._serialize_execution_task(updated)
 
     @staticmethod
     def extract_template_variables(content: str) -> list[str]:
@@ -1976,6 +2498,13 @@ class BroadcastService:
             connector_id=str(row.connector_id),
         )
         data['drafts_stale'] = bool(batch.drafts_stale) if batch is not None else False
+        data['attachments_stale'] = bool(getattr(row, 'attachments_stale', False))
+        attachments = await self.repository.list_draft_attachments(
+            int(row.id),
+            bot_uuid=str(row.bot_uuid),
+            connector_id=str(row.connector_id),
+        )
+        data['attachments'] = [self._serialize_attachment_bundle(item) for item in attachments]
         return data
 
     async def _assert_draft_ready_for_execution(self, draft, scope: dict[str, str]) -> None:
@@ -1990,6 +2519,8 @@ class BroadcastService:
             raise BroadcastError(BROADCAST_IMPORT_NOT_FOUND, '瀵煎叆鎵规涓嶅瓨鍦ㄦ垨宸茶鍒犻櫎')
         if bool(batch.drafts_stale):
             raise BroadcastError(BROADCAST_EXECUTION_DRAFT_STALE, '当前草稿已过期，请重新生成草稿后再执行。')
+        if bool(getattr(draft, 'attachments_stale', False)):
+            raise BroadcastError(BROADCAST_EXECUTION_DRAFT_STALE, '客户分组附件已变更，请重新审核草稿附件后再执行。')
 
     async def _transition_execution_batch_to_queued(
         self,
@@ -2038,11 +2569,46 @@ class BroadcastService:
         if worker is not None:
             worker.wake()
 
+    async def _mark_execution_task_terminal_without_attempt(
+        self,
+        *,
+        task_id: int,
+        scope: dict[str, str],
+        batch_id: int,
+        exc: Exception,
+    ) -> dict[str, Any]:
+        error_code = exc.code if isinstance(exc, BroadcastError) else exc.__class__.__name__
+        error_message = exc.message if isinstance(exc, BroadcastError) else str(exc)
+        terminal_status = 'failed' if error_code == ATTACHMENT_PATH_OUTSIDE_ROOT else 'interrupted'
+        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            updated = await self.repository.update_execution_task(
+                task_id,
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
+                updates={
+                    'status': terminal_status,
+                    'runtime_task_id': None,
+                    'error_code': error_code,
+                    'error_message': error_message,
+                    'finished_at': sqlalchemy.func.now(),
+                },
+                conn=conn,
+            )
+            await self.repository.recompute_execution_batch_counts(
+                batch_id,
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
+                conn=conn,
+            )
+        return await self._serialize_execution_task(updated)
+
     @staticmethod
     def _coerce_terminal_task_status(runtime_status: str) -> str:
         normalized = str(runtime_status or '').strip().lower()
-        if normalized in {'succeeded', 'succeeded_with_warning'}:
+        if normalized == 'succeeded':
             return 'succeeded'
+        if normalized == 'succeeded_with_warning':
+            return 'succeeded_with_warning'
         if normalized in {'timed_out', 'timeout', 'unknown', 'running', 'queued'}:
             return 'interrupted'
         if normalized in {'cancelled'}:
@@ -2081,11 +2647,227 @@ class BroadcastService:
         raw = action + '\0' + channel + '\0' + target_conversation + '\0' + draft_text
         return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
+    def _display_group_value(self, group_value: str | None) -> str:
+        normalized = str(group_value or '').strip()
+        return normalized or '无客户/分组值'
+
+    def _build_import_group_key(self, import_id: int, group_value: str | None) -> str:
+        normalized = str(group_value or '').strip()
+        raw = f'{import_id}\0{normalized}'
+        return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]
+
+    async def _resolve_group_value_by_group_key(
+        self,
+        import_id: int,
+        group_key: str,
+        scope: dict[str, str],
+    ) -> str | None:
+        summaries = await self.repository.list_all_import_group_summaries(
+            import_batch_id=import_id,
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            order_number_source_field=None,
+        )
+        for item in summaries:
+            if self._build_import_group_key(import_id, item.get('group_value')) == group_key:
+                return item.get('group_value')
+        raise BroadcastError(BROADCAST_IMPORT_GROUP_NOT_FOUND, '当前客户分组不存在或已被删除')
+
+    def _resolve_order_number_source_field(self, variable_profile) -> str | None:
+        if variable_profile is None:
+            return None
+        rules = list(variable_profile.mapping_rules or [])
+        for candidate_key in ('运单号', 'order_no'):
+            for rule in rules:
+                if str(rule.get('variable_key') if isinstance(rule, dict) else getattr(rule, 'variable_key', '')).strip() == candidate_key:
+                    source_field = str(rule.get('source_field') if isinstance(rule, dict) else getattr(rule, 'source_field', '')).strip()
+                    return source_field or None
+        return None
+
+    def _build_import_group_summary(
+        self,
+        *,
+        import_id: int,
+        summary: dict[str, Any],
+        attachment_count: int,
+    ) -> dict[str, Any]:
+        group_value = summary.get('group_value')
+        match_status_count = int(summary.get('match_status_count') or 0)
+        matched_conversation_name_count = int(summary.get('matched_conversation_name_count') or 0)
+        single_match_status = str(summary.get('single_match_status') or '')
+        if group_value is None:
+            match_status = 'invalid'
+            reason = '无客户/分组值'
+        elif match_status_count > 1 or matched_conversation_name_count > 1:
+            match_status = 'conflict'
+            if matched_conversation_name_count > 1 and match_status_count > 1:
+                reason = '同一客户分组存在多个匹配会话，且原始行匹配状态不一致'
+            elif matched_conversation_name_count > 1:
+                reason = '同一客户分组存在多个匹配会话'
+            else:
+                reason = '同一客户分组的原始行匹配状态不一致'
+        elif single_match_status == 'matched':
+            match_status = 'matched'
+            reason = None
+        elif single_match_status == 'unmatched':
+            match_status = 'unmatched'
+            reason = summary.get('first_error_message') or '未匹配到群聊'
+        else:
+            match_status = 'invalid'
+            reason = summary.get('first_error_message') or '无客户/分组值'
+        return {
+            'group_key': self._build_import_group_key(import_id, group_value),
+            'group_value': self._display_group_value(group_value),
+            'raw_row_count': int(summary.get('raw_row_count') or 0),
+            'distinct_order_number_count': int(summary.get('distinct_order_number_count') or 0),
+            'matched_conversation_name': None if match_status == 'conflict' else summary.get('matched_conversation_name'),
+            'match_status': match_status,
+            'reason': reason,
+            'attachment_count': attachment_count,
+            'expandable': True,
+            'first_source_row_number': int(summary.get('first_source_row_number') or 0),
+        }
+
+    def _attachments_root(self) -> Path:
+        return Path(__file__).resolve().parents[4] / 'runtime' / 'broadcast_attachments'
+
+    def _validate_attachment_limits(
+        self,
+        *,
+        existing_count: int,
+        existing_total_size: int,
+        prepared_files: list[dict[str, Any]],
+    ) -> None:
+        additional_count = len(prepared_files)
+        if existing_count + additional_count > ATTACHMENT_MAX_COUNT:
+            raise BroadcastError(ATTACHMENT_COUNT_EXCEEDED, '附件数量超过 9 个限制')
+        additional_total = sum(int(item['asset_payload']['size_bytes']) for item in prepared_files)
+        if existing_total_size + additional_total > ATTACHMENT_MAX_TOTAL_SIZE:
+            raise BroadcastError(ATTACHMENT_TOTAL_TOO_LARGE, '附件总大小超过 200MB 限制')
+
+    def _prepare_attachment_payload(
+        self,
+        file_payload: dict[str, Any],
+        *,
+        storage_parts: list[str],
+    ) -> dict[str, Any]:
+        original_name = str(file_payload.get('filename') or '').strip()
+        body = file_payload.get('body') or b''
+        if isinstance(body, str):
+            body = body.encode('utf-8')
+        body = bytes(body)
+        if not original_name or not body:
+            raise BroadcastError(ATTACHMENT_EMPTY, '附件不能为空')
+        extension = Path(original_name).suffix.lower().lstrip('.')
+        if not extension or extension not in ATTACHMENT_ALLOWED_EXTENSIONS:
+            raise BroadcastError(ATTACHMENT_UNSUPPORTED_TYPE, '附件类型不受支持')
+        if len(body) > ATTACHMENT_MAX_FILE_SIZE:
+            raise BroadcastError(ATTACHMENT_FILE_TOO_LARGE, '单个附件不能超过 50MB')
+
+        digest = hashlib.sha256(body).hexdigest()
+        safe_name = re.sub(r'[^A-Za-z0-9._\-\u4e00-\u9fff]+', '_', Path(original_name).name).strip('._')
+        stored_name = f'{secrets.token_hex(8)}_{safe_name or f"file.{extension}"}'
+        root = self._attachments_root()
+        destination_dir = root.joinpath(*storage_parts)
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination_path = destination_dir / stored_name
+        relative_path = self._build_attachment_relative_path(destination_path, root=root)
+        if relative_path is None:
+            raise BroadcastError(ATTACHMENT_PATH_OUTSIDE_ROOT, '附件路径非法')
+
+        temp_file = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, dir=destination_dir, suffix='.tmp') as handle:
+                handle.write(body)
+                temp_file = Path(handle.name)
+            os.replace(temp_file, destination_path)
+        except Exception as exc:
+            if temp_file and temp_file.exists():
+                temp_file.unlink(missing_ok=True)
+            raise BroadcastError(ATTACHMENT_STORAGE_FAILED, f'附件写入失败：{exc.__class__.__name__}') from exc
+
+        mime_type = str(file_payload.get('content_type') or '').strip() or mimetypes.guess_type(original_name)[0] or 'application/octet-stream'
+        return {
+            'asset_payload': {
+                'original_name': original_name,
+                'stored_name': stored_name,
+                'stored_path': str(destination_path),
+                'relative_path': relative_path,
+                'size_bytes': len(body),
+                'sha256': digest,
+                'extension': extension,
+                'mime_type': mime_type,
+                'status': 'ready',
+            }
+        }
+
+    async def _cleanup_orphan_asset(
+        self,
+        asset_id: int,
+        scope: dict[str, str],
+        *,
+        conn=None,
+    ) -> None:
+        if await self.repository.count_attachment_references(asset_id, conn=conn) > 0:
+            return
+        asset = await self.repository.get_attachment_asset(
+            asset_id,
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            conn=conn,
+        )
+        if asset is None:
+            return
+        path = Path(str(asset.stored_path))
+        if path.exists():
+            path.unlink(missing_ok=True)
+        await self.repository.delete_attachment_asset(
+            asset_id,
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            conn=conn,
+        )
+
+    def _serialize_attachment_bundle(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            'id': int(item['relation_id']),
+            'attachment_asset_id': int(item['asset_id']),
+            'original_name': str(item.get('original_name_snapshot') or item.get('original_name') or ''),
+            'size_bytes': int(item.get('size_bytes_snapshot') or item.get('size_bytes') or 0),
+            'sha256': str(item.get('sha256_snapshot') or item.get('sha256') or ''),
+            'extension': str(item.get('extension') or ''),
+            'mime_type': str(item.get('mime_type') or ''),
+            'sort_order': int(item.get('sort_order') or 0),
+        }
+
+    def _serialize_execution_task_attachment(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            'id': int(item['relation_id']),
+            'attachment_asset_id': int(item['asset_id']),
+            'original_name_snapshot': str(item['original_name_snapshot']),
+            'size_bytes_snapshot': int(item['size_bytes_snapshot']),
+            'sha256_snapshot': str(item['sha256_snapshot']),
+            'sort_order': int(item['sort_order']),
+            'extension': str(item['extension']),
+            'mime_type': str(item['mime_type']),
+        }
+
     def _serialize_execution_batch(self, row) -> dict[str, Any]:
         return self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastExecutionBatch, row)
 
-    def _serialize_execution_task(self, row) -> dict[str, Any]:
-        return self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastExecutionTask, row)
+    async def _serialize_execution_task(self, row) -> dict[str, Any]:
+        data = self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastExecutionTask, row)
+        scope_data = await self.repository.get_execution_task_scope(int(row.id))
+        if scope_data is None:
+            data['attachments'] = []
+            return data
+        attachments = await self.repository.list_execution_task_attachments(
+            int(row.id),
+            bot_uuid=str(scope_data['bot_uuid']),
+            connector_id=str(scope_data['connector_id']),
+        )
+        data['attachments'] = [self._serialize_execution_task_attachment(item) for item in attachments]
+        return data
 
     def _serialize_execution_attempt(self, row) -> dict[str, Any]:
         return self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastExecutionAttempt, row)
@@ -2097,11 +2879,32 @@ class BroadcastService:
         if runtime_result is None:
             return None
 
-        sanitized = dict(runtime_result)
+        sanitized = self._sanitize_runtime_payload(runtime_result)
+        if not isinstance(sanitized, dict):
+            return None
         technical_details = sanitized.pop('technical_details', None)
         if technical_details is not None:
             sanitized['technical_details'] = self._sanitize_technical_details(technical_details)
         return sanitized
+
+    def _sanitize_runtime_payload(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            sanitized: dict[str, Any] = {}
+            for key, item in value.items():
+                lowered = str(key).lower()
+                if lowered in {'authorization', 'token', 'cookie', 'drafttext', 'draft_text'}:
+                    continue
+                if 'path' in lowered or lowered.endswith('root'):
+                    continue
+                nested = self._sanitize_runtime_payload(item)
+                if nested is not None or item is None:
+                    sanitized[key] = nested
+            return sanitized
+        if isinstance(value, list):
+            return [item for item in (self._sanitize_runtime_payload(item) for item in value) if item is not None]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return None
 
     def _sanitize_technical_details(self, technical_details: Any) -> dict[str, Any] | None:
         if not isinstance(technical_details, dict):
@@ -2110,24 +2913,123 @@ class BroadcastService:
         redacted: dict[str, Any] = {}
         allowed_text_keys = {
             'runtime_task_id',
+            'provider_instance_id',
+            'providerInstanceId',
             'stage',
             'status',
+            'warning',
             'error_code',
+            'errorCode',
+            'persistence_error_code',
+            'persistence_error_message',
             'verification_method',
+            'verificationMethod',
             'verification_error_code',
+            'verificationErrorCode',
+            'reason',
+            'diagnostic_code',
+            'diagnosticCode',
+            'diagnostic_stage',
+            'diagnosticStage',
+            'sanitized_message',
             'expected_digest',
             'actual_digest',
+            'method',
+            'requiresManualConversationOpen',
+            'lastErrorCode',
         }
-
+        allowed_container_keys = {
+            'candidate_count_before_filter',
+            'candidate_count_after_filter',
+            'canonical_candidate_count',
+            'rejected_candidate_count',
+            'selected_window',
+            'selectedWindow',
+            'candidates',
+            'rejection_reasons',
+            'rejectionReasons',
+            'capability_probe_diagnostic',
+            'capabilityProbeDiagnostic',
+            'task_verification_diagnostic',
+            'taskVerificationDiagnostic',
+            'pasteVerification',
+            'displaySummary',
+            'supportedErrorCodes',
+        }
+        allowed_text_keys |= {
+            'used_cached_capability',
+            'usedCachedCapability',
+            'capability_refresh_requested',
+            'capabilityRefreshRequested',
+            'capability_refresh_executed',
+            'capabilityRefreshExecuted',
+            'capability_checked_at',
+            'capabilityCheckedAt',
+            'capability_expires_at',
+            'capabilityExpiresAt',
+            'capability_age_ms',
+            'capabilityAgeMs',
+            'capability_probe_count_before_task',
+            'capabilityProbeCountBeforeTask',
+            'capability_probe_count_after_task',
+            'capabilityProbeCountAfterTask',
+            'capability_probe_spawn_count_before_task',
+            'capabilityProbeSpawnCountBeforeTask',
+            'capability_probe_spawn_count_after_task',
+            'capabilityProbeSpawnCountAfterTask',
+            'last_capability_diagnostic_code',
+            'lastCapabilityDiagnosticCode',
+        }
         for key, value in technical_details.items():
             lowered = str(key).lower()
             if lowered in {'authorization', 'token', 'cookie', 'drafttext', 'draft_text'}:
                 continue
             if 'path' in lowered:
                 continue
+            if key == 'attachment_names' and isinstance(value, list):
+                sanitized_names = [
+                    str(item).strip()
+                    for item in value
+                    if isinstance(item, str) and str(item).strip()
+                ]
+                if sanitized_names:
+                    redacted[key] = sanitized_names
+                continue
+            if key in allowed_container_keys and isinstance(value, (list, dict)):
+                redacted[key] = value
+                continue
             if key in allowed_text_keys or isinstance(value, (int, float, bool)) or value is None:
                 redacted[key] = value
         return redacted or None
+
+    def _build_attachment_relative_path(self, file_path: Path, *, root: Path | None = None) -> str | None:
+        attachment_root = Path(root or self._attachments_root())
+        canonical_root = Path(os.path.realpath(str(attachment_root)))
+        canonical_target = Path(os.path.realpath(str(file_path)))
+        try:
+            relative = os.path.relpath(str(canonical_target), str(canonical_root))
+        except ValueError:
+            return None
+        if relative.startswith('..') or os.path.isabs(relative):
+            return None
+        relative_text = Path(relative).as_posix().strip()
+        return relative_text or None
+
+    def _resolve_attachment_relative_path(self, item: dict[str, Any]) -> str:
+        relative_path = str(item.get('relative_path') or '').strip()
+        if relative_path:
+            return relative_path
+
+        stored_path = str(item.get('stored_path') or '').strip()
+        if stored_path:
+            derived = self._build_attachment_relative_path(Path(stored_path))
+            if derived:
+                return derived
+
+        raise BroadcastError(
+            ATTACHMENT_PATH_OUTSIDE_ROOT,
+            'Attachment path is outside the configured attachment root',
+        )
 
     def _rule_matches(self, match_type: str, expression: str, source_value: str) -> bool:
         if match_type == 'exact':

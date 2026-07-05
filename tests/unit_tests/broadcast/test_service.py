@@ -72,8 +72,12 @@ class _MiniPersistenceManager:
             await conn.run_sync(persistence_broadcast.BroadcastImportBatch.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastImportRow.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastDraft.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastAttachmentAsset.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastImportGroupAttachment.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastDraftAttachment.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastExecutionBatch.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastExecutionTask.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastExecutionTaskAttachment.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastExecutionAttempt.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastExecutionEvidence.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastSendConfirmation.__table__.create)
@@ -112,7 +116,29 @@ class _FakeRuntimeClient:
         return {'status': 'ready', 'protocolVersion': '1'}
 
     async def capabilities(self):
-        return {'supportsPaste': True, 'supportsSend': False}
+        return {
+            'windowingAvailable': True,
+            'captureAvailable': True,
+            'inputAvailable': True,
+            'providerHubReady': True,
+            'activeTaskCount': 0,
+            'lastErrorCode': None,
+            'pasteVerification': {
+                'available': True,
+                'reason': None,
+                'method': 'windows_uia',
+                'requiresManualConversationOpen': True,
+                'supportedErrorCodes': [
+                    'TARGET_WINDOW_CHANGED',
+                    'CONVERSATION_MISMATCH',
+                    'INPUT_NOT_LOCATED',
+                    'PASTE_CONTENT_MISMATCH',
+                    'PASTE_VERIFICATION_UNAVAILABLE',
+                ],
+            },
+            'supportsPaste': True,
+            'supportsSend': False,
+        }
 
     async def create_task(self, *, request: dict[str, object]):
         self.requests.append(request)
@@ -1202,6 +1228,263 @@ async def test_get_import_detail_rejects_page_size_larger_than_200(service_fixtu
         )
 
 
+async def test_list_import_groups_aggregates_rows_and_distinct_order_numbers(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                },
+                {
+                    'source_field': '运单号',
+                    'variable_key': '运单号',
+                    'merge_mode': 'lines',
+                    'order': 2,
+                },
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': '1932亚鹏',
+            'match_type': 'exact',
+            'match_expression': '1932亚鹏',
+            'target_conversation_name': '小满',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': (
+                '客户名称,运单号\n'
+                '1932亚鹏,XM2605136115\n'
+                ' 1932亚鹏 ,XM2605221244\n'
+                '1932亚鹏,XM2605221244\n'
+                '1932亚鹏,XM2605228085\n'
+            ).encode('utf-8'),
+        },
+    )
+
+    groups = await service.list_import_groups(created['id'], _scope(), {})
+
+    assert groups['raw_row_total'] == 4
+    assert groups['total'] == 1
+    assert groups['total_pages'] == 1
+    assert groups['order_number_field_configured'] is True
+    assert groups['matched_group_total'] == 1
+    assert groups['unmatched_group_total'] == 0
+    assert groups['invalid_group_total'] == 0
+    assert groups['conflict_group_total'] == 0
+    assert len(groups['groups']) == 1
+    assert groups['groups'][0]['group_value'] == '1932亚鹏'
+    assert groups['groups'][0]['raw_row_count'] == 4
+    assert groups['groups'][0]['distinct_order_number_count'] == 3
+    assert groups['groups'][0]['matched_conversation_name'] == '小满'
+    assert groups['groups'][0]['match_status'] == 'matched'
+    assert groups['groups'][0]['attachment_count'] == 0
+
+    rows = await service.list_import_group_rows(
+        created['id'],
+        groups['groups'][0]['group_key'],
+        _scope(),
+        {},
+    )
+    assert rows['total'] == 4
+    assert [row['source_row_number'] for row in rows['rows']] == [2, 3, 4, 5]
+    assert rows['rows'][1]['raw_data']['客户名称'].strip() == '1932亚鹏'
+    assert rows['rows'][2]['raw_data']['运单号'] == 'XM2605221244'
+
+
+async def test_list_import_groups_marks_conflicts_and_missing_order_field(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_name': 'Acme Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': (
+                '客户名称\n'
+                'Acme\n'
+                'Acme\n'
+                'Northwind\n'
+            ).encode('utf-8'),
+        },
+    )
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        rows = await service.repository.list_import_rows(
+            import_batch_id=created['id'],
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+        await service.repository.update_import_row_match_result(
+            int(rows[1].id),
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            updates={
+                'matched_conversation_name': 'Other Group',
+                'matched_rule_id': None,
+                'match_status': 'matched',
+                'error_message': None,
+            },
+            conn=conn,
+        )
+
+    groups = await service.list_import_groups(created['id'], _scope(), {})
+
+    assert groups['order_number_field_configured'] is False
+    assert groups['conflict_group_total'] == 1
+    acme = next(item for item in groups['groups'] if item['group_value'] == 'Acme')
+    assert acme['match_status'] == 'conflict'
+    assert acme['reason']
+    assert acme['distinct_order_number_count'] == 0
+
+
+async def test_group_and_draft_attachments_use_snapshots_and_ready_draft_returns_to_pending_review(service_fixture):
+    service, _ = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户',
+            'mapping_rules': [
+                {
+                    'source_field': '客户',
+                    'variable_key': '客户',
+                    'merge_mode': 'first',
+                    'order': 1,
+                },
+                {
+                    'source_field': '运单号',
+                    'variable_key': '运单号',
+                    'merge_mode': 'lines',
+                    'order': 2,
+                },
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': '小满',
+            'match_type': 'exact',
+            'match_expression': '小满',
+            'target_conversation_name': '小满',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户,运单号\n小满,TEST-1\n'.encode('utf-8'),
+        },
+    )
+
+    groups = await service.list_import_groups(created['id'], _scope(), {})
+    group = groups['groups'][0]
+    uploaded = await service.add_import_group_attachments(
+        created['id'],
+        group['group_key'],
+        _scope(),
+        [
+            {
+                'filename': '说明.txt',
+                'body': 'group attachment'.encode('utf-8'),
+                'content_type': 'text/plain',
+            }
+        ],
+    )
+    assert len(uploaded) == 1
+    assert uploaded[0]['original_name'] == '说明.txt'
+
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': '查验通知',
+            'content': '查验通知：{{运单号}}',
+            'enabled': True,
+        },
+    )
+    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+
+    draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
+    assert len(draft['attachments']) == 1
+    assert draft['attachments'][0]['original_name'] == '说明.txt'
+
+    await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
+    updated = await service.add_draft_attachments(
+        draft['id'],
+        _scope(),
+        [
+            {
+                'filename': '补充.pdf',
+                'body': b'%PDF-1.4\n1 0 obj\n<<>>\nendobj\n',
+                'content_type': 'application/pdf',
+            }
+        ],
+    )
+    assert len(updated['attachments']) == 2
+    assert updated['status'] == 'pending_review'
+    assert updated['message'] == '附件已变更，请重新审核'
+
+    ready = await service.update_draft_statuses(
+        _scope(),
+        {'draft_ids': [draft['id']], 'status': 'ready'},
+    )
+    assert ready['updated_count'] == 1
+
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    assert len(batch['tasks']) == 1
+    task = await service.get_execution_task_detail(batch['tasks'][0]['id'], _scope())
+    assert len(task['attachments']) == 2
+    assert [item['original_name_snapshot'] for item in task['attachments']] == ['说明.txt', '补充.pdf']
+
+
 async def test_upload_import_uses_parser_outside_transaction_and_persists_after_refresh(service_fixture):
     service, _ = service_fixture
 
@@ -2027,6 +2310,197 @@ async def test_start_execution_task_persists_mismatch_diagnostics_and_error_code
     assert technical_details['actual_text_length'] == 11
 
 
+async def test_start_execution_task_preserves_succeeded_with_warning_status_and_manual_attachment_confirmation(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    attachment = {
+        'filename': 'quote.pdf',
+        'body': b'pdf-data',
+    }
+    await service.add_draft_attachments(draft['id'], _scope(), [attachment])
+    await service.update_draft_statuses(
+        _scope(),
+        {'draft_ids': [draft['id']], 'status': 'ready'},
+    )
+
+    refreshed_draft = await service.get_draft_detail(draft['id'], _scope())
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [refreshed_draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def create_warning_task(*, request):
+        runtime_client.requests.append(request)
+        return {
+            'id': 'runtime-warning',
+            'status': 'succeeded_with_warning',
+            'stage': 'attachments_pasted_unverified',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+                'warning': 'PASTE_RESULT_NOT_VERIFIED',
+                'contentVerified': False,
+                'verificationFailed': False,
+                'observationAvailable': False,
+                'draftWritten': True,
+                'inputLocated': False,
+                'searchShortcutCount': 1,
+                'conversationPasteCount': 1,
+                'conversationConfirmEnterCount': 1,
+                'draftPasteCount': 1,
+                'sendKeyCount': 0,
+                'attachmentsPrepared': True,
+                'attachmentPasteRequested': True,
+                'attachmentsVerified': False,
+                'attachmentCount': 1,
+                'attachments': [
+                    {
+                        'name': 'quote.pdf',
+                    }
+                ],
+            },
+        }
+
+    runtime_client.create_task = create_warning_task
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+
+    assert started['status'] == 'succeeded_with_warning'
+    assert started['error_code'] is None
+    assert started['error_message'] is None
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    assert len(attempts) == 1
+    assert attempts[0]['status'] == 'succeeded_with_warning'
+
+    attempt_detail = await service.get_execution_attempt_detail(attempts[0]['id'], _scope())
+    response_summary = json.loads(attempt_detail['response_summary'])
+    assert response_summary['status'] == 'succeeded_with_warning'
+    assert response_summary['stage'] == 'attachments_pasted_unverified'
+    assert response_summary['result']['messageSent'] is False
+
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+    assert evidence['evidence_summary'] == '已写入，附件待人工确认'
+    technical_details = json.loads(evidence['technical_details'])
+    assert technical_details['warning'] == 'PASTE_RESULT_NOT_VERIFIED'
+    assert technical_details['content_verified'] is False
+    assert technical_details['observation_available'] is False
+    assert technical_details['search_shortcut_count'] == 1
+    assert technical_details['conversation_paste_count'] == 1
+    assert technical_details['conversation_confirm_enter_count'] == 1
+    assert technical_details['draft_paste_count'] == 1
+    assert technical_details['send_key_count'] == 0
+    assert technical_details['attachment_count'] == 1
+    assert technical_details['attachment_names'] == ['quote.pdf']
+    assert technical_details['attachments_prepared'] is True
+    assert technical_details['attachment_paste_requested'] is True
+    assert technical_details['attachments_verified'] is False
+
+    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
+    assert refreshed_batch['status'] == 'completed'
+    assert refreshed_batch['pending_tasks'] == 0
+    assert refreshed_batch['succeeded_tasks'] == 0
+
+
+async def test_start_execution_task_uses_attachment_root_and_relative_path_contract(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    await service.add_draft_attachments(
+        draft['id'],
+        _scope(),
+        [{'filename': 'quote.pdf', 'body': b'pdf-data'}],
+    )
+    await service.update_draft_statuses(
+        _scope(),
+        {'draft_ids': [draft['id']], 'status': 'ready'},
+    )
+
+    refreshed_draft = await service.get_draft_detail(draft['id'], _scope())
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [refreshed_draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+
+    assert started['status'] == 'succeeded'
+    assert len(runtime_client.requests) == 1
+    request = runtime_client.requests[0]
+    assert request['attachmentRoot'].endswith('runtime\\broadcast_attachments')
+    assert len(request['attachments']) == 1
+    assert request['attachments'][0]['relativePath'].startswith('bot-1')
+    assert request['attachments'][0]['filename'] == 'quote.pdf'
+    assert request['attachments'][0]['size'] > 0
+    assert request['attachments'][0]['sha256']
+    assert 'localPath' not in request['attachments'][0]
+    assert 'name' not in request['attachments'][0]
+    assert 'sizeBytes' not in request['attachments'][0]
+    assert 'extension' not in request['attachments'][0]
+
+
+async def test_resolve_attachment_relative_path_derives_from_stored_path_when_relative_path_missing(
+    service_fixture,
+):
+    service, _ = service_fixture
+    attachment_root = service._attachments_root()
+    attachment_dir = attachment_root / 'bot-1' / 'drafts' / 'compat'
+    attachment_dir.mkdir(parents=True, exist_ok=True)
+    attachment_file = attachment_dir / 'quote.pdf'
+    attachment_file.write_bytes(b'compat')
+
+    try:
+        relative_path = service._resolve_attachment_relative_path(
+            {
+                'relative_path': None,
+                'stored_path': str(attachment_file),
+            }
+        )
+    finally:
+        attachment_file.unlink(missing_ok=True)
+
+    assert relative_path == 'bot-1/drafts/compat/quote.pdf'
+
+
+async def test_resolve_attachment_relative_path_rejects_stored_path_outside_root_when_relative_path_missing(
+    service_fixture,
+):
+    service, _ = service_fixture
+
+    with pytest.raises(BroadcastError) as exc_info:
+        service._resolve_attachment_relative_path(
+            {
+                'relative_path': None,
+                'stored_path': 'C:/secret/outside-root/quote.pdf',
+            }
+        )
+
+    assert exc_info.value.code == 'ATTACHMENT_PATH_OUTSIDE_ROOT'
+
+
 async def test_concurrent_start_execution_task_creates_one_attempt_and_one_runtime_call(
     service_fixture,
     monkeypatch,
@@ -2179,7 +2653,7 @@ async def test_start_execution_task_marks_interrupted_when_result_persistence_fa
     assert attempts[0]['runtime_task_id'] == 'runtime-1'
     assert attempts[0]['error_code'] == 'BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED'
 
-    with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_TASK_NOT_FOUND'):
+    with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_EVIDENCE_NOT_AVAILABLE'):
         await service.get_execution_evidence(attempts[0]['id'], _scope())
 
     refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
@@ -2298,6 +2772,88 @@ async def test_start_execution_task_redacts_sensitive_response_summary_and_evide
     assert 'pasted_to_input' in response_summary
 
 
+async def test_sanitize_technical_details_keeps_window_diagnostics_without_paths_or_body(
+    service_fixture,
+):
+    service, _ = service_fixture
+
+    sanitized = service._sanitize_technical_details(
+        {
+            'candidate_count_before_filter': 3,
+            'candidate_count_after_filter': 1,
+            'canonical_candidate_count': 2,
+            'rejected_candidate_count': 2,
+            'selected_window': {
+                'hwnd': '1769682',
+                'rootHwnd': '1769682',
+                'ownerHwnd': '0',
+                'processId': 5516,
+                'processName': 'wxwork.exe',
+                'executableName': 'wxwork.exe',
+                'title': '企业微信',
+                'className': 'Qt51514QWindowIcon',
+                'visible': True,
+                'minimized': False,
+                'source': 'node-window-manager',
+                'accepted': True,
+                'rejectionReason': None,
+            },
+            'candidates': [
+                {
+                    'hwnd': '1968272',
+                    'rootHwnd': '1769682',
+                    'ownerHwnd': '1769682',
+                    'processId': 5516,
+                    'processName': 'wxwork.exe',
+                    'executableName': 'wxwork.exe',
+                    'title': '',
+                    'className': 'Qt51514QWindowIcon',
+                    'visible': True,
+                    'minimized': False,
+                    'source': 'node-window-manager',
+                    'accepted': False,
+                    'rejectionReason': 'empty_title',
+                }
+            ],
+            'rejection_reasons': [{'reason': 'empty_title', 'count': 1}],
+            'used_cached_capability': True,
+            'capability_refresh_requested': False,
+            'capability_refresh_executed': False,
+            'capability_checked_at': '2026-07-05T11:29:59.263Z',
+            'capability_expires_at': '2026-07-05T11:30:29.263Z',
+            'capability_age_ms': 23700,
+            'capability_probe_count_before_task': 2,
+            'capability_probe_count_after_task': 2,
+            'capability_probe_spawn_count_before_task': 2,
+            'capability_probe_spawn_count_after_task': 2,
+            'last_capability_diagnostic_code': 'UIA_ROOT_UNAVAILABLE',
+            'capability_probe_diagnostic': {
+                'scriptKind': 'availability_probe',
+                'spawnSucceeded': True,
+            },
+            'task_verification_diagnostic': {
+                'script_kind': 'input_inspection',
+                'failure_step': 'INPUT_LOOKUP',
+            },
+            'path': 'C:\\Users\\33031\\Desktop\\bot\\secret.txt',
+            'draftText': 'Hello Acme',
+            'token': 'top-secret',
+        }
+    )
+
+    assert sanitized['candidate_count_before_filter'] == 3
+    assert sanitized['selected_window']['hwnd'] == '1769682'
+    assert sanitized['candidates'][0]['rejectionReason'] == 'empty_title'
+    assert sanitized['used_cached_capability'] is True
+    assert sanitized['capability_checked_at'] == '2026-07-05T11:29:59.263Z'
+    assert sanitized['last_capability_diagnostic_code'] == 'UIA_ROOT_UNAVAILABLE'
+    assert sanitized['capability_probe_diagnostic']['scriptKind'] == 'availability_probe'
+    assert sanitized['task_verification_diagnostic']['failure_step'] == 'INPUT_LOOKUP'
+    assert 'path' not in sanitized
+    assert 'draftText' not in sanitized
+    assert 'token' not in sanitized
+
+
 async def test_start_execution_task_rejects_duplicate_runtime_task_id_across_batches(
     service_fixture,
     monkeypatch,
@@ -2359,6 +2915,556 @@ async def test_start_execution_task_rejects_duplicate_runtime_task_id_across_bat
     assert second_attempts[0]['error_code'] == 'BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT'
 
 
+
+
+async def test_start_execution_task_keeps_runtime_error_when_duplicate_runtime_task_id_is_reported(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def duplicate_runtime_task(*, request):
+        runtime_client.requests.append(request)
+        return {
+            'id': 'runtime-duplicate',
+            'status': 'interrupted',
+            'stage': 'paste_verification_unavailable',
+            'errorCode': 'PASTE_VERIFICATION_UNAVAILABLE',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+                'contentVerified': False,
+                'verificationFailed': True,
+                'verificationMethod': 'windows_uia',
+                'verificationErrorCode': 'UIA_PROBE_FAILED',
+                'draftWritten': False,
+                'inputLocated': False,
+            },
+        }
+
+    runtime_client.create_task = duplicate_runtime_task
+
+    first_batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    first_task_id = first_batch['tasks'][0]['id']
+    first_started = await service.start_execution_task(first_task_id, _scope(), {'operator': 'tester@example.com'})
+    assert first_started['status'] == 'interrupted'
+    assert first_started['error_code'] == 'PASTE_VERIFICATION_UNAVAILABLE'
+
+    second_batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    second_task_id = second_batch['tasks'][0]['id']
+    second_started = await service.start_execution_task(second_task_id, _scope(), {'operator': 'tester@example.com'})
+
+    assert second_started['status'] == 'failed'
+    assert second_started['error_code'] == 'PASTE_VERIFICATION_UNAVAILABLE'
+
+    second_attempts = await service.list_execution_attempts(second_task_id, _scope())
+    assert len(second_attempts) == 1
+    assert second_attempts[0]['error_code'] == 'PASTE_VERIFICATION_UNAVAILABLE'
+    response_summary = json.loads(second_attempts[0]['response_summary'])
+    assert response_summary['errorCode'] == 'PASTE_VERIFICATION_UNAVAILABLE'
+
+    evidence = await service.get_execution_evidence(second_attempts[0]['id'], _scope())
+    technical_details = json.loads(evidence['technical_details'])
+    assert technical_details['error_code'] == 'PASTE_VERIFICATION_UNAVAILABLE'
+    assert technical_details['persistence_error_code'] == 'BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT'
+
+
+async def test_start_execution_task_does_not_forge_actual_metrics_when_input_not_observed(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def unavailable_probe_task(*, request):
+        runtime_client.requests.append(request)
+        return {
+            'id': 'runtime-unavailable',
+            'status': 'interrupted',
+            'stage': 'paste_verification_unavailable',
+            'errorCode': 'PASTE_VERIFICATION_UNAVAILABLE',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+                'contentVerified': False,
+                'verificationFailed': True,
+                'verificationMethod': 'windows_uia',
+                'verificationErrorCode': 'UIA_PROBE_FAILED',
+                'draftWritten': False,
+                'inputLocated': False,
+                'expectedTextLength': 234,
+                'expectedCodePointCount': 234,
+                'expectedDigest': 'digest-expected',
+                'expectedLineCount': 3,
+                'actualTextLength': 234,
+                'actualCodePointCount': 234,
+                'actualDigest': 'digest-expected',
+                'actualLineCount': 3,
+            },
+        }
+
+    runtime_client.create_task = unavailable_probe_task
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+
+    assert started['status'] == 'interrupted'
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+    technical_details = json.loads(evidence['technical_details'])
+
+    assert technical_details['expected_text_length'] == 234
+    assert technical_details['observation_available'] is False
+    assert technical_details['actual_text_length'] is None
+    assert technical_details['actual_code_point_count'] is None
+    assert technical_details['actual_digest'] is None
+    assert technical_details['actual_line_count'] is None
+
+
+async def test_start_execution_task_uses_pre_paste_unavailable_message_and_keeps_provider_instance_id(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def unavailable_before_paste_task(*, request):
+        runtime_client.requests.append(request)
+        return {
+            'id': 'runtime-unavailable-before-paste',
+            'status': 'interrupted',
+            'stage': 'paste_verification_unavailable',
+            'errorCode': 'PASTE_VERIFICATION_UNAVAILABLE',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+                'contentVerified': False,
+                'verificationFailed': True,
+                'verificationMethod': 'windows_uia',
+                'providerInstanceId': 'provider-123',
+                'verificationErrorCode': 'UIA_PROBE_FAILED',
+                'diagnosticCode': 'UIA_PROBE_FAILED',
+                'diagnosticStage': 'capability_probe',
+                'draftWritten': False,
+                'inputLocated': False,
+            },
+        }
+
+    runtime_client.create_task = unavailable_before_paste_task
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+
+    assert started['status'] == 'interrupted'
+    assert started['error_message'] == 'UI Automation verifier was unavailable before paste'
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    assert attempts[0]['error_message'] == 'UI Automation verifier was unavailable before paste'
+
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+    technical_details = json.loads(evidence['technical_details'])
+    assert technical_details['provider_instance_id'] == 'provider-123'
+    assert technical_details['diagnostic_stage'] == 'capability_probe'
+
+
+async def test_start_execution_task_preserves_input_not_located_window_and_task_diagnostics(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def input_not_located_task(*, request):
+        runtime_client.requests.append(request)
+        return {
+            'id': 'runtime-input-not-located',
+            'status': 'interrupted',
+            'stage': 'input_not_located',
+            'errorCode': 'INPUT_NOT_LOCATED',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+                'contentVerified': False,
+                'verificationFailed': True,
+                'verificationMethod': 'windows_uia',
+                'verificationErrorCode': 'INPUT_NOT_LOCATED',
+                'providerInstanceId': 'provider-25016',
+                'draftWritten': False,
+                'inputLocated': False,
+                'windowTitle': '企业微信',
+                'candidateCountBeforeFilter': 3,
+                'candidateCountAfterFilter': 1,
+                'canonicalCandidateCount': 2,
+                'rejectedCandidateCount': 2,
+                'selectedWindow': {
+                    'hwnd': '1769682',
+                    'rootHwnd': '1769682',
+                    'ownerHwnd': '0',
+                    'processId': 5516,
+                    'processName': 'wxwork.exe',
+                    'executableName': 'wxwork.exe',
+                    'title': '企业微信',
+                    'className': 'Qt51514QWindowIcon',
+                    'visible': True,
+                    'minimized': False,
+                    'source': 'node-window-manager',
+                    'accepted': True,
+                    'rejectionReason': None,
+                },
+                'usedCachedCapability': True,
+                'capabilityRefreshRequested': False,
+                'capabilityRefreshExecuted': False,
+                'capabilityCheckedAt': '2026-07-05T11:29:59.263Z',
+                'capabilityExpiresAt': '2026-07-05T11:30:29.263Z',
+                'capabilityAgeMs': 23700,
+                'capabilityProbeCountBeforeTask': 2,
+                'capabilityProbeCountAfterTask': 2,
+                'capabilityProbeSpawnCountBeforeTask': 2,
+                'capabilityProbeSpawnCountAfterTask': 2,
+                'lastCapabilityDiagnosticCode': 'UIA_ROOT_UNAVAILABLE',
+                'capabilityProbeDiagnostic': {
+                    'scriptKind': 'availability_probe',
+                    'spawnSucceeded': True,
+                },
+                'taskVerificationDiagnostic': {
+                    'scriptKind': 'input_inspection',
+                    'spawnSucceeded': True,
+                    'timedOut': False,
+                    'exitCode': 0,
+                    'stdoutJsonFound': True,
+                    'stderrCategory': 'none',
+                    'tempFileCreated': True,
+                    'tempFileCleanupSucceeded': True,
+                    'failureStep': 'INPUT_LOOKUP',
+                    'windowFound': True,
+                    'conversationObserved': True,
+                    'conversationMatched': True,
+                    'inputElementFound': False,
+                    'valuePatternAvailable': False,
+                    'textPatternAvailable': False,
+                    'textObserved': False,
+                },
+            },
+        }
+
+    runtime_client.create_task = input_not_located_task
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+
+    assert started['status'] == 'interrupted'
+    assert started['error_code'] == 'INPUT_NOT_LOCATED'
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    assert attempts[0]['error_code'] == 'INPUT_NOT_LOCATED'
+
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+    assert evidence['window_title'] == '企业微信'
+    technical_details = json.loads(evidence['technical_details'])
+    assert technical_details['error_code'] == 'INPUT_NOT_LOCATED'
+    assert technical_details['selected_window']['hwnd'] == '1769682'
+    assert technical_details['task_verification_diagnostic']['failureStep'] == 'INPUT_LOOKUP'
+    assert technical_details['used_cached_capability'] is True
+    assert technical_details['capability_checked_at'] == '2026-07-05T11:29:59.263Z'
+
+
+async def test_get_execution_evidence_returns_specific_not_available_error_for_attempt_without_evidence(service_fixture):
+    service, persistence_mgr = service_fixture
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+
+    async with persistence_mgr.get_db_engine().begin() as conn:
+        attempt_id = await service.repository.create_execution_attempt(
+            conn,
+            {
+                'execution_task_id': task_id,
+                'attempt_no': 1,
+                'idempotency_key': 'broadcast:test:1',
+                'request_digest': 'digest-1',
+                'runtime_task_id': None,
+                'request_summary': 'request-summary',
+                'response_summary': None,
+                'status': 'interrupted',
+                'error_code': 'PASTE_VERIFICATION_UNAVAILABLE',
+                'error_message': 'missing evidence',
+                'finished_at': None,
+            },
+        )
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.get_execution_evidence(attempt_id, _scope())
+
+    assert exc_info.value.code == 'BROADCAST_EXECUTION_EVIDENCE_NOT_AVAILABLE'
+
+
+async def test_start_execution_task_maps_attachment_path_outside_root_to_failed_and_sanitizes_paths(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def outside_root_task(*, request):
+        runtime_client.requests.append(request)
+        return {
+            'id': 'runtime-outside-root',
+            'status': 'failed',
+            'stage': 'pasting_attachments',
+            'errorCode': 'ATTACHMENT_PATH_OUTSIDE_ROOT',
+            'errorMessage': 'Attachment path is outside the configured attachment root',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+                'contentVerified': False,
+                'verificationFailed': True,
+                'draftWritten': True,
+                'inputLocated': True,
+                'attachmentsPrepared': False,
+                'attachmentPasteRequested': False,
+                'attachmentRoot': 'C:/secret/runtime/broadcast_attachments',
+                'resolvedPath': 'C:/secret/runtime/broadcast_attachments/outside.txt',
+            },
+        }
+
+    runtime_client.create_task = outside_root_task
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+
+    assert started['status'] == 'failed'
+    assert started['error_code'] == 'ATTACHMENT_PATH_OUTSIDE_ROOT'
+    assert started['error_message'] == 'Attachment path is outside the configured attachment root'
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    assert attempts[0]['status'] == 'failed'
+    attempt_detail = await service.get_execution_attempt_detail(attempts[0]['id'], _scope())
+    assert 'C:/secret' not in (attempt_detail['response_summary'] or '')
+
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+    technical_details = json.loads(evidence['technical_details'])
+    assert technical_details['error_code'] == 'ATTACHMENT_PATH_OUTSIDE_ROOT'
+    assert 'attachment_root' not in technical_details
+    assert 'resolved_path' not in technical_details
+
+
+async def test_start_execution_task_maps_file_clipboard_helper_failures_to_failed_without_path_leakage(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    await service.add_draft_attachments(
+        draft['id'],
+        _scope(),
+        [{'filename': 'report.xlsx', 'body': b'xlsx-data'}],
+    )
+    await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
+
+    refreshed_draft = await service.get_draft_detail(draft['id'], _scope())
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [refreshed_draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def helper_failed_task(*, request):
+        runtime_client.requests.append(request)
+        return {
+            'id': 'runtime-clipboard-helper-failed',
+            'status': 'failed',
+            'stage': 'pasting_attachments',
+            'errorCode': 'FILE_CLIPBOARD_OUTPUT_INVALID',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+                'contentVerified': False,
+                'verificationFailed': False,
+                'draftWritten': True,
+                'inputLocated': False,
+                'attachmentsPrepared': False,
+                'attachmentPasteRequested': False,
+                'attachmentsVerified': False,
+                'attachmentCount': 1,
+                'sanitizedMessage': 'Unable to prepare the file clipboard',
+                'attachmentRoot': 'C:/secret/runtime/broadcast_attachments',
+                'payloadPath': 'C:/temp/langbot-filedrop-123.json',
+                'resolvedPath': 'C:/secret/runtime/broadcast_attachments/report.xlsx',
+                'sendKeyCount': 0,
+            },
+        }
+
+    runtime_client.create_task = helper_failed_task
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+
+    assert started['status'] == 'failed'
+    assert started['error_code'] == 'FILE_CLIPBOARD_OUTPUT_INVALID'
+    assert started['status'] != 'interrupted'
+    assert started['status'] != 'succeeded_with_warning'
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    assert attempts[0]['status'] == 'failed'
+    assert attempts[0]['error_code'] == 'FILE_CLIPBOARD_OUTPUT_INVALID'
+    attempt_detail = await service.get_execution_attempt_detail(attempts[0]['id'], _scope())
+    assert 'C:/secret' not in (attempt_detail['response_summary'] or '')
+    assert 'langbot-filedrop-' not in (attempt_detail['response_summary'] or '')
+
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+    technical_details = json.loads(evidence['technical_details'])
+    assert technical_details['error_code'] == 'FILE_CLIPBOARD_OUTPUT_INVALID'
+    assert technical_details['attachment_count'] == 1
+    assert technical_details['message_sent'] is False
+    assert technical_details['send_key_count'] == 0
+    assert 'attachment_root' not in technical_details
+    assert 'payload_path' not in technical_details
+
+
+async def test_start_execution_task_maps_target_window_lost_before_attachment_paste_to_failed(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    await service.add_draft_attachments(
+        draft['id'],
+        _scope(),
+        [{'filename': 'quote.pdf', 'body': b'pdf-data'}],
+    )
+    await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
+    refreshed_draft = await service.get_draft_detail(draft['id'], _scope())
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [refreshed_draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = batch['tasks'][0]['id']
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def lost_focus_task(*, request):
+        runtime_client.requests.append(request)
+        return {
+            'id': 'runtime-lost-focus',
+            'status': 'failed',
+            'stage': 'pasting_attachments',
+            'errorCode': 'TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+                'contentVerified': False,
+                'draftWritten': True,
+                'inputLocated': False,
+                'attachmentsPrepared': True,
+                'attachmentPasteRequested': False,
+                'attachmentsVerified': False,
+                'attachmentCount': 1,
+                'sendKeyCount': 0,
+            },
+        }
+
+    runtime_client.create_task = lost_focus_task
+
+    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
+    assert started['status'] == 'failed'
+    assert started['error_code'] == 'TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE'
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    assert attempts[0]['status'] == 'failed'
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+    technical_details = json.loads(evidence['technical_details'])
+    assert technical_details['attachments_prepared'] is True
+    assert technical_details['attachment_paste_requested'] is False
+
 async def test_get_executor_health_uses_public_runtime_interface_when_runtime_client_is_none(service_fixture):
     service, _ = service_fixture
     deferred_runtime = _DeferredRuntimeDesktopAutomationService()
@@ -2370,9 +3476,34 @@ async def test_get_executor_health_uses_public_runtime_interface_when_runtime_cl
     assert health['protocol_version'] == '1'
     assert health['runtime_version'] == '0.1.0'
     assert health['runtime_status']['supportsPaste'] is True
+    assert health['runtime_status']['pasteVerification']['method'] == 'windows_uia'
+    assert health['runtime_status']['pasteVerification']['reason'] is None
     assert deferred_runtime.ensure_client_calls >= 2
     assert deferred_runtime.health_calls == 1
     assert deferred_runtime.capability_calls == 1
+
+
+async def test_get_executor_health_reports_stable_error_code_when_runtime_capabilities_fail(
+    service_fixture,
+):
+    service, _ = service_fixture
+
+    class _BrokenRuntimeClient:
+        async def health(self):
+            return {'status': 'ready', 'protocolVersion': '1', 'runtimeVersion': '0.1.0'}
+
+        async def capabilities(self):
+            raise RuntimeError('系统找不到指定的文件。')
+
+    service.ap.desktop_automation_service = SimpleNamespace(
+        runtime_client=_BrokenRuntimeClient(),
+    )
+
+    health = await service.get_executor_health(_scope())
+
+    assert health['available'] is False
+    assert health['status'] == 'unavailable'
+    assert health['error_message'] == 'RuntimeError'
 
 
 async def test_start_execution_task_uses_public_runtime_interface_when_runtime_client_is_none(
@@ -2401,3 +3532,80 @@ async def test_start_execution_task_uses_public_runtime_interface_when_runtime_c
     assert started['status'] == 'succeeded'
     assert len(deferred_runtime.create_task_calls) == 1
     assert deferred_runtime.create_task_calls[0]['action'] == 'paste_draft'
+
+
+async def test_run_next_execution_task_marks_claimed_failures_terminal_and_does_not_block_following_tasks(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    first_batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    second_batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    await service.start_execution_batch(
+        first_batch['id'],
+        _scope(),
+        {'operator': 'tester@example.com'},
+    )
+    await service.start_execution_batch(
+        second_batch['id'],
+        _scope(),
+        {'operator': 'tester@example.com'},
+    )
+
+    import langbot.pkg.broadcast.service as broadcast_service_module
+
+    original_build_executor = broadcast_service_module.build_executor
+    first_call = True
+
+    def build_executor_once(channel, gateway):
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            raise RuntimeError('executor-bootstrap-failed')
+        return original_build_executor(channel, gateway)
+
+    monkeypatch.setattr(
+        broadcast_service_module,
+        'build_executor',
+        build_executor_once,
+    )
+
+    first_processed = await service.run_next_execution_task()
+    second_processed = await service.run_next_execution_task()
+
+    assert first_processed is True
+    assert second_processed is True
+
+    first_task_id = first_batch['tasks'][0]['id']
+    second_task_id = second_batch['tasks'][0]['id']
+
+    first_task = await service.get_execution_task_detail(first_task_id, _scope())
+    second_task = await service.get_execution_task_detail(second_task_id, _scope())
+
+    assert first_task['status'] == 'interrupted'
+    assert first_task['attempt_count'] == 0
+    assert first_task['error_code'] == 'RuntimeError'
+    assert second_task['status'] == 'succeeded'
+    assert second_task['attempt_count'] == 1
+
+    assert await service.list_execution_attempts(first_task_id, _scope()) == []
+    second_attempts = await service.list_execution_attempts(second_task_id, _scope())
+    assert len(second_attempts) == 1

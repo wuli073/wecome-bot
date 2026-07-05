@@ -832,6 +832,10 @@ export type ApiBroadcastImportBatchStatus =
 
 export type ApiBroadcastImportMatchStatus = 'matched' | 'unmatched' | 'invalid';
 
+export type ApiBroadcastImportGroupMatchStatus =
+  | ApiBroadcastImportMatchStatus
+  | 'conflict';
+
 export interface ApiBroadcastImportBatch {
   id: number;
   bot_uuid: string;
@@ -871,6 +875,58 @@ export interface ApiBroadcastImportDetail extends ApiBroadcastImportBatch {
   total_pages: number;
 }
 
+export interface ApiBroadcastAttachment {
+  id: number;
+  attachment_asset_id: number;
+  original_name?: string;
+  original_name_snapshot?: string;
+  size_bytes?: number;
+  size_bytes_snapshot?: number;
+  sha256?: string;
+  sha256_snapshot?: string;
+  extension: string;
+  mime_type: string;
+  sort_order: number;
+}
+
+export interface ApiBroadcastImportGroupSummary {
+  group_key: string;
+  group_value: string;
+  raw_row_count: number;
+  distinct_order_number_count: number;
+  matched_conversation_name: string | null;
+  match_status: ApiBroadcastImportGroupMatchStatus;
+  reason: string | null;
+  attachment_count: number;
+  expandable: boolean;
+  first_source_row_number: number;
+}
+
+export interface ApiBroadcastImportGroupsResponse {
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+  raw_row_total: number;
+  group_total: number;
+  matched_group_total: number;
+  unmatched_group_total: number;
+  invalid_group_total: number;
+  conflict_group_total: number;
+  order_number_field_configured: boolean;
+  groups: ApiBroadcastImportGroupSummary[];
+}
+
+export interface ApiBroadcastImportGroupRowsResponse {
+  group_key: string;
+  group_value: string | null;
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+  rows: ApiBroadcastImportRow[];
+}
+
 export type ApiBroadcastDraftStatus = 'pending_review' | 'ready' | 'invalid';
 
 export interface ApiBroadcastDraft {
@@ -888,6 +944,8 @@ export interface ApiBroadcastDraft {
   status: ApiBroadcastDraftStatus;
   error_message: string | null;
   drafts_stale: boolean;
+  attachments_stale?: boolean;
+  attachments?: ApiBroadcastAttachment[];
   created_at: string;
   updated_at: string;
   message?: string | null;
@@ -927,6 +985,7 @@ export interface ApiBroadcastExecutionTask {
   finished_at: string | null;
   cancelled_at: string | null;
   updated_at: string;
+  attachments?: ApiBroadcastAttachment[];
 }
 
 export interface ApiBroadcastExecutionBatch {
@@ -983,7 +1042,7 @@ export interface ApiBroadcastExecutionEvidence {
   clipboard_restored: boolean;
   runtime_state: string | null;
   evidence_summary: string | null;
-  technical_details: string | null;
+  technical_details: Record<string, unknown> | null;
   created_at: string;
 }
 

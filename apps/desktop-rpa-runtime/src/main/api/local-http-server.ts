@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { RuntimeHttpError } from '../domain/error-types'
+import type { PasteVerificationProvider } from '../input/paste-verification'
 import type { RuntimeStateStore } from '../runtime/state-store'
 import { RuntimeHost } from '../runtime/runtime-host'
 import { assertBearerAuth } from './auth'
@@ -41,11 +42,12 @@ export async function createLocalHttpServer(options: {
   token: string
   stateStore: RuntimeStateStore
   runtimeHost?: RuntimeHost
+  pasteVerificationProvider?: PasteVerificationProvider
 }): Promise<{ port: number; close: () => Promise<void> }> {
   const runtimeHost = options.runtimeHost ?? new RuntimeHost({
     runtimeAutoSendEnabled: process.env.LANGBOT_RPA_ALLOW_AUTO_SEND === '1',
     sendDriverForceDisabled: process.env.LANGBOT_RPA_FORCE_DISABLE_SEND === '1',
-  })
+  }, options.pasteVerificationProvider)
   const server = createServer((request, response) => {
     void (async () => {
       try {
@@ -56,7 +58,11 @@ export async function createLocalHttpServer(options: {
           return
         }
         if (request.method === 'GET' && path === '/v1/runtime/status') {
-          writeJson(response, 200, { ...buildRuntimeStatusPayload(options.stateStore), activeTaskCount: runtimeHost.activeTaskCount() })
+          const runtimeStatusPatch = await runtimeHost.getRuntimeStatusPatch()
+          writeJson(response, 200, {
+            ...buildRuntimeStatusPayload(options.stateStore),
+            ...runtimeStatusPatch,
+          })
           return
         }
         if (request.method === 'POST' && /^\/v1\/tasks\/(paste-draft|send-message|send-draft|diagnose|conversation-search|history-search|quote-reply)$/.test(path)) {
@@ -113,7 +119,7 @@ export async function createLocalHttpServer(options: {
 }
 
 function assertPasteDraftBodyShape(body: Record<string, unknown>) {
-  const allowedFields = new Set(['action', 'conversationName', 'draftText', 'idempotencyKey', 'requestDigest'])
+  const allowedFields = new Set(['action', 'conversationName', 'draftText', 'idempotencyKey', 'requestDigest', 'attachmentRoot', 'attachments'])
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) throw new RuntimeHttpError(400, 'UNEXPECTED_REQUEST_FIELD', `Unexpected paste-draft field: ${key}`)
   }

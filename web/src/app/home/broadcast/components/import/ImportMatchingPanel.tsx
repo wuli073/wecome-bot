@@ -1,11 +1,5 @@
-﻿import { useMemo, useRef, useState } from 'react';
+import { Fragment, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  type ColumnDef,
-  flexRender,
-  getCoreRowModel,
-  useReactTable,
-} from '@tanstack/react-table';
 
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
@@ -34,20 +28,23 @@ import {
 } from '@/components/ui/table';
 
 import type {
+  BroadcastAttachment,
   BroadcastImportBatch,
   BroadcastImportDetail,
-  BroadcastImportMatchStatus,
+  BroadcastImportGroupList,
+  BroadcastImportGroupMatchStatus,
+  BroadcastImportGroupRowsPage,
   BroadcastImportPreviewRow,
   BroadcastMessageTemplate,
 } from '../../types';
 import { markBroadcastRender } from '../../diagnostics';
 
-const EMPTY_IMPORT_ROWS: BroadcastImportPreviewRow[] = [];
-
 interface ImportMatchingPanelProps {
   batches: BroadcastImportBatch[];
   selectedBatchId: number | null;
   detail: BroadcastImportDetail | null;
+  groupsDetail: BroadcastImportGroupList | null;
+  groupRowsByKey: Record<string, BroadcastImportGroupRowsPage | undefined>;
   templates: BroadcastMessageTemplate[];
   loading?: boolean;
   busy?: boolean;
@@ -58,12 +55,48 @@ interface ImportMatchingPanelProps {
   onDeleteBatch: (batchId: number) => Promise<void>;
   onRematch: (batchId: number) => Promise<void>;
   onGenerateDrafts: (batchId: number, templateId: number) => Promise<void>;
+  onLoadGroupRows: (groupKey: string, page?: number) => Promise<void>;
+  onUploadGroupAttachments: (
+    groupKey: string,
+    files: File[],
+  ) => Promise<void>;
+  onDeleteGroupAttachment: (
+    groupKey: string,
+    attachmentId: number,
+  ) => Promise<void>;
+}
+
+const EMPTY_ATTACHMENTS: BroadcastAttachment[] = [];
+
+function renderMatchStatusLabel(
+  status: BroadcastImportGroupMatchStatus,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  if (status === 'matched') {
+    return t('broadcast.import.statusLabels.matched');
+  }
+  if (status === 'unmatched') {
+    return t('broadcast.import.statusLabels.unmatched');
+  }
+  if (status === 'conflict') {
+    return t('broadcast.import.statusLabels.conflict');
+  }
+  return t('broadcast.import.statusLabels.invalid');
+}
+
+function renderRawRowSummary(row: BroadcastImportPreviewRow) {
+  return Object.entries(row.rawData ?? {})
+    .slice(0, 3)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(' / ');
 }
 
 export default function ImportMatchingPanel({
   batches,
   selectedBatchId,
   detail,
+  groupsDetail,
+  groupRowsByKey,
   templates,
   loading = false,
   busy = false,
@@ -74,61 +107,45 @@ export default function ImportMatchingPanel({
   onDeleteBatch,
   onRematch,
   onGenerateDrafts,
+  onLoadGroupRows,
+  onUploadGroupAttachments,
+  onDeleteGroupAttachment,
 }: ImportMatchingPanelProps) {
   markBroadcastRender('ImportMatchingPanel');
   const { t } = useTranslation();
   const uploadRef = useRef<HTMLInputElement | null>(null);
+  const attachmentInputRefs = useRef<Record<string, HTMLInputElement | null>>(
+    {},
+  );
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
-  const rows = detail?.rows ?? EMPTY_IMPORT_ROWS;
+  const [expandedGroupKeys, setExpandedGroupKeys] = useState<string[]>([]);
 
-  const columns = useMemo<ColumnDef<BroadcastImportPreviewRow>[]>(() => {
-    const matchStatusLabels: Record<BroadcastImportMatchStatus, string> = {
-      matched: t('broadcast.import.statusLabels.matched'),
-      unmatched: t('broadcast.import.statusLabels.unmatched'),
-      invalid: t('broadcast.import.statusLabels.invalid'),
-    };
+  const stats = useMemo(
+    () => ({
+      rawRowTotal: groupsDetail?.rawRowTotal ?? detail?.totalRows ?? 0,
+      groupTotal: groupsDetail?.groupTotal ?? 0,
+      matchedGroupTotal: groupsDetail?.matchedGroupTotal ?? 0,
+      unmatchedGroupTotal: groupsDetail?.unmatchedGroupTotal ?? 0,
+      invalidOrConflictTotal:
+        (groupsDetail?.invalidGroupTotal ?? 0) +
+        (groupsDetail?.conflictGroupTotal ?? 0),
+    }),
+    [detail?.totalRows, groupsDetail],
+  );
 
-    return [
-      {
-        accessorKey: 'sourceRowNumber',
-        header: t('broadcast.import.tableHeaders.sourceRowNumber'),
-      },
-      {
-        accessorKey: 'groupValue',
-        header: t('broadcast.import.tableHeaders.groupValue'),
-        cell: ({ row }) => row.original.groupValue || '-',
-      },
-      {
-        accessorKey: 'matchedConversationName',
-        header: t('broadcast.import.tableHeaders.matchedConversationName'),
-        cell: ({ row }) => row.original.matchedConversationName || '-',
-      },
-      {
-        accessorKey: 'matchStatus',
-        header: t('broadcast.import.tableHeaders.matchStatus'),
-        cell: ({ row }) => (
-          <Badge variant="outline">
-            {matchStatusLabels[row.original.matchStatus]}
-          </Badge>
-        ),
-      },
-      {
-        accessorKey: 'errorMessage',
-        header: t('broadcast.import.tableHeaders.errorMessage'),
-        cell: ({ row }) => row.original.errorMessage || '-',
-      },
-    ];
-  }, [t]);
-
-  const table = useReactTable({
-    data: rows,
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-  });
-
-  const matchedCount = detail?.matchedRows ?? 0;
-  const unmatchedCount = detail?.unmatchedRows ?? 0;
-  const invalidCount = detail?.invalidRows ?? 0;
+  const toggleGroup = async (groupKey: string) => {
+    const isExpanded = expandedGroupKeys.includes(groupKey);
+    if (isExpanded) {
+      setExpandedGroupKeys((current) =>
+        current.filter((item) => item !== groupKey),
+      );
+      return;
+    }
+    if (!groupRowsByKey[groupKey]) {
+      await onLoadGroupRows(groupKey, 1);
+    }
+    setExpandedGroupKeys((current) => [...current, groupKey]);
+  };
 
   return (
     <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
@@ -162,9 +179,7 @@ export default function ImportMatchingPanel({
               try {
                 await onUpload(file);
               } finally {
-                if (input) {
-                  input.value = '';
-                }
+                input.value = '';
               }
             }}
           />
@@ -231,34 +246,46 @@ export default function ImportMatchingPanel({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-5">
             <div className="rounded-xl border bg-muted/20 p-4">
               <div className="text-sm text-muted-foreground">
                 {t('broadcast.import.stats.totalRows')}
               </div>
               <div className="mt-2 text-2xl font-semibold">
-                {detail?.totalRows ?? 0}
+                {stats.rawRowTotal}
               </div>
             </div>
             <div className="rounded-xl border bg-muted/20 p-4">
               <div className="text-sm text-muted-foreground">
-                {t('broadcast.import.stats.matchedRows')}
-              </div>
-              <div className="mt-2 text-2xl font-semibold">{matchedCount}</div>
-            </div>
-            <div className="rounded-xl border bg-muted/20 p-4">
-              <div className="text-sm text-muted-foreground">
-                {t('broadcast.import.stats.unmatchedRows')}
+                {t('broadcast.import.stats.totalGroups')}
               </div>
               <div className="mt-2 text-2xl font-semibold">
-                {unmatchedCount}
+                {stats.groupTotal}
               </div>
             </div>
             <div className="rounded-xl border bg-muted/20 p-4">
               <div className="text-sm text-muted-foreground">
-                {t('broadcast.import.stats.invalidRows')}
+                {t('broadcast.import.stats.matchedGroups')}
               </div>
-              <div className="mt-2 text-2xl font-semibold">{invalidCount}</div>
+              <div className="mt-2 text-2xl font-semibold">
+                {stats.matchedGroupTotal}
+              </div>
+            </div>
+            <div className="rounded-xl border bg-muted/20 p-4">
+              <div className="text-sm text-muted-foreground">
+                {t('broadcast.import.stats.unmatchedGroups')}
+              </div>
+              <div className="mt-2 text-2xl font-semibold">
+                {stats.unmatchedGroupTotal}
+              </div>
+            </div>
+            <div className="rounded-xl border bg-muted/20 p-4">
+              <div className="text-sm text-muted-foreground">
+                {t('broadcast.import.stats.invalidGroups')}
+              </div>
+              <div className="mt-2 text-2xl font-semibold">
+                {stats.invalidOrConflictTotal}
+              </div>
             </div>
           </div>
 
@@ -326,40 +353,283 @@ export default function ImportMatchingPanel({
           <div data-testid="broadcast-import-table">
             <Table>
               <TableHeader>
-                {table.getHeaderGroups().map((headerGroup) => (
-                  <TableRow key={headerGroup.id}>
-                    {headerGroup.headers.map((header) => (
-                      <TableHead key={header.id}>
-                        {header.isPlaceholder
-                          ? null
-                          : flexRender(
-                              header.column.columnDef.header,
-                              header.getContext(),
-                            )}
-                      </TableHead>
-                    ))}
-                  </TableRow>
-                ))}
+                <TableRow>
+                  <TableHead>{t('broadcast.import.tableHeaders.groupValue')}</TableHead>
+                  <TableHead>{t('broadcast.import.tableHeaders.orderCount')}</TableHead>
+                  <TableHead>{t('broadcast.import.tableHeaders.rawRowCount')}</TableHead>
+                  <TableHead>
+                    {t('broadcast.import.tableHeaders.matchedConversationName')}
+                  </TableHead>
+                  <TableHead>{t('broadcast.import.tableHeaders.matchStatus')}</TableHead>
+                  <TableHead>{t('broadcast.import.tableHeaders.attachments')}</TableHead>
+                  <TableHead>{t('broadcast.import.tableHeaders.errorMessage')}</TableHead>
+                  <TableHead className="w-[120px] text-right">
+                    {t('broadcast.import.tableHeaders.actions')}
+                  </TableHead>
+                </TableRow>
               </TableHeader>
               <TableBody>
-                {table.getRowModel().rows.map((row) => (
-                  <TableRow key={row.id}>
-                    {row.getVisibleCells().map((cell) => (
-                      <TableCell key={cell.id}>
-                        {cell.column.columnDef.cell
-                          ? flexRender(
-                              cell.column.columnDef.cell,
-                              cell.getContext(),
-                            )
-                          : String(cell.getValue() ?? '')}
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                ))}
-                {rows.length === 0 ? (
+                {(groupsDetail?.groups ?? []).map((group) => {
+                  const expanded = expandedGroupKeys.includes(group.groupKey);
+                  const groupRows = groupRowsByKey[group.groupKey];
+                  const attachments = group.attachments ?? EMPTY_ATTACHMENTS;
+                  return (
+                    <Fragment key={group.groupKey}>
+                      <TableRow key={group.groupKey}>
+                        <TableCell className="font-medium">
+                          {group.groupValue}
+                        </TableCell>
+                        <TableCell>{group.distinctOrderNumberCount}</TableCell>
+                        <TableCell>{group.rawRowCount}</TableCell>
+                        <TableCell>{group.matchedConversationName || '-'}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline">
+                            {renderMatchStatusLabel(group.matchStatus, t)}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="secondary">
+                            {attachments.length || group.attachmentCount}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="max-w-[260px] text-sm text-muted-foreground">
+                          {group.reason || '-'}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busy}
+                            onClick={() => void toggleGroup(group.groupKey)}
+                          >
+                            {expanded
+                              ? t('broadcast.import.collapseGroup')
+                              : t('broadcast.import.expandGroup')}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                      {expanded ? (
+                        <TableRow>
+                          <TableCell colSpan={8} className="bg-muted/10">
+                            <div className="space-y-4 py-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="text-sm font-medium">
+                                  {t('broadcast.import.groupAttachments')}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    ref={(node) => {
+                                      attachmentInputRefs.current[group.groupKey] =
+                                        node;
+                                    }}
+                                    type="file"
+                                    multiple
+                                    className="hidden"
+                                    onChange={async (event) => {
+                                      const files = Array.from(
+                                        event.target.files ?? [],
+                                      );
+                                      if (files.length === 0) {
+                                        return;
+                                      }
+                                      try {
+                                        await onUploadGroupAttachments(
+                                          group.groupKey,
+                                          files,
+                                        );
+                                      } finally {
+                                        event.target.value = '';
+                                      }
+                                    }}
+                                  />
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      attachmentInputRefs.current[
+                                        group.groupKey
+                                      ]?.click()
+                                    }
+                                  >
+                                    {t('broadcast.import.uploadAttachment')}
+                                  </Button>
+                                </div>
+                              </div>
+
+                              {attachments.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {attachments.map((attachment) => (
+                                    <div
+                                      key={attachment.id}
+                                      className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2 text-sm"
+                                    >
+                                      <span>{attachment.originalName}</span>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        disabled={busy}
+                                        onClick={() =>
+                                          void onDeleteGroupAttachment(
+                                            group.groupKey,
+                                            attachment.id,
+                                          )
+                                        }
+                                      >
+                                        {t('broadcast.import.deleteAttachment')}
+                                      </Button>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="text-sm text-muted-foreground">
+                                  {t('broadcast.import.emptyAttachments')}
+                                </div>
+                              )}
+
+                              <div className="space-y-2">
+                                <div className="text-sm font-medium">
+                                  {t('broadcast.import.groupRowsTitle')}
+                                </div>
+                                <div className="rounded-lg border bg-background">
+                                  <Table>
+                                    <TableHeader>
+                                      <TableRow>
+                                        <TableHead>
+                                          {t(
+                                            'broadcast.import.tableHeaders.sourceRowNumber',
+                                          )}
+                                        </TableHead>
+                                        <TableHead>
+                                          {t(
+                                            'broadcast.import.tableHeaders.matchStatus',
+                                          )}
+                                        </TableHead>
+                                        <TableHead>
+                                          {t(
+                                            'broadcast.import.tableHeaders.matchedConversationName',
+                                          )}
+                                        </TableHead>
+                                        <TableHead>
+                                          {t(
+                                            'broadcast.import.tableHeaders.errorMessage',
+                                          )}
+                                        </TableHead>
+                                        <TableHead>
+                                          {t(
+                                            'broadcast.import.tableHeaders.rowPreview',
+                                          )}
+                                        </TableHead>
+                                      </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                      {(groupRows?.rows ?? []).map((row) => (
+                                        <TableRow
+                                          key={`${group.groupKey}-${row.id}`}
+                                        >
+                                          <TableCell>
+                                            {row.sourceRowNumber}
+                                          </TableCell>
+                                          <TableCell>
+                                            <Badge variant="outline">
+                                              {renderMatchStatusLabel(
+                                                row.matchStatus,
+                                                t,
+                                              )}
+                                            </Badge>
+                                          </TableCell>
+                                          <TableCell>
+                                            {row.matchedConversationName || '-'}
+                                          </TableCell>
+                                          <TableCell>
+                                            {row.errorMessage || '-'}
+                                          </TableCell>
+                                          <TableCell className="max-w-[420px] truncate text-muted-foreground">
+                                            {renderRawRowSummary(row)}
+                                          </TableCell>
+                                        </TableRow>
+                                      ))}
+                                      {(groupRows?.rows.length ?? 0) === 0 ? (
+                                        <TableRow>
+                                          <TableCell
+                                            colSpan={5}
+                                            className="text-center text-muted-foreground"
+                                          >
+                                            {t('broadcast.import.emptyRows')}
+                                          </TableCell>
+                                        </TableRow>
+                                      ) : null}
+                                    </TableBody>
+                                  </Table>
+                                </div>
+
+                                <div className="flex items-center justify-between text-sm">
+                                  <div className="text-muted-foreground">
+                                    {t('broadcast.import.groupRowsTotal', {
+                                      total: groupRows?.total ?? 0,
+                                    })}
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={
+                                        busy ||
+                                        !groupRows ||
+                                        groupRows.page <= 1
+                                      }
+                                      onClick={() =>
+                                        void onLoadGroupRows(
+                                          group.groupKey,
+                                          (groupRows?.page ?? 1) - 1,
+                                        )
+                                      }
+                                    >
+                                      {t(
+                                        'broadcast.import.pagination.previous',
+                                      )}
+                                    </Button>
+                                    <span className="text-muted-foreground">
+                                      {t(
+                                        'broadcast.import.pagination.pageStatus',
+                                        {
+                                          page: groupRows?.page ?? 0,
+                                          totalPages: groupRows?.totalPages ?? 0,
+                                        },
+                                      )}
+                                    </span>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={
+                                        busy ||
+                                        !groupRows ||
+                                        groupRows.totalPages === 0 ||
+                                        groupRows.page >= groupRows.totalPages
+                                      }
+                                      onClick={() =>
+                                        void onLoadGroupRows(
+                                          group.groupKey,
+                                          (groupRows?.page ?? 1) + 1,
+                                        )
+                                      }
+                                    >
+                                      {t('broadcast.import.pagination.next')}
+                                    </Button>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
+                {(groupsDetail?.groups.length ?? 0) === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={5}
+                      colSpan={8}
                       className="text-center text-muted-foreground"
                     >
                       {t('broadcast.import.emptyRows')}
@@ -369,13 +639,14 @@ export default function ImportMatchingPanel({
               </TableBody>
             </Table>
           </div>
+
           <div className="flex items-center justify-between gap-3 text-sm">
             <div
               className="text-muted-foreground"
               data-testid="broadcast-import-total-items"
             >
               {t('broadcast.import.pagination.totalItems', {
-                total: detail?.total ?? 0,
+                total: groupsDetail?.total ?? 0,
               })}
             </div>
             <div className="flex items-center gap-3">
@@ -383,20 +654,22 @@ export default function ImportMatchingPanel({
                 data-testid="broadcast-import-prev-page"
                 variant="outline"
                 size="sm"
-                disabled={loading || busy || !detail || detail.page <= 1}
+                disabled={
+                  loading || busy || !groupsDetail || groupsDetail.page <= 1
+                }
                 onClick={() => {
-                  if (!detail) {
+                  if (!groupsDetail) {
                     return;
                   }
-                  void onPageChange(detail.page - 1);
+                  void onPageChange(groupsDetail.page - 1);
                 }}
               >
                 {t('broadcast.import.pagination.previous')}
               </Button>
               <span data-testid="broadcast-import-pagination">
                 {t('broadcast.import.pagination.pageStatus', {
-                  page: detail?.page ?? 0,
-                  totalPages: detail?.totalPages ?? 0,
+                  page: groupsDetail?.page ?? 0,
+                  totalPages: groupsDetail?.totalPages ?? 0,
                 })}
               </span>
               <Button
@@ -406,15 +679,15 @@ export default function ImportMatchingPanel({
                 disabled={
                   loading ||
                   busy ||
-                  !detail ||
-                  detail.totalPages === 0 ||
-                  detail.page >= detail.totalPages
+                  !groupsDetail ||
+                  groupsDetail.totalPages === 0 ||
+                  groupsDetail.page >= groupsDetail.totalPages
                 }
                 onClick={() => {
-                  if (!detail) {
+                  if (!groupsDetail) {
                     return;
                   }
-                  void onPageChange(detail.page + 1);
+                  void onPageChange(groupsDetail.page + 1);
                 }}
               >
                 {t('broadcast.import.pagination.next')}

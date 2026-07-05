@@ -157,6 +157,17 @@ interface BroadcastImportRowMock {
   created_at: string;
 }
 
+interface BroadcastAttachmentMock {
+  id: number;
+  attachment_asset_id: number;
+  original_name: string;
+  size_bytes: number;
+  sha256: string;
+  extension: string;
+  mime_type: string;
+  sort_order: number;
+}
+
 interface BroadcastDraftMock {
   id: number;
   bot_uuid: string;
@@ -172,8 +183,11 @@ interface BroadcastDraftMock {
   status: 'pending_review' | 'ready' | 'invalid';
   error_message: string | null;
   drafts_stale: boolean;
+  attachments_stale?: boolean;
+  attachments?: BroadcastAttachmentMock[];
   created_at: string;
   updated_at: string;
+  message?: string | null;
 }
 
 interface BroadcastExecutionBatchMock {
@@ -225,6 +239,7 @@ interface BroadcastExecutionTaskMock {
   finished_at: string | null;
   cancelled_at: string | null;
   updated_at: string;
+  attachments?: BroadcastAttachmentMock[];
 }
 
 interface BroadcastExecutionAttemptMock {
@@ -255,7 +270,7 @@ interface BroadcastExecutionEvidenceMock {
   clipboard_restored: boolean;
   runtime_state: string | null;
   evidence_summary: string | null;
-  technical_details: string | null;
+  technical_details: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -276,6 +291,7 @@ interface LangBotApiMockState {
   broadcastExecutionEvidence: BroadcastExecutionEvidenceMock[];
   broadcastSendConfirmations: BroadcastSendConfirmationMock[];
   broadcastExecutionTasks: BroadcastExecutionTaskMock[];
+  broadcastGroupAttachments: Record<string, BroadcastAttachmentMock[]>;
   broadcastGroupNames: BroadcastGroupNameMock[];
   broadcastGroupRules: BroadcastGroupRuleMock[];
   broadcastImportBatches: BroadcastImportBatchMock[];
@@ -303,6 +319,9 @@ async function fulfillJson(route: Route, data: unknown) {
   await route.fulfill({
     status: 200,
     contentType: 'application/json',
+    headers: {
+      'cache-control': 'no-store',
+    },
     body: JSON.stringify(ok(data)),
   });
 }
@@ -317,6 +336,9 @@ async function fulfillError(
   await route.fulfill({
     status,
     contentType: 'application/json',
+    headers: {
+      'cache-control': 'no-store',
+    },
     body: JSON.stringify({
       code: -1,
       msg,
@@ -343,6 +365,241 @@ function now() {
 function nextId(state: LangBotApiMockState, prefix: string) {
   state.counters[prefix] = (state.counters[prefix] || 0) + 1;
   return `${prefix}-${state.counters[prefix]}`;
+}
+
+function makeGroupKey(importId: number, groupValue: string) {
+  return Buffer.from(`${importId}:${groupValue}`, 'utf-8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function findOrderField(profile: BroadcastVariableProfileMock) {
+  return (
+    profile.mapping_rules.find((rule) =>
+      ['运单号', 'order_no', 'shipment_no'].includes(rule.variable_key),
+    )?.source_field || null
+  );
+}
+
+function normalizeOrderValue(value: string | undefined) {
+  const trimmed = String(value || '').trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function inferGroupMatchStatus(rows: BroadcastImportRowMock[]) {
+  const statuses = new Set(rows.map((row) => row.match_status));
+  const conversations = new Set(
+    rows
+      .map((row) => row.matched_conversation_name)
+      .filter((value): value is string => Boolean(value)),
+  );
+  if (statuses.size > 1 || conversations.size > 1) {
+    return 'conflict' as const;
+  }
+  return rows[0]?.match_status || 'invalid';
+}
+
+function inferGroupReason(rows: BroadcastImportRowMock[], status: string) {
+  if (status === 'conflict') {
+    return 'Multiple match outcomes found in the same group';
+  }
+  return rows.find((row) => row.error_message)?.error_message || null;
+}
+
+function groupAttachmentMapKey(importId: number, groupKey: string) {
+  return `${importId}:${groupKey}`;
+}
+
+function cloneAttachment(
+  attachment: BroadcastAttachmentMock,
+): BroadcastAttachmentMock {
+  return JSON.parse(JSON.stringify(attachment)) as BroadcastAttachmentMock;
+}
+
+function createAttachment(
+  state: LangBotApiMockState,
+  originalName: string,
+  sortOrder: number,
+): BroadcastAttachmentMock {
+  const attachmentId = Number(
+    nextId(state, 'broadcast-attachment').split('-').pop(),
+  );
+  const attachmentAssetId = Number(
+    nextId(state, 'broadcast-attachment-asset').split('-').pop(),
+  );
+  const extensionMatch = /\.([^.]+)$/.exec(originalName);
+  const extension = extensionMatch ? `.${extensionMatch[1].toLowerCase()}` : '';
+  const sizeBytes = Math.max(1, Buffer.byteLength(originalName, 'utf-8') * 128);
+  return {
+    id: attachmentId,
+    attachment_asset_id: attachmentAssetId,
+    original_name: originalName,
+    size_bytes: sizeBytes,
+    sha256: `sha256:${attachmentAssetId}:${originalName}`,
+    extension,
+    mime_type: extension === '.pdf' ? 'application/pdf' : 'image/png',
+    sort_order: sortOrder,
+  };
+}
+
+function serializeDraft(draft: BroadcastDraftMock): BroadcastDraftMock {
+  return {
+    ...draft,
+    attachments_stale: draft.attachments_stale ?? false,
+    attachments: (draft.attachments ?? []).map(cloneAttachment),
+  };
+}
+
+function buildImportGroupsResponse(
+  state: LangBotApiMockState,
+  importId: number,
+  filters: {
+    matchStatus?: string | null;
+    keyword?: string;
+    page: number;
+    pageSize: number;
+  },
+) {
+  const rows = state.broadcastImportRows
+    .filter((item) => item.import_batch_id === importId)
+    .sort((left, right) => left.source_row_number - right.source_row_number);
+  const orderField = findOrderField(state.broadcastVariableProfile);
+  const grouped = new Map<string, BroadcastImportRowMock[]>();
+  for (const row of rows) {
+    const key = row.group_value ?? `__invalid__:${row.id}`;
+    const current = grouped.get(key) ?? [];
+    current.push(row);
+    grouped.set(key, current);
+  }
+
+  const allGroups = Array.from(grouped.entries())
+    .map(([groupValue, groupRows]) => {
+      const matchStatus = inferGroupMatchStatus(groupRows);
+      const groupKey = makeGroupKey(importId, groupValue);
+      const attachmentKey = groupAttachmentMapKey(importId, groupKey);
+      const distinctOrders = new Set(
+        groupRows
+          .map((row) =>
+            orderField ? normalizeOrderValue(row.raw_data[orderField]) : null,
+          )
+          .filter((value): value is string => value != null),
+      );
+      const attachments = (
+        state.broadcastGroupAttachments[attachmentKey] ?? []
+      ).map(cloneAttachment);
+      return {
+        group_key: groupKey,
+        group_value: groupValue,
+        raw_row_count: groupRows.length,
+        distinct_order_number_count: distinctOrders.size,
+        matched_conversation_name:
+          matchStatus === 'conflict'
+            ? null
+            : (groupRows[0]?.matched_conversation_name ?? null),
+        match_status: matchStatus,
+        reason: inferGroupReason(groupRows, matchStatus),
+        attachment_count: attachments.length,
+        attachments,
+        expandable: true,
+        first_source_row_number: Math.min(
+          ...groupRows.map((row) => row.source_row_number),
+        ),
+      };
+    })
+    .sort((left, right) => {
+      if (left.first_source_row_number !== right.first_source_row_number) {
+        return left.first_source_row_number - right.first_source_row_number;
+      }
+      return left.group_value.localeCompare(right.group_value);
+    });
+
+  const keyword = (filters.keyword || '').trim().toLowerCase();
+  const filteredGroups = allGroups.filter((group) => {
+    if (filters.matchStatus && group.match_status !== filters.matchStatus) {
+      return false;
+    }
+    if (!keyword) {
+      return true;
+    }
+    return [
+      group.group_value,
+      group.matched_conversation_name || '',
+      group.reason || '',
+    ]
+      .join(' ')
+      .toLowerCase()
+      .includes(keyword);
+  });
+
+  const offset = (filters.page - 1) * filters.pageSize;
+  return {
+    page: filters.page,
+    page_size: filters.pageSize,
+    total: filteredGroups.length,
+    total_pages:
+      filteredGroups.length === 0
+        ? 0
+        : Math.ceil(filteredGroups.length / filters.pageSize),
+    raw_row_total: rows.length,
+    group_total: allGroups.length,
+    matched_group_total: allGroups.filter(
+      (group) => group.match_status === 'matched',
+    ).length,
+    unmatched_group_total: allGroups.filter(
+      (group) => group.match_status === 'unmatched',
+    ).length,
+    invalid_group_total: allGroups.filter(
+      (group) => group.match_status === 'invalid',
+    ).length,
+    conflict_group_total: allGroups.filter(
+      (group) => group.match_status === 'conflict',
+    ).length,
+    order_number_field_configured: Boolean(orderField),
+    groups: filteredGroups.slice(offset, offset + filters.pageSize),
+  };
+}
+
+function refreshDraftMessage(
+  draft: BroadcastDraftMock,
+  statusMessage: string | null = null,
+) {
+  draft.updated_at = now();
+  draft.message = statusMessage;
+}
+
+function markDraftAttachmentsChanged(draft: BroadcastDraftMock) {
+  if (draft.status === 'ready') {
+    draft.status = 'pending_review';
+    refreshDraftMessage(
+      draft,
+      'Draft attachments changed, please confirm again before execution.',
+    );
+  } else {
+    refreshDraftMessage(draft, null);
+  }
+}
+
+function markGroupAttachmentsChanged(
+  state: LangBotApiMockState,
+  importId: number,
+  groupValue: string,
+) {
+  state.broadcastDrafts = state.broadcastDrafts.map((draft) => {
+    if (
+      draft.import_batch_id !== importId ||
+      draft.group_value !== groupValue
+    ) {
+      return draft;
+    }
+    const nextDraft = {
+      ...draft,
+      attachments_stale: true,
+    };
+    markDraftAttachmentsChanged(nextDraft);
+    return nextDraft;
+  });
 }
 
 function emptyMonitoringData() {
@@ -628,6 +885,8 @@ function syncDraftStaleFlags(
       ? {
           ...draft,
           drafts_stale: batch.drafts_stale,
+          attachments_stale: draft.attachments_stale ?? false,
+          attachments: draft.attachments ?? [],
         }
       : draft,
   );
@@ -785,7 +1044,14 @@ function createExecutionAttempt(
     clipboard_restored: true,
     runtime_state: payload.runtime_state,
     evidence_summary: payload.evidence_summary,
-    technical_details: null,
+    technical_details:
+      payload.action === 'paste_draft'
+        ? {
+            content_verified: payload.status === 'succeeded',
+            verification_method: 'windows_uia',
+            verification_error_code: payload.error_code || null,
+          }
+        : null,
     created_at: timestamp,
   };
 
@@ -1423,6 +1689,17 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       };
       state.broadcastImportBatches = [batch, ...state.broadcastImportBatches];
       state.broadcastImportRows = [...boundRows, ...state.broadcastImportRows];
+      const initialGroups = buildImportGroupsResponse(state, batchId, {
+        matchStatus: null,
+        keyword: '',
+        page: 1,
+        pageSize: Math.max(1, boundRows.length),
+      }).groups;
+      for (const group of initialGroups) {
+        const key = groupAttachmentMapKey(batchId, group.group_key);
+        state.broadcastGroupAttachments[key] =
+          state.broadcastGroupAttachments[key] ?? [];
+      }
       return fulfillJson(route, batch);
     }
   }
@@ -1473,8 +1750,149 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       state.broadcastDrafts = state.broadcastDrafts.filter(
         (item) => item.import_batch_id !== importId,
       );
+      Object.keys(state.broadcastGroupAttachments).forEach((key) => {
+        if (key.startsWith(`${importId}:`)) {
+          delete state.broadcastGroupAttachments[key];
+        }
+      });
       return fulfillJson(route, { deleted: true });
     }
+  }
+
+  const importGroupsMatch = path.match(
+    /^\/api\/v1\/broadcast\/imports\/(\d+)\/groups$/,
+  );
+  if (importGroupsMatch && method === 'GET') {
+    const importId = Number(importGroupsMatch[1]);
+    const page = Math.max(1, Number(url.searchParams.get('page') || '1'));
+    const pageSize = Math.min(
+      200,
+      Math.max(1, Number(url.searchParams.get('page_size') || '50')),
+    );
+    return fulfillJson(
+      route,
+      buildImportGroupsResponse(state, importId, {
+        matchStatus: url.searchParams.get('match_status'),
+        keyword: url.searchParams.get('keyword') || '',
+        page,
+        pageSize,
+      }),
+    );
+  }
+
+  const importGroupRowsMatch = path.match(
+    /^\/api\/v1\/broadcast\/imports\/(\d+)\/groups\/([^/]+)\/rows$/,
+  );
+  if (importGroupRowsMatch && method === 'GET') {
+    const importId = Number(importGroupRowsMatch[1]);
+    const groupKey = decodeURIComponent(importGroupRowsMatch[2]);
+    const page = Math.max(1, Number(url.searchParams.get('page') || '1'));
+    const pageSize = Math.min(
+      200,
+      Math.max(1, Number(url.searchParams.get('page_size') || '50')),
+    );
+    const groups = buildImportGroupsResponse(state, importId, {
+      matchStatus: null,
+      keyword: '',
+      page: 1,
+      pageSize: Number.MAX_SAFE_INTEGER,
+    }).groups;
+    const group = groups.find((item) => item.group_key === groupKey);
+    if (!group) {
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_IMPORT_GROUP_NOT_FOUND',
+        'Current broadcast import group was not found.',
+      );
+    }
+    const rows = state.broadcastImportRows
+      .filter((item) => item.import_batch_id === importId)
+      .filter(
+        (item) =>
+          makeGroupKey(
+            importId,
+            item.group_value ?? `__invalid__:${item.id}`,
+          ) === groupKey,
+      )
+      .sort((left, right) => left.source_row_number - right.source_row_number);
+    const offset = (page - 1) * pageSize;
+    return fulfillJson(route, {
+      group_key: groupKey,
+      group_value: group.group_value,
+      page,
+      page_size: pageSize,
+      total: rows.length,
+      total_pages: rows.length === 0 ? 0 : Math.ceil(rows.length / pageSize),
+      rows: rows.slice(offset, offset + pageSize),
+    });
+  }
+
+  const importGroupAttachmentsMatch = path.match(
+    /^\/api\/v1\/broadcast\/imports\/(\d+)\/groups\/([^/]+)\/attachments$/,
+  );
+  if (importGroupAttachmentsMatch && method === 'POST') {
+    const importId = Number(importGroupAttachmentsMatch[1]);
+    const groupKey = decodeURIComponent(importGroupAttachmentsMatch[2]);
+    const groups = buildImportGroupsResponse(state, importId, {
+      matchStatus: null,
+      keyword: '',
+      page: 1,
+      pageSize: Number.MAX_SAFE_INTEGER,
+    }).groups;
+    const group = groups.find((item) => item.group_key === groupKey);
+    if (!group) {
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_IMPORT_GROUP_NOT_FOUND',
+        'Current broadcast import group was not found.',
+      );
+    }
+    const form = request.postDataBuffer()?.toString('utf-8') || '';
+    const fileNames = Array.from(form.matchAll(/filename=\"([^\"]+)\"/g)).map(
+      (match) => match[1],
+    );
+    const key = groupAttachmentMapKey(importId, groupKey);
+    const current = state.broadcastGroupAttachments[key] ?? [];
+    state.broadcastGroupAttachments[key] = [
+      ...current,
+      ...fileNames.map((name, index) =>
+        createAttachment(state, name, current.length + index + 1),
+      ),
+    ];
+    markGroupAttachmentsChanged(state, importId, group.group_value);
+    return fulfillJson(
+      route,
+      (state.broadcastGroupAttachments[key] ?? []).map(cloneAttachment),
+    );
+  }
+
+  const importGroupAttachmentDetailMatch = path.match(
+    /^\/api\/v1\/broadcast\/imports\/(\d+)\/groups\/([^/]+)\/attachments\/(\d+)$/,
+  );
+  if (importGroupAttachmentDetailMatch && method === 'DELETE') {
+    const importId = Number(importGroupAttachmentDetailMatch[1]);
+    const groupKey = decodeURIComponent(importGroupAttachmentDetailMatch[2]);
+    const attachmentId = Number(importGroupAttachmentDetailMatch[3]);
+    const key = groupAttachmentMapKey(importId, groupKey);
+    const groups = buildImportGroupsResponse(state, importId, {
+      matchStatus: null,
+      keyword: '',
+      page: 1,
+      pageSize: Number.MAX_SAFE_INTEGER,
+    }).groups;
+    const group = groups.find((item) => item.group_key === groupKey);
+    state.broadcastGroupAttachments[key] = (
+      state.broadcastGroupAttachments[key] ?? []
+    ).filter((item) => item.id !== attachmentId);
+    if (group) {
+      markGroupAttachmentsChanged(state, importId, group.group_value);
+    }
+    return fulfillJson(
+      route,
+      (state.broadcastGroupAttachments[key] ?? []).map(cloneAttachment),
+    );
   }
 
   const rematchMatch = path.match(
@@ -1546,6 +1964,10 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       })
       .map((row) => {
         const valid = row.match_status === 'matched';
+        const rowGroupKey = makeGroupKey(
+          importId,
+          row.group_value || `invalid-${row.source_row_number}`,
+        );
         return {
           id: Number(nextId(state, 'broadcast-draft').split('-').pop()),
           bot_uuid: batch.bot_uuid,
@@ -1568,6 +1990,12 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
           status: valid ? 'pending_review' : 'invalid',
           error_message: valid ? null : row.error_message || '未匹配到群聊',
           drafts_stale: false,
+          attachments_stale: false,
+          attachments: (
+            state.broadcastGroupAttachments[
+              groupAttachmentMapKey(importId, rowGroupKey)
+            ] ?? []
+          ).map(cloneAttachment),
           created_at: now(),
           updated_at: now(),
         };
@@ -1679,6 +2107,7 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
           finished_at: null,
           cancelled_at: null,
           updated_at: timestamp,
+          attachments: (draft.attachments ?? []).map(cloneAttachment),
         };
         return task;
       });
@@ -2029,6 +2458,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     return fulfillJson(route, {
       channel: 'wxwork_database',
       supports_paste: true,
+      supports_paste_verification: true,
+      requires_manual_conversation_open: true,
       supports_send: state.broadcastSendEnabled,
       supports_cancel: true,
       supports_status_query: true,
@@ -2048,6 +2479,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       capability: {
         channel: 'wxwork_database',
         supports_paste: true,
+        supports_paste_verification: true,
+        requires_manual_conversation_open: true,
         supports_send: state.broadcastSendEnabled,
         supports_cancel: true,
         supports_status_query: true,
@@ -2057,6 +2490,19 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         runtime_min_version: '1.0.0',
       },
       runtime_status: {
+        pasteVerification: {
+          available: true,
+          reason: null,
+          method: 'windows_uia',
+          requiresManualConversationOpen: true,
+          supportedErrorCodes: [
+            'TARGET_WINDOW_CHANGED',
+            'CONVERSATION_MISMATCH',
+            'INPUT_NOT_LOCATED',
+            'PASTE_CONTENT_MISMATCH',
+            'PASTE_VERIFICATION_UNAVAILABLE',
+          ],
+        },
         runtimeAutoSendEnabled: state.broadcastSendEnabled,
       },
     });
@@ -2125,6 +2571,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
               status: 'pending_review' as const,
               error_message: null,
               drafts_stale: false,
+              attachments_stale: false,
+              attachments: [],
               created_at: now(),
               updated_at: now(),
             },
@@ -2143,6 +2591,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
               status: 'pending_review' as const,
               error_message: null,
               drafts_stale: false,
+              attachments_stale: false,
+              attachments: [],
               created_at: now(),
               updated_at: now(),
             },
@@ -2203,7 +2653,7 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       );
     }
     if (method === 'GET') {
-      return fulfillJson(route, draft);
+      return fulfillJson(route, serializeDraft(draft));
     }
     if (method === 'PUT') {
       const body = parseJsonBody(route);
@@ -2238,7 +2688,9 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       return {
         ...draft,
         status,
+        attachments_stale: false,
         updated_at: now(),
+        message: null,
       };
     });
     return fulfillJson(route, { updated_count: updatedCount });
@@ -2722,6 +3174,7 @@ export async function installLangBotApiMocks(
     broadcastSendEnabled?: boolean;
   } = {},
 ) {
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
   const {
     authenticated = false,
     storage = {},
@@ -2748,6 +3201,7 @@ export async function installLangBotApiMocks(
     broadcastExecutionEvidence: [],
     broadcastSendConfirmations: [],
     broadcastExecutionTasks: [],
+    broadcastGroupAttachments: {},
     broadcastGroupNames: broadcastSeed.broadcastGroupNames,
     broadcastGroupRules: broadcastSeed.broadcastGroupRules,
     broadcastImportBatches: [],
@@ -2762,6 +3216,8 @@ export async function installLangBotApiMocks(
       'broadcast-execution-attempt': 0,
       'broadcast-execution-evidence': 0,
       'broadcast-send-confirmation': 0,
+      'broadcast-attachment': 0,
+      'broadcast-attachment-asset': 0,
       'broadcast-template': broadcastSeed.broadcastTemplates.length,
       'broadcast-group-rule': broadcastSeed.broadcastGroupRules.length,
       'broadcast-group-name': broadcastSeed.broadcastGroupNames.length,

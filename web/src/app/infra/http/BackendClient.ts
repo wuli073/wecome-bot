@@ -73,6 +73,8 @@ import {
   ApiBroadcastExecutionBatch,
   ApiBroadcastExecutionEvidence,
   ApiBroadcastExecutionTask,
+  ApiBroadcastImportGroupRowsResponse,
+  ApiBroadcastImportGroupsResponse,
   ApiBroadcastImportBatch,
   ApiBroadcastImportDetail,
   ApiBroadcastImportDraftGenerationResult,
@@ -2161,6 +2163,73 @@ export class BackendClient extends BaseHttpClient {
     });
   }
 
+  public getBroadcastImportGroups(
+    scope: ApiBroadcastScope,
+    importId: number,
+    filters?: {
+      match_status?: 'matched' | 'unmatched' | 'invalid' | 'conflict';
+      keyword?: string;
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<ApiBroadcastImportGroupsResponse> {
+    return this.get(`/api/v1/broadcast/imports/${importId}/groups`, {
+      ...scope,
+      ...filters,
+    });
+  }
+
+  public getBroadcastImportGroupRows(
+    scope: ApiBroadcastScope,
+    importId: number,
+    groupKey: string,
+    filters?: {
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<ApiBroadcastImportGroupRowsResponse> {
+    return this.get(
+      `/api/v1/broadcast/imports/${importId}/groups/${groupKey}/rows`,
+      {
+        ...scope,
+        ...filters,
+      },
+    );
+  }
+
+  public uploadBroadcastImportGroupAttachments(
+    scope: ApiBroadcastScope,
+    importId: number,
+    groupKey: string,
+    files: File[],
+  ): Promise<ApiBroadcastDraft['attachments']> {
+    const formData = new FormData();
+    formData.append('bot_uuid', scope.bot_uuid);
+    formData.append('connector_id', scope.connector_id);
+    files.forEach((file) => formData.append('files', file));
+    return this.requestBroadcast<ApiBroadcastDraft['attachments']>({
+      method: 'post',
+      url: `/api/v1/broadcast/imports/${importId}/groups/${groupKey}/attachments`,
+      data: formData,
+    });
+  }
+
+  public deleteBroadcastImportGroupAttachment(
+    scope: ApiBroadcastScope,
+    importId: number,
+    groupKey: string,
+    attachmentId: number,
+  ): Promise<ApiBroadcastDraft['attachments']> {
+    return this.delete(
+      `/api/v1/broadcast/imports/${importId}/groups/${groupKey}/attachments/${attachmentId}?${this.toSearchParams(
+        {
+          bot_uuid: scope.bot_uuid,
+          connector_id: scope.connector_id,
+        },
+      )}`,
+    );
+  }
+
   public deleteBroadcastImport(
     scope: ApiBroadcastScope,
     importId: number,
@@ -2218,6 +2287,37 @@ export class BackendClient extends BaseHttpClient {
     draftId: number,
   ): Promise<ApiBroadcastDraft> {
     return this.get(`/api/v1/broadcast/drafts/${draftId}`, scope);
+  }
+
+  public uploadBroadcastDraftAttachments(
+    scope: ApiBroadcastScope,
+    draftId: number,
+    files: File[],
+  ): Promise<ApiBroadcastDraft> {
+    const formData = new FormData();
+    formData.append('bot_uuid', scope.bot_uuid);
+    formData.append('connector_id', scope.connector_id);
+    files.forEach((file) => formData.append('files', file));
+    return this.requestBroadcast<ApiBroadcastDraft>({
+      method: 'post',
+      url: `/api/v1/broadcast/drafts/${draftId}/attachments`,
+      data: formData,
+    });
+  }
+
+  public deleteBroadcastDraftAttachment(
+    scope: ApiBroadcastScope,
+    draftId: number,
+    attachmentId: number,
+  ): Promise<ApiBroadcastDraft> {
+    return this.delete(
+      `/api/v1/broadcast/drafts/${draftId}/attachments/${attachmentId}?${this.toSearchParams(
+        {
+          bot_uuid: scope.bot_uuid,
+          connector_id: scope.connector_id,
+        },
+      )}`,
+    );
   }
 
   public updateBroadcastDraftText(

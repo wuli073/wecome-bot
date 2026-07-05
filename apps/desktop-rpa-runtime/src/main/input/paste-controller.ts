@@ -1,14 +1,29 @@
 import { createHash } from 'node:crypto'
-import type { RuntimeTaskRequest } from '../domain/task-types'
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
+import type { RuntimeAttachmentPayload, RuntimeTaskRequest } from '../domain/task-types'
 import type { WindowDescriptor } from '../domain/window-types'
 import { activateWindow } from '../window/window-activator'
-import { findUniqueVisibleWxWorkMainWindow } from '../window/window-finder'
+import {
+  findUniqueVisibleWxWorkMainWindow,
+  matchesWxWorkWindow,
+} from '../window/window-finder'
 import { ClipboardController } from './clipboard-controller'
+import {
+  computeAttachmentPostPasteDelayMs,
+  type FileClipboardController,
+} from './file-clipboard-controller'
 import type { InputDriver } from './mouse-controller'
+import type { WxWorkWindowSelectionDiagnostics } from '../window/window-finder'
 
 type TargetWindowResult =
-  | { ok: true; window: WindowDescriptor }
-  | { ok: false; errorCode: 'TARGET_WINDOW_NOT_FOUND'; candidates: WindowDescriptor[] }
+  | { ok: true; window: WindowDescriptor; diagnostics?: WxWorkWindowSelectionDiagnostics }
+  | {
+      ok: false
+      errorCode: 'TARGET_WINDOW_NOT_FOUND' | 'TARGET_WINDOW_AMBIGUOUS'
+      candidates: WindowDescriptor[]
+      diagnostics?: WxWorkWindowSelectionDiagnostics
+    }
 
 export interface PasteTaskDeps {
   clipboard: ClipboardController
@@ -16,11 +31,9 @@ export interface PasteTaskDeps {
   sleep?: (ms: number) => Promise<void>
   findTargetWindow?: () => Promise<TargetWindowResult>
   activateTargetWindow?: (window: WindowDescriptor) => Promise<{ ok: boolean; errorCode?: string; window?: WindowDescriptor }>
-  verifyPasteContent?: (args: {
-    conversationName: string
-    draftText: string
-    window: WindowDescriptor
-  }) => Promise<PasteVerificationResult>
+  fileClipboard?: FileClipboardController
+  getActiveWindow?: () => Promise<WindowDescriptor | null>
+  isCancelled?: () => boolean
 }
 
 interface TextDiagnostics {
@@ -30,21 +43,6 @@ interface TextDiagnostics {
   lineCount: number
   crCount: number
   lfCount: number
-}
-
-interface PasteVerificationResult {
-  ok: boolean
-  inputLocated: boolean
-  draftWritten: boolean
-  contentVerified: boolean
-  runtimeState?: string
-  errorCode?: string
-  verificationMethod?: string
-  verificationErrorCode?: string
-  actualTextLength?: number
-  actualCodePointCount?: number
-  actualDigest?: string
-  actualLineCount?: number
 }
 
 export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteTaskDeps): Promise<Record<string, unknown>> {
@@ -83,23 +81,36 @@ export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteT
   let contentVerified = false
   let verificationFailed = false
   let activeWindow: WindowDescriptor | null = null
-  let clipboardRoundtripVerified = false
-  let verificationMethod = 'unavailable'
-  let verificationErrorCode: string | undefined
+  let attachmentsPrepared = false
+  let attachmentPasteRequested = false
+  let attachmentsVerified = false
+  const attachments = Array.isArray(request.attachments) ? request.attachments : []
+  let successfulStage = 'text_pasted_unverified'
+  let warning = 'PASTE_RESULT_NOT_VERIFIED'
+  let observationAvailable = false
   const expectedDiagnostics = measureText(draftText)
-  let actualTextLength = expectedDiagnostics.textLengthUtf16
-  let actualCodePointCount = expectedDiagnostics.codePointCount
-  let actualDigest = expectedDiagnostics.digest
-  let actualLineCount = expectedDiagnostics.lineCount
+  let actualTextLength: number | null = null
+  let actualCodePointCount: number | null = null
+  let actualDigest: string | null = null
+  let actualLineCount: number | null = null
+  let actualCrCount: number | null = null
+  let actualLfCount: number | null = null
+  let targetWindowDiagnostics: WxWorkWindowSelectionDiagnostics | undefined
+  const getActiveWindow = deps.getActiveWindow
+  const isCancelled = deps.isCancelled ?? (() => false)
 
   try {
-    stage = 'activating_window'
+    throwIfCancelled(isCancelled)
+    stage = 'finding_window'
     const targetWindow = await findTargetWindow()
+    targetWindowDiagnostics = targetWindow.diagnostics
     if (!targetWindow.ok) {
       status = 'blocked'
       errorCode = targetWindow.errorCode
       return result()
     }
+
+    stage = 'activating_window'
     const activated = await activateTargetWindow(targetWindow.window)
     if (!activated.ok) {
       status = 'blocked'
@@ -107,72 +118,77 @@ export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteT
       return result()
     }
     activeWindow = activated.window ?? targetWindow.window
+    await sleep(300)
+    throwIfCancelled(isCancelled)
+    await ensureWindowStillActive(getActiveWindow, activeWindow, 'WINDOW_ACTIVATION_FAILED')
 
-    stage = 'opening_search'
+    stage = 'activating_search'
     searchShortcutCount += 1
     await deps.input.hotkey(['Control', 'F'])
-    await sleep(400)
+    await sleep(200)
+    throwIfCancelled(isCancelled)
+    await ensureWindowStillActive(getActiveWindow, activeWindow, 'SEARCH_ACTIVATION_FAILED')
+    await deps.input.hotkey(['Control', 'A'])
 
     stage = 'pasting_conversation_name'
     await deps.clipboard.writeDraftText(conversationName)
     conversationPasteCount += 1
     await deps.input.hotkey(['Control', 'V'])
-    await sleep(400)
+    await sleep(300)
+    throwIfCancelled(isCancelled)
+    await ensureWindowStillActive(getActiveWindow, activeWindow, 'CONVERSATION_NAME_PASTE_FAILED')
 
-    stage = 'confirming_conversation'
+    stage = 'confirming_search_result'
     conversationConfirmEnterCount += 1
     await deps.input.hotkey(['Enter'])
-    await sleep(1000)
 
-    stage = 'pasting_draft'
+    stage = 'waiting_for_conversation_open'
+    await sleep(600)
+    throwIfCancelled(isCancelled)
+    await ensureWindowStillActive(getActiveWindow, activeWindow, 'SEARCH_RESULT_CONFIRM_FAILED')
+
+    stage = 'pasting_text'
     await deps.clipboard.writeDraftText(draftText)
-    const clipboardRoundtripText = deps.clipboard.systemText()
-    const clipboardDiagnostics = measureText(clipboardRoundtripText)
-    actualTextLength = clipboardDiagnostics.textLengthUtf16
-    actualCodePointCount = clipboardDiagnostics.codePointCount
-    actualDigest = clipboardDiagnostics.digest
-    actualLineCount = clipboardDiagnostics.lineCount
-    clipboardRoundtripVerified = textsEquivalent(draftText, clipboardRoundtripText)
-    if (!clipboardRoundtripVerified) {
-      status = 'interrupted'
-      stage = 'clipboard_roundtrip_mismatch'
-      errorCode = 'CLIPBOARD_ROUNDTRIP_MISMATCH'
-      verificationFailed = true
-      verificationMethod = 'clipboard_roundtrip'
-      verificationErrorCode = errorCode
-      return result()
-    }
-
     draftPasteCount += 1
     await deps.input.hotkey(['Control', 'V'])
+    draftWritten = true
+    status = 'succeeded_with_warning'
+    successfulStage = 'text_pasted_unverified'
 
-    stage = 'verifying_paste'
-    const verification = await (deps.verifyPasteContent ?? defaultVerifyPasteContent)({
-      conversationName,
-      draftText,
-      window: activeWindow,
-    })
-    inputLocated = verification.inputLocated
-    draftWritten = verification.draftWritten
-    contentVerified = verification.contentVerified
-    verificationFailed = !verification.ok
-    verificationMethod = verification.verificationMethod ?? verificationMethod
-    verificationErrorCode = verification.verificationErrorCode ?? verification.errorCode
-    actualTextLength = verification.actualTextLength ?? actualTextLength
-    actualCodePointCount = verification.actualCodePointCount ?? actualCodePointCount
-    actualDigest = verification.actualDigest ?? actualDigest
-    actualLineCount = verification.actualLineCount ?? actualLineCount
-    if (!verification.ok) {
-      status = 'interrupted'
-      stage = verification.runtimeState ?? 'paste_verification_failed'
-      errorCode = verification.errorCode ?? 'PASTE_VERIFICATION_FAILED'
-      return result()
+    if (attachments.length > 0) {
+      stage = 'pasting_attachments'
+      throwIfCancelled(isCancelled)
+      const resolvedAttachments = await verifyAttachmentPayloads(request.attachmentRoot, attachments)
+      if (!deps.fileClipboard) {
+        status = 'failed'
+        errorCode = 'FILE_CLIPBOARD_HELPER_FAILED'
+        return result()
+      }
+      await deps.fileClipboard.writeFiles(resolvedAttachments)
+      attachmentsPrepared = true
+      const reactivated = await activateTargetWindow(activeWindow)
+      if (!reactivated.ok) {
+        status = 'failed'
+        errorCode = 'TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE'
+        return result()
+      }
+      activeWindow = reactivated.window ?? activeWindow
+      await sleep(200)
+      throwIfCancelled(isCancelled)
+      await ensureAttachmentForeground(getActiveWindow, activeWindow)
+      await deps.input.hotkey(['Control', 'V'])
+      attachmentPasteRequested = true
+      await sleep(computeAttachmentPostPasteDelayMs(sumAttachmentBytes(resolvedAttachments)))
+      status = 'succeeded_with_warning'
+      stage = 'attachments_pasted_unverified'
+      successfulStage = stage
+      attachmentsVerified = false
     }
 
     stage = 'restoring_clipboard'
   } catch (error) {
-    status = 'failed'
-    errorCode = error instanceof Error && error.message ? error.message : 'PASTE_FAILED'
+    errorCode = classifyPasteOnlyFailure(stage, error)
+    status = errorCode === 'TASK_CANCELLED' ? 'cancelled' : 'failed'
   } finally {
     try {
       await deps.clipboard.restore(clipboardState.snapshot)
@@ -181,14 +197,16 @@ export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteT
     }
   }
 
-  if (status === 'succeeded' && clipboardRestoreFailed) {
+  if (status === 'succeeded_with_warning' && clipboardRestoreFailed) {
     status = 'succeeded_with_warning'
     errorCode = 'CLIPBOARD_RESTORE_MISMATCH'
   }
   return result()
 
   function result() {
-    return buildResult(request, status, status === 'succeeded' || status === 'succeeded_with_warning' ? 'pasted_to_input' : stage, errorCode, {
+    const finalStage = status === 'succeeded_with_warning' ? successfulStage : stage
+    return buildResult(request, status, finalStage, errorCode, {
+      warning: status === 'succeeded_with_warning' ? warning : undefined,
       clipboardRestoreFailed,
       searchShortcutCount,
       conversationPasteCount,
@@ -198,9 +216,14 @@ export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteT
       draftWritten,
       contentVerified,
       verificationFailed,
-      clipboardRoundtripVerified,
-      verificationMethod,
-      verificationErrorCode,
+      sendTriggered: false,
+      sendAuthorized: false,
+      attachmentsPrepared,
+      attachmentPasteRequested,
+      attachmentsVerified,
+      attachmentCount: attachments.length,
+      observationAvailable,
+      windowTitle: activeWindow?.title ?? targetWindowDiagnostics?.selectedWindow?.title ?? undefined,
       expectedTextLength: expectedDiagnostics.textLengthUtf16,
       actualTextLength,
       expectedCodePointCount: expectedDiagnostics.codePointCount,
@@ -210,7 +233,10 @@ export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteT
       expectedLineCount: expectedDiagnostics.lineCount,
       actualLineCount,
       expectedCrCount: expectedDiagnostics.crCount,
+      actualCrCount,
       expectedLfCount: expectedDiagnostics.lfCount,
+      actualLfCount,
+      ...(targetWindowDiagnostics ? targetWindowDiagnostics : {}),
     })
   }
 }
@@ -236,19 +262,26 @@ function buildResult(
     draftWritten: false,
     contentVerified: false,
     verificationFailed: false,
-    clipboardRoundtripVerified: false,
-    verificationMethod: 'unavailable',
-    verificationErrorCode: undefined,
+    sendTriggered: false,
+    sendAuthorized: false,
+    attachmentsPrepared: false,
+    attachmentPasteRequested: false,
+    attachmentsVerified: false,
+    attachmentCount: Array.isArray(request.attachments) ? request.attachments.length : 0,
+    warning: undefined,
+    observationAvailable: false,
     expectedTextLength: 0,
-    actualTextLength: 0,
+    actualTextLength: null,
     expectedCodePointCount: 0,
-    actualCodePointCount: 0,
+    actualCodePointCount: null,
     expectedDigest: '',
-    actualDigest: '',
+    actualDigest: null,
     expectedLineCount: 0,
-    actualLineCount: 0,
+    actualLineCount: null,
     expectedCrCount: 0,
+    actualCrCount: null,
     expectedLfCount: 0,
+    actualLfCount: null,
     sendKeyCount: 0,
     idempotencyKey: request.idempotencyKey,
     requestDigest: request.requestDigest,
@@ -260,25 +293,8 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function defaultVerifyPasteContent(): Promise<PasteVerificationResult> {
-  return {
-    ok: false,
-    inputLocated: false,
-    draftWritten: false,
-    contentVerified: false,
-    runtimeState: 'paste_verification_unavailable',
-    errorCode: 'PASTE_VERIFICATION_UNAVAILABLE',
-    verificationMethod: 'unavailable',
-    verificationErrorCode: 'PASTE_VERIFICATION_UNAVAILABLE',
-  }
-}
-
 function normalizeNewlines(text: string): string {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-}
-
-function textsEquivalent(expected: string, actual: string): boolean {
-  return normalizeNewlines(expected) === normalizeNewlines(actual)
 }
 
 function measureText(text: string): TextDiagnostics {
@@ -292,5 +308,132 @@ function measureText(text: string): TextDiagnostics {
     lineCount: normalized.length === 0 ? 1 : normalized.split('\n').length,
     crCount: crMatches?.length ?? 0,
     lfCount: lfMatches?.length ?? 0,
+  }
+}
+
+async function verifyAttachmentPayloads(
+  attachmentRoot: string | undefined,
+  attachments: RuntimeTaskRequest['attachments'],
+): Promise<RuntimeAttachmentPayload[]> {
+  const rootText = String(attachmentRoot || '').trim()
+  if (!rootText) throw new Error('ATTACHMENT_PATH_OUTSIDE_ROOT')
+  let canonicalRoot: string
+  try {
+    canonicalRoot = await fs.realpath(rootText)
+  } catch {
+    throw new Error('ATTACHMENT_PATH_OUTSIDE_ROOT')
+  }
+
+  const verified: RuntimeAttachmentPayload[] = []
+  for (const attachment of attachments ?? []) {
+    const relativePath = String(attachment.relativePath || '').trim()
+    if (!relativePath) throw new Error('ATTACHMENT_FILE_MISSING')
+    const filename = String(attachment.filename || '').trim()
+    if (!filename) throw new Error('ATTACHMENT_FILE_MISSING')
+    const candidatePath = path.resolve(canonicalRoot, relativePath)
+    let canonicalFile: string
+    try {
+      canonicalFile = await fs.realpath(candidatePath)
+    } catch {
+      throw new Error('ATTACHMENT_FILE_MISSING')
+    }
+    const relative = path.relative(canonicalRoot, canonicalFile)
+    if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('ATTACHMENT_PATH_OUTSIDE_ROOT')
+    let stat
+    try {
+      stat = await fs.stat(canonicalFile)
+    } catch {
+      throw new Error('ATTACHMENT_FILE_MISSING')
+    }
+    if (!stat.isFile()) throw new Error('ATTACHMENT_FILE_MISSING')
+    if (Number(attachment.size || 0) !== stat.size) throw new Error('ATTACHMENT_HASH_MISMATCH')
+    const expectedSha256 = String(attachment.sha256 || '').trim().toLowerCase()
+    if (!expectedSha256) throw new Error('ATTACHMENT_HASH_MISMATCH')
+    const actualSha256 = createHash('sha256').update(await fs.readFile(canonicalFile)).digest('hex')
+    if (actualSha256 !== expectedSha256) throw new Error('ATTACHMENT_HASH_MISMATCH')
+    verified.push({
+      ...attachment,
+      resolvedPath: canonicalFile,
+    })
+  }
+  return verified
+}
+
+async function ensureWindowStillActive(
+  getActiveWindow: (() => Promise<WindowDescriptor | null>) | undefined,
+  targetWindow: WindowDescriptor,
+  errorCode: string,
+): Promise<void> {
+  if (!getActiveWindow) return
+  const activeWindow = await getActiveWindow().catch(() => null)
+  if (activeWindow && !matchesTargetWindow(activeWindow, targetWindow)) {
+    throw new Error(errorCode)
+  }
+}
+
+function matchesTargetWindow(
+  activeWindow: WindowDescriptor | null | undefined,
+  targetWindow: WindowDescriptor,
+): boolean {
+  if (!activeWindow) return false
+  return String(activeWindow.windowId) === String(targetWindow.windowId)
+    && Number(activeWindow.processId) === Number(targetWindow.processId)
+}
+
+async function ensureAttachmentForeground(
+  getActiveWindow: (() => Promise<WindowDescriptor | null>) | undefined,
+  targetWindow: WindowDescriptor,
+): Promise<void> {
+  if (!getActiveWindow) return
+  const foregroundWindow = await getActiveWindow().catch(() => null)
+  if (!matchesAttachmentForeground(foregroundWindow, targetWindow)) {
+    throw new Error('TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE')
+  }
+}
+
+function matchesAttachmentForeground(
+  activeWindow: WindowDescriptor | null | undefined,
+  targetWindow: WindowDescriptor,
+): boolean {
+  if (!activeWindow || !matchesWxWorkWindow(activeWindow)) {
+    return false
+  }
+  const activeRoot = String(activeWindow.rootWindowId || activeWindow.windowId)
+  const targetRoot = String(targetWindow.rootWindowId || targetWindow.windowId)
+  if (activeRoot && targetRoot && activeRoot === targetRoot) {
+    return true
+  }
+  return normalizeExecutable(activeWindow.executablePath) === normalizeExecutable(targetWindow.executablePath)
+    && normalizeProcess(activeWindow.processName) === normalizeProcess(targetWindow.processName)
+}
+
+function normalizeExecutable(value: string | null | undefined): string {
+  return String(value || '').trim().replace(/\\/g, '/').toLowerCase()
+}
+
+function normalizeProcess(value: string | null | undefined): string {
+  return String(value || '').trim().toLowerCase()
+}
+
+function sumAttachmentBytes(files: RuntimeAttachmentPayload[]): number {
+  return files.reduce((total, item) => total + Math.max(0, Number(item.size || 0)), 0)
+}
+
+function classifyPasteOnlyFailure(stage: string, error: unknown): string {
+  const raw = error instanceof Error && error.message ? error.message : ''
+  if (raw) {
+    return raw
+  }
+  if (stage === 'activating_search') return 'SEARCH_ACTIVATION_FAILED'
+  if (stage === 'pasting_conversation_name') return 'CONVERSATION_NAME_PASTE_FAILED'
+  if (stage === 'confirming_search_result' || stage === 'waiting_for_conversation_open') return 'SEARCH_RESULT_CONFIRM_FAILED'
+  if (stage === 'pasting_text') return 'TEXT_PASTE_FAILED'
+  if (stage === 'pasting_attachments') return 'ATTACHMENT_PASTE_FAILED'
+  return 'PASTE_FAILED'
+}
+
+function throwIfCancelled(isCancelled: () => boolean): void {
+  if (isCancelled()) {
+    throw new Error('TASK_CANCELLED')
   }
 }
