@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -84,3 +85,36 @@ async def test_worker_wake_triggers_waiting_loop():
     await worker.stop()
 
     assert service.run_next_execution_task.await_count >= 1
+
+
+async def test_worker_logs_sanitized_exception_and_keeps_running(caplog):
+    from langbot.pkg.broadcast.worker import BroadcastExecutionWorker
+
+    calls = 0
+
+    async def run_next_execution_task():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError('token=top-secret conversation=Acme draft body leaked')
+        if calls == 2:
+            return True
+        return False
+
+    service = SimpleNamespace(
+        run_next_execution_task=AsyncMock(side_effect=run_next_execution_task),
+        reconcile_running_executions=AsyncMock(return_value=0),
+    )
+    worker = BroadcastExecutionWorker(service=service, poll_interval=0.01)
+
+    caplog.set_level(logging.WARNING)
+    await worker.start()
+    await asyncio.sleep(0.08)
+    await worker.stop()
+
+    assert calls >= 2
+    assert 'Broadcast execution worker run_once failed' in caplog.text
+    assert 'RuntimeError' in caplog.text
+    assert 'top-secret' not in caplog.text
+    assert 'Acme' not in caplog.text
+    assert 'draft body leaked' not in caplog.text

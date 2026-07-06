@@ -235,3 +235,40 @@ async def test_wecom_executor_normalizes_failed_attachment_helper_evidence_witho
     assert technical_details['send_key_count'] == 0
     assert 'attachmentRoot' not in technical_details
     assert 'resolvedPath' not in technical_details
+
+
+async def test_wecom_executor_and_desktop_automation_share_runtime_decoder():
+    from langbot.pkg.broadcast.executors.wecom import WeComDraftExecutor
+    from langbot.pkg.desktop_automation.runtime_task_decoder import decode_runtime_task
+
+    result = {
+        'id': 'runtime-task-shared-decoder',
+        'status': 'succeeded_with_warning',
+        'stage': 'attachments_pasted_unverified',
+        'action': 'paste_draft',
+        'result': {
+            'draftWritten': True,
+            'draftPasteCount': 1,
+            'searchShortcutCount': 1,
+            'conversationPasteCount': 1,
+            'conversationConfirmEnterCount': 1,
+            'attachmentsPrepared': True,
+            'attachmentPasteRequested': True,
+            'attachmentsVerified': False,
+            'attachmentCount': 1,
+            'warning': 'PASTE_RESULT_NOT_VERIFIED',
+            'messageSent': False,
+            'clipboardRestoreFailed': False,
+        },
+    }
+
+    decoded = decode_runtime_task(result)
+    evidence = WeComDraftExecutor(_FakeGateway()).normalize_evidence(result)
+
+    assert decoded['result_evidence']['draftPasteCount'] == 1
+    assert decoded['result_evidence']['attachmentsVerified'] is False
+    assert evidence['draft_written'] is True
+    assert evidence['technical_details']['draft_paste_count'] == decoded['result_evidence']['draftPasteCount']
+    assert evidence['technical_details']['search_shortcut_count'] == decoded['result_evidence']['searchShortcutCount']
+    assert evidence['technical_details']['conversation_confirm_enter_count'] == decoded['result_evidence']['conversationConfirmEnterCount']
+    assert evidence['technical_details']['attachments_verified'] == decoded['result_evidence']['attachmentsVerified']

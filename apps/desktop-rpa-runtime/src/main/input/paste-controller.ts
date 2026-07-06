@@ -50,6 +50,18 @@ export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteT
   const draftText = String(request.draftText ?? '')
   if (!conversationName) return buildResult(request, 'blocked', 'queued', 'CONVERSATION_NAME_REQUIRED')
   if (!draftText.trim()) return buildResult(request, 'blocked', 'queued', 'DRAFT_TEXT_REQUIRED')
+  const attachments = Array.isArray(request.attachments) ? request.attachments : []
+  let resolvedAttachments: RuntimeAttachmentPayload[] = []
+  try {
+    resolvedAttachments = await verifyAttachmentPayloads(request.attachmentRoot, attachments)
+  } catch (error) {
+    return buildResult(
+      request,
+      'failed',
+      'validating_attachments',
+      error instanceof Error ? error.message : 'ATTACHMENT_VALIDATION_FAILED',
+    )
+  }
 
   const clipboardState = deps.clipboard.inspectRestorable()
   if (!clipboardState.ok) {
@@ -84,7 +96,6 @@ export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteT
   let attachmentsPrepared = false
   let attachmentPasteRequested = false
   let attachmentsVerified = false
-  const attachments = Array.isArray(request.attachments) ? request.attachments : []
   let successfulStage = 'text_pasted_unverified'
   let warning = 'PASTE_RESULT_NOT_VERIFIED'
   let observationAvailable = false
@@ -128,10 +139,13 @@ export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteT
     await sleep(200)
     throwIfCancelled(isCancelled)
     await ensureWindowStillActive(getActiveWindow, activeWindow, 'SEARCH_ACTIVATION_FAILED')
+    throwIfCancelled(isCancelled)
     await deps.input.hotkey(['Control', 'A'])
 
     stage = 'pasting_conversation_name'
+    throwIfCancelled(isCancelled)
     await deps.clipboard.writeDraftText(conversationName)
+    throwIfCancelled(isCancelled)
     conversationPasteCount += 1
     await deps.input.hotkey(['Control', 'V'])
     await sleep(300)
@@ -139,6 +153,7 @@ export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteT
     await ensureWindowStillActive(getActiveWindow, activeWindow, 'CONVERSATION_NAME_PASTE_FAILED')
 
     stage = 'confirming_search_result'
+    throwIfCancelled(isCancelled)
     conversationConfirmEnterCount += 1
     await deps.input.hotkey(['Enter'])
 
@@ -148,7 +163,9 @@ export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteT
     await ensureWindowStillActive(getActiveWindow, activeWindow, 'SEARCH_RESULT_CONFIRM_FAILED')
 
     stage = 'pasting_text'
+    throwIfCancelled(isCancelled)
     await deps.clipboard.writeDraftText(draftText)
+    throwIfCancelled(isCancelled)
     draftPasteCount += 1
     await deps.input.hotkey(['Control', 'V'])
     draftWritten = true
@@ -158,12 +175,12 @@ export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteT
     if (attachments.length > 0) {
       stage = 'pasting_attachments'
       throwIfCancelled(isCancelled)
-      const resolvedAttachments = await verifyAttachmentPayloads(request.attachmentRoot, attachments)
       if (!deps.fileClipboard) {
         status = 'failed'
         errorCode = 'FILE_CLIPBOARD_HELPER_FAILED'
         return result()
       }
+      throwIfCancelled(isCancelled)
       await deps.fileClipboard.writeFiles(resolvedAttachments)
       attachmentsPrepared = true
       const reactivated = await activateTargetWindow(activeWindow)
@@ -176,6 +193,7 @@ export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteT
       await sleep(200)
       throwIfCancelled(isCancelled)
       await ensureAttachmentForeground(getActiveWindow, activeWindow)
+      throwIfCancelled(isCancelled)
       await deps.input.hotkey(['Control', 'V'])
       attachmentPasteRequested = true
       await sleep(computeAttachmentPostPasteDelayMs(sumAttachmentBytes(resolvedAttachments)))
@@ -315,6 +333,10 @@ async function verifyAttachmentPayloads(
   attachmentRoot: string | undefined,
   attachments: RuntimeTaskRequest['attachments'],
 ): Promise<RuntimeAttachmentPayload[]> {
+  if ((attachments ?? []).length === 0) {
+    return []
+  }
+  if ((attachments ?? []).length > 9) throw new Error('ATTACHMENT_COUNT_EXCEEDED')
   const rootText = String(attachmentRoot || '').trim()
   if (!rootText) throw new Error('ATTACHMENT_PATH_OUTSIDE_ROOT')
   let canonicalRoot: string
@@ -325,6 +347,7 @@ async function verifyAttachmentPayloads(
   }
 
   const verified: RuntimeAttachmentPayload[] = []
+  let totalBytes = 0
   for (const attachment of attachments ?? []) {
     const relativePath = String(attachment.relativePath || '').trim()
     if (!relativePath) throw new Error('ATTACHMENT_FILE_MISSING')
@@ -347,6 +370,8 @@ async function verifyAttachmentPayloads(
     }
     if (!stat.isFile()) throw new Error('ATTACHMENT_FILE_MISSING')
     if (Number(attachment.size || 0) !== stat.size) throw new Error('ATTACHMENT_HASH_MISMATCH')
+    totalBytes += stat.size
+    if (totalBytes > 200 * 1024 * 1024) throw new Error('ATTACHMENT_TOTAL_TOO_LARGE')
     const expectedSha256 = String(attachment.sha256 || '').trim().toLowerCase()
     if (!expectedSha256) throw new Error('ATTACHMENT_HASH_MISMATCH')
     const actualSha256 = createHash('sha256').update(await fs.readFile(canonicalFile)).digest('hex')

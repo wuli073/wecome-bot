@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from typing import Any
 
+from .runtime_task_decoder import decode_runtime_task
 from .errors import (
     DesktopAutomationError,
     DRAFT_ALREADY_SENT,
@@ -15,10 +17,14 @@ from .errors import (
     IDEMPOTENCY_KEY_REQUIRED,
     RPA_RUNTIME_NOT_AVAILABLE,
     RUN_NOT_FOUND,
+    TASK_CANCELLED,
+    TASK_TIMEOUT,
 )
 
 
 TERMINAL_STATUSES = {'succeeded', 'succeeded_with_warning', 'blocked', 'failed', 'cancelled', 'timed_out'}
+TASK_POLL_INTERVAL_SECONDS = 0.05
+TASK_CANCEL_GRACE_POLLS = 10
 
 
 class DesktopAutomationService:
@@ -179,10 +185,6 @@ class DesktopAutomationService:
         return self._serialize_run(run)
 
     async def cancel_run(self, bot_uuid: str | None, run_id: int) -> dict[str, Any] | None:
-        if self.runtime_client is None and (
-            self.runtime_process_manager is None or not hasattr(self.runtime_process_manager, 'ensure_started')
-        ):
-            raise DesktopAutomationError(RPA_RUNTIME_NOT_AVAILABLE, 'RPA runtime is not integrated yet')
         run = (
             await self.repository.get_run_for_bot(run_id, bot_uuid)
             if bot_uuid
@@ -194,9 +196,25 @@ class DesktopAutomationService:
             getattr(run, 'runtime_task_id', None) if not isinstance(run, dict) else run.get('runtime_task_id')
         )
         if runtime_task_id:
+            if self.runtime_client is None and (
+                self.runtime_process_manager is None or not hasattr(self.runtime_process_manager, 'ensure_started')
+            ):
+                raise DesktopAutomationError(RPA_RUNTIME_NOT_AVAILABLE, 'RPA runtime is not integrated yet')
             client = await self._get_runtime_client()
-            await client.cancel_task(str(runtime_task_id))
-        updated = await self.repository.update_run_status(run_id, status='cancelled', stage='cancelled')
+            cancelled_task = await self._request_task_cancellation(
+                str(runtime_task_id),
+                client=client,
+                task=None,
+                cancel_error_code=TASK_CANCELLED,
+            )
+            return await self._apply_runtime_task_result(run_id, cancelled_task)
+        updated = await self.repository.update_run_status(
+            run_id,
+            status='cancelled',
+            stage='cancelled',
+            last_error_code=TASK_CANCELLED,
+            last_error_message=TASK_CANCELLED,
+        )
         return self._serialize_run(updated)
 
     async def reconcile_stale_runs(self) -> list[Any]:
@@ -323,38 +341,18 @@ class DesktopAutomationService:
                 **(extra_request or {}),
             }
         )
+        task = await self._wait_for_task_terminal(task)
         return await self._apply_runtime_task_result(run_id, task)
 
     async def _apply_runtime_task_result(self, run_id: int, task: dict[str, Any]) -> dict[str, Any]:
-        status = str(task.get('status') or 'failed')
-        stage = str(task.get('stage') or status)
-        allowed_evidence_keys = {
-            'stage',
-            'sendAuthorized',
-            'messageSent',
-            'clipboardRestoreFailed',
-            'searchShortcutCount',
-            'conversationPasteCount',
-            'conversationConfirmEnterCount',
-            'draftPasteCount',
-            'sendKeyCount',
-            'idempotencyKey',
-            'requestDigest',
-            'taskId',
-            'warningCode',
-        }
-        result_evidence = {key: task.get(key) for key in allowed_evidence_keys if key in task}
-        result_evidence.setdefault('stage', stage)
-        result_evidence.setdefault('sendAuthorized', bool(task.get('sendAuthorized', False)))
-        result_evidence.setdefault('messageSent', bool(task.get('messageSent', False)))
-        result_evidence.setdefault('clipboardRestoreFailed', bool(task.get('clipboardRestoreFailed', False)))
+        decoded = self._decode_runtime_task(task)
         changes = {
-            'runtime_task_id': str(task.get('id') or ''),
-            'status': status,
-            'stage': stage,
-            'result_evidence': result_evidence,
-            'last_error_code': task.get('errorCode'),
-            'last_error_message': task.get('errorCode'),
+            'runtime_task_id': str(decoded['id'] or ''),
+            'status': decoded['status'],
+            'stage': decoded['stage'],
+            'result_evidence': decoded['result_evidence'],
+            'last_error_code': decoded['error_code'],
+            'last_error_message': decoded['error_code'],
         }
         updated = await self.repository.update_run_status(run_id, **changes)
         return self._serialize_run(updated)
@@ -410,6 +408,115 @@ class DesktopAutomationService:
     @staticmethod
     def _hash_text(text: str) -> str:
         return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+    async def _wait_for_task_terminal(self, task: dict[str, Any]) -> dict[str, Any]:
+        decoded = self._decode_runtime_task(task)
+        if decoded['status'] in TERMINAL_STATUSES:
+            return task
+
+        runtime_task_id = str(decoded['id'] or '').strip()
+        if not runtime_task_id:
+            return task
+
+        timeout_seconds = max(
+            0,
+            int(self.ap.instance_config.data.get('desktop_automation', {}).get('task_timeout_seconds', 120)),
+        )
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        client = await self._get_runtime_client()
+        current_task = task
+        while True:
+            if timeout_seconds == 0 or asyncio.get_running_loop().time() > deadline:
+                return await self._request_task_cancellation(
+                    runtime_task_id,
+                    client=client,
+                    task=current_task,
+                    cancel_error_code=TASK_TIMEOUT,
+                )
+
+            await asyncio.sleep(TASK_POLL_INTERVAL_SECONDS)
+            polled = await client.get_task(runtime_task_id)
+            decoded = self._decode_runtime_task(polled)
+            current_task = polled
+            if decoded['status'] in TERMINAL_STATUSES:
+                return polled
+
+    async def _request_task_cancellation(
+        self,
+        runtime_task_id: str,
+        *,
+        client,
+        task: dict[str, Any] | None,
+        cancel_error_code: str,
+    ) -> dict[str, Any]:
+        current_task = task or {
+            'id': runtime_task_id,
+            'status': 'running',
+            'stage': 'running',
+        }
+        current_decoded = self._decode_runtime_task(current_task)
+        if task is not None and current_decoded['status'] in TERMINAL_STATUSES:
+            return current_task
+
+        cancel_result = await client.cancel_task(runtime_task_id)
+        cancel_decoded = self._decode_runtime_task(cancel_result)
+        if cancel_decoded['status'] in TERMINAL_STATUSES:
+            return self._annotate_terminal_cancellation(cancel_result, cancel_error_code=cancel_error_code)
+
+        current_task = cancel_result or current_task
+        for _ in range(TASK_CANCEL_GRACE_POLLS):
+            await asyncio.sleep(TASK_POLL_INTERVAL_SECONDS)
+            polled = await client.get_task(runtime_task_id)
+            polled_decoded = self._decode_runtime_task(polled)
+            current_task = polled
+            if polled_decoded['status'] in TERMINAL_STATUSES:
+                return self._annotate_terminal_cancellation(polled, cancel_error_code=cancel_error_code)
+
+        return self._build_cancel_requested_task(current_task, cancel_error_code=cancel_error_code)
+
+    def _build_cancel_requested_task(
+        self,
+        task: dict[str, Any] | None,
+        *,
+        cancel_error_code: str,
+    ) -> dict[str, Any]:
+        decoded = self._decode_runtime_task(task or {})
+        result_payload = dict(decoded['result_payload'] or {})
+        result_payload['stage'] = 'cancel_requested'
+        result_payload['errorCode'] = cancel_error_code
+        envelope = dict(task or {})
+        envelope.update(
+            {
+                'id': str(decoded['id'] or envelope.get('id') or ''),
+                'status': 'running',
+                'stage': 'cancel_requested',
+                'errorCode': cancel_error_code,
+                'idempotencyKey': decoded['idempotency_key'],
+                'requestDigest': decoded['request_digest'],
+                'result': result_payload,
+            }
+        )
+        return envelope
+
+    def _annotate_terminal_cancellation(
+        self,
+        task: dict[str, Any],
+        *,
+        cancel_error_code: str,
+    ) -> dict[str, Any]:
+        decoded = self._decode_runtime_task(task)
+        if decoded['status'] not in {'cancelled', 'timed_out'} or decoded['error_code']:
+            return task
+
+        envelope = dict(task)
+        result_payload = dict(decoded['result_payload'] or {})
+        result_payload.setdefault('errorCode', cancel_error_code)
+        envelope['errorCode'] = cancel_error_code
+        envelope['result'] = result_payload
+        return envelope
+
+    def _decode_runtime_task(self, task: dict[str, Any]) -> dict[str, Any]:
+        return decode_runtime_task(task)
 
     def _serialize_run(self, run) -> dict[str, Any]:
         if hasattr(run, '__table__'):

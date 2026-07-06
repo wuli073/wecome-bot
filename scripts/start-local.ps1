@@ -22,6 +22,9 @@ $script:ControlDir = Join-Path $script:StackRoot 'control'
 $script:LogsDir = Join-Path $script:StackRoot 'logs'
 $script:StatePath = Join-Path $script:StackRoot 'state.json'
 $script:ShutdownRequestPath = Join-Path $script:ControlDir 'shutdown.request.json'
+$script:Action = $Action
+$script:WebMode = $WebMode
+$script:DryRun = [bool]$DryRun
 $script:DefaultHealthPollIntervalMilliseconds = 500
 $script:BackendHealthTimeoutSeconds = $BackendHealthTimeoutSeconds
 $script:WebHealthTimeoutSeconds = $WebHealthTimeoutSeconds
@@ -167,6 +170,16 @@ function Remove-StaleShutdownRequest {
     if (Test-Path -LiteralPath $Path) {
         Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Assert-BundledFrontendReady {
+    param([string]$RepoRoot = $script:RepoRoot)
+
+    $indexPath = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot 'web\\dist\\index.html'))
+    if (-not (Test-Path -LiteralPath $indexPath)) {
+        throw "Bundled frontend entry is missing: $indexPath"
+    }
+    return $indexPath
 }
 
 function Resolve-ApiConfiguration {
@@ -1226,6 +1239,7 @@ function New-StartDryRunSummary {
     else {
         $summary.web = [ordered]@{
             status = 'not-used'
+            bundledEntry = [System.IO.Path]::GetFullPath((Join-Path $script:RepoRoot 'web\\dist\\index.html'))
         }
     }
 
@@ -1243,6 +1257,9 @@ function Start-BackendStack {
     Ensure-Directory -Path $script:ControlDir
     Ensure-Directory -Path $script:LogsDir
     Remove-StaleShutdownRequest
+    if ($WebModeValue -eq 'Bundled') {
+        Assert-BundledFrontendReady -RepoRoot $script:RepoRoot | Out-Null
+    }
 
     $apiConfig = Resolve-ApiConfiguration -RepoRoot $script:RepoRoot
     $state = Read-JsonFile -Path $script:StatePath
@@ -1377,7 +1394,7 @@ function Start-BackendStack {
 }
 
 function Stop-BackendStack {
-    param([string]$RequestedWebMode = $WebMode)
+    param([string]$RequestedWebMode = $script:WebMode)
 
     $state = Read-JsonFile -Path $script:StatePath
     if ($null -eq $state) {
@@ -1386,7 +1403,7 @@ function Stop-BackendStack {
             $state = New-LauncherState -SessionId ([guid]::NewGuid().ToString('N')) -BackendRecord $detected.backend -WebRecord $detected.web -Status 'running' -WebModeValue $(if ($null -ne $detected.web) { 'Dev' } else { 'Bundled' })
         }
     }
-    if ($DryRun) {
+    if ($script:DryRun) {
         return [ordered]@{
             action = 'Stop'
             dryRun = $true
@@ -1401,8 +1418,12 @@ function Stop-BackendStack {
         return (Get-StackStatus -RequestedWebMode $RequestedWebMode)
     }
 
+    $stopFailed = $false
+
     if ($null -ne $state.web -and $state.web.pid) {
-        Stop-RepoOwnedProcess -Identity $state.web | Out-Null
+        if (-not (Stop-RepoOwnedProcess -Identity $state.web)) {
+            $stopFailed = $true
+        }
     }
 
     if ($null -ne $state.backend -and $state.backend.pid) {
@@ -1411,7 +1432,14 @@ function Stop-BackendStack {
             if (Stop-RepoOwnedProcess -Identity $state.backend) {
                 Write-Output 'graceful shutdown timed out'
             }
+            else {
+                $stopFailed = $true
+            }
         }
+    }
+
+    if ($stopFailed) {
+        throw 'Stop failed; launcher state was preserved.'
     }
 
     Remove-LauncherState
@@ -1420,18 +1448,18 @@ function Stop-BackendStack {
 }
 
 function Invoke-StartLocal {
-    $mutexName = Get-LauncherMutexName -RepoRoot $script:RepoRoot -Action $Action
+    $mutexName = Get-LauncherMutexName -RepoRoot $script:RepoRoot -Action $script:Action
     $mutex = Acquire-LauncherMutex -MutexName $mutexName
     try {
-        switch ($Action) {
+        switch ($script:Action) {
             'Start' {
-                return Start-BackendStack -WebModeValue $WebMode
+                return Start-BackendStack -WebModeValue $script:WebMode
             }
             'Stop' {
-                return Stop-BackendStack -RequestedWebMode $WebMode
+                return Stop-BackendStack -RequestedWebMode $script:WebMode
             }
             'Restart' {
-                if ($DryRun) {
+                if ($script:DryRun) {
                     return [ordered]@{
                         action = 'Restart'
                         dryRun = $true
@@ -1439,19 +1467,19 @@ function Invoke-StartLocal {
                             statePath = $script:StatePath
                             shutdownRequestPath = $script:ShutdownRequestPath
                         }
-                        start = New-StartDryRunSummary -WebModeValue $WebMode
+                        start = New-StartDryRunSummary -WebModeValue $script:WebMode
                         runtime = [ordered]@{ status = 'managed-by-backend' }
                     }
                 }
 
-                Stop-BackendStack -RequestedWebMode $WebMode | Out-Null
-                return Start-BackendStack -WebModeValue $WebMode
+                Stop-BackendStack -RequestedWebMode $script:WebMode | Out-Null
+                return Start-BackendStack -WebModeValue $script:WebMode
             }
             'Status' {
-                return Get-StackStatus -RequestedWebMode $WebMode
+                return Get-StackStatus -RequestedWebMode $script:WebMode
             }
             default {
-                throw "Unsupported action: $Action"
+                throw "Unsupported action: $($script:Action)"
             }
         }
     }

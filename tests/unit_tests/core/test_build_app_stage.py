@@ -13,6 +13,7 @@ from langbot.pkg.core.stages.build_app import BuildAppStage
 async def test_build_app_stage_restores_local_connectors_only_once(monkeypatch):
     restore_mock = AsyncMock()
     initialize_builtin_mock = AsyncMock()
+    watcher_args: dict[str, object] = {}
 
     def local_connectors_factory(_ap):
         return SimpleNamespace(
@@ -87,7 +88,10 @@ async def test_build_app_stage_restores_local_connectors_only_once(monkeypatch):
         'langbot.pkg.core.stages.build_app.DesktopAutomationService',
         lambda *_args, **_kwargs: SimpleNamespace(reconcile_stale_runs=AsyncMock(side_effect=noop_async)),
     )
-    monkeypatch.setattr('langbot.pkg.core.stages.build_app.build_local_shutdown_watcher_from_env', lambda **_kwargs: None)
+    monkeypatch.setattr(
+        'langbot.pkg.core.stages.build_app.build_local_shutdown_watcher_from_env',
+        lambda **kwargs: watcher_args.update(kwargs) or None,
+    )
     monkeypatch.setattr(
         'langbot.pkg.core.stages.build_app.plugin_connector.PluginRuntimeConnector',
         lambda *_args, **_kwargs: SimpleNamespace(initialize=AsyncMock(side_effect=noop_async)),
@@ -100,6 +104,7 @@ async def test_build_app_stage_restores_local_connectors_only_once(monkeypatch):
     )
     monkeypatch.setattr('langbot.pkg.core.stages.build_app.apply_local_desktop_automation_defaults', lambda config: config)
     monkeypatch.setattr('langbot.pkg.core.stages.build_app.paths.get_data_root', lambda: str(Path.cwd() / 'data'))
+    monkeypatch.setattr('langbot.pkg.core.stages.build_app.paths.get_repo_root', lambda: str(Path.cwd()))
 
     for target in [
         'user_service.UserService',
@@ -128,3 +133,4 @@ async def test_build_app_stage_restores_local_connectors_only_once(monkeypatch):
 
     assert initialize_builtin_mock.await_count == 1
     assert restore_mock.await_count == 1
+    assert watcher_args['repo_root'] == Path.cwd()

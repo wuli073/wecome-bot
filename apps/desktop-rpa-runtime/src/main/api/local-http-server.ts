@@ -48,6 +48,18 @@ export async function createLocalHttpServer(options: {
     runtimeAutoSendEnabled: process.env.LANGBOT_RPA_ALLOW_AUTO_SEND === '1',
     sendDriverForceDisabled: process.env.LANGBOT_RPA_FORCE_DISABLE_SEND === '1',
   }, options.pasteVerificationProvider)
+  let closing = false
+  let closePromise: Promise<void> | null = null
+
+  function assertTaskAdmissionOpen(): void {
+    const runtimeShuttingDown = typeof (runtimeHost as { isShuttingDown?: () => boolean }).isShuttingDown === 'function'
+      ? (runtimeHost as { isShuttingDown: () => boolean }).isShuttingDown()
+      : false
+    if (closing || runtimeShuttingDown) {
+      throw new RuntimeHttpError(503, 'RUNTIME_SHUTTING_DOWN', 'Runtime host is shutting down')
+    }
+  }
+
   const server = createServer((request, response) => {
     void (async () => {
       try {
@@ -66,7 +78,9 @@ export async function createLocalHttpServer(options: {
           return
         }
         if (request.method === 'POST' && /^\/v1\/tasks\/(paste-draft|send-message|send-draft|diagnose|conversation-search|history-search|quote-reply)$/.test(path)) {
+          assertTaskAdmissionOpen()
           const body = await readBody(request)
+          assertTaskAdmissionOpen()
           const action = toAction(path)
           if (action === 'paste_draft') assertPasteDraftBodyShape(body)
           if (action === 'send_message') assertSendMessageBodyShape(body)
@@ -115,7 +129,25 @@ export async function createLocalHttpServer(options: {
 
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Expected TCP server address')
-  return { port: address.port, close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())) }
+  return {
+    port: address.port,
+    close: async () => {
+      if (closePromise) {
+        await closePromise
+        return
+      }
+      closing = true
+      closePromise = (async () => {
+        if (typeof (runtimeHost as { shutdown?: () => Promise<void> }).shutdown === 'function') {
+          await (runtimeHost as { shutdown: () => Promise<void> }).shutdown()
+        }
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => error ? reject(error) : resolve())
+        })
+      })()
+      await closePromise
+    },
+  }
 }
 
 function assertPasteDraftBodyShape(body: Record<string, unknown>) {

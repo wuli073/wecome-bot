@@ -11,7 +11,9 @@ import pytest
 
 from langbot.pkg.desktop_automation.errors import (
     RPA_RUNTIME_NOT_AVAILABLE,
+    RUNTIME_PROTOCOL_MISMATCH,
     RUNTIME_START_FAILED,
+    RUNTIME_UNAVAILABLE,
     DesktopAutomationError,
 )
 from langbot.pkg.desktop_automation.runtime_process import (
@@ -433,6 +435,39 @@ async def test_runtime_process_manager_rejects_non_empty_stdout_before_handshake
     assert exc_info.value.code == RUNTIME_START_FAILED
 
 
+async def test_runtime_process_manager_rejects_missing_stdout_before_handshake():
+    manager = DesktopRuntimeProcessManager(config={'enabled': True}, runtime_root=Path('C:/missing'))
+    process = SimpleNamespace(stdout=None)
+
+    with pytest.raises(DesktopAutomationError) as exc_info:
+        await manager._read_handshake(process)
+
+    assert exc_info.value.code == RUNTIME_START_FAILED
+    assert str(exc_info.value) == 'Runtime stdout is not readable'
+
+
+async def test_runtime_process_manager_rejects_handshake_eof():
+    manager = DesktopRuntimeProcessManager(config={'enabled': True}, runtime_root=Path('C:/missing'))
+    process = _FakeProcess([])
+
+    with pytest.raises(DesktopAutomationError) as exc_info:
+        await manager._read_handshake(process)
+
+    assert exc_info.value.code == RUNTIME_START_FAILED
+    assert str(exc_info.value) == 'Desktop runtime exited before handshake'
+
+
+async def test_runtime_process_manager_rejects_handshake_shape_mismatch():
+    manager = DesktopRuntimeProcessManager(config={'enabled': True}, runtime_root=Path('C:/missing'))
+    process = _FakeProcess(['{"pid": 4321, "port": 55123, "protocolVersion": "1"}\n'])
+
+    with pytest.raises(DesktopAutomationError) as exc_info:
+        await manager._read_handshake(process)
+
+    assert exc_info.value.code == RUNTIME_START_FAILED
+    assert str(exc_info.value) == 'Desktop runtime handshake shape is invalid'
+
+
 async def test_runtime_token_is_never_written_to_auth_token_file():
     with TemporaryDirectory(dir=r'C:\Users\33031\Desktop\bot\.tmp-pytest') as temp_dir:
         tmp_path = Path(temp_dir)
@@ -517,11 +552,10 @@ def test_runtime_process_manager_replaces_stale_project_runtime_process(monkeypa
 
         manager._replace_stale_runtime_processes(target)
 
-        assert stale_proc.terminated is True
-        assert stale_child.terminated is True
+        assert stale_proc.terminated is False
+        assert stale_child.terminated is False
         assert foreign_proc.terminated is False
-        assert 'Replacing stale desktop runtime' in caplog.text
-        assert str(stale) in caplog.text
+        assert 'Skipping global stale desktop runtime cleanup for ownership isolation' in caplog.text
         assert str(target) in caplog.text
 
 
@@ -542,6 +576,26 @@ def test_runtime_process_manager_does_not_terminate_non_project_runtime_process(
 
         assert foreign.terminated is False
         assert foreign.killed is False
+
+
+def test_runtime_process_manager_does_not_terminate_process_without_create_time(monkeypatch):
+    with TemporaryDirectory(dir=r'C:\Users\33031\Desktop\bot\.tmp-pytest') as temp_dir:
+        tmp_path = Path(temp_dir)
+        target = _write_official_runtime(tmp_path, '2026-06-30T04-24-26-368Z')
+
+        class _MissingCreateTimeProcess(_FakePsutilProcess):
+            def create_time(self) -> float:
+                raise _FakePsutilModule.AccessDenied('missing create time')
+
+        stale = _MissingCreateTimeProcess(8201, str(target))
+        fake_psutil = _FakePsutilModule([stale])
+        monkeypatch.setattr('langbot.pkg.desktop_automation.runtime_process.psutil', fake_psutil)
+        manager = DesktopRuntimeProcessManager(config={'enabled': True}, runtime_root=tmp_path)
+
+        manager._replace_stale_runtime_processes(target)
+
+        assert stale.terminated is False
+        assert stale.killed is False
 
 
 async def test_runtime_process_manager_new_python_process_does_not_take_over_existing_target_runtime(
@@ -579,11 +633,11 @@ async def test_runtime_process_manager_new_python_process_does_not_take_over_exi
         runtime_info = await manager.ensure_started()
 
         assert selected_paths == [target]
-        assert existing.terminated is True
+        assert existing.terminated is False
         assert runtime_info['pid'] == 4321
         assert tokens and tokens[0]
         assert 'Reusing desktop runtime' not in caplog.text
-        assert 'Replacing stale desktop runtime' in caplog.text
+        assert 'Skipping global stale desktop runtime cleanup for ownership isolation' in caplog.text
         assert 'Selected desktop runtime' in caplog.text
         assert tokens[0] not in caplog.text
 
@@ -827,13 +881,159 @@ async def test_runtime_handshake_pid_mismatch_stops_spawned_process_and_fails(mo
         assert events == [
             ('terminate', 5001),
             ('terminate', 4321),
-            ('terminate', 5001),
-            ('terminate', 4321),
         ]
         assert manager.process is None
         assert manager.runtime_info is None
         assert manager.client is None
         client_factory.assert_not_called()
+
+
+async def test_runtime_handshake_protocol_mismatch_stops_spawned_process_and_fails(monkeypatch):
+    with TemporaryDirectory(dir=r'C:\Users\33031\Desktop\bot\.tmp-pytest') as temp_dir:
+        tmp_path = Path(temp_dir)
+        runtime_executable = _write_official_runtime(tmp_path, '2026-06-30T04-24-26-368Z')
+        owned_process = _FakePsutilProcess(4321, str(runtime_executable), create_time=12.5)
+        fake_psutil = _FakePsutilModule([owned_process])
+
+        async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
+            return _FakeProcess(
+                ['{"pid": 4321, "port": 55123, "protocolVersion": "999", "runtimeVersion": "0.1.0"}\n'],
+                pid=4321,
+            )
+
+        client_factory = AsyncMock()
+        monkeypatch.setattr('langbot.pkg.desktop_automation.runtime_process.psutil', fake_psutil)
+        manager = DesktopRuntimeProcessManager(
+            config={'enabled': True, 'expected_protocol_version': '1'},
+            spawn_runtime=spawn_runtime,
+            client_factory=client_factory,
+            runtime_root=tmp_path,
+        )
+
+        with pytest.raises(DesktopAutomationError) as exc_info:
+            await manager.ensure_started()
+
+        assert exc_info.value.code == RUNTIME_PROTOCOL_MISMATCH
+        assert 'expected 1, got 999' in str(exc_info.value)
+        assert owned_process.terminated is True
+        assert manager.process is None
+        assert manager.runtime_info is None
+        assert manager.client is None
+        client_factory.assert_not_called()
+
+
+async def test_runtime_readiness_timeout_stops_spawned_process_and_clears_state(monkeypatch):
+    with TemporaryDirectory(dir=r'C:\Users\33031\Desktop\bot\.tmp-pytest') as temp_dir:
+        tmp_path = Path(temp_dir)
+        runtime_executable = _write_official_runtime(tmp_path, '2026-06-30T04-24-26-368Z')
+        owned_process = _FakePsutilProcess(4321, str(runtime_executable), create_time=12.5)
+        fake_psutil = _FakePsutilModule([owned_process])
+
+        async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
+            return _FakeProcess(
+                ['{"pid": 4321, "port": 55123, "protocolVersion": "1", "runtimeVersion": "0.1.0"}\n'],
+                pid=4321,
+            )
+
+        fake_client = SimpleNamespace(
+            health=AsyncMock(return_value={'status': 'starting'}),
+            capabilities=AsyncMock(return_value={}),
+        )
+        monkeypatch.setattr('langbot.pkg.desktop_automation.runtime_process.psutil', fake_psutil)
+        manager = DesktopRuntimeProcessManager(
+            config={'enabled': True, 'startup_timeout_seconds': 0.05},
+            spawn_runtime=spawn_runtime,
+            client_factory=lambda runtime_info: fake_client,
+            runtime_root=tmp_path,
+        )
+
+        with pytest.raises(DesktopAutomationError) as exc_info:
+            await manager.ensure_started()
+
+        assert exc_info.value.code == RUNTIME_UNAVAILABLE
+        assert str(exc_info.value) == 'Desktop runtime failed to become ready in time'
+        assert owned_process.terminated is True
+        assert manager.process is None
+        assert manager.runtime_info is None
+        assert manager.client is None
+
+
+async def test_runtime_readiness_health_exception_stops_spawned_process_and_preserves_primary_error(monkeypatch):
+    with TemporaryDirectory(dir=r'C:\Users\33031\Desktop\bot\.tmp-pytest') as temp_dir:
+        tmp_path = Path(temp_dir)
+        runtime_executable = _write_official_runtime(tmp_path, '2026-06-30T04-24-26-368Z')
+        owned_process = _FakePsutilProcess(4321, str(runtime_executable), create_time=12.5)
+        fake_psutil = _FakePsutilModule([owned_process])
+
+        async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
+            return _FakeProcess(
+                ['{"pid": 4321, "port": 55123, "protocolVersion": "1", "runtimeVersion": "0.1.0"}\n'],
+                pid=4321,
+            )
+
+        fake_client = SimpleNamespace(
+            health=AsyncMock(side_effect=RuntimeError('health exploded')),
+            capabilities=AsyncMock(return_value={}),
+        )
+        monkeypatch.setattr('langbot.pkg.desktop_automation.runtime_process.psutil', fake_psutil)
+        manager = DesktopRuntimeProcessManager(
+            config={'enabled': True, 'startup_timeout_seconds': 0.05},
+            spawn_runtime=spawn_runtime,
+            client_factory=lambda runtime_info: fake_client,
+            runtime_root=tmp_path,
+        )
+
+        with pytest.raises(DesktopAutomationError) as exc_info:
+            await manager.ensure_started()
+
+        assert exc_info.value.code == RUNTIME_UNAVAILABLE
+        assert str(exc_info.value) == 'Desktop runtime readiness health check failed'
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        assert owned_process.terminated is True
+        assert manager.process is None
+        assert manager.runtime_info is None
+        assert manager.client is None
+
+
+async def test_runtime_readiness_child_exits_early_stops_spawned_process(monkeypatch):
+    with TemporaryDirectory(dir=r'C:\Users\33031\Desktop\bot\.tmp-pytest') as temp_dir:
+        tmp_path = Path(temp_dir)
+        runtime_executable = _write_official_runtime(tmp_path, '2026-06-30T04-24-26-368Z')
+        owned_process = _FakePsutilProcess(4321, str(runtime_executable), create_time=12.5)
+        fake_psutil = _FakePsutilModule([owned_process])
+
+        class _ExitedProcess(_FakeProcess):
+            def __init__(self):
+                super().__init__(
+                    ['{"pid": 4321, "port": 55123, "protocolVersion": "1", "runtimeVersion": "0.1.0"}\n'],
+                    pid=4321,
+                )
+                self.returncode = 1
+
+        async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
+            return _ExitedProcess()
+
+        fake_client = SimpleNamespace(
+            health=AsyncMock(return_value={'status': 'starting'}),
+            capabilities=AsyncMock(return_value={}),
+        )
+        monkeypatch.setattr('langbot.pkg.desktop_automation.runtime_process.psutil', fake_psutil)
+        manager = DesktopRuntimeProcessManager(
+            config={'enabled': True, 'startup_timeout_seconds': 0.2},
+            spawn_runtime=spawn_runtime,
+            client_factory=lambda runtime_info: fake_client,
+            runtime_root=tmp_path,
+        )
+
+        with pytest.raises(DesktopAutomationError) as exc_info:
+            await manager.ensure_started()
+
+        assert exc_info.value.code == RUNTIME_START_FAILED
+        assert str(exc_info.value) == 'Desktop runtime exited before readiness'
+        assert owned_process.terminated is True
+        assert manager.process is None
+        assert manager.runtime_info is None
+        assert manager.client is None
 
 
 async def test_runtime_stop_terminates_children_before_parent_and_kills_remaining_after_wait(monkeypatch):

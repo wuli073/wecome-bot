@@ -59,6 +59,14 @@ def get_data_root() -> str:
     return str((Path.cwd() / 'data').resolve())
 
 
+def get_repo_root() -> str | None:
+    """Get the LangBot repository root when running from a source checkout."""
+    source_root = _find_source_root()
+    if source_root is None:
+        return None
+    return str(source_root.resolve())
+
+
 def get_data_path(*parts: str) -> str:
     """Join path segments under the resolved data root."""
     data_root = Path(get_data_root())

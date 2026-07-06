@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { RuntimeHttpError } from '../domain/error-types'
 import type { RuntimeTask, RuntimeTaskRequest } from '../domain/task-types'
 
 export class TaskRegistry {
@@ -9,7 +10,17 @@ export class TaskRegistry {
     const existingId = this.idempotency.get(request.idempotencyKey)
     if (existingId) {
       const existing = this.tasks.get(existingId)
-      if (existing) return { task: existing, reused: true }
+      if (existing) {
+        if (existing.requestDigest !== request.requestDigest || existing.action !== request.action) {
+          throw new RuntimeHttpError(
+            409,
+            'IDEMPOTENCY_KEY_CONFLICT',
+            'The idempotency key is already bound to a different action or request digest',
+          )
+        }
+        return { task: existing, reused: true }
+      }
+      this.idempotency.delete(request.idempotencyKey)
     }
     const now = new Date().toISOString()
     const task: RuntimeTask = {
@@ -17,7 +28,7 @@ export class TaskRegistry {
       action: request.action,
       idempotencyKey: request.idempotencyKey,
       requestDigest: request.requestDigest,
-      windowKey: request.action === 'paste_draft' ? 'wxwork-main-window' : 'default',
+      executionLaneKey: request.action === 'paste_draft' ? 'wxwork-main-window' : 'default',
       status: 'queued',
       stage: 'queued',
       createdAt: now,
@@ -38,6 +49,10 @@ export class TaskRegistry {
 
   get(taskId: string): RuntimeTask | null {
     return this.tasks.get(taskId) ?? null
+  }
+
+  all(): RuntimeTask[] {
+    return [...this.tasks.values()]
   }
 
   activeCount(): number {

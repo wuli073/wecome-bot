@@ -264,3 +264,78 @@ async def test_application_run_treats_http_controller_failure_as_critical():
 
     assert exit_code == 1
     assert reasons == ['critical-task:http-api-controller']
+
+
+async def test_application_run_detects_http_controller_failure_before_first_wait():
+    ap = _make_application()
+
+    async def platform_startup_only():
+        return None
+
+    async def crashing_http_run():
+        raise RuntimeError('http controller boom before first wait')
+
+    ap.platform_mgr = SimpleNamespace(run=platform_startup_only)
+    ap.http_ctrl = SimpleNamespace(run=crashing_http_run, request_shutdown=lambda: None)
+    shutdown_calls: list[str] = []
+
+    async def fake_shutdown():
+        shutdown_calls.append('shutdown')
+
+    ap.shutdown = fake_shutdown
+
+    exit_code = await ap.run()
+
+    assert exit_code == 1
+    assert shutdown_calls == ['shutdown']
+    assert isinstance(ap._critical_failure, RuntimeError)
+    assert str(ap._critical_failure) == 'http controller boom before first wait'
+    assert ap.shutdown_requested_event.is_set()
+    assert ap._shutdown_reason == 'critical-task:http-api-controller'
+
+
+async def test_application_run_detects_query_controller_failure_before_first_wait():
+    ap = _make_application()
+
+    async def platform_startup_only():
+        return None
+
+    async def crashing_query_run():
+        raise RuntimeError('query controller boom before first wait')
+
+    ap.platform_mgr = SimpleNamespace(run=platform_startup_only)
+    ap.ctrl = SimpleNamespace(run=crashing_query_run)
+    shutdown_calls: list[str] = []
+
+    async def fake_shutdown():
+        shutdown_calls.append('shutdown')
+
+    ap.shutdown = fake_shutdown
+
+    exit_code = await ap.run()
+
+    assert exit_code == 1
+    assert shutdown_calls == ['shutdown']
+    assert isinstance(ap._critical_failure, RuntimeError)
+    assert str(ap._critical_failure) == 'query controller boom before first wait'
+    assert ap.shutdown_requested_event.is_set()
+    assert ap._shutdown_reason == 'critical-task:query-controller'
+
+
+async def test_application_run_cancelled_error_still_runs_shutdown():
+    ap = _make_application()
+    shutdown_calls: list[str] = []
+
+    async def cancelled_platform_run():
+        raise asyncio.CancelledError()
+
+    async def fake_shutdown():
+        shutdown_calls.append('shutdown')
+
+    ap.platform_mgr = SimpleNamespace(run=cancelled_platform_run)
+    ap.shutdown = fake_shutdown
+
+    exit_code = await ap.run()
+
+    assert exit_code == 0
+    assert shutdown_calls == ['shutdown']

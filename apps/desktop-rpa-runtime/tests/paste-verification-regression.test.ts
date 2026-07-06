@@ -803,9 +803,11 @@ test('runtime status and paste task surface the same providerInstanceId for diag
     conversationName: '小满',
     draftText: '第一行\n第二行',
   })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const completed = host.getTask(task.id)
 
   assert.equal((status.pasteVerification as any).providerInstanceId, providerInstanceId)
-  assert.equal((task.result as any).providerInstanceId, undefined)
+  assert.equal((completed?.result as any).providerInstanceId, undefined)
 })
 
 test('runtime status warm cache is reused by paste task without spawning another capability probe inside TTL', async () => {
@@ -863,9 +865,12 @@ test('runtime status warm cache is reused by paste task without spawning another
     })
 
     assert.equal(task.statusCode, 200)
-    assert.equal((task.payload.result as any).status, 'succeeded_with_warning')
-    assert.equal((task.payload.result as any).stage, 'text_pasted_unverified')
-    assert.equal((task.payload.result as any).providerInstanceId, undefined)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const finalTask = await request(server.port, 'GET', `/v1/tasks/${task.payload.id}`)
+    assert.equal(finalTask.statusCode, 200)
+    assert.equal(finalTask.payload.status, 'succeeded_with_warning')
+    assert.equal(finalTask.payload.stage, 'text_pasted_unverified')
+    assert.equal((finalTask.payload.result as any).providerInstanceId, undefined)
     assert.equal(availabilityProbeCount, 1)
   } finally {
     await server.close()
@@ -921,7 +926,10 @@ test('expired capability cache refreshes once per task instead of re-probing bef
     })
 
     assert.equal(task.statusCode, 200)
-    assert.equal((task.payload.result as any).status, 'succeeded_with_warning')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const finalTask = await request(server.port, 'GET', `/v1/tasks/${task.payload.id}`)
+    assert.equal(finalTask.statusCode, 200)
+    assert.equal(finalTask.payload.status, 'succeeded_with_warning')
     assert.equal(availabilityProbeCount, 1)
   } finally {
     await server.close()

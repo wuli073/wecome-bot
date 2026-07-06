@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
+
+
+logger = logging.getLogger(__name__)
 
 
 class BroadcastExecutionWorker:
@@ -14,6 +19,7 @@ class BroadcastExecutionWorker:
         self._run_lock = asyncio.Lock()
         self._stop_lock = asyncio.Lock()
         self._stop_task: asyncio.Task[None] | None = None
+        self._consecutive_failures = 0
 
     async def start(self) -> None:
         if self._runner_task is not None and not self._runner_task.done():
@@ -54,12 +60,41 @@ class BroadcastExecutionWorker:
         while not self._stop_event.is_set():
             try:
                 processed = await self.run_once()
-            except Exception:
+                self._consecutive_failures = 0
+            except Exception as exc:
+                self._consecutive_failures += 1
+                logger.warning(
+                    'Broadcast execution worker run_once failed: error_type=%s message=%s consecutive_failures=%s',
+                    exc.__class__.__name__,
+                    self._sanitize_exception_message(exc),
+                    self._consecutive_failures,
+                )
                 processed = False
             if processed:
                 continue
             self._wake_event.clear()
+            timeout = self.poll_interval
+            if self._consecutive_failures > 0:
+                timeout = min(max(self.poll_interval, self.poll_interval * self._consecutive_failures), 5.0)
             try:
-                await asyncio.wait_for(self._wake_event.wait(), timeout=self.poll_interval)
+                await asyncio.wait_for(self._wake_event.wait(), timeout=timeout)
             except asyncio.TimeoutError:
                 continue
+
+    @staticmethod
+    def _sanitize_exception_message(exc: Exception) -> str:
+        raw = str(exc or '').strip()
+        if not raw:
+            return ''
+
+        redacted = raw
+        for secret_pattern in (
+            r'(?i)token\s*=\s*\S+',
+            r'(?i)authorization\s*=\s*\S+',
+            r'(?i)cookie\s*=\s*\S+',
+            r'(?i)conversation\s*=\s*[^,\s]+',
+            r'(?i)draft(?:\s+body|\s*text)?\s*=\s*.+',
+            r'(?i)draft\s+body\b.*',
+        ):
+            redacted = re.sub(secret_pattern, '[redacted]', redacted)
+        return redacted[:200]

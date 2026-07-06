@@ -42,6 +42,7 @@ class OwnedRuntimeSnapshot:
     process: Any | None
     pid: int | None
     process_create_time: float | None
+    manager_session_id: str
     runtime_info: dict[str, Any] | None
     client: DesktopRuntimeClient | Any | None
     stderr_task: asyncio.Task[Any] | None
@@ -155,6 +156,7 @@ class DesktopRuntimeProcessManager:
         self._lock = asyncio.Lock()
         self._stderr_task = None
         self._selected_runtime_executable: Path | None = None
+        self._manager_session_id = secrets.token_hex(8)
         self._stopping = False
 
     async def ensure_started(self) -> dict[str, Any]:
@@ -201,33 +203,35 @@ class DesktopRuntimeProcessManager:
             if getattr(self.process, 'stderr', None) is not None:
                 self._stderr_task = asyncio.create_task(self._drain_stream(self.process.stderr))
 
-            handshake = await self._read_handshake(self.process)
-            spawn_pid = int(getattr(self.process, 'pid'))
-            if int(handshake['pid']) != spawn_pid:
-                await self._stop_locked()
-                raise DesktopAutomationError(RUNTIME_START_FAILED, 'Desktop runtime handshake pid mismatch')
-            expected_protocol_version = str(self.config.get('expected_protocol_version') or '1')
-            if str(handshake['protocolVersion']) != expected_protocol_version:
-                await self._stop_locked()
-                raise DesktopAutomationError(
-                    RUNTIME_PROTOCOL_MISMATCH,
-                    f'Runtime protocol mismatch: expected {expected_protocol_version}, got {handshake["protocolVersion"]}',
-                )
+            try:
+                handshake = await self._read_handshake(self.process)
+                spawn_pid = int(getattr(self.process, 'pid'))
+                if int(handshake['pid']) != spawn_pid:
+                    raise DesktopAutomationError(RUNTIME_START_FAILED, 'Desktop runtime handshake pid mismatch')
+                expected_protocol_version = str(self.config.get('expected_protocol_version') or '1')
+                if str(handshake['protocolVersion']) != expected_protocol_version:
+                    raise DesktopAutomationError(
+                        RUNTIME_PROTOCOL_MISMATCH,
+                        f'Runtime protocol mismatch: expected {expected_protocol_version}, got {handshake["protocolVersion"]}',
+                    )
 
-            runtime_info = {
-                'pid': spawn_pid,
-                'processCreateTime': self._read_process_create_time(spawn_pid),
-                'host': '127.0.0.1',
-                'port': int(handshake['port']),
-                'protocolVersion': str(handshake['protocolVersion']),
-                'runtimeVersion': str(handshake['runtimeVersion']),
-                'token': token,
-                'executablePath': str(target_runtime),
-            }
-            self.client = self.client_factory(runtime_info)
-            await self._wait_until_ready()
-            self.runtime_info = runtime_info
-            return dict(runtime_info)
+                runtime_info = {
+                    'pid': spawn_pid,
+                    'processCreateTime': self._read_process_create_time(spawn_pid),
+                    'host': '127.0.0.1',
+                    'port': int(handshake['port']),
+                    'protocolVersion': str(handshake['protocolVersion']),
+                    'runtimeVersion': str(handshake['runtimeVersion']),
+                    'token': token,
+                    'executablePath': str(target_runtime),
+                }
+                self.client = self.client_factory(runtime_info)
+                await self._wait_until_ready()
+                self.runtime_info = runtime_info
+                return dict(runtime_info)
+            except BaseException as exc:
+                await self._cleanup_failed_startup(exc)
+                raise
 
     async def stop(self) -> None:
         async with self._lock:
@@ -371,22 +375,11 @@ class DesktopRuntimeProcessManager:
         normalized_target = _normalize_path(target_runtime)
         if normalized_target is None:
             return
-
-        for runtime_process in self._iter_runtime_processes():
-            executable_path = self._get_process_executable_path(runtime_process)
-            if executable_path is None or executable_path == normalized_target:
-                if executable_path == normalized_target:
-                    logger.info(
-                        'Replacing stale desktop runtime: %s -> %s',
-                        str(executable_path),
-                        str(normalized_target),
-                    )
-                    self._terminate_psutil_tree(runtime_process)
-                continue
-
-            if self._is_project_runtime_path(executable_path):
-                logger.info('Replacing stale desktop runtime: %s -> %s', str(executable_path), str(normalized_target))
-                self._terminate_psutil_tree(runtime_process)
+        logger.info(
+            'Skipping global stale desktop runtime cleanup for ownership isolation: target=%s session=%s',
+            str(normalized_target),
+            self._manager_session_id,
+        )
 
     def _iter_runtime_processes(self):
         for process in psutil.process_iter():
@@ -507,19 +500,24 @@ class DesktopRuntimeProcessManager:
 
     async def _wait_until_ready(self) -> None:
         timeout_seconds = float(self.config.get('startup_timeout_seconds') or 30)
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        last_health_error: Exception | None = None
 
-        async def _poll() -> None:
-            while True:
+        while asyncio.get_running_loop().time() < deadline:
+            if self.process is not None and not self._process_is_alive(self.process):
+                raise DesktopAutomationError(RUNTIME_START_FAILED, 'Desktop runtime exited before readiness')
+            try:
                 health = await self.client.health()
-                if health.get('status') == 'ready':
-                    return
+            except Exception as exc:
+                last_health_error = exc
                 await asyncio.sleep(0.1)
-
-        try:
-            await asyncio.wait_for(_poll(), timeout=timeout_seconds)
-        except asyncio.TimeoutError as exc:
-            await self._stop_locked()
-            raise DesktopAutomationError(RUNTIME_UNAVAILABLE, 'Desktop runtime failed to become ready in time') from exc
+                continue
+            if health.get('status') == 'ready':
+                return
+            await asyncio.sleep(0.1)
+        if last_health_error is not None:
+            raise DesktopAutomationError(RUNTIME_UNAVAILABLE, 'Desktop runtime readiness health check failed') from last_health_error
+        raise DesktopAutomationError(RUNTIME_UNAVAILABLE, 'Desktop runtime failed to become ready in time')
 
     async def _read_handshake(self, process) -> dict[str, Any]:
         stdout = getattr(process, 'stdout', None)
@@ -600,11 +598,23 @@ class DesktopRuntimeProcessManager:
             process=process,
             pid=pid,
             process_create_time=process_create_time,
+            manager_session_id=self._manager_session_id,
             runtime_info=runtime_info,
             client=client,
             stderr_task=stderr_task,
             selected_runtime_executable=selected_runtime_executable,
         )
+
+    async def _cleanup_failed_startup(self, original_exc: BaseException) -> None:
+        try:
+            await self._stop_locked()
+        except BaseException as cleanup_exc:
+            logger.warning(
+                'Desktop runtime startup cleanup failed after %s: %s (session=%s)',
+                original_exc.__class__.__name__,
+                cleanup_exc,
+                self._manager_session_id,
+            )
 
     async def _terminate_owned_runtime_snapshot(self, snapshot: OwnedRuntimeSnapshot) -> None:
         owned_process = self._resolve_owned_psutil_process(snapshot)
@@ -633,19 +643,26 @@ class DesktopRuntimeProcessManager:
             return None
 
         expected_create_time = snapshot.process_create_time
-        if expected_create_time is not None:
-            try:
-                actual_create_time = process.create_time()
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
-                return None
-            if abs(actual_create_time - float(expected_create_time)) > 2:
-                logger.warning(
-                    'Desktop runtime PID reuse detected during stop: pid=%s expected_create_time=%s actual_create_time=%s',
-                    snapshot.pid,
-                    expected_create_time,
-                    actual_create_time,
-                )
-                return None
+        if expected_create_time is None:
+            logger.warning(
+                'Desktop runtime create time is unavailable during stop; refusing termination: pid=%s session=%s',
+                snapshot.pid,
+                snapshot.manager_session_id,
+            )
+            return None
+        try:
+            actual_create_time = process.create_time()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+            return None
+        if abs(actual_create_time - float(expected_create_time)) > 2:
+            logger.warning(
+                'Desktop runtime PID reuse detected during stop: pid=%s expected_create_time=%s actual_create_time=%s session=%s',
+                snapshot.pid,
+                expected_create_time,
+                actual_create_time,
+                snapshot.manager_session_id,
+            )
+            return None
 
         expected_path = snapshot.selected_runtime_executable
         if expected_path is None:
@@ -686,5 +703,12 @@ class DesktopRuntimeProcessManager:
     def _read_process_create_time(pid: int) -> float | None:
         try:
             return float(psutil.Process(int(pid)).create_time())
+        except (AttributeError, TypeError, ValueError, psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+            return None
+
+    @staticmethod
+    def _safe_get_process_create_time(process) -> float | None:
+        try:
+            return float(process.create_time())
         except (AttributeError, TypeError, ValueError, psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
             return None

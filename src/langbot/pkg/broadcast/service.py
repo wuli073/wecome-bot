@@ -16,6 +16,7 @@ import sqlalchemy
 from sqlalchemy.exc import IntegrityError
 
 from ..entity.persistence import broadcast as persistence_broadcast
+from ..desktop_automation.runtime_task_decoder import decode_runtime_task
 from .errors import (
     ATTACHMENT_COUNT_EXCEEDED,
     ATTACHMENT_EMPTY,
@@ -1643,9 +1644,10 @@ class BroadcastService:
                     for item in task_attachments
                 ]
             runtime_result = await executor.paste_draft(**paste_kwargs)
+            decoded_runtime_result = decode_runtime_task(runtime_result)
             evidence = executor.normalize_evidence(runtime_result)
             runtime_error_code = (
-                str(runtime_result.get('errorCode') or runtime_result.get('error_code') or '').strip()
+                str(decoded_runtime_result.get('error_code') or runtime_result.get('error_code') or '').strip()
                 or None
             )
             runtime_error_message = (
@@ -1660,8 +1662,8 @@ class BroadcastService:
                 task_status = 'failed'
                 error_code = runtime_error_code
                 error_message = runtime_error_message or runtime_error_code
-            elif str(runtime_result.get('status') or '').strip().lower() == 'succeeded_with_warning':
-                runtime_status = str(runtime_result.get('status') or '')
+            elif str(decoded_runtime_result.get('status') or '').strip().lower() == 'succeeded_with_warning':
+                runtime_status = str(decoded_runtime_result.get('status') or '')
                 task_status = self._coerce_terminal_task_status(runtime_status)
                 error_code = runtime_error_code
                 error_message = runtime_error_message
@@ -1686,7 +1688,7 @@ class BroadcastService:
                         else 'Paste completed but input content does not match expected text'
                     )
             else:
-                runtime_status = str(runtime_result.get('status') or '')
+                runtime_status = str(decoded_runtime_result.get('status') or '')
                 task_status = self._coerce_terminal_task_status(runtime_status)
                 error_code = runtime_error_code
                 error_message = runtime_error_message
@@ -1699,7 +1701,11 @@ class BroadcastService:
             error_code = exc.__class__.__name__
             error_message = str(exc)
 
-        runtime_task_id = str(runtime_result.get('id') or '').strip() or None if runtime_result else None
+        runtime_task_id = (
+            str(decode_runtime_task(runtime_result).get('id') or '').strip() or None
+            if runtime_result
+            else None
+        )
         persistence_error_code = None
         persistence_error_message = None
         if runtime_task_id:
@@ -2218,9 +2224,10 @@ class BroadcastService:
                 request_digest=str(task.request_digest),
                 confirmation_token=confirmation_token,
             )
-            runtime_status = str(runtime_result.get('status') or '')
+            decoded_runtime_result = decode_runtime_task(runtime_result)
+            runtime_status = str(decoded_runtime_result.get('status') or '')
             task_status = self._coerce_terminal_task_status(runtime_status)
-            error_code = str(runtime_result.get('errorCode') or runtime_result.get('error_code') or '').strip() or None
+            error_code = str(decoded_runtime_result.get('error_code') or runtime_result.get('error_code') or '').strip() or None
             error_message = str(runtime_result.get('errorMessage') or runtime_result.get('error_message') or '').strip() or None
         except BroadcastError as exc:
             task_status = 'failed'
@@ -2231,7 +2238,11 @@ class BroadcastService:
             error_code = exc.__class__.__name__
             error_message = str(exc)
 
-        runtime_task_id = str(runtime_result.get('id') or '').strip() or None if runtime_result else None
+        runtime_task_id = (
+            str(decode_runtime_task(runtime_result).get('id') or '').strip() or None
+            if runtime_result
+            else None
+        )
         sanitized_runtime_result = self._sanitize_runtime_result(runtime_result)
         evidence_payload = None
         if runtime_result is not None:

@@ -237,12 +237,14 @@ class Application:
                 await self.shutdown()
                 return 1
 
-            self.task_mgr.create_task(
+            critical_task_wrappers: dict[str, taskmgr.TaskWrapper] = {}
+
+            critical_task_wrappers['query-controller'] = self.task_mgr.create_task(
                 self.ctrl.run(),
                 name='query-controller',
                 scopes=[core_entities.LifecycleControlScope.APPLICATION],
             )
-            self.task_mgr.create_task(
+            critical_task_wrappers['http-api-controller'] = self.task_mgr.create_task(
                 self.http_ctrl.run(),
                 name='http-api-controller',
                 scopes=[core_entities.LifecycleControlScope.APPLICATION],
@@ -334,7 +336,10 @@ class Application:
             )
             try:
                 while True:
-                    critical_wrappers = self._get_critical_task_wrappers()
+                    critical_wrappers = self._get_critical_task_wrappers(critical_task_wrappers)
+                    if self._handle_completed_critical_tasks(critical_wrappers):
+                        break
+
                     wait_targets = [shutdown_waiter, *(wrapper.task for wrapper in critical_wrappers.values())]
                     if len(wait_targets) == 1:
                         await shutdown_waiter
@@ -344,23 +349,10 @@ class Application:
                         wait_targets,
                         return_when=asyncio.FIRST_COMPLETED,
                     )
-                    if shutdown_waiter in done:
+                    if self._handle_completed_critical_tasks(critical_wrappers, done):
                         break
 
-                    for name, wrapper in critical_wrappers.items():
-                        task = wrapper.task
-                        if task not in done:
-                            continue
-                        if not self.shutdown_requested_event.is_set():
-                            if task.cancelled():
-                                self._critical_failure = asyncio.CancelledError()
-                            else:
-                                self._critical_failure = task.exception() or RuntimeError(
-                                    f'{name} exited unexpectedly'
-                                )
-                            self.request_shutdown(f'critical-task:{name}')
-                            break
-                    if self.shutdown_requested_event.is_set():
+                    if shutdown_waiter in done:
                         break
             finally:
                 shutdown_waiter.cancel()
@@ -369,6 +361,7 @@ class Application:
             await self.shutdown()
             return 1 if self._critical_failure is not None else 0
         except asyncio.CancelledError:
+            await self.shutdown()
             return 0
         except Exception as e:
             self.logger.error(f'Application runtime fatal exception: {e}')
@@ -376,15 +369,63 @@ class Application:
             await self.shutdown()
             return 1
 
-    def _get_critical_task_wrappers(self) -> dict[str, taskmgr.TaskWrapper]:
+    def _get_critical_task_wrappers(
+        self,
+        wrappers: dict[str, taskmgr.TaskWrapper] | None = None,
+    ) -> dict[str, taskmgr.TaskWrapper]:
         critical_wrappers: dict[str, taskmgr.TaskWrapper] = {}
-        for wrapper in list(self.task_mgr.tasks):
-            if wrapper.task.done():
-                continue
+        wrapper_iterable = wrappers.values() if wrappers is not None else list(self.task_mgr.tasks)
+        for wrapper in wrapper_iterable:
             if wrapper.name not in self.LONG_LIVED_CRITICAL_TASK_NAMES:
                 continue
             critical_wrappers[wrapper.name or f'task-{wrapper.id}'] = wrapper
         return critical_wrappers
+
+    def _handle_completed_critical_tasks(
+        self,
+        critical_wrappers: dict[str, taskmgr.TaskWrapper],
+        done_tasks: set[asyncio.Task] | None = None,
+    ) -> bool:
+        shutdown_requested = self.shutdown_requested_event.is_set()
+        for name, wrapper in critical_wrappers.items():
+            task = wrapper.task
+            if done_tasks is not None and task not in done_tasks and not task.done():
+                continue
+
+            failure = self._get_critical_task_failure(
+                name,
+                task,
+                shutdown_requested=shutdown_requested,
+            )
+            if failure is None:
+                continue
+
+            if self._critical_failure is None:
+                self._critical_failure = failure
+            self.request_shutdown(f'critical-task:{name}')
+            return True
+
+        return False
+
+    def _get_critical_task_failure(
+        self,
+        name: str,
+        task: asyncio.Task,
+        *,
+        shutdown_requested: bool,
+    ) -> BaseException | None:
+        if not task.done():
+            return None
+        if shutdown_requested and task.cancelled():
+            return None
+        if task.cancelled():
+            return asyncio.CancelledError()
+
+        task_exception = task.exception()
+        if task_exception is not None:
+            return task_exception
+
+        return RuntimeError(f'{name} exited unexpectedly')
 
     async def shutdown(self) -> None:
         async with self._shutdown_lock:

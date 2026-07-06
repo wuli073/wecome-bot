@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = 'C:\Users\33031\Desktop\bot'
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $scriptPath = Join-Path $repoRoot 'scripts\start-local.ps1'
 $cmdWrapperPath = Join-Path $repoRoot 'scripts\start-local.cmd'
 
@@ -490,4 +490,119 @@ Describe 'start-local sequencing and rollback guards' {
         }
     }
 
+    It 'bundled start fails fast when web dist index is missing and does not create state' {
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('start-local-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tmpRoot | Out-Null
+        $repo = Join-Path $tmpRoot 'repo'
+        New-Item -ItemType Directory -Path (Join-Path $repo 'scripts') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $repo 'web\dist') -Force | Out-Null
+        try {
+            . $scriptPath
+            $script:RepoRoot = $repo
+            $script:StackRoot = Join-Path $repo '.tmp\local-stack'
+            $script:ControlDir = Join-Path $script:StackRoot 'control'
+            $script:LogsDir = Join-Path $script:StackRoot 'logs'
+            $script:StatePath = Join-Path $script:StackRoot 'state.json'
+            $script:ShutdownRequestPath = Join-Path $script:ControlDir 'shutdown.request.json'
+
+            Mock Resolve-ApiConfiguration { [pscustomobject]@{ Host='127.0.0.1'; Port=5302; BaseUrl='http://127.0.0.1:5302'; HealthUrl='http://127.0.0.1:5302/healthz'; ConfigPath='config.yaml' } }
+            Mock Read-JsonFile { $null }
+            Mock Test-TcpPortListening { $false }
+            Mock Assert-PortAvailableOrOwned { }
+            Mock Start-ManagedProcess { throw 'should not spawn backend' }
+
+            $didThrow = $false
+            $message = ''
+            try {
+                Start-BackendStack -WebModeValue 'Bundled' | Out-Null
+            }
+            catch {
+                $didThrow = $true
+                $message = $_.Exception.Message
+            }
+            $didThrow | Should Be $true
+            $message | Should Match 'index\.html'
+            Test-Path -LiteralPath $script:StatePath | Should Be $false
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'restart does not start when stop fails' {
+        . $scriptPath
+        $script:Action = 'Restart'
+        $script:WebMode = 'Bundled'
+        $script:restartStopCalls = 0
+        $script:restartStartCalls = 0
+        function Stop-BackendStack {
+            param([string]$RequestedWebMode)
+            $script:restartStopCalls += 1
+            throw 'stop failed'
+        }
+        function Start-BackendStack {
+            param([string]$WebModeValue)
+            $script:restartStartCalls += 1
+            throw 'must not start'
+        }
+
+        $didThrow = $false
+        $message = ''
+        try {
+            Invoke-StartLocal | Out-Null
+        }
+        catch {
+            $didThrow = $true
+            $message = $_.Exception.Message
+        }
+        $script:restartStopCalls | Should Be 1
+        $didThrow | Should Be $true
+        $message | Should Match 'stop failed'
+        $script:restartStartCalls | Should Be 0
+    }
+
+}
+
+Describe 'start-local stop failure guard' {
+    It 'stop failure keeps state and returns non-stopped status' {
+        . $scriptPath
+        $script:WebMode = 'Bundled'
+        $state = [pscustomobject]@{
+            sessionId = 'session-stop-fail'
+            status = 'running'
+            webMode = 'Bundled'
+            updatedAt = [DateTime]::UtcNow.ToString('o')
+            backend = [pscustomobject]@{
+                role = 'backend'
+                status = 'running'
+                pid = 999
+                processStartTimeUtcTicks = 123
+                executablePath = 'C:\Python\python.exe'
+                commandLine = 'python main.py'
+                repoRoot = $repoRoot
+            }
+            web = $null
+            runtime = [pscustomobject]@{ status = 'managed-by-backend' }
+        }
+
+        Mock Read-JsonFile { $state }
+        Mock Wait-ForProcessExit { $false }
+        Mock Stop-RepoOwnedProcess { $false }
+        Mock Request-GracefulBackendShutdown { }
+        Mock Remove-LauncherState { throw 'state must be preserved' }
+
+        $didThrow = $false
+        $message = ''
+        try {
+            Stop-BackendStack -RequestedWebMode 'Bundled' | Out-Null
+        }
+        catch {
+            $didThrow = $true
+            $message = $_.Exception.Message
+        }
+        Assert-MockCalled Stop-RepoOwnedProcess -Times 1 -Exactly
+        $didThrow | Should Be $true
+        $message | Should Match 'failed'
+        Assert-MockCalled Remove-LauncherState -Times 0 -Exactly
+    }
 }

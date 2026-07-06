@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .base import ConversationDraftExecutor
+from ...desktop_automation.runtime_task_decoder import decode_runtime_task
 
 
 class WeComDraftExecutor(ConversationDraftExecutor):
@@ -82,9 +83,10 @@ class WeComDraftExecutor(ConversationDraftExecutor):
         return await self.gateway.query_task(runtime_task_id)
 
     def normalize_evidence(self, result: dict[str, Any]) -> dict[str, Any]:
-        payload = dict(result.get('result') or {})
-        status = str(result.get('status') or '')
-        stage = str(result.get('stage') or status)
+        decoded = decode_runtime_task(result)
+        payload = dict(decoded.get('result_payload') or {})
+        status = str(decoded['status'] or '')
+        stage = str(decoded['stage'] or status)
         action = str(result.get('action') or payload.get('action') or '')
         normalized_action = 'send_message' if action == 'send_message' or stage.startswith('sent') else 'paste_draft'
         content_verified = bool(payload.get('contentVerified', False))

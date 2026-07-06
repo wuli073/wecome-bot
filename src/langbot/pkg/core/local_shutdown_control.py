@@ -51,7 +51,9 @@ class LocalShutdownControlWatcher:
             await asyncio.sleep(0.5)
 
 
-def build_local_shutdown_watcher_from_env(*, app, repo_root: Path):
+def build_local_shutdown_watcher_from_env(*, app, repo_root: Path | None):
+    if repo_root is None:
+        return None
     session_id = os.environ.get('LANGBOT_LOCAL_STACK_SESSION_ID', '').strip()
     request_path = os.environ.get('LANGBOT_LOCAL_SHUTDOWN_REQUEST_PATH', '').strip()
     if not session_id or not request_path:

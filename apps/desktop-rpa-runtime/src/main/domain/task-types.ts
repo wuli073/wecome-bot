@@ -31,7 +31,7 @@ export interface RuntimeTask {
   action: TaskAction
   idempotencyKey: string
   requestDigest: string
-  windowKey: string
+  executionLaneKey: string
   status: TaskStatus
   stage: string
   createdAt: string

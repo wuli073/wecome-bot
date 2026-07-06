@@ -289,48 +289,63 @@ test('paste_only blocks when no valid WXWork main window is found', async () => 
 
 test('paste_only blocks on ambiguous windows without writing draft or attachments and exposes diagnostics', async () => {
   const input = new RecordingInputDriver()
-  const result = await runPasteOnlyTask({
-    action: 'paste_draft',
-    idempotencyKey: 'ambiguous-1',
-    requestDigest: 'ambiguous-digest',
-    conversationName: 'Customer A',
-    draftText: 'First line\nSecond line',
-    attachmentRoot: 'C:/runtime/broadcast_attachments',
-    attachments: [{ relativePath: 'a1.pdf', filename: 'quote.pdf', size: 1, sha256: 'x' }],
-  }, {
-    input,
-    clipboard: new ClipboardController({ formats: ['text'], data: { text: 'old' } }),
-    findTargetWindow: async () => ({
-      ok: false,
-      errorCode: 'TARGET_WINDOW_AMBIGUOUS',
-      candidates: [],
-      diagnostics: {
-        candidateCountBeforeFilter: 2,
-        canonicalCandidateCount: 2,
-        candidateCountAfterFilter: 2,
-        rejectedCandidateCount: 0,
-        selectedWindow: null,
-        candidates: [
-          { hwnd: '1769682', rootHwnd: '1769682', ownerHwnd: '0', processId: 5516, processName: 'wxwork.exe', executableName: 'wxwork.exe', title: '企业微信', className: 'Qt', visible: true, minimized: false, source: 'node-window-manager', accepted: true, rejectionReason: null },
-        ],
-        rejectionReasons: [],
-      },
-    }),
-    activateTargetWindow: async () => ({ ok: true }),
-    sleep: async () => undefined,
-  })
+  const attachmentRoot = path.join(os.tmpdir(), 'broadcast-runtime-ambiguous-window', 'runtime', 'broadcast_attachments')
+  const baseDir = path.join(attachmentRoot, 'bot-1', '1', 'g1')
+  await fs.mkdir(baseDir, { recursive: true })
+  const attachmentPath = path.join(baseDir, 'asset-1_quote.pdf')
+  await fs.writeFile(attachmentPath, Buffer.from('pdf-data', 'utf8'))
 
-  assert.equal(result.status, 'blocked')
-  assert.equal(result.errorCode, 'TARGET_WINDOW_AMBIGUOUS')
-  assert.equal(result.draftWritten, false)
-  assert.equal(result.inputLocated, false)
-  assert.equal(result.attachmentPasteRequested, false)
-  assert.equal(result.sendKeyCount, 0)
-  assert.equal(result.messageSent, false)
-  assert.equal(result.candidateCountBeforeFilter, 2)
-  assert.equal(result.canonicalCandidateCount, 2)
-  assert.equal(Array.isArray(result.rejectionReasons), true)
-  assert.deepEqual(input.events, [])
+  try {
+    const result = await runPasteOnlyTask({
+      action: 'paste_draft',
+      idempotencyKey: 'ambiguous-1',
+      requestDigest: 'ambiguous-digest',
+      conversationName: 'Customer A',
+      draftText: 'First line\nSecond line',
+      attachmentRoot,
+      attachments: [{
+        relativePath: path.join('bot-1', '1', 'g1', 'asset-1_quote.pdf'),
+        filename: 'quote.pdf',
+        size: (await fs.stat(attachmentPath)).size,
+        sha256: sha256('pdf-data'),
+      }],
+    }, {
+      input,
+      clipboard: new ClipboardController({ formats: ['text'], data: { text: 'old' } }),
+      findTargetWindow: async () => ({
+        ok: false,
+        errorCode: 'TARGET_WINDOW_AMBIGUOUS',
+        candidates: [],
+        diagnostics: {
+          candidateCountBeforeFilter: 2,
+          canonicalCandidateCount: 2,
+          candidateCountAfterFilter: 2,
+          rejectedCandidateCount: 0,
+          selectedWindow: null,
+          candidates: [
+            { hwnd: '1769682', rootHwnd: '1769682', ownerHwnd: '0', processId: 5516, processName: 'wxwork.exe', executableName: 'wxwork.exe', title: '??????', className: 'Qt', visible: true, minimized: false, source: 'node-window-manager', accepted: true, rejectionReason: null },
+          ],
+          rejectionReasons: [],
+        },
+      }),
+      activateTargetWindow: async () => ({ ok: true }),
+      sleep: async () => undefined,
+    })
+
+    assert.equal(result.status, 'blocked')
+    assert.equal(result.errorCode, 'TARGET_WINDOW_AMBIGUOUS')
+    assert.equal(result.draftWritten, false)
+    assert.equal(result.inputLocated, false)
+    assert.equal(result.attachmentPasteRequested, false)
+    assert.equal(result.sendKeyCount, 0)
+    assert.equal(result.messageSent, false)
+    assert.equal(result.candidateCountBeforeFilter, 2)
+    assert.equal(result.canonicalCandidateCount, 2)
+    assert.equal(Array.isArray(result.rejectionReasons), true)
+    assert.deepEqual(input.events, [])
+  } finally {
+    await fs.rm(path.join(os.tmpdir(), 'broadcast-runtime-ambiguous-window'), { recursive: true, force: true })
+  }
 })
 
 test('paste_only searches conversation by keyboard and pastes draft without verifier or send Enter reuse', async () => {
@@ -723,7 +738,147 @@ test('runtime host reuses idempotency key and does not repeat paste task', async
   const first = await host.createTask(request)
   const second = await host.createTask({ ...request, draftText: 'changed' })
   assert.equal(first.id, second.id)
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (host.getTask(first.id)?.status === 'succeeded_with_warning') {
+      break
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.equal(host.getTask(first.id)?.status, 'succeeded_with_warning')
   assert.equal(input.events.filter((event) => event.type === 'hotkey').length, 5)
+})
+
+test('paste-draft tasks share one execution lane and run in FIFO order', async () => {
+  const started: string[] = []
+  const finished: string[] = []
+  const releases = new Map<string, () => void>()
+  const host = new RuntimeHost()
+  host.runner.run = (async (request: { idempotencyKey: string }) => {
+    started.push(request.idempotencyKey)
+    await new Promise<void>((resolve) => { releases.set(request.idempotencyKey, resolve) })
+    finished.push(request.idempotencyKey)
+    return { status: 'succeeded', stage: `done-${request.idempotencyKey}` }
+  }) as never
+
+  const first = await host.createTask({
+    action: 'paste_draft',
+    idempotencyKey: 'fifo-1',
+    requestDigest: 'digest-fifo-1',
+    conversationName: 'Customer A',
+    draftText: 'hello',
+  })
+  const second = await host.createTask({
+    action: 'paste_draft',
+    idempotencyKey: 'fifo-2',
+    requestDigest: 'digest-fifo-2',
+    conversationName: 'Customer A',
+    draftText: 'hello',
+  })
+
+  assert.equal(first.status, 'running')
+  assert.equal(first.executionLaneKey, 'wxwork-main-window')
+  assert.equal(second.status, 'queued')
+  assert.equal(second.stage, 'queued_for_execution_lane')
+  assert.equal(second.executionLaneKey, 'wxwork-main-window')
+  assert.deepEqual(started, ['fifo-1'])
+  releases.get('fifo-1')?.()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(finished, ['fifo-1'])
+  assert.deepEqual(started, ['fifo-1', 'fifo-2'])
+
+  releases.get('fifo-2')?.()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(host.getTask(second.id)?.status, 'succeeded')
+})
+
+test('queued tasks can be cancelled before they start and never execute', async () => {
+  const started: string[] = []
+  const controls: { releaseFirst?: () => void } = {}
+  const host = new RuntimeHost()
+  host.runner.run = (async (request: { idempotencyKey: string }) => {
+    started.push(request.idempotencyKey)
+    if (request.idempotencyKey === 'cancel-first') {
+      await new Promise<void>((resolve) => { controls.releaseFirst = () => resolve() })
+    }
+    return { status: 'succeeded', stage: `done-${request.idempotencyKey}` }
+  }) as never
+
+  await host.createTask({
+    action: 'paste_draft',
+    idempotencyKey: 'cancel-first',
+    requestDigest: 'digest-cancel-first',
+    conversationName: 'Customer A',
+    draftText: 'hello',
+  })
+  const queued = await host.createTask({
+    action: 'paste_draft',
+    idempotencyKey: 'cancel-second',
+    requestDigest: 'digest-cancel-second',
+    conversationName: 'Customer A',
+    draftText: 'hello',
+  })
+
+  const cancelled = host.cancelTask(queued.id)
+  assert.equal(cancelled?.status, 'cancelled')
+  controls.releaseFirst?.()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(started, ['cancel-first'])
+  assert.equal(host.getTask(queued.id)?.status, 'cancelled')
+})
+
+test('runtime host rejects new task creation once shutdown begins and leaves no registry residue', async () => {
+  const controls: { releaseRunning?: () => void } = {}
+  const started: string[] = []
+  const host = new RuntimeHost()
+  host.runner.run = (async (request: { idempotencyKey: string }) => {
+    started.push(request.idempotencyKey)
+    await new Promise<void>((resolve) => { controls.releaseRunning = () => resolve() })
+    return { status: 'succeeded', stage: 'completed' }
+  }) as never
+
+  const running = await host.createTask({
+    action: 'paste_draft',
+    idempotencyKey: 'shutdown-running',
+    requestDigest: 'shutdown-running-digest',
+    conversationName: 'Customer A',
+    draftText: 'hello',
+  })
+  const queued = await host.createTask({
+    action: 'paste_draft',
+    idempotencyKey: 'shutdown-queued',
+    requestDigest: 'shutdown-queued-digest',
+    conversationName: 'Customer A',
+    draftText: 'hello',
+  })
+
+  const shutdownPromise = host.shutdown()
+
+  await assert.rejects(
+    () => host.createTask({
+      action: 'paste_draft',
+      idempotencyKey: 'shutdown-rejected',
+      requestDigest: 'shutdown-rejected-digest',
+      conversationName: 'Customer A',
+      draftText: 'hello',
+    }),
+    (error: unknown) => {
+      assert.equal((error as { errorCode?: string }).errorCode, 'RUNTIME_SHUTTING_DOWN')
+      assert.equal((error as { statusCode?: number }).statusCode, 503)
+      return true
+    },
+  )
+
+  assert.equal(host.isShuttingDown(), true)
+  assert.equal(host.getTask(queued.id)?.status, 'interrupted')
+  assert.equal(host.getTask(queued.id)?.stage, 'runtime_shutdown')
+  assert.equal(host.activeTaskCount(), 1)
+  assert.deepEqual(started, ['shutdown-running'])
+  assert.equal(host.registry.all().some((task) => task.idempotencyKey === 'shutdown-rejected'), false)
+
+  controls.releaseRunning?.()
+  await shutdownPromise
+  assert.equal(host.getTask(running.id)?.status, 'cancelled')
+  assert.equal(host.getTask(running.id)?.stage, 'cancelled')
 })
 
 test('paste_only appends attachments after verified text and never presses Enter', async () => {
@@ -859,6 +1014,7 @@ test('paste_only blocks attachment paste when file digest mismatches', async () 
     assert.equal(result.status, 'failed')
     assert.equal(result.errorCode, 'ATTACHMENT_HASH_MISMATCH')
     assert.equal(result.attachmentPasteRequested, false)
+    assert.deepEqual(input.events, [])
     assert.deepEqual(fileClipboard.writes, [])
   } finally {
     await fs.rm(path.join(os.tmpdir(), 'broadcast-runtime-test-mismatch'), { recursive: true, force: true })
@@ -1153,6 +1309,7 @@ test('paste_only fails attachments outside configured attachment root', async ()
     assert.equal(result.errorCode, 'ATTACHMENT_PATH_OUTSIDE_ROOT')
     assert.equal(result.attachmentsPrepared, false)
     assert.equal(result.attachmentPasteRequested, false)
+    assert.deepEqual(input.events, [])
     assert.deepEqual(fileClipboard.writes, [])
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true })

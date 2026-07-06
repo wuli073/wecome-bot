@@ -241,11 +241,12 @@ class BuildAppStage(stage.BootingStage):
         )
         quart_app = ap.http_ctrl.quart_app
 
-        repo_root = Path(paths.get_data_root()).resolve().parent
+        repo_root_text = paths.get_repo_root()
+        repo_root = Path(repo_root_text).resolve() if repo_root_text else None
         watcher = build_local_shutdown_watcher_from_env(
             app=ap,
             repo_root=repo_root,
-        )
+        ) if repo_root is not None else None
         ap.local_shutdown_control_watcher = watcher
         if watcher is not None:
             ap.task_mgr.create_task(
