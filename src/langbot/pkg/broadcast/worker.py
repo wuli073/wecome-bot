@@ -12,6 +12,8 @@ class BroadcastExecutionWorker:
         self._stop_event = asyncio.Event()
         self._runner_task: asyncio.Task[None] | None = None
         self._run_lock = asyncio.Lock()
+        self._stop_lock = asyncio.Lock()
+        self._stop_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         if self._runner_task is not None and not self._runner_task.done():
@@ -21,10 +23,23 @@ class BroadcastExecutionWorker:
         self.wake()
 
     async def stop(self) -> None:
+        async with self._stop_lock:
+            if self._stop_task is None or self._stop_task.done():
+                self._stop_task = asyncio.create_task(self._stop_once(), name='broadcast-worker-stop')
+            stop_task = self._stop_task
+        await stop_task
+
+    async def _stop_once(self) -> None:
         self._stop_event.set()
         self.wake()
-        if self._runner_task is not None:
-            await self._runner_task
+        if self._runner_task is None:
+            return
+        try:
+            await asyncio.wait_for(self._runner_task, timeout=10)
+        except asyncio.TimeoutError:
+            self._runner_task.cancel()
+            await asyncio.gather(self._runner_task, return_exceptions=True)
+        finally:
             self._runner_task = None
 
     def wake(self) -> None:

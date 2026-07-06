@@ -51,6 +51,7 @@ testsdk/
 .playwright-cli/
 .tmp-codex/
 .tmp-pytest/
+.tmp/
 
 # Build artifacts
 /dist

@@ -44,23 +44,28 @@ async def make_app(loop: asyncio.AbstractEventLoop) -> app.Application:
     return ap
 
 
-async def main(loop: asyncio.AbstractEventLoop):
+async def main(loop: asyncio.AbstractEventLoop) -> int:
     app_inst: app.Application | None = None
+    pending_shutdown = False
     try:
         # Hang system signal processing
         import signal
 
         def signal_handler(sig, frame):
+            nonlocal pending_shutdown
+            pending_shutdown = True
             if app_inst is not None:
-                app_inst.dispose()
-            print('[Signal] Program exit.')
-            os._exit(0)
+                loop.call_soon_threadsafe(app_inst.request_shutdown, f'signal:{sig}')
 
         signal.signal(signal.SIGINT, signal_handler)
 
         app_inst = await make_app(loop)
-        await app_inst.run()
+        if pending_shutdown:
+            app_inst.request_shutdown('pending-signal')
+        return await app_inst.run()
     except Exception:
         if app_inst is not None:
+            await app_inst.shutdown()
             app_inst.dispose()
         traceback.print_exc()
+        return 1

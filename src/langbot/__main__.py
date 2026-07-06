@@ -95,34 +95,34 @@ async def main_entry(loop: asyncio.AbstractEventLoop):
         for file in generated_files:
             print('-', file)
 
+    return await boot_main(loop)
+
+
+async def boot_main(loop: asyncio.AbstractEventLoop) -> int:
     from langbot.pkg.core import boot
 
-    await boot.main(loop)
+    return await boot.main(loop)
 
 
 def main():
     """Main function to be called by console script entry point"""
-    # Check Python version
     if sys.version_info < (3, 10, 1):
-        print('需要 Python 3.10.1 及以上版本，当前 Python 版本为：', sys.version)
-        print('Your Python version is not supported.')
         print('Python 3.10.1 or higher is required. Current version:', sys.version)
         sys.exit(1)
 
-    # Set up the working directory
-    # When installed as a package, we need to handle the working directory differently
-    # We'll create data directory in current working directory if not exists
     os.makedirs(paths.get_data_root(), exist_ok=True)
 
     loop = asyncio.new_event_loop()
 
     try:
-        loop.run_until_complete(main_entry(loop))
+        exit_code = loop.run_until_complete(main_entry(loop))
     except KeyboardInterrupt:
-        print('\n正在退出...')
         print('Exiting...')
+        exit_code = 0
     finally:
         loop.close()
+
+    raise SystemExit(exit_code)
 
 
 if __name__ == '__main__':

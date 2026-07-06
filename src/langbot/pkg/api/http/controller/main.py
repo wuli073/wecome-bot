@@ -42,6 +42,7 @@ class HTTPController:
         quart_cors.cors(self.quart_app, allow_origin='*')
         self.quart_app.config['MAX_CONTENT_LENGTH'] = group.MAX_FILE_SIZE
         self.mcp_mount: MCPMount | None = None
+        self._shutdown_event = asyncio.Event()
 
     async def initialize(self) -> None:
         @self.quart_app.errorhandler(RequestEntityTooLarge)
@@ -64,21 +65,24 @@ class HTTPController:
         port = int(self.ap.instance_config.data['api']['port'])
         config = self._build_hypercorn_config(host=host, port=port)
         sockets = self._reserve_sockets(config)
-        return self._run_with_readiness(config=config, sockets=sockets)
+        return self._run_with_readiness(
+            config=config,
+            sockets=sockets,
+            shutdown_trigger=self._shutdown_event.wait,
+        )
 
-    async def _run_with_readiness(self, config, sockets) -> None:
+    def request_shutdown(self) -> None:
+        self._shutdown_event.set()
+
+    async def _run_with_readiness(self, config, sockets, shutdown_trigger) -> None:
         loop = asyncio.get_running_loop()
         ready_future = loop.create_future()
-
-        async def shutdown_trigger_placeholder():
-            while True:
-                await asyncio.sleep(1)
 
         server_task = loop.create_task(
             self._run_task(
                 config=config,
                 sockets=sockets,
-                shutdown_trigger=shutdown_trigger_placeholder,
+                shutdown_trigger=shutdown_trigger,
                 ready_future=ready_future,
             ),
             name='langbot-http-server',

@@ -12,22 +12,43 @@ pytestmark = pytest.mark.asyncio
 
 async def test_application_run_does_not_schedule_redundant_local_connector_restore():
     from langbot.pkg.core.app import Application
+    from langbot.pkg.core import taskmgr as taskmgr_module
 
     app = Application()
+    app.event_loop = asyncio.get_running_loop()
     app.plugin_connector = SimpleNamespace(initialize_plugins=AsyncMock())
     app.local_connectors_service = SimpleNamespace(restore_configured_connectors=AsyncMock())
-    app.platform_mgr = SimpleNamespace(run=AsyncMock())
-    app.ctrl = SimpleNamespace(run=AsyncMock())
-    app.http_ctrl = SimpleNamespace(run=AsyncMock())
-    app.task_mgr = SimpleNamespace(create_task=Mock(), wait_all=AsyncMock(side_effect=asyncio.CancelledError()))
+    shutdown_gate = asyncio.Event()
+
+    async def long_running():
+        await shutdown_gate.wait()
+
+    app.platform_mgr = SimpleNamespace(run=long_running)
+    app.ctrl = SimpleNamespace(run=long_running)
+    app.http_ctrl = SimpleNamespace(run=long_running, request_shutdown=Mock())
+    app.task_mgr = taskmgr_module.AsyncTaskManager(app)
     app.telemetry = None
-    app.instance_config = SimpleNamespace(data={"monitoring": {"auto_cleanup": {"enabled": False}}, "storage": {"cleanup": {"enabled": False}}})
+    app.instance_config = SimpleNamespace(
+        data={
+            "monitoring": {"auto_cleanup": {"enabled": False}},
+            "storage": {"cleanup": {"enabled": False}},
+            "desktop_automation": {"enabled": False},
+            "system": {"task_retention": {"completed_limit": 200}},
+            "api": {"port": 5300},
+        }
+    )
     app.monitoring_service = None
     app.maintenance_service = None
+    app.broadcast_execution_worker = None
+    app.desktop_automation_service = None
     app.logger = Mock()
     app.print_web_access_info = AsyncMock()
+    app.dispose = Mock()
 
-    await app.run()
+    run_task = asyncio.create_task(app.run())
+    await asyncio.sleep(0)
+    app.request_shutdown("test-finish")
+    await asyncio.wait_for(run_task, timeout=5)
 
-    scheduled = [call.kwargs["name"] for call in app.task_mgr.create_task.call_args_list]
+    scheduled = [wrapper.name for wrapper in app.task_mgr.tasks]
     assert "local-connector-restore" not in scheduled

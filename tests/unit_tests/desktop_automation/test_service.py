@@ -210,3 +210,16 @@ async def test_shutdown_and_close_delegate_to_runtime_process_manager():
 
     assert runtime_process_manager.stopped is True
     assert runtime_process_manager.closed is True
+
+
+async def test_shutdown_is_async_first_and_does_not_require_close():
+    runtime_process_manager = SimpleNamespace(
+        stop=AsyncMock(),
+        close=AsyncMock(),
+    )
+    service = _build_service(repository=_FakeRepository(), runtime_process_manager=runtime_process_manager)
+
+    await service.shutdown()
+
+    runtime_process_manager.stop.assert_awaited_once()
+    runtime_process_manager.close.assert_not_called()

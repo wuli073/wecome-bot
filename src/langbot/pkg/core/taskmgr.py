@@ -214,6 +214,30 @@ class AsyncTaskManager:
     async def wait_all(self):
         await asyncio.gather(*[t.task for t in self.tasks], return_exceptions=True)
 
+    async def cancel_and_wait_by_scope(
+        self,
+        scope: core_entities.LifecycleControlScope,
+        timeout: float,
+    ) -> list[object]:
+        wrappers = [
+            wrapper
+            for wrapper in list(self.tasks)
+            if scope in wrapper.scopes and not wrapper.task.done()
+        ]
+        if not wrappers:
+            return []
+
+        for wrapper in wrappers:
+            wrapper.task.cancel()
+
+        try:
+            return await asyncio.wait_for(
+                asyncio.gather(*(wrapper.task for wrapper in wrappers), return_exceptions=True),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            return []
+
     def get_all_tasks(self) -> list[TaskWrapper]:
         return self.tasks
 

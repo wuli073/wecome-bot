@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from .. import stage, app
 from ...utils import version, proxy
@@ -52,6 +53,9 @@ from ...desktop_automation.runtime_process import (
 )
 from ...desktop_automation.client import DesktopRuntimeClient
 from ...desktop_automation.service import DesktopAutomationService
+from ...utils import paths
+from .. import entities as core_entities
+from ..local_shutdown_control import build_local_shutdown_watcher_from_env
 
 
 @stage.stage_class('BuildAppStage')
@@ -160,7 +164,6 @@ class BuildAppStage(stage.BootingStage):
         llm_tool_mgr_inst = llm_tool_mgr.ToolManager(ap)
         ap.tool_mgr = llm_tool_mgr_inst
         await llm_tool_mgr_inst.initialize()
-        await local_connectors_service_inst.restore_configured_connectors()
 
         im_mgr_inst = im_mgr.PlatformManager(ap=ap)
         await im_mgr_inst.initialize()
@@ -237,6 +240,19 @@ class BuildAppStage(stage.BootingStage):
             service=ap.broadcast_service,
         )
         quart_app = ap.http_ctrl.quart_app
+
+        repo_root = Path(paths.get_data_root()).resolve().parent
+        watcher = build_local_shutdown_watcher_from_env(
+            app=ap,
+            repo_root=repo_root,
+        )
+        ap.local_shutdown_control_watcher = watcher
+        if watcher is not None:
+            ap.task_mgr.create_task(
+                watcher.watch(),
+                name='local-shutdown-control-watcher',
+                scopes=[core_entities.LifecycleControlScope.APPLICATION],
+            )
 
         @quart_app.before_serving
         async def _start_broadcast_execution_worker() -> None:

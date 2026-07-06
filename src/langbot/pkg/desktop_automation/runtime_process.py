@@ -37,6 +37,17 @@ class RuntimeCandidate:
     parsed_timestamp: datetime.datetime
 
 
+@dataclass(frozen=True)
+class OwnedRuntimeSnapshot:
+    process: Any | None
+    pid: int | None
+    process_create_time: float | None
+    runtime_info: dict[str, Any] | None
+    client: DesktopRuntimeClient | Any | None
+    stderr_task: asyncio.Task[Any] | None
+    selected_runtime_executable: Path | None
+
+
 def _normalize_path(pathlike: str | Path | None) -> Path | None:
     if pathlike is None:
         return None
@@ -144,6 +155,7 @@ class DesktopRuntimeProcessManager:
         self._lock = asyncio.Lock()
         self._stderr_task = None
         self._selected_runtime_executable: Path | None = None
+        self._stopping = False
 
     async def ensure_started(self) -> dict[str, Any]:
         async with self._lock:
@@ -190,16 +202,21 @@ class DesktopRuntimeProcessManager:
                 self._stderr_task = asyncio.create_task(self._drain_stream(self.process.stderr))
 
             handshake = await self._read_handshake(self.process)
+            spawn_pid = int(getattr(self.process, 'pid'))
+            if int(handshake['pid']) != spawn_pid:
+                await self._stop_locked()
+                raise DesktopAutomationError(RUNTIME_START_FAILED, 'Desktop runtime handshake pid mismatch')
             expected_protocol_version = str(self.config.get('expected_protocol_version') or '1')
             if str(handshake['protocolVersion']) != expected_protocol_version:
-                await self.stop()
+                await self._stop_locked()
                 raise DesktopAutomationError(
                     RUNTIME_PROTOCOL_MISMATCH,
                     f'Runtime protocol mismatch: expected {expected_protocol_version}, got {handshake["protocolVersion"]}',
                 )
 
             runtime_info = {
-                'pid': int(handshake['pid']),
+                'pid': spawn_pid,
+                'processCreateTime': self._read_process_create_time(spawn_pid),
                 'host': '127.0.0.1',
                 'port': int(handshake['port']),
                 'protocolVersion': str(handshake['protocolVersion']),
@@ -213,27 +230,26 @@ class DesktopRuntimeProcessManager:
             return dict(runtime_info)
 
     async def stop(self) -> None:
-        if self.process is None:
-            return None
-        process = self.process
-        self.process = None
-        self.runtime_info = None
-        self.client = None
+        async with self._lock:
+            await self._stop_locked()
+        return None
 
+    async def _stop_locked(self) -> None:
+        snapshot = self._build_owned_snapshot()
+        if snapshot is None:
+            return None
+
+        self._stopping = True
         try:
-            if getattr(process, 'returncode', None) is None and hasattr(process, 'terminate'):
-                process.terminate()
-            if hasattr(process, 'wait'):
-                wait_result = process.wait(timeout=5) if self._is_psutil_process(process) else process.wait()
-                if asyncio.iscoroutine(wait_result):
-                    await asyncio.wait_for(wait_result, timeout=5)
-        except Exception:
-            if hasattr(process, 'kill'):
-                process.kill()
+            await self._terminate_owned_runtime_snapshot(snapshot)
         finally:
-            if self._stderr_task is not None:
-                self._stderr_task.cancel()
-                self._stderr_task = None
+            await self._cleanup_stderr_task(snapshot.stderr_task)
+            self.process = None
+            self.client = None
+            self.runtime_info = None
+            self._stderr_task = None
+            self._selected_runtime_executable = None
+            self._stopping = False
         return None
 
     def close(self) -> None:
@@ -327,7 +343,8 @@ class DesktopRuntimeProcessManager:
         current_runtime = self.runtime_info or {}
         current_path = _normalize_path(current_runtime.get('executablePath'))
         if (
-            self.process is None
+            self._stopping
+            or self.process is None
             or self.client is None
             or self.runtime_info is None
             or target_path is None
@@ -340,6 +357,8 @@ class DesktopRuntimeProcessManager:
 
         process_path = self._get_process_executable_path(self.process)
         if process_path != target_path:
+            return False
+        if not self._process_create_time_matches(self.process, current_runtime.get('processCreateTime')):
             return False
 
         try:
@@ -362,12 +381,12 @@ class DesktopRuntimeProcessManager:
                         str(executable_path),
                         str(normalized_target),
                     )
-                    self._terminate_process_tree(runtime_process)
+                    self._terminate_psutil_tree(runtime_process)
                 continue
 
             if self._is_project_runtime_path(executable_path):
                 logger.info('Replacing stale desktop runtime: %s -> %s', str(executable_path), str(normalized_target))
-                self._terminate_process_tree(runtime_process)
+                self._terminate_psutil_tree(runtime_process)
 
     def _iter_runtime_processes(self):
         for process in psutil.process_iter():
@@ -413,24 +432,52 @@ class DesktopRuntimeProcessManager:
             return False
         return _OFFICIAL_RUNTIME_BUILD_DIR_PATTERN.match(build_dir.name) is not None
 
-    def _terminate_process_tree(self, process) -> None:
-        processes = list(process.children(recursive=True)) + [process]
-        for child in reversed(processes):
+    def _terminate_psutil_tree(self, process) -> None:
+        try:
+            children = list(process.children(recursive=True))
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+            children = []
+
+        for child in children:
             try:
                 child.terminate()
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
                 continue
 
         try:
+            process.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+            pass
+
+        processes = children + [process]
+
+        try:
             _, alive = psutil.wait_procs(processes, timeout=5)
         except AttributeError:
             alive = []
 
-        for child in alive:
+        alive_children = [child for child in alive if getattr(child, 'pid', None) != getattr(process, 'pid', None)]
+        alive_parent = next(
+            (child for child in alive if getattr(child, 'pid', None) == getattr(process, 'pid', None)),
+            None,
+        )
+
+        for child in alive_children:
             try:
                 child.kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
                 continue
+
+        if alive_parent is not None:
+            try:
+                alive_parent.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+                pass
+
+        try:
+            psutil.wait_procs(alive, timeout=5)
+        except AttributeError:
+            pass
 
     @staticmethod
     def _process_is_alive(process) -> bool:
@@ -447,6 +494,17 @@ class DesktopRuntimeProcessManager:
     def _is_psutil_process(process) -> bool:
         return isinstance(process, psutil.Process)
 
+    @staticmethod
+    def _process_create_time_matches(process, expected_created_at: float | None) -> bool:
+        if expected_created_at is None:
+            return True
+        try:
+            pid = int(getattr(process, 'pid'))
+            actual_create_time = psutil.Process(pid).create_time()
+        except (AttributeError, TypeError, ValueError, psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+            return False
+        return abs(actual_create_time - float(expected_created_at)) <= 2
+
     async def _wait_until_ready(self) -> None:
         timeout_seconds = float(self.config.get('startup_timeout_seconds') or 30)
 
@@ -460,7 +518,7 @@ class DesktopRuntimeProcessManager:
         try:
             await asyncio.wait_for(_poll(), timeout=timeout_seconds)
         except asyncio.TimeoutError as exc:
-            await self.stop()
+            await self._stop_locked()
             raise DesktopAutomationError(RUNTIME_UNAVAILABLE, 'Desktop runtime failed to become ready in time') from exc
 
     async def _read_handshake(self, process) -> dict[str, Any]:
@@ -509,3 +567,124 @@ class DesktopRuntimeProcessManager:
             line = await stream.readline()
             if not line:
                 return
+
+    def _build_owned_snapshot(self) -> OwnedRuntimeSnapshot | None:
+        process = self.process
+        runtime_info = self.runtime_info
+        client = self.client
+        stderr_task = self._stderr_task
+        selected_runtime_executable = _normalize_path(
+            self._selected_runtime_executable
+            or ((runtime_info or {}).get('executablePath') if isinstance(runtime_info, dict) else None)
+        )
+        pid = self._coerce_int(getattr(process, 'pid', None))
+        if pid is None and isinstance(runtime_info, dict):
+            pid = self._coerce_int(runtime_info.get('pid'))
+
+        process_create_time = None
+        if isinstance(runtime_info, dict):
+            process_create_time = self._coerce_float(runtime_info.get('processCreateTime'))
+        if process_create_time is None and pid is not None:
+            process_create_time = self._read_process_create_time(pid)
+
+        if (
+            process is None
+            and runtime_info is None
+            and client is None
+            and stderr_task is None
+            and selected_runtime_executable is None
+        ):
+            return None
+
+        return OwnedRuntimeSnapshot(
+            process=process,
+            pid=pid,
+            process_create_time=process_create_time,
+            runtime_info=runtime_info,
+            client=client,
+            stderr_task=stderr_task,
+            selected_runtime_executable=selected_runtime_executable,
+        )
+
+    async def _terminate_owned_runtime_snapshot(self, snapshot: OwnedRuntimeSnapshot) -> None:
+        owned_process = self._resolve_owned_psutil_process(snapshot)
+        if owned_process is not None:
+            self._terminate_psutil_tree(owned_process)
+
+    async def _cleanup_stderr_task(self, task: asyncio.Task[Any] | None) -> None:
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
+
+    def _resolve_owned_psutil_process(self, snapshot: OwnedRuntimeSnapshot):
+        if snapshot.pid is None:
+            return None
+
+        try:
+            process = psutil.Process(snapshot.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+            logger.warning('Desktop runtime process is no longer available during stop: pid=%s', snapshot.pid)
+            return None
+
+        expected_create_time = snapshot.process_create_time
+        if expected_create_time is not None:
+            try:
+                actual_create_time = process.create_time()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+                return None
+            if abs(actual_create_time - float(expected_create_time)) > 2:
+                logger.warning(
+                    'Desktop runtime PID reuse detected during stop: pid=%s expected_create_time=%s actual_create_time=%s',
+                    snapshot.pid,
+                    expected_create_time,
+                    actual_create_time,
+                )
+                return None
+
+        expected_path = snapshot.selected_runtime_executable
+        if expected_path is None:
+            logger.warning('Desktop runtime executable path is unavailable during stop: pid=%s', snapshot.pid)
+            return None
+
+        actual_path = self._get_process_executable_path(process)
+        if actual_path != expected_path:
+            logger.warning(
+                'Desktop runtime executable path changed before stop: pid=%s expected=%s actual=%s',
+                snapshot.pid,
+                str(expected_path),
+                str(actual_path),
+            )
+            return None
+
+        if not _is_valid_runtime_executable_path(actual_path, self.runtime_root):
+            logger.warning('Desktop runtime executable path is no longer owned: pid=%s path=%s', snapshot.pid, str(actual_path))
+            return None
+
+        return process
+
+    @staticmethod
+    def _coerce_int(value) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _coerce_float(value) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _read_process_create_time(pid: int) -> float | None:
+        try:
+            return float(psutil.Process(int(pid)).create_time())
+        except (AttributeError, TypeError, ValueError, psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+            return None
