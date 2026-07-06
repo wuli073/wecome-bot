@@ -790,13 +790,27 @@ function New-BackendCommand {
 function Get-StateOwnedWebCheck {
     param($State)
 
+    $capturedWeb = if ($null -ne $State) {
+        $State.web
+    }
+    else {
+        $null
+    }
+
+    $capturedSnapshotReader = ${function:Get-ProcessIdentitySnapshot}
+    $capturedOwnershipChecker = ${function:Test-ManagedProcessOwnership}
+
     return {
-        if ($null -eq $State -or $null -eq $State.web -or -not $State.web.pid) {
+        if ($null -eq $capturedWeb -or -not $capturedWeb.pid) {
             return $false
         }
 
-        $snapshot = Get-ProcessIdentitySnapshot -ProcessId ([int]$State.web.pid)
-        return (Test-ManagedProcessOwnership -Identity $State.web -Snapshot $snapshot)
+        $snapshot = & $capturedSnapshotReader -ProcessId ([int]$capturedWeb.pid)
+        if ($null -eq $snapshot) {
+            return $false
+        }
+
+        return (& $capturedOwnershipChecker -Identity $capturedWeb -Snapshot $snapshot)
     }.GetNewClosure()
 }
 
@@ -1113,18 +1127,274 @@ function Rollback-PartialStart {
 function Get-StateOwnedBackendCheck {
     param($State)
 
+    $capturedBackend = if ($null -ne $State) {
+        $State.backend
+    }
+    else {
+        $null
+    }
+
+    $capturedRepoRoot = if ($script:RepoRoot) {
+        [string]$script:RepoRoot
+    }
+    else {
+        ''
+    }
+
+    $capturedPythonPath = if ($null -ne $capturedBackend -and $capturedBackend.executablePath) {
+        [string]$capturedBackend.executablePath
+    }
+    else {
+        ''
+    }
+
+    $capturedMainPath = if ($capturedRepoRoot) {
+        [System.IO.Path]::GetFullPath((Join-Path $capturedRepoRoot 'main.py'))
+    }
+    else {
+        ''
+    }
+
+    $capturedOwnershipChecker = ${function:Test-BackendOwnership}
+
     return {
-        if ($null -eq $State -or $null -eq $State.backend) {
+        if (
+            $null -eq $capturedBackend -or
+            -not $capturedBackend.pid -or
+            -not $capturedBackend.processStartTimeUtcTicks -or
+            -not $capturedRepoRoot -or
+            -not $capturedPythonPath -or
+            -not $capturedMainPath
+        ) {
             return $false
         }
 
-        return Test-BackendOwnership `
-            -Identity $State.backend `
-            -RepoRoot $script:RepoRoot `
-            -PythonPath ([string]$State.backend.executablePath) `
-            -MainPath ([System.IO.Path]::GetFullPath((Join-Path $script:RepoRoot 'main.py'))) `
-            -ProcessCreatedAt 0
+        return (& $capturedOwnershipChecker `
+            -Identity $capturedBackend `
+            -RepoRoot $capturedRepoRoot `
+            -PythonPath $capturedPythonPath `
+            -MainPath $capturedMainPath `
+            -ProcessCreatedAt 0)
     }.GetNewClosure()
+}
+
+function Resolve-OwnedStateRecord {
+    param(
+        $PreferredRecord = $null,
+        $DetectedRecord = $null
+    )
+
+    $resolution = [ordered]@{
+        Record = $PreferredRecord
+        VerifiedRecord = $null
+        VerifiedSnapshot = $null
+        DetectedRecord = $null
+        Ownership = 'none'
+        Status = 'absent'
+    }
+
+    $hasPreferred = ($null -ne $PreferredRecord -and $PreferredRecord.pid)
+    $hasDetected = ($null -ne $DetectedRecord -and $DetectedRecord.pid)
+
+    if (-not $hasPreferred) {
+        if ($hasDetected) {
+            $resolution.DetectedRecord = $DetectedRecord
+            $resolution.Ownership = 'unknown'
+            $resolution.Status = 'detected-unmanaged'
+        }
+
+        return [pscustomobject]$resolution
+    }
+
+    $snapshot = Get-ProcessIdentitySnapshot -ProcessId ([int]$PreferredRecord.pid)
+    $snapshotMatches = ($null -ne $snapshot -and (Test-ManagedProcessOwnership -Identity $PreferredRecord -Snapshot $snapshot))
+    $detectedMatches = ($hasDetected -and (Test-ManagedProcessOwnership -Identity $PreferredRecord -Snapshot $DetectedRecord))
+
+    if ($snapshotMatches) {
+        $resolution.VerifiedRecord = $PreferredRecord
+        $resolution.VerifiedSnapshot = $snapshot
+
+        if ($hasDetected -and -not $detectedMatches) {
+            $resolution.DetectedRecord = $DetectedRecord
+            $resolution.Ownership = 'unknown'
+            $resolution.Status = 'identity-mismatch'
+        }
+        else {
+            $resolution.Ownership = 'owned'
+            $resolution.Status = 'verified'
+        }
+
+        return [pscustomobject]$resolution
+    }
+
+    if ($hasDetected) {
+        $resolution.DetectedRecord = $DetectedRecord
+        $resolution.Ownership = 'unknown'
+        $resolution.Status = 'identity-mismatch'
+        return [pscustomobject]$resolution
+    }
+
+    if ($null -ne $snapshot) {
+        $resolution.Ownership = 'unknown'
+        $resolution.Status = 'identity-mismatch'
+        return [pscustomobject]$resolution
+    }
+
+    $resolution.Status = 'missing'
+    return [pscustomobject]$resolution
+}
+
+function Resolve-EffectiveLauncherState {
+    param(
+        [string]$RepoRoot = $script:RepoRoot,
+        [string]$RequestedWebMode = $script:WebMode
+    )
+
+    $persistedState = Read-JsonFile -Path $script:StatePath
+    $detected = Get-RepoOwnedRunningStack -RepoRoot $RepoRoot
+    $state = $persistedState
+
+    $backendResolution = Resolve-OwnedStateRecord `
+        -PreferredRecord $(if ($null -ne $state) { $state.backend } else { $null }) `
+        -DetectedRecord $detected.backend
+
+    $webResolution = Resolve-OwnedStateRecord `
+        -PreferredRecord $(if ($null -ne $state) { $state.web } else { $null }) `
+        -DetectedRecord $detected.web
+
+    $effectiveWebMode = if ($null -ne $state -and $state.webMode) {
+        [string]$state.webMode
+    }
+    else {
+        $RequestedWebMode
+    }
+
+    [pscustomobject]@{
+        PersistedState = $persistedState
+        State = $state
+        Detected = $detected
+        BackendResolution = $backendResolution
+        WebResolution = $webResolution
+        BackendRecord = $backendResolution.VerifiedRecord
+        WebRecord = $webResolution.VerifiedRecord
+        WebMode = $effectiveWebMode
+    }
+}
+
+function Get-AggregateStackStatus {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WebModeValue,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BackendStatus,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WebStatus,
+
+        [bool]$HasPersistedState = $false,
+
+        [bool]$HasOwnershipUnknown = $false,
+
+        [bool]$HasDetectedComponents = $false
+    )
+
+    if (-not $HasPersistedState) {
+        if ($HasOwnershipUnknown -or $HasDetectedComponents) {
+            return 'degraded'
+        }
+
+        return 'stopped'
+    }
+
+    if ($WebModeValue -eq 'Bundled') {
+        if ($HasOwnershipUnknown) {
+            return 'degraded'
+        }
+
+        switch ($BackendStatus) {
+            'running' { return 'running' }
+            'process-up' { return 'degraded' }
+            default { return 'stopped' }
+        }
+    }
+
+    $backendUp = @('running', 'process-up') -contains $BackendStatus
+    $webUp = $WebStatus -eq 'running'
+
+    if ($HasOwnershipUnknown) {
+        return 'degraded'
+    }
+
+    if ($BackendStatus -eq 'running' -and $webUp) {
+        return 'running'
+    }
+
+    if (-not $backendUp -and -not $webUp) {
+        return 'stopped'
+    }
+
+    return 'degraded'
+}
+
+function Assert-RequestedModeMatchesStatus {
+    param(
+        $Status,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RequestedWebMode
+    )
+
+    if ($null -eq $Status) {
+        return
+    }
+
+    $currentStatus = [string]$Status.status
+    if (-not $currentStatus -or $currentStatus -eq 'stopped') {
+        return
+    }
+
+    $currentMode = [string]$Status.webMode
+    if (-not $currentMode -or $currentMode -eq $RequestedWebMode) {
+        return
+    }
+
+    throw "STACK_MODE_MISMATCH`nStack is already running in $currentMode mode. Use Restart -WebMode $RequestedWebMode."
+}
+
+function Test-StackHealthyForStart {
+    param(
+        $Status,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RequestedWebMode
+    )
+
+    if ($null -eq $Status) {
+        return $false
+    }
+
+    if ([string]$Status.status -ne 'running') {
+        return $false
+    }
+
+    if ([string]$Status.ownership -ne 'owned') {
+        return $false
+    }
+
+    if ([string]$Status.webMode -ne $RequestedWebMode) {
+        return $false
+    }
+
+    if ([string]$Status.backend.status -ne 'running' -or [string]$Status.backend.ownership -ne 'owned') {
+        return $false
+    }
+
+    if ($RequestedWebMode -eq 'Bundled') {
+        return ([string]$Status.web.status -eq 'not-used')
+    }
+
+    return ([string]$Status.web.status -eq 'running' -and [string]$Status.web.ownership -eq 'owned')
 }
 
 function Get-StackStatus {
@@ -1134,55 +1404,79 @@ function Get-StackStatus {
     )
 
     $apiConfig = Resolve-ApiConfiguration -RepoRoot $RepoRoot
-    $state = Read-JsonFile -Path $script:StatePath
-    if ($null -eq $state) {
-        $detected = Get-RepoOwnedRunningStack
-        if ($null -ne $detected.backend -or $null -ne $detected.web) {
-            $state = New-LauncherState -SessionId ([guid]::NewGuid().ToString('N')) -BackendRecord $detected.backend -WebRecord $detected.web -Status 'running' -WebModeValue $(if ($null -ne $detected.web) { 'Dev' } else { 'Bundled' })
-        }
-    }
+    $resolvedState = Resolve-EffectiveLauncherState -RepoRoot $RepoRoot -RequestedWebMode $RequestedWebMode
+    $state = $resolvedState.State
+    $backendResolution = $resolvedState.BackendResolution
+    $webResolution = $resolvedState.WebResolution
 
     $backendStatus = [ordered]@{
         status = 'down'
+        ownership = if ($backendResolution.Ownership -eq 'unknown') { 'unknown' } elseif ($backendResolution.Ownership -eq 'owned') { 'owned' } else { 'none' }
         url = $apiConfig.BaseUrl
         healthUrl = $apiConfig.HealthUrl
-        pid = $null
-        processStartTimeUtcTicks = $null
+        pid = if ($null -ne $backendResolution.Record -and $backendResolution.Record.pid) { [int]$backendResolution.Record.pid } else { $null }
+        processStartTimeUtcTicks = if ($null -ne $backendResolution.Record -and $backendResolution.Record.processStartTimeUtcTicks) { [int64]$backendResolution.Record.processStartTimeUtcTicks } else { $null }
     }
 
-    $effectiveWebMode = if ($null -ne $state -and $state.webMode) { [string]$state.webMode } else { $RequestedWebMode }
+    $effectiveWebMode = [string]$resolvedState.WebMode
 
     $webStatus = [ordered]@{
         status = if ($effectiveWebMode -eq 'Dev') { 'down' } else { 'not-used' }
+        ownership = if ($webResolution.Ownership -eq 'unknown') { 'unknown' } elseif ($webResolution.Ownership -eq 'owned') { 'owned' } else { 'none' }
         url = if ($effectiveWebMode -eq 'Dev') { 'http://127.0.0.1:3000' } else { $null }
-        pid = $null
-        processStartTimeUtcTicks = $null
+        pid = if ($null -ne $webResolution.Record -and $webResolution.Record.pid) { [int]$webResolution.Record.pid } else { $null }
+        processStartTimeUtcTicks = if ($null -ne $webResolution.Record -and $webResolution.Record.processStartTimeUtcTicks) { [int64]$webResolution.Record.processStartTimeUtcTicks } else { $null }
     }
 
-    if ($null -ne $state -and $null -ne $state.backend) {
-        $snapshot = Get-ProcessIdentitySnapshot -ProcessId ([int]$state.backend.pid)
-        if (Test-ManagedProcessOwnership -Identity $state.backend -Snapshot $snapshot) {
+    if ($null -ne $backendResolution.VerifiedRecord -and $backendResolution.VerifiedRecord.pid) {
+        if ($backendResolution.VerifiedRecord.pid) {
             $backendStatus.status = if (Wait-ForHttpOk -Url $apiConfig.HealthUrl -TimeoutSeconds 1) { 'running' } else { 'process-up' }
-            $backendStatus.pid = [int]$state.backend.pid
-            $backendStatus.processStartTimeUtcTicks = [int64]$state.backend.processStartTimeUtcTicks
         }
     }
 
-    if ($null -ne $state -and $null -ne $state.web -and $state.web.pid) {
-        $snapshot = Get-ProcessIdentitySnapshot -ProcessId ([int]$state.web.pid)
-        if (Test-ManagedProcessOwnership -Identity $state.web -Snapshot $snapshot) {
+    if ($effectiveWebMode -eq 'Dev' -and $null -ne $webResolution.VerifiedRecord -and $webResolution.VerifiedRecord.pid) {
             $webStatus.status = 'running'
-            $webStatus.pid = [int]$state.web.pid
-            $webStatus.processStartTimeUtcTicks = [int64]$state.web.processStartTimeUtcTicks
+    }
+
+    $detectedComponents = [ordered]@{}
+    if ($null -ne $backendResolution.DetectedRecord -and $backendResolution.DetectedRecord.pid) {
+        $detectedComponents.backend = [ordered]@{
+            pid = [int]$backendResolution.DetectedRecord.pid
+            processStartTimeUtcTicks = [int64]$backendResolution.DetectedRecord.processStartTimeUtcTicks
+            executablePath = $backendResolution.DetectedRecord.executablePath
+            commandLine = $backendResolution.DetectedRecord.commandLine
+            repoRoot = $backendResolution.DetectedRecord.repoRoot
         }
     }
+    if ($null -ne $webResolution.DetectedRecord -and $webResolution.DetectedRecord.pid) {
+        $detectedComponents.web = [ordered]@{
+            pid = [int]$webResolution.DetectedRecord.pid
+            processStartTimeUtcTicks = [int64]$webResolution.DetectedRecord.processStartTimeUtcTicks
+            executablePath = $webResolution.DetectedRecord.executablePath
+            commandLine = $webResolution.DetectedRecord.commandLine
+            repoRoot = $webResolution.DetectedRecord.repoRoot
+        }
+    }
+
+    $hasOwnershipUnknown = ($backendResolution.Ownership -eq 'unknown' -or $webResolution.Ownership -eq 'unknown')
+    $hasDetectedComponents = ($detectedComponents.Count -gt 0)
+    $aggregateStatus = Get-AggregateStackStatus `
+        -WebModeValue $effectiveWebMode `
+        -BackendStatus ([string]$backendStatus.status) `
+        -WebStatus ([string]$webStatus.status) `
+        -HasPersistedState ($null -ne $state) `
+        -HasOwnershipUnknown $hasOwnershipUnknown `
+        -HasDetectedComponents $hasDetectedComponents
 
     [ordered]@{
         repoRoot = $RepoRoot
-        status = if ($null -ne $state) { [string]$state.status } else { 'stopped' }
+        sessionId = if ($null -ne $state) { [string]$state.sessionId } else { $null }
+        status = $aggregateStatus
+        ownership = if ($hasOwnershipUnknown -or $hasDetectedComponents) { 'unknown' } elseif ([string]$aggregateStatus -eq 'running') { 'owned' } else { 'none' }
         webMode = $effectiveWebMode
         backend = $backendStatus
         web = $webStatus
+        detectedComponents = $detectedComponents
         runtime = [ordered]@{
             status = 'managed-by-backend'
         }
@@ -1262,6 +1556,16 @@ function Start-BackendStack {
     }
 
     $apiConfig = Resolve-ApiConfiguration -RepoRoot $script:RepoRoot
+    $currentStatus = Get-StackStatus -RepoRoot $script:RepoRoot -RequestedWebMode $WebModeValue
+    if ([string]$currentStatus.status -ne 'stopped') {
+        Assert-RequestedModeMatchesStatus -Status $currentStatus -RequestedWebMode $WebModeValue
+        if (Test-StackHealthyForStart -Status $currentStatus -RequestedWebMode $WebModeValue) {
+            return $currentStatus
+        }
+
+        throw 'STACK_NOT_HEALTHY`nStack is not healthy. Use Status for diagnostics, then Stop or Restart after resolving ownership.'
+    }
+
     $state = Read-JsonFile -Path $script:StatePath
     $ownerCheck = Get-StateOwnedBackendCheck -State $state
     Assert-PortAvailableOrOwned -Address $apiConfig.Host -Port $apiConfig.Port -OwnerCheck $ownerCheck
@@ -1396,13 +1700,12 @@ function Start-BackendStack {
 function Stop-BackendStack {
     param([string]$RequestedWebMode = $script:WebMode)
 
-    $state = Read-JsonFile -Path $script:StatePath
-    if ($null -eq $state) {
-        $detected = Get-RepoOwnedRunningStack
-        if ($null -ne $detected.backend -or $null -ne $detected.web) {
-            $state = New-LauncherState -SessionId ([guid]::NewGuid().ToString('N')) -BackendRecord $detected.backend -WebRecord $detected.web -Status 'running' -WebModeValue $(if ($null -ne $detected.web) { 'Dev' } else { 'Bundled' })
-        }
-    }
+    $resolvedState = Resolve-EffectiveLauncherState -RepoRoot $script:RepoRoot -RequestedWebMode $RequestedWebMode
+    $state = $resolvedState.State
+    $persistedState = $resolvedState.PersistedState
+    $backendIdentity = $resolvedState.BackendRecord
+    $webIdentity = $resolvedState.WebRecord
+    $status = Get-StackStatus -RequestedWebMode $RequestedWebMode
     if ($script:DryRun) {
         return [ordered]@{
             action = 'Stop'
@@ -1415,24 +1718,42 @@ function Stop-BackendStack {
     }
 
     if ($null -eq $state) {
-        return (Get-StackStatus -RequestedWebMode $RequestedWebMode)
+        if ([string]$status.ownership -eq 'unknown') {
+            throw 'STOP_OWNERSHIP_UNKNOWN`nLauncher ownership could not be proven for the detected stack.'
+        }
+
+        return $status
+    }
+
+    if (
+        $resolvedState.BackendResolution.Ownership -eq 'unknown' -or
+        $resolvedState.WebResolution.Ownership -eq 'unknown'
+    ) {
+        throw 'STOP_OWNERSHIP_UNKNOWN`nLauncher ownership could not be proven for the persisted stack.'
     }
 
     $stopFailed = $false
 
-    if ($null -ne $state.web -and $state.web.pid) {
-        if (-not (Stop-RepoOwnedProcess -Identity $state.web)) {
+    if ($null -ne $webIdentity -and $webIdentity.pid) {
+        if (-not (Stop-RepoOwnedProcess -Identity $webIdentity)) {
             $stopFailed = $true
         }
     }
 
-    if ($null -ne $state.backend -and $state.backend.pid) {
-        Request-GracefulBackendShutdown -ControlPath $script:ShutdownRequestPath -SessionId ([string]$state.sessionId)
-        if (-not (Wait-ForProcessExit -ProcessId ([int]$state.backend.pid) -TimeoutSeconds 20)) {
-            if (Stop-RepoOwnedProcess -Identity $state.backend) {
-                Write-Output 'graceful shutdown timed out'
+    if ($null -ne $backendIdentity -and $backendIdentity.pid) {
+        if ($null -ne $persistedState -and $persistedState.sessionId) {
+            Request-GracefulBackendShutdown -ControlPath $script:ShutdownRequestPath -SessionId ([string]$persistedState.sessionId)
+            if (-not (Wait-ForProcessExit -ProcessId ([int]$backendIdentity.pid) -TimeoutSeconds 20)) {
+                if (Stop-RepoOwnedProcess -Identity $backendIdentity) {
+                    Write-Output 'graceful shutdown timed out'
+                }
+                else {
+                    $stopFailed = $true
+                }
             }
-            else {
+        }
+        else {
+            if (-not (Stop-RepoOwnedProcess -Identity $backendIdentity)) {
                 $stopFailed = $true
             }
         }

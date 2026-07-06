@@ -413,6 +413,8 @@ Describe 'start-local sequencing and rollback guards' {
             Mock Assert-PortAvailableOrOwned { }
             Mock Test-TcpPortListening { $false }
             Mock Read-JsonFile { $null }
+            Mock Get-NetTCPConnection { param([string]$State, [int[]]$LocalPort, $ErrorAction) $null }
+            Mock Get-ProcessIdentitySnapshot { $null }
             Mock Resolve-ApiConfiguration { [pscustomobject]@{ Host='127.0.0.1'; Port=5302; BaseUrl='http://127.0.0.1:5302'; HealthUrl='http://127.0.0.1:5302/healthz'; ConfigPath='config.yaml' } }
             Mock Start-ManagedProcess {
                 param([string]$FilePath)
@@ -563,6 +565,529 @@ Describe 'start-local sequencing and rollback guards' {
 
 }
 
+Describe 'start-local ownership and fail-closed behavior' {
+    BeforeEach {
+        Test-Path -LiteralPath $scriptPath | Should Be $true
+        . $scriptPath
+    }
+
+    AfterEach {
+        foreach ($fn in @(
+            'Get-NetTCPConnection',
+            'Get-ProcessIdentitySnapshot',
+            'Get-CimInstance',
+            'Invoke-WebRequest'
+        )) {
+            Remove-Item -Path ("Function:\{0}" -f $fn) -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    function New-TestStackRoot {
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('start-local-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tmpRoot | Out-Null
+        $script:StackRoot = $tmpRoot
+        $script:ControlDir = Join-Path $script:StackRoot 'control'
+        $script:LogsDir = Join-Path $script:StackRoot 'logs'
+        $script:StatePath = Join-Path $script:StackRoot 'state.json'
+        $script:ShutdownRequestPath = Join-Path $script:ControlDir 'shutdown.request.json'
+        return $tmpRoot
+    }
+
+    function New-TestRecord {
+        param(
+            [Parameter(Mandatory = $true)][string]$Role,
+            [Parameter(Mandatory = $true)][Alias('Pid')][int]$RecordPid,
+            [Parameter(Mandatory = $true)][int64]$Ticks,
+            [Parameter(Mandatory = $true)][string]$ExecutablePath,
+            [Parameter(Mandatory = $true)][string]$CommandLine
+        )
+
+        return [ordered]@{
+            role = $Role
+            status = 'running'
+            pid = $RecordPid
+            processStartTimeUtcTicks = $Ticks
+            executablePath = $ExecutablePath
+            commandLine = $CommandLine
+            repoRoot = $repoRoot
+        }
+    }
+
+    It 'captures backend ownership inputs before the closure runs' {
+        $escapedRepoRoot = $repoRoot.Replace("'", "''")
+        $proc = Start-Process `
+            -FilePath 'powershell.exe' `
+            -ArgumentList @(
+                '-NoProfile',
+                '-Command',
+                "Set-Location -LiteralPath '$escapedRepoRoot'; Start-Sleep -Seconds 8"
+            ) `
+            -WindowStyle Hidden `
+            -PassThru
+        try {
+            Start-Sleep -Milliseconds 300
+            $snapshot = Read-CurrentProcessIdentity -ProcessId $proc.Id
+            $identity = [pscustomobject]@{
+                pid = $snapshot.pid
+                processStartTimeUtcTicks = $snapshot.processStartTimeUtcTicks
+                executablePath = $snapshot.executablePath
+                commandLine = $snapshot.commandLine
+                repoRoot = $repoRoot
+            }
+
+            $ownerCheck = Get-StateOwnedBackendCheck -State ([pscustomobject]@{
+                backend = $identity
+            })
+
+            $script:RepoRoot = $null
+
+            (& $ownerCheck) | Should Be $true
+        }
+        finally {
+            $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'fails Stop closed when persisted session differs from detected listener owner' {
+        $tmpRoot = New-TestStackRoot
+        try {
+            $state = [ordered]@{
+                sessionId = 'session-a'
+                status = 'running'
+                webMode = 'Bundled'
+                updatedAt = [DateTime]::UtcNow.ToString('o')
+                backend = New-TestRecord -Role 'backend' -Pid 101 -Ticks 1001 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-a"
+                web = $null
+                runtime = [ordered]@{ status = 'managed-by-backend' }
+            }
+            Save-LauncherState -State $state
+
+            function Get-NetTCPConnection {
+                param([string]$State, [int[]]$LocalPort, $ErrorAction)
+                if ($LocalPort -contains 5302) {
+                    return [pscustomobject]@{ OwningProcess = 202 }
+                }
+                return $null
+            }
+            function Get-ProcessIdentitySnapshot {
+                param([int]$ProcessId)
+                switch ($ProcessId) {
+                    101 { return $null }
+                    202 { return [pscustomobject](New-TestRecord -Role 'backend' -Pid 202 -Ticks 2002 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-b") }
+                    default { return $null }
+                }
+            }
+            function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) [pscustomobject]@{ ParentProcessId = 0 } }
+            Mock Request-GracefulBackendShutdown { }
+            Mock Stop-RepoOwnedProcess { $true }
+
+            { Stop-BackendStack -RequestedWebMode 'Bundled' } | Should Throw 'STOP_OWNERSHIP_UNKNOWN'
+            Assert-MockCalled Request-GracefulBackendShutdown -Times 0 -Exactly
+            Assert-MockCalled Stop-RepoOwnedProcess -Times 0 -Exactly
+            Test-Path -LiteralPath $script:StatePath | Should Be $true
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'prevents Restart from starting a new stack after Stop ownership failure' {
+        $tmpRoot = New-TestStackRoot
+        try {
+            $state = [ordered]@{
+                sessionId = 'session-a'
+                status = 'running'
+                webMode = 'Bundled'
+                updatedAt = [DateTime]::UtcNow.ToString('o')
+                backend = New-TestRecord -Role 'backend' -Pid 101 -Ticks 1001 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-a"
+                web = $null
+                runtime = [ordered]@{ status = 'managed-by-backend' }
+            }
+            Save-LauncherState -State $state
+
+            $script:Action = 'Restart'
+            $script:WebMode = 'Bundled'
+
+            function Get-NetTCPConnection {
+                param([string]$State, [int[]]$LocalPort, $ErrorAction)
+                if ($LocalPort -contains 5302) {
+                    return [pscustomobject]@{ OwningProcess = 202 }
+                }
+                return $null
+            }
+            function Get-ProcessIdentitySnapshot {
+                param([int]$ProcessId)
+                switch ($ProcessId) {
+                    101 { return $null }
+                    202 { return [pscustomobject](New-TestRecord -Role 'backend' -Pid 202 -Ticks 2002 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-b") }
+                    default { return $null }
+                }
+            }
+            function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) [pscustomobject]@{ ParentProcessId = 0 } }
+            Mock Request-GracefulBackendShutdown { }
+            Mock Stop-RepoOwnedProcess { $true }
+            Mock Start-ManagedProcess { throw 'must not start after stop ownership failure' }
+
+            { Invoke-StartLocal | Out-Null } | Should Throw 'STOP_OWNERSHIP_UNKNOWN'
+            Assert-MockCalled Start-ManagedProcess -Times 0 -Exactly
+            ((Read-JsonFile -Path $script:StatePath).sessionId) | Should Be 'session-a'
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'keeps persisted backend identity and reports ownership unknown when listener belongs to another session' {
+        $tmpRoot = New-TestStackRoot
+        try {
+            $state = [ordered]@{
+                sessionId = 'session-a'
+                status = 'running'
+                webMode = 'Bundled'
+                updatedAt = [DateTime]::UtcNow.ToString('o')
+                backend = New-TestRecord -Role 'backend' -Pid 101 -Ticks 1001 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-a"
+                web = $null
+                runtime = [ordered]@{ status = 'managed-by-backend' }
+            }
+            Save-LauncherState -State $state
+
+            function Get-NetTCPConnection {
+                param([string]$State, [int[]]$LocalPort, $ErrorAction)
+                if ($LocalPort -contains 5302) {
+                    return [pscustomobject]@{ OwningProcess = 202 }
+                }
+                return $null
+            }
+            function Get-ProcessIdentitySnapshot {
+                param([int]$ProcessId)
+                switch ($ProcessId) {
+                    101 { return $null }
+                    202 { return [pscustomobject](New-TestRecord -Role 'backend' -Pid 202 -Ticks 2002 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-b") }
+                    default { return $null }
+                }
+            }
+            function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) [pscustomobject]@{ ParentProcessId = 0 } }
+            function Invoke-WebRequest { throw 'health unavailable' }
+
+            $status = Get-StackStatus -RequestedWebMode 'Bundled'
+
+            $status.sessionId | Should Be 'session-a'
+            $status.status | Should Be 'degraded'
+            $status.ownership | Should Be 'unknown'
+            $status.backend.pid | Should Be 101
+            $status.backend.ownership | Should Be 'unknown'
+            $status.detectedComponents.backend.pid | Should Be 202
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'fails repeated Bundled Start closed when backend is only process-up' {
+        $tmpRoot = New-TestStackRoot
+        try {
+            $state = [ordered]@{
+                sessionId = 'session-process-up'
+                status = 'running'
+                webMode = 'Bundled'
+                updatedAt = [DateTime]::UtcNow.ToString('o')
+                backend = New-TestRecord -Role 'backend' -Pid 101 -Ticks 1001 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-process-up"
+                web = $null
+                runtime = [ordered]@{ status = 'managed-by-backend' }
+            }
+            Save-LauncherState -State $state
+
+            function Get-NetTCPConnection { param([string]$State, [int[]]$LocalPort, $ErrorAction) $null }
+            function Get-ProcessIdentitySnapshot {
+                param([int]$ProcessId)
+                if ($ProcessId -eq 101) {
+                    return [pscustomobject](New-TestRecord -Role 'backend' -Pid 101 -Ticks 1001 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-process-up")
+                }
+                return $null
+            }
+            function Invoke-WebRequest { throw 'health failed' }
+            Mock Start-ManagedProcess { throw 'must not spawn second backend' }
+
+            { Start-BackendStack -WebModeValue 'Bundled' } | Should Throw 'STACK_NOT_HEALTHY'
+            Assert-MockCalled Start-ManagedProcess -Times 0 -Exactly
+            ((Read-JsonFile -Path $script:StatePath).sessionId) | Should Be 'session-process-up'
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'fails repeated Dev Start closed when web component is missing' {
+        $tmpRoot = New-TestStackRoot
+        try {
+            $state = [ordered]@{
+                sessionId = 'session-dev-missing-web'
+                status = 'running'
+                webMode = 'Dev'
+                updatedAt = [DateTime]::UtcNow.ToString('o')
+                backend = New-TestRecord -Role 'backend' -Pid 101 -Ticks 1001 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-dev-missing-web"
+                web = New-TestRecord -Role 'web' -Pid 303 -Ticks 3003 -ExecutablePath 'C:\Windows\System32\cmd.exe' -CommandLine ('cmd.exe /d /s /c call "{0}\web\node_modules\vite\bin\vite.js"' -f $repoRoot)
+                runtime = [ordered]@{ status = 'managed-by-backend' }
+            }
+            Save-LauncherState -State $state
+
+            function Get-NetTCPConnection { param([string]$State, [int[]]$LocalPort, $ErrorAction) $null }
+            function Get-ProcessIdentitySnapshot {
+                param([int]$ProcessId)
+                if ($ProcessId -eq 101) {
+                    return [pscustomobject](New-TestRecord -Role 'backend' -Pid 101 -Ticks 1001 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-dev-missing-web")
+                }
+                return $null
+            }
+            function Invoke-WebRequest {
+                [pscustomobject]@{
+                    StatusCode = 200
+                    Content = '{"code":0,"msg":"ok"}'
+                }
+            }
+            Mock Start-ManagedProcess { throw 'must not auto-start missing web' }
+
+            { Start-BackendStack -WebModeValue 'Dev' } | Should Throw 'STACK_NOT_HEALTHY'
+            Assert-MockCalled Start-ManagedProcess -Times 0 -Exactly
+            ((Read-JsonFile -Path $script:StatePath).sessionId) | Should Be 'session-dev-missing-web'
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'reports manual repo Vite without state as degraded ownership unknown and does not create state' {
+        $tmpRoot = New-TestStackRoot
+        try {
+            function Get-NetTCPConnection {
+                param([string]$State, [int[]]$LocalPort, $ErrorAction)
+                if ($LocalPort -contains 3000) {
+                    return [pscustomobject]@{ OwningProcess = 222 }
+                }
+                return $null
+            }
+            function Get-ProcessIdentitySnapshot {
+                param([int]$ProcessId)
+                if ($ProcessId -eq 222) {
+                    return [pscustomobject](New-TestRecord -Role 'web' -Pid 222 -Ticks 2222 -ExecutablePath 'C:\Windows\System32\cmd.exe' -CommandLine ('cmd.exe /d /s /c call "{0}\web\node_modules\vite\bin\vite.js" --port 3000' -f $repoRoot))
+                }
+                return $null
+            }
+            function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) [pscustomobject]@{ ParentProcessId = 0 } }
+
+            $status = Get-StackStatus -RequestedWebMode 'Dev'
+
+            $status.status | Should Be 'degraded'
+            $status.ownership | Should Be 'unknown'
+            $status.web.status | Should Be 'down'
+            $status.detectedComponents.web.pid | Should Be 222
+            Test-Path -LiteralPath $script:StatePath | Should Be $false
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'fails Stop closed for manual repo Vite without state' {
+        $tmpRoot = New-TestStackRoot
+        try {
+            function Get-NetTCPConnection {
+                param([string]$State, [int[]]$LocalPort, $ErrorAction)
+                if ($LocalPort -contains 3000) {
+                    return [pscustomobject]@{ OwningProcess = 222 }
+                }
+                return $null
+            }
+            function Get-ProcessIdentitySnapshot {
+                param([int]$ProcessId)
+                if ($ProcessId -eq 222) {
+                    return [pscustomobject](New-TestRecord -Role 'web' -Pid 222 -Ticks 2222 -ExecutablePath 'C:\Windows\System32\cmd.exe' -CommandLine ('cmd.exe /d /s /c call "{0}\web\node_modules\vite\bin\vite.js" --port 3000' -f $repoRoot))
+                }
+                return $null
+            }
+            function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) [pscustomobject]@{ ParentProcessId = 0 } }
+            Mock Stop-RepoOwnedProcess { $true }
+
+            { Stop-BackendStack -RequestedWebMode 'Dev' } | Should Throw 'STOP_OWNERSHIP_UNKNOWN'
+            Assert-MockCalled Stop-RepoOwnedProcess -Times 0 -Exactly
+            Test-Path -LiteralPath $script:StatePath | Should Be $false
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'reports manual repo backend without state as degraded ownership unknown and does not create state' {
+        $tmpRoot = New-TestStackRoot
+        try {
+            function Get-NetTCPConnection {
+                param([string]$State, [int[]]$LocalPort, $ErrorAction)
+                if ($LocalPort -contains 5302) {
+                    return [pscustomobject]@{ OwningProcess = 333 }
+                }
+                return $null
+            }
+            function Get-ProcessIdentitySnapshot {
+                param([int]$ProcessId)
+                if ($ProcessId -eq 333) {
+                    return [pscustomobject](New-TestRecord -Role 'backend' -Pid 333 -Ticks 3333 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py")
+                }
+                return $null
+            }
+            function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) [pscustomobject]@{ ParentProcessId = 0 } }
+            function Invoke-WebRequest {
+                [pscustomobject]@{
+                    StatusCode = 200
+                    Content = '{"code":0,"msg":"ok"}'
+                }
+            }
+
+            $status = Get-StackStatus -RequestedWebMode 'Bundled'
+
+            $status.status | Should Be 'degraded'
+            $status.ownership | Should Be 'unknown'
+            $status.backend.status | Should Be 'down'
+            $status.detectedComponents.backend.pid | Should Be 333
+            Test-Path -LiteralPath $script:StatePath | Should Be $false
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'allows forced kill only after exact identity verification and graceful timeout' {
+        $tmpRoot = New-TestStackRoot
+        try {
+            $state = [ordered]@{
+                sessionId = 'session-owned'
+                status = 'running'
+                webMode = 'Bundled'
+                updatedAt = [DateTime]::UtcNow.ToString('o')
+                backend = New-TestRecord -Role 'backend' -Pid 101 -Ticks 1001 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-owned"
+                web = $null
+                runtime = [ordered]@{ status = 'managed-by-backend' }
+            }
+            Save-LauncherState -State $state
+
+            function Get-NetTCPConnection { param([string]$State, [int[]]$LocalPort, $ErrorAction) $null }
+            function Get-ProcessIdentitySnapshot {
+                param([int]$ProcessId)
+                if ($ProcessId -eq 101) {
+                    return [pscustomobject](New-TestRecord -Role 'backend' -Pid 101 -Ticks 1001 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-owned")
+                }
+                return $null
+            }
+            $script:stopFlowCalls = New-Object System.Collections.Generic.List[string]
+            function Request-GracefulBackendShutdown {
+                $script:stopFlowCalls.Add('graceful') | Out-Null
+            }
+            function Wait-ForProcessExit {
+                $script:stopFlowCalls.Add('wait') | Out-Null
+                return $false
+            }
+            function Stop-RepoOwnedProcess {
+                param($Identity)
+                $script:stopFlowCalls.Add(("kill:{0}" -f [int]$Identity.pid)) | Out-Null
+                return $true
+            }
+            function Invoke-WebRequest {
+                [pscustomobject]@{
+                    StatusCode = 200
+                    Content = '{"code":0,"msg":"ok"}'
+                }
+            }
+
+            Stop-BackendStack -RequestedWebMode 'Bundled' | Out-Null
+
+            $script:stopFlowCalls[0] | Should Be 'graceful'
+            $script:stopFlowCalls[1] | Should Be 'wait'
+            $script:stopFlowCalls[2] | Should Be 'kill:101'
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'treats PID reuse as ownership unknown and never shuts it down' {
+        $tmpRoot = New-TestStackRoot
+        try {
+            $state = [ordered]@{
+                sessionId = 'session-a'
+                status = 'running'
+                webMode = 'Bundled'
+                updatedAt = [DateTime]::UtcNow.ToString('o')
+                backend = New-TestRecord -Role 'backend' -Pid 101 -Ticks 1001 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-a"
+                web = $null
+                runtime = [ordered]@{ status = 'managed-by-backend' }
+            }
+            Save-LauncherState -State $state
+
+            function Get-NetTCPConnection {
+                param([string]$State, [int[]]$LocalPort, $ErrorAction)
+                if ($LocalPort -contains 5302) {
+                    return [pscustomobject]@{ OwningProcess = 101 }
+                }
+                return $null
+            }
+            function Get-ProcessIdentitySnapshot {
+                param([int]$ProcessId)
+                if ($ProcessId -eq 101) {
+                    return [pscustomobject](New-TestRecord -Role 'backend' -Pid 101 -Ticks 9999 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py --session session-b")
+                }
+                return $null
+            }
+            function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) [pscustomobject]@{ ParentProcessId = 0 } }
+            Mock Request-GracefulBackendShutdown { }
+            Mock Stop-RepoOwnedProcess { $true }
+
+            { Stop-BackendStack -RequestedWebMode 'Bundled' } | Should Throw 'STOP_OWNERSHIP_UNKNOWN'
+            Assert-MockCalled Request-GracefulBackendShutdown -Times 0 -Exactly
+            Assert-MockCalled Stop-RepoOwnedProcess -Times 0 -Exactly
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'Status remains read-only when unmanaged components are observed' {
+        $tmpRoot = New-TestStackRoot
+        try {
+            function Get-NetTCPConnection {
+                param([string]$State, [int[]]$LocalPort, $ErrorAction)
+                if ($LocalPort -contains 5302) {
+                    return [pscustomobject]@{ OwningProcess = 333 }
+                }
+                return $null
+            }
+            function Get-ProcessIdentitySnapshot {
+                param([int]$ProcessId)
+                if ($ProcessId -eq 333) {
+                    return [pscustomobject](New-TestRecord -Role 'backend' -Pid 333 -Ticks 3333 -ExecutablePath 'C:\Python\python.exe' -CommandLine "C:\Python\python.exe $repoRoot\main.py")
+                }
+                return $null
+            }
+            function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) [pscustomobject]@{ ParentProcessId = 0 } }
+            function Invoke-WebRequest {
+                [pscustomobject]@{
+                    StatusCode = 200
+                    Content = '{"code":0,"msg":"ok"}'
+                }
+            }
+            Mock Remove-LauncherState { throw 'status must be read-only' }
+            Mock Remove-StaleShutdownRequest { throw 'status must be read-only' }
+            Mock Stop-RepoOwnedProcess { throw 'status must be read-only' }
+
+            $status = Get-StackStatus -RequestedWebMode 'Bundled'
+
+            $status.status | Should Be 'degraded'
+            Test-Path -LiteralPath $script:StatePath | Should Be $false
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Describe 'start-local stop failure guard' {
     It 'stop failure keeps state and returns non-stopped status' {
         . $scriptPath
@@ -585,24 +1110,58 @@ Describe 'start-local stop failure guard' {
             runtime = [pscustomobject]@{ status = 'managed-by-backend' }
         }
 
-        Mock Read-JsonFile { $state }
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('start-local-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tmpRoot | Out-Null
         Mock Wait-ForProcessExit { $false }
-        Mock Stop-RepoOwnedProcess { $false }
-        Mock Request-GracefulBackendShutdown { }
-        Mock Remove-LauncherState { throw 'state must be preserved' }
-
-        $didThrow = $false
-        $message = ''
         try {
-            Stop-BackendStack -RequestedWebMode 'Bundled' | Out-Null
+            $script:StackRoot = $tmpRoot
+            $script:ControlDir = Join-Path $script:StackRoot 'control'
+            $script:LogsDir = Join-Path $script:StackRoot 'logs'
+            $script:StatePath = Join-Path $script:StackRoot 'state.json'
+            $script:ShutdownRequestPath = Join-Path $script:ControlDir 'shutdown.request.json'
+
+            Save-LauncherState -State $state
+
+        Mock Get-NetTCPConnection { param([string]$State, [int[]]$LocalPort, $ErrorAction) $null }
+            Mock Get-ProcessIdentitySnapshot {
+                param([int]$ProcessId)
+                if ($ProcessId -eq 999) {
+                    return [pscustomobject]@{
+                        pid = 999
+                        processStartTimeUtcTicks = 123
+                        executablePath = 'C:\Python\python.exe'
+                        commandLine = 'python main.py'
+                        repoRoot = $repoRoot
+                    }
+                }
+                return $null
+            }
+            Mock Invoke-WebRequest {
+                [pscustomobject]@{
+                    StatusCode = 200
+                    Content = '{"code":0,"msg":"ok"}'
+                }
+            }
+            Mock Stop-RepoOwnedProcess { $false }
+            Mock Request-GracefulBackendShutdown { }
+            Mock Remove-LauncherState { throw 'state must be preserved' }
+
+            $didThrow = $false
+            $message = ''
+            try {
+                Stop-BackendStack -RequestedWebMode 'Bundled' | Out-Null
+            }
+            catch {
+                $didThrow = $true
+                $message = $_.Exception.Message
+            }
+            Assert-MockCalled Stop-RepoOwnedProcess -Times 1 -Exactly
+            $didThrow | Should Be $true
+            $message | Should Match 'failed'
+            Assert-MockCalled Remove-LauncherState -Times 0 -Exactly
         }
-        catch {
-            $didThrow = $true
-            $message = $_.Exception.Message
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
-        Assert-MockCalled Stop-RepoOwnedProcess -Times 1 -Exactly
-        $didThrow | Should Be $true
-        $message | Should Match 'failed'
-        Assert-MockCalled Remove-LauncherState -Times 0 -Exactly
     }
 }
