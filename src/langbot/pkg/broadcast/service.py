@@ -41,6 +41,7 @@ from .errors import (
     BROADCAST_DRAFT_SCOPE_MISMATCH,
     BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN,
     BROADCAST_DRAFT_STATUS_INVALID,
+    BATCH_VALIDATION_FAILED,
     BROADCAST_EXECUTION_BATCH_NOT_FOUND,
     BROADCAST_EXECUTION_BATCH_STATUS_INVALID,
     BROADCAST_EXECUTION_CONFIRMATION_EXPIRED,
@@ -67,6 +68,7 @@ from .errors import (
     BROADCAST_IMPORT_READY_DRAFT_EXISTS,
     BROADCAST_IMPORT_REMATCH_FIELDS_MISSING,
     BROADCAST_IMPORT_VARIABLE_PROFILE_REQUIRED,
+    DUPLICATE_TARGET_CONVERSATION,
     BROADCAST_GROUP_NAME_DUPLICATE,
     BROADCAST_GROUP_NAME_NOT_FOUND,
     BROADCAST_GROUP_RULE_DUPLICATE,
@@ -77,6 +79,8 @@ from .errors import (
     BROADCAST_TEMPLATE_NAME_DUPLICATE,
     BROADCAST_TEMPLATE_NOT_FOUND,
     BROADCAST_VARIABLE_PROFILE_INVALID,
+    INVALID_SEND_STATUS,
+    MIXED_SEND_STATUS,
     TEMPLATE_RENDER_INPUT_INVALID,
     TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE,
     BroadcastError,
@@ -866,6 +870,8 @@ class BroadcastService:
                     'render_variables': draft['render_variables'],
                     'draft_text': draft['draft_text'],
                     'status': draft['status'],
+                    'send_status': 'pending' if draft['status'] != 'invalid' else None,
+                    'sent_at': None,
                     'error_message': draft['error_message'],
                 }
             )
@@ -937,11 +943,29 @@ class BroadcastService:
 
     async def list_drafts(self, scope: dict[str, Any], filters: dict[str, Any]) -> list[dict[str, Any]]:
         validated_scope = await self.validate_scope(scope)
+        status_filter = str(filters.get('status') or '').strip() or None
+        legacy_status_filter = None
+        send_status_filter = None
+        exclude_invalid = False
+        if status_filter in {None, 'all'}:
+            exclude_invalid = True
+        elif status_filter in {'pending', 'pending_review', 'ready'}:
+            send_status_filter = 'pending'
+            exclude_invalid = True
+        elif status_filter == 'sent':
+            send_status_filter = 'sent'
+            exclude_invalid = True
+        elif status_filter == 'invalid':
+            return []
+        else:
+            legacy_status_filter = status_filter
         rows = await self.repository.list_drafts(
             bot_uuid=validated_scope['bot_uuid'],
             connector_id=validated_scope['connector_id'],
             import_batch_id=filters.get('import_batch_id'),
-            status=filters.get('status'),
+            status=legacy_status_filter,
+            send_status=send_status_filter,
+            exclude_invalid=exclude_invalid,
             keyword=filters.get('keyword'),
         )
         return [await self._serialize_draft(row) for row in rows]
@@ -1219,6 +1243,12 @@ class BroadcastService:
         validated_scope = await self.validate_scope(scope)
         draft_ids = [int(draft_id) for draft_id in payload.get('draft_ids') or []]
         target_status = str(payload.get('status') or '').strip()
+        if target_status in {'pending', 'sent'}:
+            return await self._update_draft_send_statuses(
+                validated_scope,
+                draft_ids,
+                target_status,
+            )
         if target_status not in {'ready', 'pending_review'}:
             raise BroadcastError(BROADCAST_DRAFT_STATUS_INVALID, '鑽夌鐘舵€佹棤鏁堬紝璇峰埛鏂板悗閲嶈瘯')
 
@@ -1277,28 +1307,70 @@ class BroadcastService:
         if raw_draft_ids is None and payload.get('draft_id') is not None:
             raw_draft_ids = [payload.get('draft_id')]
         draft_ids = [int(draft_id) for draft_id in list(raw_draft_ids or [])]
-        draft_ids = list(dict.fromkeys(draft_ids))
         if not draft_ids:
             raise BroadcastError(BROADCAST_EXECUTION_DRAFT_LIMIT_EXCEEDED, '至少需要选择一条草稿')
         if mode == 'send' and len(draft_ids) != 1:
             raise BroadcastError(BROADCAST_EXECUTION_DRAFT_LIMIT_EXCEEDED, '真实发送当前仅允许单条任务')
 
         operator = str(payload.get('operator') or '').strip() or 'unknown'
+        allow_sent_rewrite = (
+            mode == 'paste_only'
+            and bool(payload.get('allow_sent_rewrite'))
+            and len(draft_ids) == 1
+        )
         if mode == 'send':
             self._assert_send_feature_enabled(validated_scope)
 
-        drafts = []
-        for draft_id in draft_ids:
-            draft = await self.repository.get_draft(draft_id, **validated_scope)
-            if draft is None:
-                raise BroadcastError(
-                    BROADCAST_EXECUTION_SCOPE_MISMATCH,
-                    '所选草稿不属于当前 bot / connector 作用域',
-                )
-            await self._assert_draft_ready_for_execution(draft, validated_scope)
-            drafts.append(draft)
-
         async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            drafts = []
+            for draft_id in draft_ids:
+                draft = await self.repository.get_draft(draft_id, conn=conn, **validated_scope)
+                if draft is None:
+                    raise BroadcastError(
+                        BROADCAST_EXECUTION_SCOPE_MISMATCH,
+                        '所选草稿不属于当前 bot / connector 作用域',
+                    )
+                drafts.append(draft)
+
+            if mode == 'paste_only':
+                send_statuses = {
+                    self._normalize_draft_send_status(draft)
+                    for draft in drafts
+                    if str(draft.status) != 'invalid'
+                }
+                if len(send_statuses) > 1:
+                    raise BroadcastError(
+                        MIXED_SEND_STATUS,
+                        '批量写入只允许选择同一业务状态的草稿',
+                    )
+                only_send_status = next(iter(send_statuses), 'pending')
+                if only_send_status == 'sent' and not allow_sent_rewrite:
+                    raise BroadcastError(
+                        INVALID_SEND_STATUS,
+                        '已发送草稿不允许参与批量写入，请先恢复为待发送',
+                    )
+
+            for draft in drafts:
+                await self._assert_draft_ready_for_execution(
+                    draft,
+                    validated_scope,
+                    allow_sent_rewrite=allow_sent_rewrite,
+                )
+
+            self._assert_unique_target_conversations(drafts)
+
+            draft_attachments_by_id: dict[int, list[dict[str, Any]]] = {}
+            for draft in drafts:
+                draft_attachments = await self.repository.list_draft_attachments(
+                    int(draft.id),
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                    conn=conn,
+                )
+                for attachment in draft_attachments:
+                    self._resolve_attachment_relative_path(attachment)
+                draft_attachments_by_id[int(draft.id)] = draft_attachments
+
             batch_id = await self.repository.create_execution_batch(
                 conn,
                 {
@@ -1356,12 +1428,7 @@ class BroadcastService:
                     updates={'idempotency_key': f'broadcast:{task_id}:1'},
                     conn=conn,
                 )
-                draft_attachments = await self.repository.list_draft_attachments(
-                    int(draft.id),
-                    bot_uuid=validated_scope['bot_uuid'],
-                    connector_id=validated_scope['connector_id'],
-                    conn=conn,
-                )
+                draft_attachments = draft_attachments_by_id.get(int(draft.id), [])
                 for attachment in draft_attachments:
                     await self.repository.create_execution_task_attachment(
                         conn,
@@ -2503,6 +2570,8 @@ class BroadcastService:
 
     async def _serialize_draft(self, row) -> dict[str, Any]:
         data = self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastDraft, row)
+        data['send_status'] = self._normalize_draft_send_status(row)
+        data['legacy_status'] = data['status']
         batch = await self.repository.get_import_batch(
             int(row.import_batch_id),
             bot_uuid=str(row.bot_uuid),
@@ -2518,9 +2587,18 @@ class BroadcastService:
         data['attachments'] = [self._serialize_attachment_bundle(item) for item in attachments]
         return data
 
-    async def _assert_draft_ready_for_execution(self, draft, scope: dict[str, str]) -> None:
-        if str(draft.status) != 'ready':
-            raise BroadcastError(BROADCAST_EXECUTION_DRAFT_NOT_READY, '浠?ready 鑽夌鍏佽鎵ц')
+    async def _assert_draft_ready_for_execution(
+        self,
+        draft,
+        scope: dict[str, str],
+        *,
+        allow_sent_rewrite: bool = False,
+    ) -> None:
+        if str(draft.status) == 'invalid':
+            raise BroadcastError(BROADCAST_EXECUTION_DRAFT_NOT_READY, '无效草稿不允许执行')
+        send_status = self._normalize_draft_send_status(draft)
+        if send_status == 'sent' and not allow_sent_rewrite:
+            raise BroadcastError(INVALID_SEND_STATUS, '已发送草稿不允许参与批量写入，请先恢复为待发送')
         if not str(draft.target_conversation_name or '').strip():
             raise BroadcastError(BROADCAST_EXECUTION_DRAFT_NOT_READY, '鐩爣缇よ亰涓嶈兘涓虹┖')
         if not str(draft.draft_text or '').strip():
@@ -2532,6 +2610,87 @@ class BroadcastService:
             raise BroadcastError(BROADCAST_EXECUTION_DRAFT_STALE, '当前草稿已过期，请重新生成草稿后再执行。')
         if bool(getattr(draft, 'attachments_stale', False)):
             raise BroadcastError(BROADCAST_EXECUTION_DRAFT_STALE, '客户分组附件已变更，请重新审核草稿附件后再执行。')
+
+    async def _update_draft_send_statuses(
+        self,
+        scope: dict[str, str],
+        draft_ids: list[int],
+        target_status: str,
+    ) -> dict[str, Any]:
+        unique_ids = list(dict.fromkeys(int(draft_id) for draft_id in draft_ids))
+        if not unique_ids:
+            raise BroadcastError(BROADCAST_DRAFT_SCOPE_MISMATCH, '请选择至少一条草稿')
+
+        drafts = [await self.repository.get_draft(draft_id, **scope) for draft_id in unique_ids]
+        if any(draft is None for draft in drafts):
+            raise BroadcastError(
+                BROADCAST_DRAFT_SCOPE_MISMATCH,
+                '鎵€閫夎崏绋夸腑鍖呭惈鏃犳潈鎿嶄綔鐨勬暟鎹紝璇峰埛鏂板悗閲嶈瘯',
+            )
+
+        if any(str(draft.status) == 'invalid' for draft in drafts):
+            raise BroadcastError(INVALID_SEND_STATUS, '无效草稿不支持修改发送状态')
+
+        current_statuses = {
+            self._normalize_draft_send_status(draft)
+            for draft in drafts
+        }
+        if len(current_statuses) != 1:
+            raise BroadcastError(
+                MIXED_SEND_STATUS,
+                '批量状态操作只允许选择同一业务状态的草稿',
+            )
+
+        current_status = next(iter(current_statuses))
+        expected_current_status = 'pending' if target_status == 'sent' else 'sent'
+        if current_status != expected_current_status:
+            raise BroadcastError(
+                INVALID_SEND_STATUS,
+                '所选草稿当前状态不允许执行该操作',
+            )
+
+        sent_at = datetime.now(timezone.utc).replace(tzinfo=None) if target_status == 'sent' else None
+        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            updated_count = await self.repository.update_draft_send_statuses(
+                draft_ids=unique_ids,
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
+                current_send_status=current_status,
+                target_send_status=target_status,
+                sent_at=sent_at,
+                conn=conn,
+            )
+            if updated_count != len(unique_ids):
+                raise BroadcastError(
+                    BATCH_VALIDATION_FAILED,
+                    '草稿状态在提交期间已发生变化，请刷新后重试',
+                )
+        return {'updated_count': updated_count}
+
+    def _normalize_draft_send_status(self, draft) -> str:
+        send_status = str(getattr(draft, 'send_status', '') or '').strip()
+        if send_status == 'sent':
+            return 'sent'
+        return 'pending'
+
+    def _assert_unique_target_conversations(self, drafts: list[Any]) -> None:
+        seen: dict[str, dict[str, Any]] = {}
+        duplicates: list[str] = []
+        for draft in drafts:
+            target = str(getattr(draft, 'target_conversation_name', '') or '').strip()
+            if not target:
+                continue
+            key = target
+            if key in seen:
+                duplicates.append(f'{key} (drafts: {seen[key]["id"]}, {int(draft.id)})')
+                continue
+            seen[key] = {'id': int(draft.id)}
+        if duplicates:
+            raise BroadcastError(
+                DUPLICATE_TARGET_CONVERSATION,
+                '同一批次内不允许存在重复目标群聊',
+                duplicates,
+            )
 
     async def _transition_execution_batch_to_queued(
         self,

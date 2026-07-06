@@ -312,7 +312,11 @@ def _scope(bot_uuid: str = 'bot-1', connector_id: str = 'wxwork-local') -> dict[
     }
 
 
-async def _prepare_ready_draft_for_execution(service) -> dict[str, object]:
+async def _prepare_ready_drafts_for_execution(
+    service,
+    draft_specs: list[tuple[str, str]] | None = None,
+) -> dict[str, object]:
+    specs = draft_specs or [('Acme', 'Acme Group')]
     await service.save_variable_profile(
         _scope(),
         {
@@ -327,22 +331,27 @@ async def _prepare_ready_draft_for_execution(service) -> dict[str, object]:
             ],
         },
     )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Group',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
+    for index, (source_value, target_conversation_name) in enumerate(specs, start=1):
+        await service.create_group_rule(
+            _scope(),
+            {
+                'source_value': source_value,
+                'match_type': 'exact',
+                'match_expression': source_value,
+                'target_conversation_name': target_conversation_name,
+                'priority': index * 10,
+                'enabled': True,
+            },
+        )
     created = await service.upload_import(
         _scope(),
         {
             'filename': 'customers.csv',
-            'body': '客户名称\nAcme\n'.encode('utf-8'),
+            'body': (
+                '客户名称\n'
+                + '\n'.join(source_value for source_value, _ in specs)
+                + '\n'
+            ).encode('utf-8'),
         },
     )
     template = await service.create_template(
@@ -354,12 +363,22 @@ async def _prepare_ready_draft_for_execution(service) -> dict[str, object]:
         },
     )
     await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
-    draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
-    await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
+    generated_drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
+    draft_ids = [
+        next(item['id'] for item in generated_drafts if item['group_value'] == source_value)
+        for source_value, _ in specs
+    ]
+    await service.update_draft_statuses(_scope(), {'draft_ids': draft_ids, 'status': 'ready'})
+    drafts = [await service.get_draft_detail(draft_id, _scope()) for draft_id in draft_ids]
     return {
         'import_id': created['id'],
-        'draft': await service.get_draft_detail(draft['id'], _scope()),
+        'draft': drafts[0],
+        'drafts': drafts,
     }
+
+
+async def _prepare_ready_draft_for_execution(service) -> dict[str, object]:
+    return await _prepare_ready_drafts_for_execution(service)
 
 
 async def test_render_template_requires_exactly_one_of_template_id_or_content(service_fixture):
@@ -1701,9 +1720,17 @@ async def test_list_and_get_drafts_are_scoped_and_filterable(service_fixture):
     await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
 
     drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id'], 'status': 'invalid'})
-    assert [draft['group_value'] for draft in drafts] == ['Northwind']
+    assert drafts == []
 
-    detail = await service.get_draft_detail(drafts[0]['id'], _scope())
+    invalid_row = (
+        await service.repository.list_drafts(
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            import_batch_id=created['id'],
+            status='invalid',
+        )
+    )[0]
+    detail = await service.get_draft_detail(int(invalid_row.id), _scope())
     assert detail['group_value'] == 'Northwind'
     assert detail['status'] == 'invalid'
 
@@ -1794,7 +1821,19 @@ async def test_edit_invalid_draft_keeps_invalid_and_cannot_be_confirmed(service_
         },
     )
     await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
-    draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
+    draft = await service.get_draft_detail(
+        int(
+            (
+                await service.repository.list_drafts(
+                    bot_uuid='bot-1',
+                    connector_id='wxwork-local',
+                    import_batch_id=created['id'],
+                    status='invalid',
+                )
+            )[0].id
+        ),
+        _scope(),
+    )
 
     updated = await service.update_draft_text(draft['id'], _scope(), {'draft_text': 'Manual preview'})
     assert updated['status'] == 'invalid'
@@ -1802,6 +1841,254 @@ async def test_edit_invalid_draft_keeps_invalid_and_cannot_be_confirmed(service_
     with pytest.raises(BroadcastError, match='BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN') as exc_info:
         await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
     assert exc_info.value.code == 'BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN'
+
+
+async def test_list_drafts_excludes_invalid_from_audit_send_filters(service_fixture):
+    service, persistence_mgr = service_fixture
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_name': 'Acme Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nAcme\nNorthwind\n'.encode('utf-8'),
+        },
+    )
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': 'Arrival Reminder',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
+    valid_draft = next(item for item in drafts if item['group_value'] == 'Acme')
+
+    pending_only = await service.list_drafts(
+        _scope(),
+        {'import_batch_id': created['id'], 'status': 'pending'},
+    )
+    pending_review_legacy = await service.list_drafts(
+        _scope(),
+        {'import_batch_id': created['id'], 'status': 'pending_review'},
+    )
+    ready_legacy = await service.list_drafts(
+        _scope(),
+        {'import_batch_id': created['id'], 'status': 'ready'},
+    )
+    invalid_legacy = await service.list_drafts(
+        _scope(),
+        {'import_batch_id': created['id'], 'status': 'invalid'},
+    )
+
+    assert [item['group_value'] for item in pending_only] == ['Acme']
+    assert [item['group_value'] for item in pending_review_legacy] == ['Acme']
+    assert [item['group_value'] for item in ready_legacy] == ['Acme']
+    assert invalid_legacy == []
+
+    async with persistence_mgr.engine.begin() as conn:
+        await conn.execute(
+            sqlalchemy.update(persistence_broadcast.BroadcastDraft)
+            .where(persistence_broadcast.BroadcastDraft.id == valid_draft['id'])
+            .values({'send_status': None})
+        )
+
+    pending_with_null_send_status = await service.list_drafts(
+        _scope(),
+        {'import_batch_id': created['id'], 'status': 'pending'},
+    )
+    assert [item['group_value'] for item in pending_with_null_send_status] == ['Acme']
+
+    await service.update_draft_statuses(
+        _scope(),
+        {'draft_ids': [valid_draft['id']], 'status': 'sent'},
+    )
+
+    all_visible = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
+    pending_after_mark_sent = await service.list_drafts(
+        _scope(),
+        {'import_batch_id': created['id'], 'status': 'pending'},
+    )
+    sent_only = await service.list_drafts(
+        _scope(),
+        {'import_batch_id': created['id'], 'status': 'sent'},
+    )
+
+    assert [item['group_value'] for item in all_visible] == ['Acme']
+    assert [item['send_status'] for item in all_visible] == ['sent']
+    assert pending_after_mark_sent == []
+    assert [item['group_value'] for item in sent_only] == ['Acme']
+
+
+async def test_update_draft_statuses_marks_sent_and_restores_pending_atomically(service_fixture):
+    service, _ = service_fixture
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+
+    marked = await service.update_draft_statuses(
+        _scope(),
+        {'draft_ids': [draft['id']], 'status': 'sent'},
+    )
+    assert marked['updated_count'] == 1
+
+    sent_detail = await service.get_draft_detail(draft['id'], _scope())
+    assert sent_detail['send_status'] == 'sent'
+    assert sent_detail['sent_at'] is not None
+
+    restored = await service.update_draft_statuses(
+        _scope(),
+        {'draft_ids': [draft['id']], 'status': 'pending'},
+    )
+    assert restored['updated_count'] == 1
+
+    pending_detail = await service.get_draft_detail(draft['id'], _scope())
+    assert pending_detail['send_status'] == 'pending'
+    assert pending_detail['sent_at'] is None
+
+    with pytest.raises(BroadcastError, match='INVALID_SEND_STATUS') as exc_info:
+        await service.update_draft_statuses(
+            _scope(),
+            {'draft_ids': [draft['id']], 'status': 'pending'},
+        )
+    assert exc_info.value.code == 'INVALID_SEND_STATUS'
+
+
+async def test_update_draft_statuses_rejects_mixed_send_status_selection(service_fixture):
+    service, _ = service_fixture
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    first_draft = prepared['draft']
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Northwind',
+            'match_type': 'exact',
+            'match_expression': 'Northwind',
+            'target_conversation_name': 'Northwind Group',
+            'priority': 20,
+            'enabled': True,
+        },
+    )
+    second_import = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers-2.csv',
+            'body': '客户名称\nNorthwind\n'.encode('utf-8'),
+        },
+    )
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': 'Arrival Reminder 2',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+    await service.generate_import_drafts(second_import['id'], _scope(), {'template_id': template['id']})
+    second_draft = (await service.list_drafts(_scope(), {'import_batch_id': second_import['id']}))[0]
+
+    await service.update_draft_statuses(
+        _scope(),
+        {'draft_ids': [first_draft['id']], 'status': 'sent'},
+    )
+
+    with pytest.raises(BroadcastError, match='MIXED_SEND_STATUS') as exc_info:
+        await service.update_draft_statuses(
+            _scope(),
+            {
+                'draft_ids': [first_draft['id'], second_draft['id']],
+                'status': 'sent',
+            },
+    )
+    assert exc_info.value.code == 'MIXED_SEND_STATUS'
+
+
+async def test_update_draft_statuses_rejects_concurrent_send_status_change_atomically(
+    service_fixture,
+    monkeypatch,
+):
+    service, persistence_mgr = service_fixture
+
+    prepared = await _prepare_ready_drafts_for_execution(
+        service,
+        [('Acme', 'Acme Group'), ('Northwind', 'Northwind Group')],
+    )
+    first_draft, second_draft = prepared['drafts']
+    original_update = service.repository.update_draft_send_statuses
+
+    async def concurrent_update(**kwargs):
+        async with persistence_mgr.engine.begin() as conn:
+            await original_update(
+                draft_ids=[second_draft['id']],
+                bot_uuid=_scope()['bot_uuid'],
+                connector_id=_scope()['connector_id'],
+                current_send_status='pending',
+                target_send_status='sent',
+                sent_at=datetime.datetime.utcnow(),
+                conn=conn,
+            )
+        return await original_update(**kwargs)
+
+    monkeypatch.setattr(service.repository, 'update_draft_send_statuses', concurrent_update)
+
+    with pytest.raises(BroadcastError, match='BATCH_VALIDATION_FAILED') as exc_info:
+        await service.update_draft_statuses(
+            _scope(),
+            {
+                'draft_ids': [first_draft['id'], second_draft['id']],
+                'status': 'sent',
+            },
+        )
+    assert exc_info.value.code == 'BATCH_VALIDATION_FAILED'
+
+    refreshed_first = await service.get_draft_detail(first_draft['id'], _scope())
+    refreshed_second = await service.get_draft_detail(second_draft['id'], _scope())
+    assert refreshed_first['send_status'] == 'pending'
+    assert refreshed_first['sent_at'] is None
+    assert refreshed_second['send_status'] == 'sent'
+    assert refreshed_second['sent_at'] is not None
 
 
 async def test_stale_draft_cannot_be_confirmed_and_cross_scope_ids_reject_whole_batch(service_fixture):
@@ -1903,7 +2190,7 @@ async def test_create_execution_batch_phase4_persists_single_ready_task_with_dig
     assert batch['tasks'][0]['idempotency_key'] == f"broadcast:{batch['tasks'][0]['id']}:1"
 
 
-async def test_create_execution_batch_rejects_non_ready_and_cross_scope_drafts(service_fixture):
+async def test_create_execution_batch_allows_pending_send_status_and_rejects_cross_scope_drafts(service_fixture):
     service, _ = service_fixture
 
     prepared = await _prepare_ready_draft_for_execution(service)
@@ -1912,15 +2199,15 @@ async def test_create_execution_batch_rejects_non_ready_and_cross_scope_drafts(s
     await service.update_draft_text(ready_draft['id'], _scope(), {'draft_text': 'Edited after ready'})
     pending_review_draft = await service.get_draft_detail(ready_draft['id'], _scope())
 
-    with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_DRAFT_NOT_READY'):
-        await service.create_execution_batch(
-            _scope(),
-            {
-                'draft_ids': [pending_review_draft['id']],
-                'mode': 'paste_only',
-                'operator': 'tester@example.com',
-            },
-        )
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [pending_review_draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    assert batch['total_tasks'] == 1
 
     with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_SCOPE_MISMATCH'):
         await service.create_execution_batch(
@@ -1931,6 +2218,168 @@ async def test_create_execution_batch_rejects_non_ready_and_cross_scope_drafts(s
                 'operator': 'tester@example.com',
             },
         )
+
+
+async def test_create_execution_batch_rejects_sent_in_batch_but_allows_single_sent_rewrite(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+
+    await service.update_draft_statuses(
+        _scope(),
+        {'draft_ids': [draft['id']], 'status': 'sent'},
+    )
+
+    with pytest.raises(BroadcastError, match='INVALID_SEND_STATUS') as exc_info:
+        await service.create_execution_batch(
+            _scope(),
+            {
+                'draft_ids': [draft['id']],
+                'mode': 'paste_only',
+                'operator': 'tester@example.com',
+            },
+        )
+    assert exc_info.value.code == 'INVALID_SEND_STATUS'
+
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+            'allow_sent_rewrite': True,
+        },
+    )
+    assert batch['total_tasks'] == 1
+    started = await service.start_execution_task(
+        batch['tasks'][0]['id'],
+        _scope(),
+        {'operator': 'tester@example.com'},
+    )
+    assert started['status'] == 'succeeded'
+    rewritten_detail = await service.get_draft_detail(draft['id'], _scope())
+    assert rewritten_detail['send_status'] == 'sent'
+
+
+async def test_create_execution_batch_rejects_multi_sent_and_mixed_send_status_atomically(service_fixture):
+    service, _ = service_fixture
+
+    prepared = await _prepare_ready_drafts_for_execution(
+        service,
+        [('Acme', 'Acme Group'), ('Northwind', 'Northwind Group')],
+    )
+    first_draft, second_draft = prepared['drafts']
+
+    await service.update_draft_statuses(
+        _scope(),
+        {'draft_ids': [first_draft['id'], second_draft['id']], 'status': 'sent'},
+    )
+
+    with pytest.raises(BroadcastError, match='INVALID_SEND_STATUS') as exc_info:
+        await service.create_execution_batch(
+            _scope(),
+            {
+                'draft_ids': [first_draft['id'], second_draft['id']],
+                'mode': 'paste_only',
+                'operator': 'tester@example.com',
+                'allow_sent_rewrite': True,
+            },
+        )
+    assert exc_info.value.code == 'INVALID_SEND_STATUS'
+    assert await service.list_execution_batches(_scope()) == []
+
+    await service.update_draft_statuses(
+        _scope(),
+        {'draft_ids': [second_draft['id']], 'status': 'pending'},
+    )
+
+    with pytest.raises(BroadcastError, match='MIXED_SEND_STATUS') as mixed_exc_info:
+        await service.create_execution_batch(
+            _scope(),
+            {
+                'draft_ids': [first_draft['id'], second_draft['id']],
+                'mode': 'paste_only',
+                'operator': 'tester@example.com',
+            },
+        )
+    assert mixed_exc_info.value.code == 'MIXED_SEND_STATUS'
+    assert await service.list_execution_batches(_scope()) == []
+
+
+async def test_create_execution_batch_rejects_duplicate_target_conversations_atomically(service_fixture):
+    service, persistence_mgr = service_fixture
+
+    prepared = await _prepare_ready_draft_for_execution(service)
+    first_draft = prepared['draft']
+
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Second',
+            'match_type': 'exact',
+            'match_expression': 'Second',
+            'target_conversation_name': 'Second Group',
+            'priority': 20,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'second.csv',
+            'body': '客户名称\nSecond\n'.encode('utf-8'),
+        },
+    )
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': 'Duplicate Target',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    second_draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
+
+    async with persistence_mgr.engine.begin() as conn:
+        await conn.execute(
+            sqlalchemy.update(persistence_broadcast.BroadcastDraft)
+            .where(persistence_broadcast.BroadcastDraft.id == second_draft['id'])
+            .values({'target_conversation_name': 'Acme Group'})
+        )
+
+    with pytest.raises(BroadcastError, match='DUPLICATE_TARGET_CONVERSATION') as exc_info:
+        await service.create_execution_batch(
+            _scope(),
+            {
+                'draft_ids': [first_draft['id'], second_draft['id']],
+                'mode': 'paste_only',
+                'operator': 'tester@example.com',
+            },
+        )
+    assert exc_info.value.code == 'DUPLICATE_TARGET_CONVERSATION'
+
+    batches = await service.list_execution_batches(_scope())
+    assert batches == []
 
 
 async def test_start_execution_task_creates_attempt_and_evidence_and_updates_batch(service_fixture, monkeypatch):
@@ -3609,3 +4058,99 @@ async def test_run_next_execution_task_marks_claimed_failures_terminal_and_does_
     assert await service.list_execution_attempts(first_task_id, _scope()) == []
     second_attempts = await service.list_execution_attempts(second_task_id, _scope())
     assert len(second_attempts) == 1
+
+
+async def test_run_next_execution_task_preserves_fifo_and_continues_after_mid_batch_failure(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    prepared = await _prepare_ready_drafts_for_execution(
+        service,
+        [('A', 'Group A'), ('B', 'Group B'), ('C', 'Group C')],
+    )
+    drafts = prepared['drafts']
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id'] for draft in drafts],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    await service.start_execution_batch(
+        batch['id'],
+        _scope(),
+        {'operator': 'tester@example.com'},
+    )
+
+    runtime_client = service.ap.desktop_automation_service.runtime_client
+
+    async def create_task(*, request):
+        runtime_client.requests.append(request)
+        if request['conversationName'] == 'Group B':
+            return {
+                'id': 'runtime-b',
+                'status': 'failed',
+                'stage': 'paste_failed',
+                'errorCode': 'PASTE_CONTENT_MISMATCH',
+                'result': {
+                    'messageSent': False,
+                    'clipboardRestoreFailed': False,
+                    'contentVerified': True,
+                    'draftWritten': True,
+                    'inputLocated': True,
+                },
+            }
+        return {
+            'id': f"runtime-{request['conversationName']}",
+            'status': 'succeeded',
+            'stage': 'pasted_to_input',
+            'result': {
+                'messageSent': False,
+                'clipboardRestoreFailed': False,
+                'contentVerified': True,
+                'draftWritten': True,
+                'inputLocated': True,
+            },
+        }
+
+    runtime_client.create_task = create_task
+
+    processed = []
+    while await service.run_next_execution_task():
+        processed.append(True)
+
+    assert len(processed) == 3
+    assert [request['conversationName'] for request in runtime_client.requests] == [
+        'Group A',
+        'Group B',
+        'Group C',
+    ]
+
+    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
+    assert [task['target_conversation_snapshot'] for task in refreshed_batch['tasks']] == [
+        'Group A',
+        'Group B',
+        'Group C',
+    ]
+    assert [task['status'] for task in refreshed_batch['tasks']] == [
+        'succeeded',
+        'failed',
+        'succeeded',
+    ]
+    assert refreshed_batch['status'] == 'partially_failed'
+    assert refreshed_batch['succeeded_tasks'] == 2
+    assert refreshed_batch['failed_tasks'] == 1
+
+    refreshed_drafts = [
+        await service.get_draft_detail(draft['id'], _scope())
+        for draft in drafts
+    ]
+    assert [draft['send_status'] for draft in refreshed_drafts] == [
+        'pending',
+        'pending',
+        'pending',
+    ]

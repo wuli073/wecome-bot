@@ -23,12 +23,11 @@ import {
 import type {
   BroadcastDraft,
   BroadcastImportBatch,
-  BroadcastDraftStatus,
   BroadcastStatusFilter,
 } from '../../types';
 
 interface DraftQueueProps {
-  drafts: Array<{ status: BroadcastDraftStatus; drafts: BroadcastDraft[] }>;
+  drafts: Array<{ status: 'pending' | 'sent'; drafts: BroadcastDraft[] }>;
   importBatches: BroadcastImportBatch[];
   selectedImportId: number | null;
   searchTerm: string;
@@ -36,27 +35,26 @@ interface DraftQueueProps {
   selectedDraftId: number | null;
   selectedDraftIds: number[];
   busy?: boolean;
-  canCreateExecutionBatch?: boolean;
+  canBatchWrite?: boolean;
+  canBatchMarkSent?: boolean;
+  canBatchRestorePending?: boolean;
   onImportBatchChange: (importBatchId: number | null) => void;
   onSearchTermChange: (value: string) => void;
   onStatusFilterChange: (value: BroadcastStatusFilter) => void;
   onSelectDraft: (draftId: number) => void;
   onToggleDraftSelection: (draftId: number, checked: boolean) => void;
-  onBatchConfirm: () => void;
-  onCreateExecutionBatch: () => void;
+  onBatchWrite: () => void;
+  onBatchMarkSent: () => void;
+  onBatchRestorePending: () => void;
 }
 
 function getStatusLabel(
-  status: BroadcastDraftStatus,
+  status: 'pending' | 'sent',
   t: ReturnType<typeof useTranslation>['t'],
 ) {
-  if (status === 'pending_review') {
-    return t('broadcast.drafts.statusPendingReview');
-  }
-  if (status === 'ready') {
-    return t('broadcast.drafts.statusReady');
-  }
-  return t('broadcast.drafts.statusInvalid');
+  return status === 'sent'
+    ? t('broadcast.drafts.statusSent')
+    : t('broadcast.drafts.statusPending');
 }
 
 export default function DraftQueue({
@@ -68,32 +66,26 @@ export default function DraftQueue({
   selectedDraftId,
   selectedDraftIds,
   busy = false,
-  canCreateExecutionBatch = true,
+  canBatchWrite = false,
+  canBatchMarkSent = false,
+  canBatchRestorePending = false,
   onImportBatchChange,
   onSearchTermChange,
   onStatusFilterChange,
   onSelectDraft,
   onToggleDraftSelection,
-  onBatchConfirm,
-  onCreateExecutionBatch,
+  onBatchWrite,
+  onBatchMarkSent,
+  onBatchRestorePending,
 }: DraftQueueProps) {
   const { t } = useTranslation();
 
   const selectableDraftIds = useMemo(
-    () =>
-      drafts
-        .flatMap((group) => group.drafts)
-        .filter(
-          (draft) =>
-            draft.status !== 'invalid' &&
-            !draft.draftsStale &&
-            !draft.attachmentsStale,
-        )
-        .map((draft) => draft.id),
+    () => drafts.flatMap((group) => group.drafts).map((draft) => draft.id),
     [drafts],
   );
 
-  const eligibleSelectedCount = selectedDraftIds.filter((draftId) =>
+  const selectedCount = selectedDraftIds.filter((draftId) =>
     selectableDraftIds.includes(draftId),
   ).length;
 
@@ -151,14 +143,11 @@ export default function DraftQueue({
               <SelectItem value="all">
                 {t('broadcast.drafts.allStatuses')}
               </SelectItem>
-              <SelectItem value="pending_review">
-                {t('broadcast.drafts.statusPendingReview')}
+              <SelectItem value="pending">
+                {t('broadcast.drafts.statusPending')}
               </SelectItem>
-              <SelectItem value="ready">
-                {t('broadcast.drafts.statusReady')}
-              </SelectItem>
-              <SelectItem value="invalid">
-                {t('broadcast.drafts.statusInvalid')}
+              <SelectItem value="sent">
+                {t('broadcast.drafts.statusSent')}
               </SelectItem>
             </SelectContent>
           </Select>
@@ -185,7 +174,7 @@ export default function DraftQueue({
                   </div>
                   <div className="text-xs text-muted-foreground">
                     {t('broadcast.drafts.selectedCount', {
-                      count: eligibleSelectedCount,
+                      count: selectedCount,
                     })}
                   </div>
                 </div>
@@ -193,23 +182,29 @@ export default function DraftQueue({
             </div>
             <div className="flex flex-wrap gap-2">
               <Button
-                data-testid="broadcast-draft-batch-confirm-button"
-                onClick={onBatchConfirm}
-                disabled={eligibleSelectedCount === 0 || busy}
+                data-testid="broadcast-draft-batch-write-button"
+                onClick={onBatchWrite}
+                disabled={selectedCount === 0 || busy || !canBatchWrite}
               >
-                {t('broadcast.drafts.batchConfirm')}
+                {t('broadcast.drafts.batchWriteSelected')}
               </Button>
               <Button
-                data-testid="broadcast-draft-create-execution-batch-button"
+                data-testid="broadcast-draft-batch-mark-sent-button"
                 variant="outline"
-                onClick={onCreateExecutionBatch}
+                onClick={onBatchMarkSent}
+                disabled={selectedCount === 0 || busy || !canBatchMarkSent}
+              >
+                {t('broadcast.drafts.markSent')}
+              </Button>
+              <Button
+                data-testid="broadcast-draft-batch-restore-pending-button"
+                variant="outline"
+                onClick={onBatchRestorePending}
                 disabled={
-                  eligibleSelectedCount === 0 ||
-                  busy ||
-                  !canCreateExecutionBatch
+                  selectedCount === 0 || busy || !canBatchRestorePending
                 }
               >
-                {t('broadcast.drafts.createExecutionBatch')}
+                {t('broadcast.drafts.restorePending')}
               </Button>
             </div>
           </div>
@@ -231,10 +226,6 @@ export default function DraftQueue({
                 <div className="space-y-2">
                   {group.drafts.map((draft) => {
                     const isActive = selectedDraftId === draft.id;
-                    const selectionDisabled =
-                      draft.status === 'invalid' ||
-                      Boolean(draft.draftsStale) ||
-                      Boolean(draft.attachmentsStale);
                     return (
                       <div
                         key={draft.id}
@@ -249,7 +240,7 @@ export default function DraftQueue({
                               id: draft.id,
                             })}
                             checked={selectedDraftIds.includes(draft.id)}
-                            disabled={selectionDisabled || busy}
+                            disabled={busy}
                             data-testid={`broadcast-draft-select-${draft.id}`}
                             onCheckedChange={(checked) =>
                               onToggleDraftSelection(draft.id, Boolean(checked))
@@ -267,15 +258,12 @@ export default function DraftQueue({
                               {draft.conversationName}
                             </div>
                             <div className="mt-2 text-xs text-muted-foreground">
-                              {getStatusLabel(
-                                draft.status as BroadcastDraftStatus,
-                                t,
-                              )}
+                              {getStatusLabel(group.status, t)}
                               {draft.draftsStale
                                 ? ` · ${t('broadcast.drafts.staleBadge')}`
                                 : draft.attachmentsStale
                                   ? ` · ${t('broadcast.drafts.attachmentsStaleBadge')}`
-                                : ''}
+                                  : ''}
                             </div>
                           </button>
                         </div>

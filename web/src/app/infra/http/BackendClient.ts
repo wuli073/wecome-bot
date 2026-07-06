@@ -2357,6 +2357,7 @@ export class BackendClient extends BaseHttpClient {
       draft_ids: number[];
       mode: 'paste_only' | 'send';
       operator: string;
+      allow_sent_rewrite?: boolean;
     },
   ): Promise<ApiBroadcastExecutionBatch> {
     return this.requestBroadcast<ApiBroadcastExecutionBatch>({

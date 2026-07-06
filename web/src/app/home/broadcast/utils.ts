@@ -29,12 +29,11 @@ export const BROADCAST_GROUP_MATCH_TYPE_LABELS: Record<
 };
 
 export const BROADCAST_STATUS_LABELS: Record<BroadcastStatus, string> = {
-  pending: '待审核',
+  pending: '待发送',
   pasted: '已写入输入框',
   failed: '处理失败',
   completed: '已完成',
-  pending_review: '待审核',
-  ready: '已确认',
+  sent: '已发送',
   invalid: '无效',
 };
 

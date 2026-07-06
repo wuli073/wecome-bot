@@ -1,9 +1,12 @@
 import { expect, test } from '@playwright/test';
 
+import zhHans from '../../src/i18n/locales/zh-Hans';
 import { installLangBotApiMocks } from './fixtures/langbot-api';
 
 test.describe('broadcast workflow', () => {
-  test('supports import and draft review without runtime calls', async ({ page }) => {
+  test('supports import and draft review without runtime calls', async ({
+    page,
+  }) => {
     await installLangBotApiMocks(page, {
       authenticated: true,
       storage: {
@@ -35,33 +38,75 @@ test.describe('broadcast workflow', () => {
     await page.locator('[role="tab"]').nth(2).click();
     await expect(page.getByTestId('broadcast-draft-queue')).toBeVisible();
     await expect(page.getByTestId('broadcast-draft-detail')).toBeVisible();
-    await expect(page.getByText('pending_review')).toHaveCount(0);
-    await expect(page.getByText('ready')).toHaveCount(0);
-    await expect(page.getByTestId('broadcast-draft-batch-filter')).toBeVisible();
-    await expect(page.getByTestId('broadcast-draft-confirm-button')).toBeVisible();
-    await expect(page.getByTestId('broadcast-draft-revoke-button')).toBeVisible();
-    await expect(page.getByTestId('broadcast-draft-batch-confirm-button')).toBeVisible();
-
-    await page.getByTestId('broadcast-draft-confirm-button').click();
-    await expect(page.getByText('草稿已确认')).toBeVisible();
+    await expect(
+      page.getByTestId('broadcast-draft-batch-filter'),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId('broadcast-draft-confirm-button'),
+    ).toHaveCount(0);
+    await expect(page.getByTestId('broadcast-draft-revoke-button')).toHaveCount(
+      0,
+    );
+    await expect(
+      page.getByTestId('broadcast-draft-batch-confirm-button'),
+    ).toHaveCount(0);
+    await expect(
+      page.getByTestId('broadcast-draft-batch-write-button'),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId('broadcast-draft-mark-sent-button'),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId('broadcast-draft-restore-pending-button'),
+    ).toHaveCount(0);
+    await expect(
+      page.locator(
+        '[data-testid^="broadcast-draft-select-"]:not([data-testid="broadcast-draft-select-all-checkbox"])',
+      ),
+    ).toHaveCount(2);
 
     await page.getByTestId('broadcast-draft-edit-button').click();
-    await page.getByLabel('草稿编辑器').fill('Updated ready draft');
+    await page
+      .getByLabel(zhHans.broadcast.drafts.editor)
+      .fill('Updated pending draft');
     await page.getByTestId('broadcast-draft-save-button').click();
-    await expect(page.getByText('草稿内容已修改，请重新确认')).toBeVisible();
+    await expect(page.locator('body')).toContainText(
+      zhHans.broadcast.toasts.draftSaved,
+    );
 
-    await page.getByRole('checkbox', { name: /选择草稿/ }).first().check();
-    await expect(page.getByTestId('broadcast-draft-batch-confirm-button')).toBeEnabled();
-    await expect(page.getByRole('checkbox', { name: /选择草稿 3/ })).toBeDisabled();
-
-    await page.locator('[role="tab"]').nth(1).click();
-    await page.getByTestId('broadcast-import-rematch-button').click();
+    await page.getByTestId('broadcast-draft-paste-button').click();
+    await expect(
+      page.getByTestId('broadcast-draft-paste-confirm-dialog'),
+    ).toHaveCount(0);
+    await expect(
+      page.getByTestId('broadcast-execution-logs-table'),
+    ).toBeVisible();
     await page.locator('[role="tab"]').nth(2).click();
-    await expect(page.getByText('草稿已过期，请重新生成')).toBeVisible();
-    await expect(page.getByRole('checkbox', { name: /选择草稿 1/ })).toBeDisabled();
-    await expect(page.getByTestId('broadcast-draft-confirm-button')).toBeDisabled();
 
-    expect(requestPaths.some((path) => path.includes('paste-draft'))).toBeFalsy();
-    expect(requestPaths.some((path) => path.includes('send-draft'))).toBeFalsy();
+    await page.getByTestId('broadcast-draft-mark-sent-button').click();
+    await expect(page.locator('body')).toContainText(
+      zhHans.broadcast.toasts.draftsMarkedSent,
+    );
+    await expect(
+      page.getByTestId('broadcast-draft-restore-pending-button'),
+    ).toBeVisible();
+
+    await page.getByTestId('broadcast-draft-select-1').check();
+    await expect(
+      page.getByTestId('broadcast-draft-batch-write-button'),
+    ).toBeDisabled();
+    await expect(
+      page.getByTestId('broadcast-draft-batch-restore-pending-button'),
+    ).toBeEnabled();
+
+    expect(
+      requestPaths.some((path) => path.includes('paste-draft')),
+    ).toBeFalsy();
+    expect(
+      requestPaths.some((path) => path.includes('send-draft')),
+    ).toBeFalsy();
+    expect(
+      requestPaths.some((path) => path.includes('send-confirmations')),
+    ).toBeFalsy();
   });
 });

@@ -179,7 +179,7 @@ export default function ExecutionLogPanel({
   executorCapability,
   executorHealth,
   pasteVerificationAvailable = false,
-  pasteVerificationMethod: _pasteVerificationMethod = 'unavailable',
+  pasteVerificationMethod = 'unavailable',
   requiresManualConversationOpen: _requiresManualConversationOpen = false,
   pasteActionDisabledReason = null,
   busy = false,
@@ -190,6 +190,13 @@ export default function ExecutionLogPanel({
   onRetryTask,
 }: ExecutionLogPanelProps) {
   const { t } = useTranslation();
+  const pasteVerificationMethodLabel =
+    pasteVerificationMethod === 'windows_uia'
+      ? t('broadcast.logs.pasteVerificationMethodWindowsUia')
+      : t('broadcast.logs.pasteVerificationUnavailable');
+  const pasteVerificationStatusLabel = pasteVerificationAvailable
+    ? t('broadcast.logs.pasteVerificationAvailable')
+    : t('broadcast.logs.pasteVerificationUnavailable');
 
   const columns = useMemo<ColumnDef<BroadcastExecutionLog>[]>(
     () => [
@@ -303,7 +310,9 @@ export default function ExecutionLogPanel({
               </Badge>
               <Badge variant="outline">
                 {t('broadcast.logs.capabilityPasteVerification')}:{' '}
-                {t('broadcast.logs.capabilityBooleanNo')}
+                {executorCapability?.supports_paste_verification
+                  ? t('broadcast.logs.capabilityBooleanYes')
+                  : t('broadcast.logs.capabilityBooleanNo')}
               </Badge>
               <Badge variant="outline">
                 {t('broadcast.logs.capabilityConversationLocator')}:{' '}
@@ -311,14 +320,14 @@ export default function ExecutionLogPanel({
               </Badge>
               <Badge variant="outline">
                 {t('broadcast.logs.pasteVerificationMethod')}:{' '}
-                {t('broadcast.logs.pasteVerificationUnavailable')}
+                {pasteVerificationMethodLabel}
               </Badge>
               <Badge
                 variant={pasteVerificationAvailable ? 'outline' : 'secondary'}
                 data-testid="broadcast-executor-paste-verification-status"
               >
                 {t('broadcast.logs.pasteVerificationStatus')}:{' '}
-                {t('broadcast.logs.pasteVerificationUnavailable')}
+                {pasteVerificationStatusLabel}
               </Badge>
             </div>
             <div className="mt-3 text-xs text-muted-foreground">
@@ -326,6 +335,11 @@ export default function ExecutionLogPanel({
               {executorCapability?.executor_version || '-'} ·
               {` ${t('broadcast.logs.runtimeMinVersion')}: ${executorCapability?.runtime_min_version || '-'}`}
             </div>
+            {pasteActionDisabledReason ? (
+              <div className="mt-3 text-xs text-muted-foreground">
+                {pasteActionDisabledReason}
+              </div>
+            ) : null}
           </div>
 
           <div

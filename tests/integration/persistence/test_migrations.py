@@ -555,6 +555,184 @@ class TestSQLiteMigrationUpgrade:
         assert module.down_revision == '0017_broadcast_attach'
 
     @pytest.mark.asyncio
+    async def test_broadcast_send_status_migration_maps_legacy_values_and_adds_columns(self, sqlite_engine):
+        async with sqlite_engine.begin() as conn:
+            def sync_setup(sync_conn):
+                sync_conn.execute(
+                    sa.text(
+                        """
+                        CREATE TABLE alembic_version (
+                            version_num VARCHAR(32) NOT NULL
+                        )
+                        """
+                    )
+                )
+                sync_conn.execute(
+                    sa.text("INSERT INTO alembic_version (version_num) VALUES ('0018_attach_relpath')")
+                )
+                sync_conn.execute(
+                    sa.text(
+                        """
+                        CREATE TABLE broadcast_drafts (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            status VARCHAR(32) NOT NULL,
+                            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                )
+                sync_conn.execute(
+                    sa.text(
+                        """
+                        INSERT INTO broadcast_drafts (id, status)
+                        VALUES
+                            (1, 'pending_review'),
+                            (2, 'ready'),
+                            (3, 'invalid'),
+                            (4, 'sent'),
+                            (5, 'completed')
+                        """
+                    )
+                )
+
+            await conn.run_sync(sync_setup)
+
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def sync_verify(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                columns = {column['name']: column for column in inspector.get_columns('broadcast_drafts')}
+                indexes = {index['name'] for index in inspector.get_indexes('broadcast_drafts')}
+                rows = sync_conn.execute(
+                    sa.text(
+                        """
+                        SELECT id, status, send_status
+                        FROM broadcast_drafts
+                        ORDER BY id
+                        """
+                    )
+                ).mappings().all()
+                return columns, indexes, [dict(row) for row in rows]
+
+            columns, indexes, rows = await conn.run_sync(sync_verify)
+
+        assert 'send_status' in columns
+        assert 'sent_at' in columns
+        assert isinstance(columns['sent_at']['type'], sa.DateTime)
+        assert 'ix_broadcast_drafts_send_status' in indexes
+        assert rows == [
+            {'id': 1, 'status': 'pending_review', 'send_status': 'pending'},
+            {'id': 2, 'status': 'ready', 'send_status': 'pending'},
+            {'id': 3, 'status': 'invalid', 'send_status': None},
+            {'id': 4, 'status': 'sent', 'send_status': 'sent'},
+            {'id': 5, 'status': 'completed', 'send_status': 'sent'},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_broadcast_send_status_migration_preserves_existing_values_and_downgrade(self, sqlite_engine):
+        async with sqlite_engine.begin() as conn:
+            def sync_setup(sync_conn):
+                sync_conn.execute(
+                    sa.text(
+                        """
+                        CREATE TABLE alembic_version (
+                            version_num VARCHAR(32) NOT NULL
+                        )
+                        """
+                    )
+                )
+                sync_conn.execute(
+                    sa.text("INSERT INTO alembic_version (version_num) VALUES ('0018_attach_relpath')")
+                )
+                sync_conn.execute(
+                    sa.text(
+                        """
+                        CREATE TABLE broadcast_drafts (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            status VARCHAR(32) NOT NULL,
+                            send_status VARCHAR(32) NULL,
+                            sent_at DATETIME NULL,
+                            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                )
+                sync_conn.execute(
+                    sa.text(
+                        """
+                        INSERT INTO broadcast_drafts (id, status, send_status, sent_at)
+                        VALUES
+                            (1, 'ready', 'sent', '2026-07-06 12:00:00'),
+                            (2, 'pending_review', 'pending', NULL)
+                        """
+                    )
+                )
+                sync_conn.execute(
+                    sa.text('CREATE INDEX ix_broadcast_drafts_send_status ON broadcast_drafts (send_status)')
+                )
+
+            await conn.run_sync(sync_setup)
+
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def sync_verify_upgrade(sync_conn):
+                rows = sync_conn.execute(
+                    sa.text(
+                        """
+                        SELECT id, status, send_status, sent_at
+                        FROM broadcast_drafts
+                        ORDER BY id
+                        """
+                    )
+                ).mappings().all()
+                return [dict(row) for row in rows]
+
+            upgraded_rows = await conn.run_sync(sync_verify_upgrade)
+
+        assert upgraded_rows[0]['status'] == 'ready'
+        assert upgraded_rows[0]['send_status'] == 'sent'
+        assert upgraded_rows[0]['sent_at'] is not None
+        assert upgraded_rows[1]['send_status'] == 'pending'
+
+        await run_alembic_downgrade(sqlite_engine, '0018_attach_relpath')
+
+        async with sqlite_engine.begin() as conn:
+            def sync_verify_downgrade(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                columns = {column['name'] for column in inspector.get_columns('broadcast_drafts')}
+                rows = sync_conn.execute(
+                    sa.text(
+                        """
+                        SELECT id, status
+                        FROM broadcast_drafts
+                        ORDER BY id
+                        """
+                    )
+                ).mappings().all()
+                return columns, [dict(row) for row in rows]
+
+            columns, downgraded_rows = await conn.run_sync(sync_verify_downgrade)
+
+        assert 'send_status' not in columns
+        assert 'sent_at' not in columns
+        assert downgraded_rows == [
+            {'id': 1, 'status': 'sent'},
+            {'id': 2, 'status': 'pending_review'},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_broadcast_send_status_revision_metadata_is_correct(self, sqlite_engine):
+        del sqlite_engine
+        script_path = _get_revision_script('0019_broadcast_send_status')
+        assert script_path.exists(), 'Expected 0019_broadcast_send_status migration script to exist'
+
+        module = importlib.import_module('langbot.pkg.persistence.alembic.versions.0019_broadcast_send_status')
+        assert len(module.revision) <= 32
+        assert module.down_revision == '0018_attach_relpath'
+
+    @pytest.mark.asyncio
     async def test_deleting_batch_cascades_to_execution_children(self, sqlite_engine):
         """Deleting a batch should cascade delete tasks, attempts, evidence, and send confirmations."""
         async with sqlite_engine.begin() as conn:

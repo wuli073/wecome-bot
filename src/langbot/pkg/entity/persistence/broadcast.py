@@ -215,6 +215,8 @@ class BroadcastDraft(Base):
     render_variables = sqlalchemy.Column(sqlalchemy.JSON, nullable=False)
     draft_text = sqlalchemy.Column(sqlalchemy.Text, nullable=False)
     status = sqlalchemy.Column(sqlalchemy.String(32), nullable=False, index=True)
+    send_status = sqlalchemy.Column(sqlalchemy.String(32), nullable=True, index=True)
+    sent_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
     error_message = sqlalchemy.Column(sqlalchemy.Text, nullable=True)
     attachments_stale = sqlalchemy.Column(
         sqlalchemy.Boolean,

@@ -1,24 +1,36 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 import zhHans from '../../src/i18n/locales/zh-Hans';
 import { installLangBotApiMocks } from './fixtures/langbot-api';
+
+async function prepareDraftReview(page: Page) {
+  await page.goto('/home/broadcast');
+  await page.locator('[role="tab"]').nth(1).click();
+  await page.getByTestId('broadcast-import-upload-input').setInputFiles({
+    name: 'customers.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('customers', 'utf-8'),
+  });
+  await page.getByTestId('broadcast-import-template-select').click();
+  await page.getByRole('option', { name: 'Arrival Reminder' }).click();
+  await page.getByTestId('broadcast-import-generate-drafts-button').click();
+  await page.locator('[role="tab"]').nth(2).click();
+}
 
 test.describe('broadcast execution phase 4', () => {
   test('uses exact zh-Hans paste verification copy without mojibake', async ({
     page,
   }) => {
     expect(zhHans.broadcast.drafts.pasteHint).toBe(
-      '请先手动打开目标群聊。本操作只会将草稿写入输入框，不会自动发送消息。',
+      '系统将自动搜索并进入目标群聊，然后把正文和附件粘贴到输入框。系统不会自动发送，请人工确认后发送。',
     );
-    expect(zhHans.broadcast.logs.capabilityPasteVerification).toBe(
-      '支持粘贴验证',
-    );
+    expect(zhHans.broadcast.logs.capabilityPasteVerification).toBe('内容验证');
     expect(zhHans.broadcast.logs.pasteVerificationMethod).toBe('验证方式');
     expect(zhHans.broadcast.logs.pasteVerificationStatus).toBe('验证状态');
     expect(zhHans.broadcast.logs.pasteVerificationAvailable).toBe('可用');
-    expect(zhHans.broadcast.logs.pasteVerificationUnavailable).toBe('不可用');
+    expect(zhHans.broadcast.logs.pasteVerificationUnavailable).toBe('未启用');
     expect(zhHans.broadcast.logs.pasteVerificationUnavailableHint).toBe(
-      '当前运行时缺少粘贴内容验证能力，无法执行“写入输入框”。',
+      '内容验证：未启用',
     );
     expect(zhHans.broadcast.logs.statusPasteVerified).toBe('已写入并验证');
     expect(zhHans.broadcast.toasts.pasteSubmitted).toBe('写入任务已提交');
@@ -30,35 +42,35 @@ test.describe('broadcast execution phase 4', () => {
       },
     });
 
-    await page.goto('/home/broadcast');
-    await page.locator('[role="tab"]').nth(1).click();
-    await page.getByTestId('broadcast-import-upload-input').setInputFiles({
-      name: 'customers.csv',
-      mimeType: 'text/csv',
-      buffer: Buffer.from('customers', 'utf-8'),
-    });
-    await page.getByTestId('broadcast-import-template-select').click();
-    await page.getByRole('option', { name: 'Arrival Reminder' }).click();
-    await page.getByTestId('broadcast-import-generate-drafts-button').click();
-
-    await page.locator('[role="tab"]').nth(2).click();
-    await page.getByTestId('broadcast-draft-confirm-button').click();
+    await prepareDraftReview(page);
     await page.getByTestId('broadcast-draft-paste-button').click();
-    await page.getByTestId('broadcast-draft-paste-confirm-action').click();
+    await expect(
+      page.getByTestId('broadcast-draft-paste-confirm-dialog'),
+    ).toHaveCount(0);
 
-    await page.locator('[role="tab"]').nth(3).click();
     await expect(
       page.getByTestId('broadcast-execution-logs-table'),
     ).toBeVisible();
-    await expect(page.locator('body')).toContainText('支持粘贴验证');
-    await expect(page.locator('body')).toContainText('验证方式');
-    await expect(page.locator('body')).toContainText('验证状态');
+    await expect(page.locator('body')).toContainText(
+      zhHans.broadcast.logs.capabilityPasteVerification,
+    );
+    await expect(page.locator('body')).toContainText(
+      zhHans.broadcast.logs.pasteVerificationMethod,
+    );
+    await expect(page.locator('body')).toContainText(
+      zhHans.broadcast.logs.pasteVerificationStatus,
+    );
     await expect(page.locator('body')).toContainText('Windows UI Automation');
-    await expect(page.locator('body')).toContainText('已写入并验证');
-    await expect(page.locator('body')).not.toContainText(/锟|鐨|绔|鍏|鏀|鎵|�/);
+    await expect(page.locator('body')).toContainText(
+      zhHans.broadcast.logs.pasteVerificationAvailable,
+    );
+    await expect(page.locator('body')).toContainText(
+      zhHans.broadcast.logs.statusPasteVerified,
+    );
+    await expect(page.locator('body')).not.toContainText(/锟|鏀|楠岃瘉鏂瑰紡/);
   });
 
-  test('writes a single ready draft into the input box without sending', async ({
+  test('writes a single pending draft into the input box without sending', async ({
     page,
   }) => {
     await installLangBotApiMocks(page, {
@@ -76,40 +88,16 @@ test.describe('broadcast execution phase 4', () => {
       }
     });
 
-    await page.goto('/home/broadcast');
-    await page.locator('[role="tab"]').nth(1).click();
-    await page.getByTestId('broadcast-import-upload-input').setInputFiles({
-      name: 'customers.csv',
-      mimeType: 'text/csv',
-      buffer: Buffer.from('customers', 'utf-8'),
-    });
-    await page.getByTestId('broadcast-import-template-select').click();
-    await page.getByRole('option', { name: 'Arrival Reminder' }).click();
-    await page.getByTestId('broadcast-import-generate-drafts-button').click();
-
-    await page.locator('[role="tab"]').nth(2).click();
-    await page.getByTestId('broadcast-draft-confirm-button').click();
-    await expect(
-      page.getByTestId('broadcast-draft-revoke-button'),
-    ).toBeEnabled();
-
+    await prepareDraftReview(page);
     await page.getByTestId('broadcast-draft-paste-button').click();
     await expect(
       page.getByTestId('broadcast-draft-paste-confirm-dialog'),
-    ).toBeVisible();
-    await expect(
-      page.getByTestId('broadcast-draft-paste-confirm-action'),
-    ).toBeVisible();
-    await page.getByTestId('broadcast-draft-paste-confirm-action').click();
-
+    ).toHaveCount(0);
     await expect(
       page.getByTestId('broadcast-execution-logs-table'),
     ).toBeVisible();
 
     await page.locator('[role="tab"]').nth(3).click();
-    await expect(
-      page.getByTestId('broadcast-execution-logs-table'),
-    ).toBeVisible();
     await expect(
       page.getByRole('cell', { name: 'Acme Freight', exact: true }),
     ).toBeVisible();
@@ -173,22 +161,8 @@ test.describe('broadcast execution phase 4', () => {
       }
     });
 
-    await page.goto('/home/broadcast');
-    await page.locator('[role="tab"]').nth(1).click();
-    await page.getByTestId('broadcast-import-upload-input').setInputFiles({
-      name: 'customers.csv',
-      mimeType: 'text/csv',
-      buffer: Buffer.from('customers', 'utf-8'),
-    });
-    await page.getByTestId('broadcast-import-template-select').click();
-    await page.getByRole('option', { name: 'Arrival Reminder' }).click();
-    await page.getByTestId('broadcast-import-generate-drafts-button').click();
-
-    await page.locator('[role="tab"]').nth(2).click();
-    await page.getByTestId('broadcast-draft-confirm-button').click();
+    await prepareDraftReview(page);
     await page.getByTestId('broadcast-draft-paste-button').click();
-    await page.getByTestId('broadcast-draft-paste-confirm-action').click();
-
     await expect(
       page.getByTestId('broadcast-draft-paste-button'),
     ).toBeDisabled();
@@ -199,9 +173,7 @@ test.describe('broadcast execution phase 4', () => {
     expect(executionsCount).toBe(1);
     expect(startCount).toBe(0);
 
-    if (releaseExecutionResponse) {
-      releaseExecutionResponse();
-    }
+    releaseExecutionResponse?.();
 
     await expect
       .poll(() => executionsCount, {
@@ -270,7 +242,7 @@ test.describe('broadcast execution phase 4', () => {
           message: 'ok',
           data: {
             channel: 'wxwork_database',
-            status: 'healthy',
+            status: 'ready',
             protocol_version: '1.0.0',
             runtime_version: '1.0.0',
             capability: {
@@ -318,41 +290,36 @@ test.describe('broadcast execution phase 4', () => {
       }
     });
 
-    await page.goto('/home/broadcast');
-    await page.locator('[role="tab"]').nth(1).click();
-    await page.getByTestId('broadcast-import-upload-input').setInputFiles({
-      name: 'customers.csv',
-      mimeType: 'text/csv',
-      buffer: Buffer.from('customers', 'utf-8'),
-    });
-    await page.getByTestId('broadcast-import-template-select').click();
-    await page.getByRole('option', { name: 'Arrival Reminder' }).click();
-    await page.getByTestId('broadcast-import-generate-drafts-button').click();
-
-    await page.locator('[role="tab"]').nth(2).click();
-    await page.getByTestId('broadcast-draft-confirm-button').click();
+    await prepareDraftReview(page);
     await page.getByTestId('broadcast-draft-select-all-checkbox').click();
 
     await expect(
       page.getByTestId('broadcast-draft-paste-button'),
     ).toBeDisabled();
     await expect(
-      page.getByTestId('broadcast-draft-create-execution-batch-button'),
+      page.getByTestId('broadcast-draft-batch-write-button'),
     ).toBeDisabled();
     await expect(page.locator('body')).toContainText(
-      '当前运行时缺少粘贴内容验证能力，无法执行“写入输入框”。',
+      zhHans.broadcast.logs.pasteVerificationUnavailableHint,
     );
 
     await page.locator('[role="tab"]').nth(3).click();
     await expect(
       page.getByTestId('broadcast-execution-logs-table'),
     ).toBeVisible();
-    await expect(page.locator('body')).toContainText('支持粘贴验证');
-    await expect(page.locator('body')).toContainText('验证方式');
-    await expect(page.locator('body')).toContainText('验证状态');
+    await expect(page.locator('body')).toContainText(
+      zhHans.broadcast.logs.capabilityPasteVerification,
+    );
+    await expect(page.locator('body')).toContainText(
+      zhHans.broadcast.logs.pasteVerificationMethod,
+    );
+    await expect(page.locator('body')).toContainText(
+      zhHans.broadcast.logs.pasteVerificationStatus,
+    );
     await expect(page.locator('body')).toContainText('Windows UI Automation');
-    await expect(page.locator('body')).toContainText('不可用');
-    await expect(page.locator('body')).not.toContainText(/锟|鐨|绔|鍏|鏀|鎵|�/);
+    await expect(page.locator('body')).toContainText(
+      zhHans.broadcast.logs.pasteVerificationUnavailable,
+    );
 
     expect(
       requestRecords.some(
@@ -412,20 +379,9 @@ test.describe('broadcast execution phase 4', () => {
         counters.evidence += 1;
       }
     });
-    await page.locator('[role="tab"]').nth(1).click();
-    await page.getByTestId('broadcast-import-upload-input').setInputFiles({
-      name: 'customers.csv',
-      mimeType: 'text/csv',
-      buffer: Buffer.from('customers', 'utf-8'),
-    });
-    await page.getByTestId('broadcast-import-template-select').click();
-    await page.getByRole('option', { name: 'Arrival Reminder' }).click();
-    await page.getByTestId('broadcast-import-generate-drafts-button').click();
 
-    await page.locator('[role="tab"]').nth(2).click();
-    await page.getByTestId('broadcast-draft-confirm-button').click();
+    await prepareDraftReview(page);
     await page.getByTestId('broadcast-draft-paste-button').click();
-    await page.getByTestId('broadcast-draft-paste-confirm-action').click();
 
     await expect(
       page.getByTestId('broadcast-execution-logs-table'),

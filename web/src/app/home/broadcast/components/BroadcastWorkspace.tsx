@@ -47,7 +47,7 @@ import type {
   BroadcastMessageTemplate,
 } from '../types';
 
-const draftStatusOrder = ['pending_review', 'ready', 'invalid'] as const;
+const draftStatusOrder = ['pending', 'sent'] as const;
 const OPERATOR_EMAIL = 'tester@example.com';
 const EXECUTION_TERMINAL_STATUSES = new Set([
   'completed',
@@ -129,12 +129,29 @@ function hasWritableTargetConversation(draft: BroadcastDraft | null): boolean {
 function canWriteDraftToInput(draft: BroadcastDraft | null): boolean {
   return Boolean(
     draft &&
-    draft.status === 'ready' &&
+    ['pending', 'sent'].includes(draft.status) &&
     !draft.attachmentsStale &&
     !draft.draftsStale &&
     draft.draftText.trim() &&
     hasWritableTargetConversation(draft),
   );
+}
+
+function getPasteVerificationRuntimeState(
+  executorHealth: BroadcastExecutorHealth | null,
+): Record<string, unknown> | null {
+  const runtimeStatus = executorHealth?.runtime_status;
+  if (!runtimeStatus || typeof runtimeStatus !== 'object') {
+    return null;
+  }
+
+  const pasteVerification = (runtimeStatus as Record<string, unknown>)
+    .pasteVerification;
+  if (!pasteVerification || typeof pasteVerification !== 'object') {
+    return null;
+  }
+
+  return pasteVerification as Record<string, unknown>;
 }
 
 export default function BroadcastWorkspace() {
@@ -182,7 +199,6 @@ export default function BroadcastWorkspace() {
   const [importError, setImportError] = useState<string | null>(null);
   const [importBusyCount, setImportBusyCount] = useState(0);
   const [draftBusy, setDraftBusy] = useState(false);
-  const [sendBusy, setSendBusy] = useState(false);
   const [scopeOptions, setScopeOptions] = useState<
     Array<{ botUuid: string; botName: string; connectorId: string }>
   >([]);
@@ -227,11 +243,26 @@ export default function BroadcastWorkspace() {
   const executionLogsHydratedRef = useRef(false);
   const importBusy = importBusyCount > 0;
 
+  const pasteVerificationState =
+    getPasteVerificationRuntimeState(executorHealth);
   const runtimeReady = executorHealth?.status === 'ready';
   const pasteSupported = Boolean(executorCapability?.supports_paste);
-  const pasteVerificationAvailable = runtimeReady && pasteSupported;
-  const pasteVerificationMethod = 'unavailable' as const;
-  const requiresManualConversationOpen = false;
+  const pasteVerificationSupported = Boolean(
+    executorCapability?.supports_paste_verification,
+  );
+  const pasteVerificationAvailable =
+    runtimeReady &&
+    pasteSupported &&
+    pasteVerificationSupported &&
+    (pasteVerificationState ? pasteVerificationState.available === true : true);
+  const pasteVerificationMethod =
+    pasteVerificationState?.method === 'windows_uia'
+      ? 'windows_uia'
+      : 'unavailable';
+  const requiresManualConversationOpen = Boolean(
+    pasteVerificationState?.requiresManualConversationOpen ??
+    executorCapability?.requires_manual_conversation_open,
+  );
   const pasteActionDisabledReason = useMemo(() => {
     if (!runtimeReady) {
       return t('common.loading');
@@ -239,8 +270,17 @@ export default function BroadcastWorkspace() {
     if (!pasteSupported) {
       return t('broadcast.drafts.pasteUnavailable');
     }
+    if (!pasteVerificationSupported || !pasteVerificationAvailable) {
+      return t('broadcast.logs.pasteVerificationUnavailableHint');
+    }
     return null;
-  }, [pasteSupported, runtimeReady, t]);
+  }, [
+    pasteSupported,
+    pasteVerificationAvailable,
+    pasteVerificationSupported,
+    runtimeReady,
+    t,
+  ]);
 
   const topTabOptions = useMemo(
     () => [
@@ -311,6 +351,17 @@ export default function BroadcastWorkspace() {
     [filteredDrafts],
   );
 
+  const selectedDrafts = useMemo(
+    () =>
+      selectedDraftIds
+        .map(
+          (draftId) =>
+            snapshot.drafts.find((draft) => draft.id === draftId) ?? null,
+        )
+        .filter((draft): draft is BroadcastDraft => draft != null),
+    [selectedDraftIds, snapshot.drafts],
+  );
+
   useEffect(() => {
     if (activeDraft) {
       setSelectedDraftId(activeDraft.id);
@@ -325,9 +376,7 @@ export default function BroadcastWorkspace() {
   useEffect(() => {
     setSelectedDraftIds((current) =>
       current.filter((draftId) =>
-        snapshot.drafts.some(
-          (draft) => draft.id === draftId && canWriteDraftToInput(draft),
-        ),
+        snapshot.drafts.some((draft) => draft.id === draftId),
       ),
     );
   }, [snapshot.drafts]);
@@ -1048,6 +1097,13 @@ export default function BroadcastWorkspace() {
     };
   }, [latestExecutionBatch, refreshExecutionState, scope, topTab]);
 
+  const resolveTargetDrafts = useCallback(() => {
+    if (selectedDrafts.length > 0) {
+      return selectedDrafts;
+    }
+    return activeDraft ? [activeDraft] : [];
+  }, [activeDraft, selectedDrafts]);
+
   const handleCreateExecutionBatch = async () => {
     if (!pasteVerificationAvailable) {
       toast.error(
@@ -1055,28 +1111,42 @@ export default function BroadcastWorkspace() {
       );
       return;
     }
-    const targetDraftIds =
-      selectedDraftIds.length > 0
-        ? selectedDraftIds
-        : activeDraft
-          ? [activeDraft.id]
-          : [];
-    if (targetDraftIds.length === 0) {
+    const targetDrafts = resolveTargetDrafts();
+    if (targetDrafts.length === 0) {
       toast.error(t('broadcast.toasts.noDraftSelected'));
+      return;
+    }
+    if (
+      targetDrafts.some(
+        (draft) => draft.status !== 'pending' || !canWriteDraftToInput(draft),
+      )
+    ) {
+      toast.error(t('broadcast.toasts.batchWritePendingOnly'));
       return;
     }
     setDraftBusy(true);
     try {
       const batch = await dataSource.createExecutionBatch(
         scope,
-        targetDraftIds,
+        targetDrafts.map((draft) => draft.id),
         'paste_only',
         OPERATOR_EMAIL,
       );
-      setLatestExecutionBatch(batch);
-      await refreshExecutionState(scope);
       setTopTab('logs');
-      toast.success(t('broadcast.toasts.executionBatchCreated'));
+      setLatestExecutionBatch(batch);
+      try {
+        const started = await dataSource.startExecutionBatch(
+          scope,
+          batch.id,
+          OPERATOR_EMAIL,
+        );
+        setLatestExecutionBatch(started);
+        await refreshExecutionState(scope);
+        toast.success(t('broadcast.toasts.executionBatchStarted'));
+      } catch (error) {
+        await refreshExecutionState(scope, { refreshLatestLogsOnly: true });
+        toast.error(getErrorMessage(error, t('common.error')));
+      }
     } catch (error) {
       toast.error(getErrorMessage(error, t('common.error')));
     } finally {
@@ -1179,52 +1249,30 @@ export default function BroadcastWorkspace() {
         [draft.id],
         'paste_only',
         OPERATOR_EMAIL,
+        {
+          allowSentRewrite: draft.status === 'sent',
+        },
       );
-      setLatestExecutionBatch(batch);
-      await dataSource.startExecutionBatch(scope, batch.id, OPERATOR_EMAIL);
-      await refreshExecutionState(scope);
       setTopTab('logs');
-      toast.success(t('broadcast.toasts.pasteSubmitted'));
+      setLatestExecutionBatch(batch);
+      try {
+        const started = await dataSource.startExecutionBatch(
+          scope,
+          batch.id,
+          OPERATOR_EMAIL,
+        );
+        setLatestExecutionBatch(started);
+        await refreshExecutionState(scope);
+        toast.success(t('broadcast.toasts.pasteSubmitted'));
+      } catch (error) {
+        await refreshExecutionState(scope, { refreshLatestLogsOnly: true });
+        toast.error(getErrorMessage(error, t('common.error')));
+      }
     } catch (error) {
       toast.error(getErrorMessage(error, t('common.error')));
     } finally {
       setDraftBusy(false);
       setPasteRequestInFlight(false);
-    }
-  };
-
-  const handleRealSendDraft = async (draft: BroadcastDraft) => {
-    setSendBusy(true);
-    try {
-      const batch = await dataSource.createExecutionBatch(
-        scope,
-        [draft.id],
-        'send',
-        OPERATOR_EMAIL,
-      );
-      setLatestExecutionBatch(batch);
-      setTopTab('logs');
-      const taskId = batch.tasks[0]?.id;
-      if (!taskId) {
-        throw new Error(t('broadcast.logs.missingSendTask'));
-      }
-      const confirmation = await dataSource.createSendConfirmation(
-        scope,
-        taskId,
-        OPERATOR_EMAIL,
-      );
-      await dataSource.sendExecutionTask(
-        scope,
-        taskId,
-        confirmation.token,
-        OPERATOR_EMAIL,
-      );
-      await refreshExecutionState(scope);
-      toast.success(t('broadcast.toasts.sendSubmitted'));
-    } catch (error) {
-      toast.error(getErrorMessage(error, t('common.error')));
-    } finally {
-      setSendBusy(false);
     }
   };
 
@@ -1280,7 +1328,7 @@ export default function BroadcastWorkspace() {
         ),
       }));
       setEditingDraftId(null);
-      toast.success(updated.message || t('broadcast.toasts.draftSaved'));
+      toast.success(t('broadcast.toasts.draftSaved'));
     } catch (error) {
       toast.error(getErrorMessage(error, t('common.error')));
     } finally {
@@ -1298,38 +1346,18 @@ export default function BroadcastWorkspace() {
     setDraftEditorText('');
   };
 
-  const handleBatchConfirm = async () => {
-    const targetDraftIds =
-      selectedDraftIds.length > 0
-        ? selectedDraftIds
-        : activeDraft
-          ? [activeDraft.id]
-          : [];
-
-    if (targetDraftIds.length === 0) {
+  const handleUpdateDraftStatuses = async (
+    draftIds: number[],
+    status: 'pending' | 'sent',
+    successMessage: string,
+  ) => {
+    if (draftIds.length === 0) {
       toast.error(t('broadcast.toasts.noDraftSelected'));
       return;
     }
     setDraftBusy(true);
     try {
-      await dataSource.updateDraftStatuses(scope, targetDraftIds, 'ready');
-      await refreshDrafts();
-      toast.success(t('broadcast.toasts.draftsConfirmed'));
-    } catch (error) {
-      toast.error(getErrorMessage(error, t('common.error')));
-    } finally {
-      setDraftBusy(false);
-    }
-  };
-
-  const handleUpdateSingleDraftStatus = async (
-    draftId: number,
-    status: 'ready' | 'pending_review',
-    successMessage: string,
-  ) => {
-    setDraftBusy(true);
-    try {
-      await dataSource.updateDraftStatuses(scope, [draftId], status);
+      await dataSource.updateDraftStatuses(scope, draftIds, status);
       await refreshDrafts();
       toast.success(successMessage);
     } catch (error) {
@@ -1337,6 +1365,40 @@ export default function BroadcastWorkspace() {
     } finally {
       setDraftBusy(false);
     }
+  };
+
+  const handleBatchMarkSent = async () => {
+    const targetDrafts = resolveTargetDrafts();
+    if (targetDrafts.length === 0) {
+      toast.error(t('broadcast.toasts.noDraftSelected'));
+      return;
+    }
+    if (targetDrafts.some((draft) => draft.status !== 'pending')) {
+      toast.error(t('broadcast.toasts.batchMarkSentPendingOnly'));
+      return;
+    }
+    await handleUpdateDraftStatuses(
+      targetDrafts.map((draft) => draft.id),
+      'sent',
+      t('broadcast.toasts.draftsMarkedSent'),
+    );
+  };
+
+  const handleBatchRestorePending = async () => {
+    const targetDrafts = resolveTargetDrafts();
+    if (targetDrafts.length === 0) {
+      toast.error(t('broadcast.toasts.noDraftSelected'));
+      return;
+    }
+    if (targetDrafts.some((draft) => draft.status !== 'sent')) {
+      toast.error(t('broadcast.toasts.batchRestorePendingSentOnly'));
+      return;
+    }
+    await handleUpdateDraftStatuses(
+      targetDrafts.map((draft) => draft.id),
+      'pending',
+      t('broadcast.toasts.draftsRestoredPending'),
+    );
   };
 
   const handleScopeChange = async (botUuid: string) => {
@@ -1798,15 +1860,31 @@ export default function BroadcastWorkspace() {
               statusFilter={statusFilter}
               selectedDraftId={selectedDraftId}
               selectedDraftIds={selectedDraftIds}
-              busy={draftBusy || sendBusy}
-              canCreateExecutionBatch={pasteVerificationAvailable}
+              busy={draftBusy}
+              canBatchWrite={
+                pasteVerificationAvailable &&
+                selectedDrafts.length > 0 &&
+                selectedDrafts.every(
+                  (draft) =>
+                    draft.status === 'pending' && canWriteDraftToInput(draft),
+                )
+              }
+              canBatchMarkSent={
+                selectedDrafts.length > 0 &&
+                selectedDrafts.every((draft) => draft.status === 'pending')
+              }
+              canBatchRestorePending={
+                selectedDrafts.length > 0 &&
+                selectedDrafts.every((draft) => draft.status === 'sent')
+              }
               onImportBatchChange={setDraftImportBatchId}
               onSearchTermChange={setSearchTerm}
               onStatusFilterChange={setStatusFilter}
               onSelectDraft={handleSelectDraft}
               onToggleDraftSelection={handleToggleDraftSelection}
-              onBatchConfirm={() => void handleBatchConfirm()}
-              onCreateExecutionBatch={() => void handleCreateExecutionBatch()}
+              onBatchWrite={() => void handleCreateExecutionBatch()}
+              onBatchMarkSent={() => void handleBatchMarkSent()}
+              onBatchRestorePending={() => void handleBatchRestorePending()}
             />
             <DraftDetail
               draft={activeDraft}
@@ -1817,33 +1895,28 @@ export default function BroadcastWorkspace() {
                 pasteVerificationAvailable && canWriteDraftToInput(activeDraft)
               }
               pasteDisabledReason={pasteActionDisabledReason}
-              canRealSend={Boolean(executorCapability?.supports_send)}
-              sendBusy={sendBusy}
               onStartEdit={handleStartEdit}
               onDraftEditorTextChange={setDraftEditorText}
               onSaveDraft={() => void handleSaveDraft()}
               onCancelEdit={handleCancelEdit}
-              onConfirmDraft={() =>
+              onMarkSent={() =>
                 activeDraft &&
-                void handleUpdateSingleDraftStatus(
-                  activeDraft.id,
-                  'ready',
-                  t('broadcast.toasts.draftsConfirmed'),
+                void handleUpdateDraftStatuses(
+                  [activeDraft.id],
+                  'sent',
+                  t('broadcast.toasts.draftsMarkedSent'),
                 )
               }
-              onRevokeDraft={() =>
+              onRestorePending={() =>
                 activeDraft &&
-                void handleUpdateSingleDraftStatus(
-                  activeDraft.id,
-                  'pending_review',
-                  t('broadcast.toasts.draftConfirmationRevoked'),
+                void handleUpdateDraftStatuses(
+                  [activeDraft.id],
+                  'pending',
+                  t('broadcast.toasts.draftsRestoredPending'),
                 )
               }
               onPasteDraft={() =>
                 activeDraft && void handlePasteDraft(activeDraft)
-              }
-              onSendDraft={() =>
-                activeDraft && void handleRealSendDraft(activeDraft)
               }
               onUploadAttachments={(files) => {
                 if (!activeDraft) {
@@ -1915,7 +1988,7 @@ export default function BroadcastWorkspace() {
             pasteVerificationMethod={pasteVerificationMethod}
             requiresManualConversationOpen={requiresManualConversationOpen}
             pasteActionDisabledReason={pasteActionDisabledReason}
-            busy={draftBusy || sendBusy}
+            busy={draftBusy}
             onStartBatch={() => void handleBatchAction('start')}
             onPauseBatch={() => void handleBatchAction('pause')}
             onResumeBatch={() => void handleBatchAction('resume')}

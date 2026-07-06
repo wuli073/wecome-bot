@@ -15,8 +15,6 @@ async function prepareDraft(page: import('@playwright/test').Page) {
   await page.getByTestId('broadcast-import-generate-drafts-button').click();
 
   await page.locator('[role="tab"]').nth(2).click();
-  await page.getByTestId('broadcast-draft-confirm-button').click();
-  await expect(page.getByTestId('broadcast-draft-revoke-button')).toBeEnabled();
 }
 
 test.describe('broadcast execution phase 7', () => {
@@ -30,10 +28,14 @@ test.describe('broadcast execution phase 7', () => {
     });
 
     await prepareDraft(page);
-    await expect(page.getByTestId('broadcast-draft-send-button')).toHaveCount(0);
+    await expect(page.getByTestId('broadcast-draft-send-button')).toHaveCount(
+      0,
+    );
   });
 
-  test('shows real send confirmation and uses dedicated send endpoints', async ({ page }) => {
+  test('still hides real send even when backend advertises send support', async ({
+    page,
+  }) => {
     await installLangBotApiMocks(page, {
       authenticated: true,
       storage: {
@@ -52,21 +54,19 @@ test.describe('broadcast execution phase 7', () => {
 
     await prepareDraft(page);
 
-    await expect(page.getByTestId('broadcast-draft-send-button')).toBeVisible();
-    await page.getByTestId('broadcast-draft-send-button').click();
-    await expect(page.getByTestId('broadcast-draft-send-confirm-dialog')).toBeVisible();
-    await expect(page.getByTestId('broadcast-draft-send-confirm-action')).toBeDisabled();
-    await page.waitForTimeout(3200);
-    await page.getByTestId('broadcast-draft-send-acknowledge').click();
-    await expect(page.getByTestId('broadcast-draft-send-confirm-action')).toBeEnabled();
-    await page.getByTestId('broadcast-draft-send-confirm-action').click();
+    await expect(page.getByTestId('broadcast-draft-send-button')).toHaveCount(
+      0,
+    );
 
-    await expect(page.getByTestId('broadcast-latest-execution-batch')).toBeVisible();
-    await expect(page.getByTestId('broadcast-execution-logs-table')).toBeVisible();
-
-    expect(requestPaths).toContain('/api/v1/broadcast/send-confirmations');
-    expect(requestPaths.some((path) => /\/api\/v1\/broadcast\/execution-tasks\/\d+\/send$/.test(path))).toBeTruthy();
-    expect(requestPaths.some((path) => /\/api\/v1\/broadcast\/executions$/.test(path))).toBeTruthy();
-    expect(requestPaths.some((path) => /\/api\/v1\/broadcast\/executions\/\d+\/start$/.test(path))).toBeFalsy();
+    expect(
+      requestPaths.some((path) =>
+        /\/api\/v1\/broadcast\/send-confirmations$/.test(path),
+      ),
+    ).toBeFalsy();
+    expect(
+      requestPaths.some((path) =>
+        /\/api\/v1\/broadcast\/execution-tasks\/\d+\/send$/.test(path),
+      ),
+    ).toBeFalsy();
   });
 });

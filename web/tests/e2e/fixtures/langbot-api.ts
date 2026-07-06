@@ -181,6 +181,9 @@ interface BroadcastDraftMock {
   render_variables: Record<string, string>;
   draft_text: string;
   status: 'pending_review' | 'ready' | 'invalid';
+  legacy_status?: 'pending_review' | 'ready' | 'invalid';
+  send_status: 'pending' | 'sent';
+  sent_at?: string | null;
   error_message: string | null;
   drafts_stale: boolean;
   attachments_stale?: boolean;
@@ -447,6 +450,7 @@ function createAttachment(
 function serializeDraft(draft: BroadcastDraftMock): BroadcastDraftMock {
   return {
     ...draft,
+    legacy_status: draft.status,
     attachments_stale: draft.attachments_stale ?? false,
     attachments: (draft.attachments ?? []).map(cloneAttachment),
   };
@@ -570,15 +574,7 @@ function refreshDraftMessage(
 }
 
 function markDraftAttachmentsChanged(draft: BroadcastDraftMock) {
-  if (draft.status === 'ready') {
-    draft.status = 'pending_review';
-    refreshDraftMessage(
-      draft,
-      'Draft attachments changed, please confirm again before execution.',
-    );
-  } else {
-    refreshDraftMessage(draft, null);
-  }
+  refreshDraftMessage(draft, null);
 }
 
 function markGroupAttachmentsChanged(
@@ -1988,6 +1984,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
               )
             : '',
           status: valid ? 'pending_review' : 'invalid',
+          send_status: 'pending',
+          sent_at: null,
           error_message: valid ? null : row.error_message || '未匹配到群聊',
           drafts_stale: false,
           attachments_stale: false,
@@ -2052,6 +2050,58 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         );
       }
       const mode = body.mode === 'send' ? 'send' : 'paste_only';
+      const allowSentRewrite = Boolean(body.allow_sent_rewrite);
+      if (mode === 'paste_only') {
+        const sendStatuses = new Set(drafts.map((draft) => draft.send_status));
+        if (sendStatuses.size > 1) {
+          return fulfillError(
+            route,
+            400,
+            'MIXED_SEND_STATUS',
+            'Mixed send status selection is not allowed',
+          );
+        }
+        if (
+          drafts.some(
+            (draft) =>
+              draft.status === 'invalid' ||
+              !draft.target_conversation_name ||
+              !draft.draft_text.trim(),
+          )
+        ) {
+          return fulfillError(
+            route,
+            400,
+            'BROADCAST_EXECUTION_DRAFT_NOT_READY',
+            'Draft is not ready for paste-only execution',
+          );
+        }
+        if (
+          drafts.some((draft) => draft.send_status === 'sent') &&
+          !(allowSentRewrite && drafts.length === 1)
+        ) {
+          return fulfillError(
+            route,
+            400,
+            'INVALID_SEND_STATUS',
+            'Sent drafts cannot be included in bulk write',
+          );
+        }
+        const duplicateTargets = drafts
+          .map((draft) => String(draft.target_conversation_name || '').trim())
+          .filter(
+            (target, index, allTargets) =>
+              target && allTargets.indexOf(target) !== index,
+          );
+        if (duplicateTargets.length > 0) {
+          return fulfillError(
+            route,
+            409,
+            'DUPLICATE_TARGET_CONVERSATION',
+            'Duplicate target conversations are not allowed in one batch',
+          );
+        }
+      }
       const timestamp = now();
       const batchId = Number(
         nextId(state, 'broadcast-execution-batch').split('-').pop(),
@@ -2473,7 +2523,7 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
   if (path === '/api/v1/broadcast/executors/health' && method === 'GET') {
     return fulfillJson(route, {
       channel: 'wxwork_database',
-      status: 'healthy',
+      status: 'ready',
       protocol_version: '1.0.0',
       runtime_version: '1.0.0',
       capability: {
@@ -2569,6 +2619,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
               render_variables: { customer_name: 'Acme' },
               draft_text: 'Hello Acme',
               status: 'pending_review' as const,
+              send_status: 'pending' as const,
+              sent_at: null,
               error_message: null,
               drafts_stale: false,
               attachments_stale: false,
@@ -2589,6 +2641,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
               render_variables: { customer_name: 'Northwind Team' },
               draft_text: 'Hello Northwind Team',
               status: 'pending_review' as const,
+              send_status: 'pending' as const,
+              sent_at: null,
               error_message: null,
               drafts_stale: false,
               attachments_stale: false,
@@ -2609,6 +2663,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
               render_variables: {},
               draft_text: '',
               status: 'invalid' as const,
+              send_status: 'pending' as const,
+              sent_at: null,
               error_message: '未匹配到群聊',
               drafts_stale: false,
               created_at: now(),
@@ -2622,7 +2678,15 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       if (importBatchId && item.import_batch_id !== importBatchId) {
         return false;
       }
-      if (status && item.status !== status) {
+      if (!status || status === 'all') {
+        if (item.status === 'invalid') {
+          return false;
+        }
+      } else if (status === 'pending' || status === 'sent') {
+        if (item.status === 'invalid' || item.send_status !== status) {
+          return false;
+        }
+      } else if (item.status !== status) {
         return false;
       }
       if (keyword) {
@@ -2658,17 +2722,11 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     if (method === 'PUT') {
       const body = parseJsonBody(route);
       const nextText = String(body.draft_text || '');
-      const nextStatus =
-        draft.status === 'ready' ? 'pending_review' : draft.status;
       draft.draft_text = nextText;
-      draft.status = nextStatus;
       draft.updated_at = now();
       return fulfillJson(route, {
         ...draft,
-        message:
-          draft.status === 'pending_review'
-            ? '草稿内容已修改，请重新确认'
-            : null,
+        message: null,
       });
     }
   }
@@ -2678,20 +2736,64 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     const draftIds = Array.isArray(body.draft_ids)
       ? body.draft_ids.map((item) => Number(item))
       : [];
-    const status = String(body.status || '') as BroadcastDraftMock['status'];
+    const status = String(body.status || '');
+    const selectedDrafts = state.broadcastDrafts.filter((draft) =>
+      draftIds.includes(draft.id),
+    );
+    if (selectedDrafts.length !== draftIds.length) {
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_DRAFT_NOT_FOUND',
+        'Draft not found',
+      );
+    }
+    if (status === 'pending' || status === 'sent') {
+      const sendStatuses = new Set(
+        selectedDrafts.map((draft) => draft.send_status),
+      );
+      if (sendStatuses.size !== 1) {
+        return fulfillError(
+          route,
+          400,
+          'MIXED_SEND_STATUS',
+          'Mixed send status selection is not allowed',
+        );
+      }
+      const expectedSource = status === 'sent' ? 'pending' : 'sent';
+      if (
+        selectedDrafts.some(
+          (draft) =>
+            draft.status === 'invalid' || draft.send_status !== expectedSource,
+        )
+      ) {
+        return fulfillError(
+          route,
+          400,
+          'INVALID_SEND_STATUS',
+          'Selected drafts are not eligible for this send-status transition',
+        );
+      }
+    }
     let updatedCount = 0;
     state.broadcastDrafts = state.broadcastDrafts.map((draft) => {
       if (!draftIds.includes(draft.id)) {
         return draft;
       }
       updatedCount += 1;
-      return {
+      const nextDraft: BroadcastDraftMock = {
         ...draft,
-        status,
         attachments_stale: false,
         updated_at: now(),
         message: null,
       };
+      if (status === 'pending' || status === 'sent') {
+        nextDraft.send_status = status;
+        nextDraft.sent_at = status === 'sent' ? now() : null;
+      } else {
+        nextDraft.status = status as BroadcastDraftMock['status'];
+      }
+      return nextDraft;
     });
     return fulfillJson(route, { updated_count: updatedCount });
   }

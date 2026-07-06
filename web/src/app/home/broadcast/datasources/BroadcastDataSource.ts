@@ -325,6 +325,13 @@ function fromApiImportGroupRows(
 }
 
 function fromApiDraft(draft: ApiBroadcastDraft): BroadcastDraftDetail {
+  const businessStatus =
+    draft.send_status ??
+    (draft.status === 'sent'
+      ? 'sent'
+      : draft.status === 'invalid'
+        ? 'invalid'
+        : 'pending');
   return {
     id: draft.id,
     botUuid: draft.bot_uuid,
@@ -338,7 +345,10 @@ function fromApiDraft(draft: ApiBroadcastDraft): BroadcastDraftDetail {
     templateContentSnapshot: draft.template_content_snapshot,
     renderVariables: draft.render_variables,
     draftText: draft.draft_text,
-    status: draft.status,
+    status: businessStatus,
+    sendStatus: businessStatus === 'invalid' ? undefined : businessStatus,
+    sentAt: draft.sent_at ?? null,
+    legacyStatus: draft.legacy_status ?? draft.status,
     errorMessage: draft.error_message,
     draftsStale: draft.drafts_stale,
     attachmentsStale: draft.attachments_stale ?? false,
@@ -346,7 +356,7 @@ function fromApiDraft(draft: ApiBroadcastDraft): BroadcastDraftDetail {
     updatedAt: draft.updated_at,
     createdAt: draft.created_at,
     message: draft.message ?? null,
-    progressLabel: BROADCAST_STATUS_LABELS[draft.status],
+    progressLabel: BROADCAST_STATUS_LABELS[businessStatus],
     operator: '',
   };
 }
@@ -680,6 +690,9 @@ export interface BroadcastDataSource {
     draftIds: number[],
     mode: 'paste_only' | 'send',
     operator: string,
+    options?: {
+      allowSentRewrite?: boolean;
+    },
   ) => Promise<BroadcastExecutionBatchSummary>;
   startExecutionBatch: (
     scope: BroadcastScope,
@@ -1106,12 +1119,13 @@ export function createBroadcastDataSource(): BroadcastDataSource {
         updatedCount: response.updated_count,
       };
     },
-    createExecutionBatch: async (scope, draftIds, mode, operator) =>
+    createExecutionBatch: async (scope, draftIds, mode, operator, options) =>
       fromApiExecutionBatch(
         await backendClient.createBroadcastExecutionBatch(toApiScope(scope), {
           draft_ids: draftIds,
           mode,
           operator,
+          allow_sent_rewrite: options?.allowSentRewrite,
         }),
       ),
     startExecutionBatch: async (scope, batchId, operator) =>

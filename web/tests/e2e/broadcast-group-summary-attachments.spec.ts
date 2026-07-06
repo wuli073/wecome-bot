@@ -347,7 +347,7 @@ test.describe('broadcast group summary and attachments', () => {
         body: JSON.stringify(
           ok({
             channel: 'wxwork_database',
-            status: 'healthy',
+            status: 'ready',
             protocol_version: '1.0.0',
             runtime_version: '1.0.0',
             capability: {
@@ -435,13 +435,10 @@ test.describe('broadcast group summary and attachments', () => {
     await page.getByRole('tab', { name: '审核发送' }).click();
     await expect(page.locator('body')).toContainText('附件已变更');
     await expect(
-      page.getByTestId('broadcast-draft-confirm-button'),
+      page.getByTestId('broadcast-draft-paste-button'),
     ).toBeDisabled();
     await expect(
-      page.getByTestId('broadcast-draft-select-all-checkbox'),
-    ).toBeDisabled();
-    await expect(
-      page.getByTestId('broadcast-draft-create-execution-batch-button'),
+      page.getByTestId('broadcast-draft-batch-write-button'),
     ).toBeDisabled();
   });
 });

@@ -12,7 +12,7 @@ export type BroadcastImportGroupMatchStatus =
   | BroadcastImportMatchStatus
   | 'conflict';
 
-export type BroadcastDraftStatus = 'pending_review' | 'ready' | 'invalid';
+export type BroadcastDraftStatus = 'pending' | 'sent' | 'invalid';
 
 export type BroadcastStatus =
   | BroadcastDraftStatus
@@ -21,7 +21,7 @@ export type BroadcastStatus =
   | 'failed'
   | 'completed';
 
-export type BroadcastStatusFilter = 'all' | BroadcastDraftStatus;
+export type BroadcastStatusFilter = 'all' | 'pending' | 'sent';
 
 export type BroadcastMergeMode =
   | 'first'
@@ -247,6 +247,9 @@ export interface BroadcastDraft {
   status: BroadcastStatus;
   draftText: string;
   errorMessage?: string | null;
+  sendStatus?: 'pending' | 'sent';
+  sentAt?: string | null;
+  legacyStatus?: string | null;
   draftsStale?: boolean;
   attachmentsStale?: boolean;
   attachments?: BroadcastAttachment[];
@@ -262,7 +265,7 @@ export interface BroadcastDraftDetail extends BroadcastDraft {
 
 export interface BroadcastDraftFilters {
   importBatchId?: number;
-  status?: BroadcastDraftStatus | 'all';
+  status?: BroadcastStatusFilter;
   keyword?: string;
 }
 

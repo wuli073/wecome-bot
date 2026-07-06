@@ -927,7 +927,12 @@ export interface ApiBroadcastImportGroupRowsResponse {
   rows: ApiBroadcastImportRow[];
 }
 
-export type ApiBroadcastDraftStatus = 'pending_review' | 'ready' | 'invalid';
+export type ApiBroadcastDraftSendStatus = 'pending' | 'sent';
+export type ApiBroadcastDraftStatus =
+  | 'pending_review'
+  | 'ready'
+  | 'invalid'
+  | ApiBroadcastDraftSendStatus;
 
 export interface ApiBroadcastDraft {
   id: number;
@@ -942,6 +947,9 @@ export interface ApiBroadcastDraft {
   render_variables: Record<string, string>;
   draft_text: string;
   status: ApiBroadcastDraftStatus;
+  send_status?: ApiBroadcastDraftSendStatus | null;
+  sent_at?: string | null;
+  legacy_status?: 'pending_review' | 'ready' | 'invalid' | null;
   error_message: string | null;
   drafts_stale: boolean;
   attachments_stale?: boolean;

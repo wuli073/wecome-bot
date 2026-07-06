@@ -806,6 +806,8 @@ class BroadcastRepository:
         connector_id: str,
         import_batch_id: int | None = None,
         status: str | None = None,
+        send_status: str | None = None,
+        exclude_invalid: bool = False,
         keyword: str | None = None,
         conn=None,
     ):
@@ -817,6 +819,16 @@ class BroadcastRepository:
             stmt = stmt.where(persistence_broadcast.BroadcastDraft.import_batch_id == import_batch_id)
         if status:
             stmt = stmt.where(persistence_broadcast.BroadcastDraft.status == status)
+        if send_status:
+            stmt = stmt.where(
+                sqlalchemy.func.coalesce(
+                    persistence_broadcast.BroadcastDraft.send_status,
+                    'pending',
+                )
+                == send_status
+            )
+        if exclude_invalid:
+            stmt = stmt.where(persistence_broadcast.BroadcastDraft.status != 'invalid')
         if keyword:
             like_value = f'%{keyword}%'
             stmt = stmt.where(
@@ -1276,6 +1288,40 @@ class BroadcastRepository:
                 persistence_broadcast.BroadcastDraft.connector_id == connector_id,
             )
             .values({'attachments_stale': attachments_stale}),
+            conn=conn,
+        )
+        return int(result.rowcount or 0)
+
+    async def update_draft_send_statuses(
+        self,
+        *,
+        draft_ids: list[int],
+        bot_uuid: str,
+        connector_id: str,
+        current_send_status: str,
+        target_send_status: str,
+        sent_at,
+        conn=None,
+    ) -> int:
+        unique_ids = list(dict.fromkeys(int(draft_id) for draft_id in draft_ids))
+        if not unique_ids:
+            return 0
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastDraft)
+            .where(
+                persistence_broadcast.BroadcastDraft.id.in_(unique_ids),
+                persistence_broadcast.BroadcastDraft.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastDraft.connector_id == connector_id,
+                persistence_broadcast.BroadcastDraft.status != 'invalid',
+                sqlalchemy.func.coalesce(persistence_broadcast.BroadcastDraft.send_status, 'pending')
+                == current_send_status,
+            )
+            .values(
+                {
+                    'send_status': target_send_status,
+                    'sent_at': sent_at,
+                }
+            ),
             conn=conn,
         )
         return int(result.rowcount or 0)
