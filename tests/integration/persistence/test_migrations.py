@@ -441,6 +441,201 @@ class TestSQLiteMigrationUpgrade:
         assert 'broadcast_send_confirmations' in created_tables
 
     @pytest.mark.asyncio
+    async def test_broadcast_group_template_assignment_tables_exist_after_upgrade(self, sqlite_engine):
+        """Group template assignment table, index, unique constraint, and FKs exist after upgrade."""
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await run_alembic_stamp(sqlite_engine, '0001_baseline')
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_schema(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                table_names = set(inspector.get_table_names())
+                indexes = {
+                    index['name']
+                    for index in inspector.get_indexes(
+                        'broadcast_import_group_template_assignments'
+                    )
+                }
+                uniques = {
+                    tuple(sorted(item['column_names']))
+                    for item in inspector.get_unique_constraints(
+                        'broadcast_import_group_template_assignments'
+                    )
+                }
+                foreign_keys = inspector.get_foreign_keys(
+                    'broadcast_import_group_template_assignments'
+                )
+                return table_names, indexes, uniques, foreign_keys
+
+            table_names, indexes, uniques, foreign_keys = await conn.run_sync(inspect_schema)
+
+        assert 'broadcast_import_group_template_assignments' in table_names
+        assert 'ix_bc_imp_group_tpl_assign_batch' in indexes
+        assert tuple(sorted(['import_batch_id', 'group_key'])) in uniques
+        assert any(
+            fk['referred_table'] == 'broadcast_import_batches'
+            and (fk.get('options') or {}).get('ondelete') == 'CASCADE'
+            for fk in foreign_keys
+        )
+        assert any(
+            fk['referred_table'] == 'broadcast_templates'
+            and (fk.get('options') or {}).get('ondelete') == 'SET NULL'
+            for fk in foreign_keys
+        )
+
+    @pytest.mark.asyncio
+    async def test_broadcast_group_template_assignment_revision_metadata_is_correct(self, sqlite_engine):
+        """Group template assignment migration metadata is correct and chained from 0019."""
+        script_path = _get_revision_script('0020_bc_group_tpl')
+        assert script_path.exists(), 'Expected 0020_bc_group_tpl migration script to exist'
+
+        module = importlib.import_module('langbot.pkg.persistence.alembic.versions.0020_bc_group_tpl')
+        assert len(module.revision) <= 32
+        assert module.down_revision == '0019_bc_send_status'
+
+    @pytest.mark.asyncio
+    async def test_broadcast_group_template_assignment_models_are_registered_in_metadata(self, sqlite_engine):
+        """Group template assignment ORM model appears in metadata and create_all creates the table."""
+        table_names = set(Base.metadata.tables)
+        assert 'broadcast_import_group_template_assignments' in table_names
+
+        async with sqlite_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+            def inspect_tables(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                return set(inspector.get_table_names())
+
+            created_tables = await conn.run_sync(inspect_tables)
+
+        assert 'broadcast_import_group_template_assignments' in created_tables
+
+    @pytest.mark.asyncio
+    async def test_broadcast_target_conversation_id_revision_metadata_is_correct(self, sqlite_engine):
+        """Target conversation id migration metadata is correct and chained from 0020."""
+        script_path = _get_revision_script('0021_bc_target_conv_id')
+        assert script_path.exists(), 'Expected 0021_bc_target_conv_id migration script to exist'
+
+        module = importlib.import_module(
+            'langbot.pkg.persistence.alembic.versions.0021_bc_target_conv_id'
+        )
+        assert len(module.revision) <= 32
+        assert module.down_revision == '0020_bc_group_tpl'
+
+    @pytest.mark.asyncio
+    async def test_broadcast_target_conversation_id_migration_adds_and_removes_columns(self, sqlite_engine):
+        """Upgrade from 0020 adds target conversation id columns and downgrade removes them."""
+        async with sqlite_engine.begin() as conn:
+            def setup_legacy_0020(sync_conn):
+                sync_conn.exec_driver_sql(
+                    """
+                    CREATE TABLE alembic_version (
+                        version_num VARCHAR(32) NOT NULL
+                    )
+                    """
+                )
+                sync_conn.exec_driver_sql(
+                    "INSERT INTO alembic_version (version_num) VALUES ('0020_bc_group_tpl')"
+                )
+                sync_conn.exec_driver_sql(
+                    """
+                    CREATE TABLE broadcast_group_rules (
+                        id INTEGER NOT NULL PRIMARY KEY,
+                        bot_uuid VARCHAR(255) NOT NULL,
+                        connector_id VARCHAR(255) NOT NULL,
+                        source_value VARCHAR(255) NOT NULL,
+                        match_type VARCHAR(50) NOT NULL,
+                        match_expression VARCHAR(1024) NOT NULL,
+                        target_conversation_name VARCHAR(255) NOT NULL,
+                        priority INTEGER NOT NULL DEFAULT 0,
+                        enabled BOOLEAN NOT NULL DEFAULT 1,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL
+                    )
+                    """
+                )
+                sync_conn.exec_driver_sql(
+                    """
+                    CREATE TABLE broadcast_import_rows (
+                        id INTEGER NOT NULL PRIMARY KEY,
+                        import_batch_id INTEGER NOT NULL,
+                        source_row_number INTEGER NOT NULL,
+                        raw_data JSON NOT NULL,
+                        group_value VARCHAR(255),
+                        matched_conversation_name VARCHAR(255),
+                        matched_rule_id INTEGER,
+                        match_status VARCHAR(32) NOT NULL,
+                        error_message TEXT,
+                        created_at DATETIME NOT NULL
+                    )
+                    """
+                )
+                sync_conn.exec_driver_sql(
+                    """
+                    CREATE TABLE broadcast_drafts (
+                        id INTEGER NOT NULL PRIMARY KEY,
+                        bot_uuid VARCHAR(255) NOT NULL,
+                        connector_id VARCHAR(255) NOT NULL,
+                        import_batch_id INTEGER NOT NULL,
+                        group_value VARCHAR(255) NOT NULL,
+                        target_conversation_name VARCHAR(255),
+                        template_id INTEGER,
+                        template_name_snapshot VARCHAR(255) NOT NULL,
+                        template_content_snapshot TEXT NOT NULL,
+                        render_variables JSON NOT NULL,
+                        draft_text TEXT NOT NULL,
+                        status VARCHAR(32) NOT NULL,
+                        send_status VARCHAR(32),
+                        sent_at DATETIME,
+                        error_message TEXT,
+                        attachments_stale BOOLEAN NOT NULL DEFAULT 0,
+                        drafts_stale BOOLEAN NOT NULL DEFAULT 0,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL
+                    )
+                    """
+                )
+
+            await conn.run_sync(setup_legacy_0020)
+
+        await run_alembic_upgrade(sqlite_engine, 'head')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_upgraded(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                return (
+                    {col['name'] for col in inspector.get_columns('broadcast_group_rules')},
+                    {col['name'] for col in inspector.get_columns('broadcast_import_rows')},
+                    {col['name'] for col in inspector.get_columns('broadcast_drafts')},
+                )
+
+            rule_columns, import_row_columns, draft_columns = await conn.run_sync(inspect_upgraded)
+
+        assert 'target_conversation_id' in rule_columns
+        assert 'matched_conversation_id' in import_row_columns
+        assert 'target_conversation_id' in draft_columns
+
+        await run_alembic_downgrade(sqlite_engine, '0020_bc_group_tpl')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_downgraded(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                return (
+                    {col['name'] for col in inspector.get_columns('broadcast_group_rules')},
+                    {col['name'] for col in inspector.get_columns('broadcast_import_rows')},
+                    {col['name'] for col in inspector.get_columns('broadcast_drafts')},
+                )
+
+            rule_columns, import_row_columns, draft_columns = await conn.run_sync(inspect_downgraded)
+
+        assert 'target_conversation_id' not in rule_columns
+        assert 'matched_conversation_id' not in import_row_columns
+        assert 'target_conversation_id' not in draft_columns
+
+    @pytest.mark.asyncio
     async def test_broadcast_attachment_relative_path_migration_repairs_already_applied_0017_db(self, sqlite_engine):
         """A DB stamped at 0017 without relative_path should still be repaired by head upgrade."""
         attachment_root = _broadcast_attachment_root()

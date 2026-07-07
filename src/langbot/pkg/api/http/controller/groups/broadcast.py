@@ -270,6 +270,20 @@ class BroadcastRouterGroup(group.RouterGroup):
             except BroadcastError as exc:
                 return self._broadcast_error_response(exc)
 
+        @self.route('/imports/<int:import_id>/group-template-assignments', methods=['PUT'], auth_type=group.AuthType.USER_TOKEN)
+        async def import_group_template_assignments(import_id: int) -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.upsert_import_group_template_assignments(
+                    import_id,
+                    scope,
+                    payload,
+                )
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
         @self.route('/imports/<int:import_id>/groups/<string:group_key>/rows', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
         async def import_group_rows(import_id: int, group_key: str) -> str:
             try:

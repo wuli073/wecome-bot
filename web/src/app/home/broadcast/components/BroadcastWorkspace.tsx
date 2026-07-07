@@ -137,6 +137,32 @@ function canWriteDraftToInput(draft: BroadcastDraft | null): boolean {
   );
 }
 
+function getDraftWriteDisabledReason(
+  draft: BroadcastDraft | null,
+  fallbackReason: string | null,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string | null {
+  if (fallbackReason) {
+    return fallbackReason;
+  }
+  if (!draft) {
+    return t('broadcast.drafts.noDraftSelectedReason');
+  }
+  if (!draft.conversationName.trim()) {
+    return t('broadcast.drafts.pasteMissingConversation');
+  }
+  if (!draft.draftText.trim()) {
+    return t('broadcast.drafts.pasteMissingBody');
+  }
+  if (draft.attachmentsStale) {
+    return t('broadcast.drafts.attachmentsStaleWarning');
+  }
+  if (draft.draftsStale) {
+    return t('broadcast.drafts.staleWarning');
+  }
+  return null;
+}
+
 function getPasteVerificationRuntimeState(
   executorHealth: BroadcastExecutorHealth | null,
 ): Record<string, unknown> | null {
@@ -250,6 +276,7 @@ export default function BroadcastWorkspace() {
   const pasteVerificationSupported = Boolean(
     executorCapability?.supports_paste_verification,
   );
+  const pasteExecutionAvailable = runtimeReady && pasteSupported;
   const pasteVerificationAvailable =
     runtimeReady &&
     pasteSupported &&
@@ -258,29 +285,25 @@ export default function BroadcastWorkspace() {
   const pasteVerificationMethod =
     pasteVerificationState?.method === 'windows_uia'
       ? 'windows_uia'
-      : 'unavailable';
+      : (executorCapability?.content_verification ?? 'unknown');
   const requiresManualConversationOpen = Boolean(
     pasteVerificationState?.requiresManualConversationOpen ??
     executorCapability?.requires_manual_conversation_open,
   );
-  const pasteActionDisabledReason = useMemo(() => {
+  const pasteExecutionDisabledReason = useMemo(() => {
     if (!runtimeReady) {
       return t('common.loading');
     }
     if (!pasteSupported) {
       return t('broadcast.drafts.pasteUnavailable');
     }
-    if (!pasteVerificationSupported || !pasteVerificationAvailable) {
-      return t('broadcast.logs.pasteVerificationUnavailableHint');
-    }
     return null;
-  }, [
-    pasteSupported,
-    pasteVerificationAvailable,
-    pasteVerificationSupported,
-    runtimeReady,
-    t,
-  ]);
+  }, [pasteSupported, runtimeReady, t]);
+  const pasteVerificationHint =
+    pasteExecutionAvailable &&
+    (!pasteVerificationSupported || !pasteVerificationAvailable)
+      ? t('broadcast.logs.pasteVerificationUnavailableHint')
+      : null;
 
   const topTabOptions = useMemo(
     () => [
@@ -361,6 +384,31 @@ export default function BroadcastWorkspace() {
         .filter((draft): draft is BroadcastDraft => draft != null),
     [selectedDraftIds, snapshot.drafts],
   );
+
+  const pasteActionDisabledReason = useMemo(
+    () =>
+      getDraftWriteDisabledReason(activeDraft, pasteExecutionDisabledReason, t),
+    [activeDraft, pasteExecutionDisabledReason, t],
+  );
+
+  const batchWriteDisabledReason = useMemo(() => {
+    if (pasteExecutionDisabledReason) {
+      return pasteExecutionDisabledReason;
+    }
+    if (selectedDrafts.length === 0) {
+      return t('broadcast.drafts.batchWriteNoSelection');
+    }
+    if (selectedDrafts.some((draft) => draft.status !== 'pending')) {
+      return t('broadcast.toasts.batchWritePendingOnly');
+    }
+    for (const draft of selectedDrafts) {
+      const reason = getDraftWriteDisabledReason(draft, null, t);
+      if (reason) {
+        return reason;
+      }
+    }
+    return null;
+  }, [pasteExecutionDisabledReason, selectedDrafts, t]);
 
   useEffect(() => {
     if (activeDraft) {
@@ -1105,9 +1153,9 @@ export default function BroadcastWorkspace() {
   }, [activeDraft, selectedDrafts]);
 
   const handleCreateExecutionBatch = async () => {
-    if (!pasteVerificationAvailable) {
+    if (!pasteExecutionAvailable) {
       toast.error(
-        pasteActionDisabledReason ?? t('broadcast.drafts.pasteUnavailable'),
+        pasteExecutionDisabledReason ?? t('broadcast.drafts.pasteUnavailable'),
       );
       return;
     }
@@ -1163,10 +1211,10 @@ export default function BroadcastWorkspace() {
     if (
       ['start', 'resume'].includes(action) &&
       latestExecutionBatch.mode === 'paste_only' &&
-      !pasteVerificationAvailable
+      !pasteExecutionAvailable
     ) {
       toast.error(
-        pasteActionDisabledReason ?? t('broadcast.drafts.pasteUnavailable'),
+        pasteExecutionDisabledReason ?? t('broadcast.drafts.pasteUnavailable'),
       );
       return;
     }
@@ -1231,14 +1279,17 @@ export default function BroadcastWorkspace() {
     if (pasteRequestInFlight) {
       return;
     }
-    if (!pasteVerificationAvailable) {
+    if (!pasteExecutionAvailable) {
       toast.error(
-        pasteActionDisabledReason ?? t('broadcast.drafts.pasteUnavailable'),
+        pasteExecutionDisabledReason ?? t('broadcast.drafts.pasteUnavailable'),
       );
       return;
     }
     if (!canWriteDraftToInput(draft)) {
-      toast.error(t('broadcast.drafts.pasteMissingConversation'));
+      toast.error(
+        getDraftWriteDisabledReason(draft, null, t) ??
+          t('broadcast.drafts.pasteUnavailable'),
+      );
       return;
     }
     setPasteRequestInFlight(true);
@@ -1786,7 +1837,53 @@ export default function BroadcastWorkspace() {
                 releaseImportBusy();
               }
             }}
-            onGenerateDrafts={async (batchId, templateId) => {
+            onUpdateGroupTemplateAssignments={async (batchId, items) => {
+              setImportError(null);
+              try {
+                await dataSource.updateImportGroupTemplateAssignments(
+                  scope,
+                  batchId,
+                  items,
+                );
+                const templateById = new Map(
+                  snapshot.templates.map((template) => [template.id, template]),
+                );
+                applyImportGroupsDetail(
+                  selectedImportGroupsDetailRef.current
+                    ? {
+                        ...selectedImportGroupsDetailRef.current,
+                        groups:
+                          selectedImportGroupsDetailRef.current.groups.map(
+                            (group) => {
+                              const assignment = items.find(
+                                (item) => item.groupKey === group.groupKey,
+                              );
+                              if (!assignment) {
+                                return group;
+                              }
+                              const template =
+                                templateById.get(assignment.templateId) ?? null;
+                              return {
+                                ...group,
+                                templateId: assignment.templateId,
+                                templateName: template?.name ?? null,
+                                templateEnabled: template?.enabled ?? null,
+                              };
+                            },
+                          ),
+                      }
+                    : null,
+                );
+                toast.success(
+                  t('broadcast.toasts.groupTemplateAssignmentsSaved'),
+                );
+              } catch (error) {
+                const message = getErrorMessage(error, t('common.error'));
+                setImportError(message);
+                toast.error(message);
+              }
+            }}
+            onGenerateDrafts={async (batchId, groupKeys) => {
               const requestGeneration = ++importRequestGenerationRef.current;
               const releaseImportBusy = beginImportBusy();
               setImportError(null);
@@ -1794,7 +1891,10 @@ export default function BroadcastWorkspace() {
                 const result = await dataSource.generateImportDrafts(
                   scope,
                   batchId,
-                  templateId,
+                  {
+                    groupKeys,
+                    overwriteExisting: true,
+                  },
                 );
                 await refreshImports(scope, {
                   preferredImportId: batchId,
@@ -1805,7 +1905,11 @@ export default function BroadcastWorkspace() {
                 await refreshDrafts(scope, batchId);
                 toast.success(
                   t('broadcast.toasts.draftsGenerated', {
-                    count: result.totalGroupCount,
+                    count:
+                      result.generatedGroupKeys?.length ??
+                      result.totalGroupCount,
+                    createdCount: result.createdCount ?? 0,
+                    updatedCount: result.updatedCount ?? 0,
                   }),
                 );
               } catch (error) {
@@ -1862,13 +1966,14 @@ export default function BroadcastWorkspace() {
               selectedDraftIds={selectedDraftIds}
               busy={draftBusy}
               canBatchWrite={
-                pasteVerificationAvailable &&
+                pasteExecutionAvailable &&
                 selectedDrafts.length > 0 &&
                 selectedDrafts.every(
                   (draft) =>
                     draft.status === 'pending' && canWriteDraftToInput(draft),
                 )
               }
+              batchWriteDisabledReason={batchWriteDisabledReason}
               canBatchMarkSent={
                 selectedDrafts.length > 0 &&
                 selectedDrafts.every((draft) => draft.status === 'pending')
@@ -1892,9 +1997,10 @@ export default function BroadcastWorkspace() {
               draftEditorText={draftEditorText}
               busy={draftBusy}
               canPasteDraft={
-                pasteVerificationAvailable && canWriteDraftToInput(activeDraft)
+                pasteExecutionAvailable && canWriteDraftToInput(activeDraft)
               }
               pasteDisabledReason={pasteActionDisabledReason}
+              pasteHint={pasteVerificationHint}
               onStartEdit={handleStartEdit}
               onDraftEditorTextChange={setDraftEditorText}
               onSaveDraft={() => void handleSaveDraft()}
@@ -1984,10 +2090,12 @@ export default function BroadcastWorkspace() {
             latestBatch={latestExecutionBatch}
             executorCapability={executorCapability}
             executorHealth={executorHealth}
+            pasteExecutionAvailable={pasteExecutionAvailable}
             pasteVerificationAvailable={pasteVerificationAvailable}
             pasteVerificationMethod={pasteVerificationMethod}
             requiresManualConversationOpen={requiresManualConversationOpen}
-            pasteActionDisabledReason={pasteActionDisabledReason}
+            pasteActionDisabledReason={pasteExecutionDisabledReason}
+            pasteVerificationHint={pasteVerificationHint}
             busy={draftBusy}
             onStartBatch={() => void handleBatchAction('start')}
             onPauseBatch={() => void handleBatchAction('pause')}

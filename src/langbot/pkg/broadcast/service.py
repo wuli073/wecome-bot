@@ -124,6 +124,21 @@ FAILED_RUNTIME_PASTE_ERROR_CODES = {
     ATTACHMENT_PASTE_FAILED,
 }
 
+DRAFT_GENERATION_MODIFIED_FIELDS = [
+    'template_id',
+    'template_name_snapshot',
+    'template_content_snapshot',
+    'render_variables',
+    'draft_text',
+    'target_conversation_id',
+    'target_conversation_name',
+    'attachment_snapshots',
+    'status',
+    'error_message',
+    'attachments_stale',
+    'updated_at',
+]
+
 
 class BroadcastService:
     def __init__(self, ap) -> None:
@@ -268,7 +283,6 @@ class BroadcastService:
     async def create_group_rule(self, scope: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         validated_scope = await self.validate_scope(scope)
         normalized = self._normalize_group_rule_payload(payload)
-        await self._validate_group_rule_target(validated_scope, normalized['target_conversation_name'])
         try:
             async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
                 rule_id = await self.repository.create_group_rule(
@@ -291,7 +305,6 @@ class BroadcastService:
     ) -> dict[str, Any]:
         validated_scope = await self.validate_scope(scope)
         normalized = self._normalize_group_rule_payload(payload)
-        await self._validate_group_rule_target(validated_scope, normalized['target_conversation_name'])
         try:
             async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
                 updated = await self.repository.update_group_rule(
@@ -327,6 +340,7 @@ class BroadcastService:
             return {
                 'matched': False,
                 'rule_id': None,
+                'target_conversation_id': None,
                 'target_conversation_name': None,
                 'match_type': None,
             }
@@ -339,12 +353,14 @@ class BroadcastService:
                 return {
                     'matched': True,
                     'rule_id': int(row.id),
+                    'target_conversation_id': row.target_conversation_id,
                     'target_conversation_name': row.target_conversation_name,
                     'match_type': row.match_type,
                 }
         return {
             'matched': False,
             'rule_id': None,
+            'target_conversation_id': None,
             'target_conversation_name': None,
             'match_type': None,
         }
@@ -501,7 +517,13 @@ class BroadcastService:
             self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, row)
             for row in self._iter_matchable_group_rules(rules)
         ]
-        group_names = [item.name for item in await self.repository.list_group_names(**validated_scope)]
+        group_names = [
+            self.ap.persistence_mgr.serialize_model(
+                persistence_broadcast.BroadcastGroupName,
+                item,
+            )
+            for item in await self.repository.list_group_names(**validated_scope)
+        ]
         classified_rows = classify_import_rows(
             rows=list(parsed['rows']),
             group_field=str(variable_profile.group_field),
@@ -606,10 +628,32 @@ class BroadcastService:
             bot_uuid=validated_scope['bot_uuid'],
             connector_id=validated_scope['connector_id'],
         )
+        assignment_rows = await self.repository.list_import_group_template_assignments(
+            import_batch_id=import_id,
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+        )
         attachment_count_by_group_key: dict[str, int] = {}
         for item in attachment_rows:
             group_key = str(item['group_key'])
             attachment_count_by_group_key[group_key] = attachment_count_by_group_key.get(group_key, 0) + 1
+        assignment_by_group_key = {
+            str(item.group_key): item for item in assignment_rows
+        }
+        template_ids = {
+            int(item.template_id)
+            for item in assignment_rows
+            if getattr(item, 'template_id', None) is not None
+        }
+        template_by_id: dict[int, Any] = {}
+        for template_id in template_ids:
+            template = await self.repository.get_template(
+                template_id,
+                bot_uuid=validated_scope['bot_uuid'],
+                connector_id=validated_scope['connector_id'],
+            )
+            if template is not None:
+                template_by_id[int(template.id)] = template
 
         summaries = await self.repository.list_all_import_group_summaries(
             import_batch_id=import_id,
@@ -629,6 +673,17 @@ class BroadcastService:
             )
             for item in summaries
         ]
+        for group in groups:
+            assignment = assignment_by_group_key.get(str(group['group_key']))
+            template_id = int(assignment.template_id) if assignment and assignment.template_id is not None else None
+            template = template_by_id.get(template_id) if template_id is not None else None
+            group['template_id'] = template_id
+            group['template_name'] = str(template.name) if template is not None else None
+            group['template_enabled'] = (
+                bool(template.enabled)
+                if template is not None
+                else (False if template_id is not None else None)
+            )
         match_status = str(filters.get('match_status') or '').strip() or None
         if match_status and match_status != 'all':
             groups = [item for item in groups if item['match_status'] == match_status]
@@ -651,6 +706,70 @@ class BroadcastService:
             'order_number_field_configured': order_number_source_field is not None,
             'groups': page_groups,
         }
+
+    async def upsert_import_group_template_assignments(
+        self,
+        import_id: int,
+        scope: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        validated_scope = await self.validate_scope(scope)
+        batch = await self.repository.get_import_batch(import_id, **validated_scope)
+        if batch is None:
+            raise BroadcastError(BROADCAST_IMPORT_NOT_FOUND, '当前导入批次不存在或已被删除')
+
+        raw_items = payload.get('items') or []
+        if not isinstance(raw_items, list) or not raw_items:
+            raise BroadcastError(BATCH_VALIDATION_FAILED, '请至少提交一条分组模板设置')
+
+        summaries = await self.repository.list_all_import_group_summaries(
+            import_batch_id=import_id,
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+            order_number_source_field=None,
+        )
+        available_group_keys = {
+            self._build_import_group_key(import_id, item.get('group_value'))
+            for item in summaries
+        }
+
+        normalized_items: list[dict[str, Any]] = []
+        seen_group_keys: set[str] = set()
+        for item in raw_items:
+            group_key = str((item or {}).get('group_key') or '').strip()
+            if not group_key:
+                raise BroadcastError(BROADCAST_IMPORT_GROUP_NOT_FOUND, '当前客户分组不存在或已被删除')
+            if group_key in seen_group_keys:
+                raise BroadcastError(BATCH_VALIDATION_FAILED, '同一请求中不能重复设置同一个分组')
+            seen_group_keys.add(group_key)
+            if group_key not in available_group_keys:
+                raise BroadcastError(BROADCAST_IMPORT_GROUP_NOT_FOUND, '当前客户分组不存在或已被删除')
+
+            template_id = int((item or {}).get('template_id') or 0)
+            template = await self.repository.get_template(
+                template_id,
+                bot_uuid=validated_scope['bot_uuid'],
+                connector_id=validated_scope['connector_id'],
+            )
+            if template is None:
+                raise BroadcastError(BROADCAST_TEMPLATE_NOT_FOUND, '当前模板不存在或已被删除')
+            if not bool(template.enabled):
+                raise BroadcastError(BATCH_VALIDATION_FAILED, '已停用的模板不能用于生成新草稿')
+            normalized_items.append(
+                {
+                    'group_key': group_key,
+                    'template_id': template_id,
+                }
+            )
+
+        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            await self.repository.upsert_import_group_template_assignments(
+                conn,
+                import_batch_id=import_id,
+                items=normalized_items,
+            )
+
+        return {'items': normalized_items}
 
     async def list_import_group_rows(
         self,
@@ -759,7 +878,13 @@ class BroadcastService:
             self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, row)
             for row in self._iter_matchable_group_rules(rules)
         ]
-        group_names = [item.name for item in await self.repository.list_group_names(**validated_scope)]
+        group_names = [
+            self.ap.persistence_mgr.serialize_model(
+                persistence_broadcast.BroadcastGroupName,
+                item,
+            )
+            for item in await self.repository.list_group_names(**validated_scope)
+        ]
         classified_rows = classify_import_rows(
             rows=[
                 {
@@ -804,27 +929,7 @@ class BroadcastService:
         validated_scope = await self.validate_scope(scope)
         batch = await self.repository.get_import_batch(import_id, **validated_scope)
         if batch is None:
-            raise BroadcastError(BROADCAST_IMPORT_NOT_FOUND, '褰撳墠瀵煎叆鎵规涓嶅瓨鍦ㄦ垨宸茶鍒犻櫎')
-
-        ready_drafts = await self.repository.list_drafts(
-            bot_uuid=validated_scope['bot_uuid'],
-            connector_id=validated_scope['connector_id'],
-            import_batch_id=import_id,
-            status='ready',
-        )
-        if ready_drafts:
-            raise BroadcastError(
-                BROADCAST_IMPORT_READY_DRAFT_EXISTS,
-                '当前批次存在已确认草稿，请先撤回确认后再重新生成。',
-            )
-
-        template = await self.repository.get_template(
-            int(payload.get('template_id') or 0),
-            bot_uuid=validated_scope['bot_uuid'],
-            connector_id=validated_scope['connector_id'],
-        )
-        if template is None:
-            raise BroadcastError(BROADCAST_TEMPLATE_NOT_FOUND, '褰撳墠妯℃澘涓嶅瓨鍦ㄦ垨宸茶鍒犻櫎')
+            raise BroadcastError(BROADCAST_IMPORT_NOT_FOUND, '当前导入批次不存在或已被删除')
 
         variable_profile = await self.repository.get_variable_profile(**validated_scope)
         rows = await self.repository.list_import_rows(
@@ -832,78 +937,227 @@ class BroadcastService:
             bot_uuid=validated_scope['bot_uuid'],
             connector_id=validated_scope['connector_id'],
         )
-        grouped_rows: dict[str, list[Any]] = {}
+        grouped_rows: dict[str | None, list[Any]] = {}
         for row in rows:
-            key = row.group_value or '__invalid__'
-            grouped_rows.setdefault(key, []).append(row)
+            grouped_rows.setdefault(row.group_value, []).append(row)
 
-        drafts = []
-        pending_review_count = 0
-        invalid_count = 0
-        unmatched_group_count = 0
-        for group_key, group_rows in grouped_rows.items():
-            first_row = group_rows[0]
+        summaries = await self.repository.list_all_import_group_summaries(
+            import_batch_id=import_id,
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+            order_number_source_field=self._resolve_order_number_source_field(variable_profile),
+        )
+        summary_by_group_key = {
+            self._build_import_group_key(import_id, item.get('group_value')): item
+            for item in summaries
+        }
+
+        requested_group_keys = payload.get('group_keys')
+        fallback_template_id = int(payload.get('template_id') or 0) or None
+        overwrite_existing = bool(payload.get('overwrite_existing'))
+        if not isinstance(requested_group_keys, list):
+            raise BroadcastError(BATCH_VALIDATION_FAILED, '请先选择至少一个分组')
+        selected_group_keys = [
+            str(item or '').strip()
+            for item in requested_group_keys
+            if str(item or '').strip()
+        ]
+
+        if not selected_group_keys:
+            raise BroadcastError(BATCH_VALIDATION_FAILED, '请先选择至少一个分组')
+
+        assignment_rows = await self.repository.list_import_group_template_assignments(
+            import_batch_id=import_id,
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+        )
+        assignment_by_group_key = {
+            str(item.group_key): item for item in assignment_rows
+        }
+        existing_drafts = await self.repository.list_drafts(
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+            import_batch_id=import_id,
+        )
+        existing_draft_by_group_value = {
+            str(item.group_value): item for item in existing_drafts
+        }
+
+        validation_errors: list[str] = []
+        seen_group_keys: set[str] = set()
+        selected_specs: list[dict[str, Any]] = []
+        template_cache: dict[int, Any | None] = {}
+
+        for group_key in selected_group_keys:
+            if group_key in seen_group_keys:
+                validation_errors.append(f'{group_key}: 分组重复提交')
+                continue
+            seen_group_keys.add(group_key)
+            summary = summary_by_group_key.get(group_key)
+            if summary is None:
+                validation_errors.append(f'{group_key}: 当前客户分组不存在或已被删除')
+                continue
+
+            group_value = summary.get('group_value')
+            display_group_value = self._display_group_value(group_value)
+            group_summary = self._build_import_group_summary(
+                import_id=import_id,
+                summary=summary,
+                attachment_count=0,
+            )
+            if group_summary['match_status'] != 'matched':
+                validation_errors.append(
+                    f'{display_group_value}: {group_summary["reason"] or "当前分组不可生成草稿"}'
+                )
+                continue
+
+            matched_conversation_id = str(summary.get('matched_conversation_id') or '').strip()
+            matched_conversation_name = str(summary.get('matched_conversation_name') or '').strip()
+            if not matched_conversation_name:
+                validation_errors.append(f'{display_group_value}: 未匹配到群聊')
+                continue
+            if not matched_conversation_id:
+                validation_errors.append(f'{display_group_value}: 未选择稳定目标群聊 ID')
+                continue
+
+            template_id = fallback_template_id
+            if template_id is None:
+                assignment = assignment_by_group_key.get(group_key)
+                template_id = (
+                    int(assignment.template_id)
+                    if assignment and assignment.template_id is not None
+                    else None
+                )
+            if template_id is None:
+                validation_errors.append(f'{display_group_value}: 未选择消息模板')
+                continue
+
+            if template_id not in template_cache:
+                template_cache[template_id] = await self.repository.get_template(
+                    template_id,
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                )
+            template = template_cache[template_id]
+            if template is None:
+                validation_errors.append(f'{display_group_value}: 当前模板不存在或已被删除')
+                continue
+            if not bool(template.enabled):
+                validation_errors.append(f'{display_group_value}: 选中的消息模板已停用')
+                continue
+
+            normalized_group_value = self._display_group_value(group_value)
+            existing_draft = existing_draft_by_group_value.get(normalized_group_value)
+            if existing_draft is not None and self._normalize_draft_send_status(existing_draft) == 'sent':
+                validation_errors.append(
+                    f'{display_group_value}: 已发送草稿不允许覆盖，请先恢复为待发送'
+                )
+                continue
+            if existing_draft is not None and not overwrite_existing:
+                validation_errors.append(f'{display_group_value}: 已存在草稿，请到审核页继续处理')
+                continue
+
+            selected_specs.append(
+                {
+                    'group_key': group_key,
+                    'group_value': group_value,
+                    'display_group_value': display_group_value,
+                    'matched_conversation_id': matched_conversation_id,
+                    'matched_conversation_name': matched_conversation_name,
+                    'template': template,
+                    'template_id': template_id,
+                    'group_rows': grouped_rows.get(group_value, []),
+                    'existing_draft': existing_draft,
+                }
+            )
+
+        if validation_errors:
+            raise BroadcastError(
+                BATCH_VALIDATION_FAILED,
+                validation_errors[0] if len(validation_errors) == 1 else '所选分组校验失败，请修正后重试',
+                validation_errors,
+            )
+
+        draft_operations: list[dict[str, Any]] = []
+        for spec in selected_specs:
             draft = generate_group_draft(
-                group_value=self._display_group_value(first_row.group_value),
-                rows=[{'raw_data': row.raw_data} for row in group_rows],
-                mapping_rules=list(variable_profile.mapping_rules or []),
-                matched_conversation_name=first_row.matched_conversation_name,
-                template_name=str(template.name),
-                template_content=str(template.content),
+                group_value=spec['display_group_value'],
+                rows=[{'raw_data': row.raw_data} for row in spec['group_rows']],
+                mapping_rules=list(variable_profile.mapping_rules or []) if variable_profile is not None else [],
+                matched_conversation_name=spec['matched_conversation_name'],
+                template_name=str(spec['template'].name),
+                template_content=str(spec['template'].content),
                 render_template=safe_render_template,
             )
-            if draft['status'] == 'pending_review':
-                pending_review_count += 1
-            else:
-                invalid_count += 1
-                if draft['error_message'] == '鏈尮閰嶅埌缇よ亰':
-                    unmatched_group_count += 1
-            drafts.append(
+            if draft['status'] != 'pending_review':
+                validation_errors.append(
+                    f'{spec["display_group_value"]}: {draft["error_message"] or "草稿生成失败"}'
+                )
+                continue
+            draft_operations.append(
                 {
                     **validated_scope,
                     'import_batch_id': import_id,
+                    'group_key': spec['group_key'],
                     'group_value': draft['group_value'],
+                    'target_conversation_id': spec['matched_conversation_id'],
                     'target_conversation_name': draft['target_conversation_name'],
-                    'template_id': int(template.id),
+                    'template_id': int(spec['template'].id),
                     'template_name_snapshot': draft['template_name_snapshot'],
                     'template_content_snapshot': draft['template_content_snapshot'],
                     'render_variables': draft['render_variables'],
                     'draft_text': draft['draft_text'],
                     'status': draft['status'],
-                    'send_status': 'pending' if draft['status'] != 'invalid' else None,
+                    'send_status': 'pending',
                     'sent_at': None,
                     'error_message': draft['error_message'],
+                    'existing_draft': spec['existing_draft'],
                 }
             )
 
+        if validation_errors:
+            raise BroadcastError(
+                BATCH_VALIDATION_FAILED,
+                validation_errors[0] if len(validation_errors) == 1 else '所选分组校验失败，请修正后重试',
+                validation_errors,
+            )
+
+        created_count = 0
+        updated_count = 0
+        draft_ids: list[int] = []
+        draft_results: list[dict[str, Any]] = []
         async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
-            await self.repository.replace_drafts(
-                conn,
-                import_batch_id=import_id,
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
-                drafts=drafts,
-            )
-            await self.repository.update_import_batch(
-                import_id,
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
-                updates={'status': 'drafts_generated', 'drafts_stale': False},
-                conn=conn,
-            )
-            stored_drafts = await self.repository.list_drafts(
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
-                import_batch_id=import_id,
-                conn=conn,
-            )
-            for stored_draft in stored_drafts:
-                group_key = self._build_import_group_key(
-                    import_id,
-                    None
-                    if str(stored_draft.group_value) == self._display_group_value(None)
-                    else str(stored_draft.group_value),
-                )
+            for draft_payload in draft_operations:
+                existing_draft = draft_payload.pop('existing_draft')
+                group_key = str(draft_payload.pop('group_key'))
+
+                if existing_draft is not None and overwrite_existing:
+                    draft_id = int(existing_draft.id)
+                    await self.repository.update_draft(
+                        draft_id,
+                        bot_uuid=validated_scope['bot_uuid'],
+                        connector_id=validated_scope['connector_id'],
+                        updates={
+                            'template_id': draft_payload['template_id'],
+                            'template_name_snapshot': draft_payload['template_name_snapshot'],
+                            'template_content_snapshot': draft_payload['template_content_snapshot'],
+                            'render_variables': draft_payload['render_variables'],
+                            'draft_text': draft_payload['draft_text'],
+                            'target_conversation_id': draft_payload['target_conversation_id'],
+                            'target_conversation_name': draft_payload['target_conversation_name'],
+                            'status': draft_payload['status'],
+                            'error_message': draft_payload['error_message'],
+                            'attachments_stale': False,
+                        },
+                        conn=conn,
+                    )
+                    operation = 'updated'
+                    updated_count += 1
+                else:
+                    draft_payload['attachments_stale'] = False
+                    draft_id = await self.repository.create_draft(conn, draft_payload)
+                    operation = 'created'
+                    created_count += 1
                 attachments = await self.repository.list_import_group_attachments(
                     import_batch_id=import_id,
                     bot_uuid=validated_scope['bot_uuid'],
@@ -913,10 +1167,10 @@ class BroadcastService:
                 )
                 await self.repository.replace_draft_attachments(
                     conn,
-                    draft_id=int(stored_draft.id),
+                    draft_id=draft_id,
                     attachments=[
                         {
-                            'draft_id': int(stored_draft.id),
+                            'draft_id': draft_id,
                             'attachment_asset_id': int(item['asset_id']),
                             'original_name_snapshot': str(item['original_name']),
                             'size_bytes_snapshot': int(item['size_bytes']),
@@ -926,19 +1180,33 @@ class BroadcastService:
                         for item in attachments
                     ],
                 )
-                await self.repository.update_draft(
-                    int(stored_draft.id),
-                    bot_uuid=validated_scope['bot_uuid'],
-                    connector_id=validated_scope['connector_id'],
-                    updates={'attachments_stale': False},
-                    conn=conn,
+                draft_ids.append(draft_id)
+                draft_results.append(
+                    {
+                        'group_key': group_key,
+                        'draft_id': draft_id,
+                        'operation': operation,
+                        'modified_fields': list(DRAFT_GENERATION_MODIFIED_FIELDS),
+                    }
                 )
+            await self.repository.update_import_batch(
+                import_id,
+                bot_uuid=validated_scope['bot_uuid'],
+                connector_id=validated_scope['connector_id'],
+                updates={'status': 'drafts_generated', 'drafts_stale': False},
+                conn=conn,
+            )
 
         return {
-            'total_group_count': len(grouped_rows),
-            'pending_review_count': pending_review_count,
-            'invalid_count': invalid_count,
-            'unmatched_group_count': unmatched_group_count,
+            'total_group_count': len(selected_specs),
+            'pending_review_count': len(draft_operations),
+            'invalid_count': 0,
+            'unmatched_group_count': 0,
+            'generated_group_keys': [item['group_key'] for item in selected_specs],
+            'draft_ids': draft_ids,
+            'created_count': created_count,
+            'updated_count': updated_count,
+            'draft_results': draft_results,
         }
 
     async def list_drafts(self, scope: dict[str, Any], filters: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2482,8 +2750,14 @@ class BroadcastService:
         match_type = str(payload.get('match_type') or '').strip()
         expression = str(payload.get('match_expression') or '').strip()
         source_value = str(payload.get('source_value') or '').strip()
+        target_conversation_id = str(payload.get('target_conversation_id') or '').strip()
         target_conversation_name = str(payload.get('target_conversation_name') or '').strip()
-        if match_type not in VALID_MATCH_TYPES or not source_value or not target_conversation_name:
+        if (
+            match_type not in VALID_MATCH_TYPES
+            or not source_value
+            or not target_conversation_id
+            or not target_conversation_name
+        ):
             raise BroadcastError(BROADCAST_GROUP_RULE_REGEX_INVALID)
         if self._is_placeholder_group_rule(
             source_value=source_value,
@@ -2510,6 +2784,7 @@ class BroadcastService:
             'source_value': source_value,
             'match_type': match_type,
             'match_expression': expression,
+            'target_conversation_id': target_conversation_id,
             'target_conversation_name': target_conversation_name,
             'priority': priority,
             'enabled': bool(payload.get('enabled', True)),
@@ -2544,26 +2819,6 @@ class BroadcastService:
                 target_conversation_name=str(getattr(row, 'target_conversation_name', '') or ''),
             )
         ]
-
-    async def _validate_group_rule_target(
-        self,
-        scope: dict[str, str],
-        target_conversation_name: str,
-    ) -> None:
-        normalized_target = str(target_conversation_name or '').strip()
-        if not normalized_target:
-            raise BroadcastError(BROADCAST_GROUP_RULE_REGEX_INVALID)
-
-        group_names = await self.repository.list_group_names(**scope)
-        if not group_names:
-            return
-
-        exists = any(str(item.name or '') == normalized_target for item in group_names)
-        if not exists:
-            raise BroadcastError(
-                BROADCAST_GROUP_RULE_REGEX_INVALID,
-                '目标群不存在，或不属于当前 Bot / Connector。',
-            )
 
     def _serialize_template(self, row) -> dict[str, Any]:
         return self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastTemplate, row)
@@ -2677,12 +2932,14 @@ class BroadcastService:
         seen: dict[str, dict[str, Any]] = {}
         duplicates: list[str] = []
         for draft in drafts:
-            target = str(getattr(draft, 'target_conversation_name', '') or '').strip()
-            if not target:
+            target_id = str(getattr(draft, 'target_conversation_id', '') or '').strip()
+            target_name = str(getattr(draft, 'target_conversation_name', '') or '').strip()
+            key = target_id or target_name
+            if not key:
                 continue
-            key = target
             if key in seen:
-                duplicates.append(f'{key} (drafts: {seen[key]["id"]}, {int(draft.id)})')
+                display_target = target_name or target_id
+                duplicates.append(f'{display_target} (drafts: {seen[key]["id"]}, {int(draft.id)})')
                 continue
             seen[key] = {'id': int(draft.id)}
         if duplicates:
@@ -2843,6 +3100,26 @@ class BroadcastService:
                 return item.get('group_value')
         raise BroadcastError(BROADCAST_IMPORT_GROUP_NOT_FOUND, '当前客户分组不存在或已被删除')
 
+    async def _resolve_target_conversation_identity(
+        self,
+        scope: dict[str, str],
+        matched_conversation_name: str,
+    ) -> str:
+        normalized_name = str(matched_conversation_name or '').strip()
+        group_name = await self.repository.get_group_name_by_name(
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            name=normalized_name,
+        )
+        external_conversation_id = (
+            str(group_name.external_conversation_id or '').strip()
+            if group_name is not None
+            else ''
+        )
+        if external_conversation_id:
+            return f'external:{external_conversation_id}'
+        return f'name:{normalized_name}'
+
     def _resolve_order_number_source_field(self, variable_profile) -> str | None:
         if variable_profile is None:
             return None
@@ -2863,16 +3140,18 @@ class BroadcastService:
     ) -> dict[str, Any]:
         group_value = summary.get('group_value')
         match_status_count = int(summary.get('match_status_count') or 0)
-        matched_conversation_name_count = int(summary.get('matched_conversation_name_count') or 0)
+        matched_conversation_identity_count = int(
+            summary.get('matched_conversation_identity_count') or 0
+        )
         single_match_status = str(summary.get('single_match_status') or '')
         if group_value is None:
             match_status = 'invalid'
             reason = '无客户/分组值'
-        elif match_status_count > 1 or matched_conversation_name_count > 1:
+        elif match_status_count > 1 or matched_conversation_identity_count > 1:
             match_status = 'conflict'
-            if matched_conversation_name_count > 1 and match_status_count > 1:
+            if matched_conversation_identity_count > 1 and match_status_count > 1:
                 reason = '同一客户分组存在多个匹配会话，且原始行匹配状态不一致'
-            elif matched_conversation_name_count > 1:
+            elif matched_conversation_identity_count > 1:
                 reason = '同一客户分组存在多个匹配会话'
             else:
                 reason = '同一客户分组的原始行匹配状态不一致'
@@ -2890,6 +3169,7 @@ class BroadcastService:
             'group_value': self._display_group_value(group_value),
             'raw_row_count': int(summary.get('raw_row_count') or 0),
             'distinct_order_number_count': int(summary.get('distinct_order_number_count') or 0),
+            'matched_conversation_id': None if match_status == 'conflict' else summary.get('matched_conversation_id'),
             'matched_conversation_name': None if match_status == 'conflict' else summary.get('matched_conversation_name'),
             'match_status': match_status,
             'reason': reason,

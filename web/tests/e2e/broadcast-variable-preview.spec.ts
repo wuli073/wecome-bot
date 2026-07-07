@@ -625,10 +625,16 @@ test.describe('broadcast variable preview', () => {
       }
       const url = new URL(route.request().url());
       if (url.pathname === '/api/v1/broadcast/imports/1/groups') {
+        const groupPage = makeGroupPage(batch, [row]);
+        groupPage.groups[0] = {
+          ...groupPage.groups[0],
+          template_id: 11,
+          template_name: '查验通知',
+        };
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify(ok(makeGroupPage(batch, [row]))),
+          body: JSON.stringify(ok(groupPage)),
         });
         return;
       }
@@ -748,8 +754,7 @@ test.describe('broadcast variable preview', () => {
     );
 
     await page.getByRole('tab', { name: '导入匹配' }).click();
-    await page.getByTestId('broadcast-import-template-select').click();
-    await page.getByRole('option', { name: '查验通知' }).click();
+    await page.getByTestId('broadcast-import-select-all-checkbox').click();
     await page.getByTestId('broadcast-import-generate-drafts-button').click();
 
     await page.getByRole('tab', { name: '审核发送' }).click();

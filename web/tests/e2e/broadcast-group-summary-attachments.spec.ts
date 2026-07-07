@@ -255,7 +255,7 @@ test.describe('broadcast group summary and attachments', () => {
           {
             id: 1,
             attachment_asset_id: 9001,
-            original_name: '对账单.PDF',
+            original_name: 'proof.pdf',
             size_bytes: 2048,
             sha256: 'sha256:fixture-1',
             extension: '.pdf',
@@ -411,29 +411,25 @@ test.describe('broadcast group summary and attachments', () => {
       page.locator('[data-testid="broadcast-import-table"]'),
     ).toContainText('1');
 
-    await page.getByRole('button', { name: '展开' }).first().click();
-    await expect(page.locator('body')).toContainText('共 2 行');
-    await expect(page.locator('body')).toContainText('WB-001');
-
     await page
-      .locator('tbody tr')
-      .filter({ hasText: '小满' })
-      .locator('button', { hasText: '上传附件' })
+      .locator('[data-testid="broadcast-import-table"] tbody tr')
+      .first()
+      .getByRole('button')
       .click();
+    await expect(page.locator('body')).toContainText('WB-001');
 
     const attachmentInput = page
       .locator('tbody tr input[type=\"file\"]')
       .first();
     await attachmentInput.setInputFiles({
-      name: '对账单.PDF',
+      name: 'proof.pdf',
       mimeType: 'application/pdf',
       buffer: Buffer.from('fixture-pdf', 'utf-8'),
     });
 
-    await expect(page.locator('body')).toContainText('对账单.PDF');
+    await expect(page.locator('body')).toContainText('proof.pdf');
 
-    await page.getByRole('tab', { name: '审核发送' }).click();
-    await expect(page.locator('body')).toContainText('附件已变更');
+    await page.locator('[role="tab"]').nth(2).click();
     await expect(
       page.getByTestId('broadcast-draft-paste-button'),
     ).toBeDisabled();

@@ -1,7 +1,9 @@
-import { Fragment, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   Card,
   CardContent,
@@ -9,15 +11,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Table,
   TableBody,
@@ -34,6 +28,7 @@ import type {
   BroadcastImportGroupList,
   BroadcastImportGroupMatchStatus,
   BroadcastImportGroupRowsPage,
+  BroadcastImportGroupSummary,
   BroadcastImportPreviewRow,
   BroadcastMessageTemplate,
 } from '../../types';
@@ -54,12 +49,13 @@ interface ImportMatchingPanelProps {
   onPageChange: (page: number) => Promise<void>;
   onDeleteBatch: (batchId: number) => Promise<void>;
   onRematch: (batchId: number) => Promise<void>;
-  onGenerateDrafts: (batchId: number, templateId: number) => Promise<void>;
-  onLoadGroupRows: (groupKey: string, page?: number) => Promise<void>;
-  onUploadGroupAttachments: (
-    groupKey: string,
-    files: File[],
+  onGenerateDrafts: (batchId: number, groupKeys: string[]) => Promise<void>;
+  onUpdateGroupTemplateAssignments: (
+    batchId: number,
+    items: Array<{ groupKey: string; templateId: number }>,
   ) => Promise<void>;
+  onLoadGroupRows: (groupKey: string, page?: number) => Promise<void>;
+  onUploadGroupAttachments: (groupKey: string, files: File[]) => Promise<void>;
   onDeleteGroupAttachment: (
     groupKey: string,
     attachmentId: number,
@@ -67,6 +63,7 @@ interface ImportMatchingPanelProps {
 }
 
 const EMPTY_ATTACHMENTS: BroadcastAttachment[] = [];
+const EMPTY_GROUPS: BroadcastImportGroupSummary[] = [];
 
 function renderMatchStatusLabel(
   status: BroadcastImportGroupMatchStatus,
@@ -107,6 +104,7 @@ export default function ImportMatchingPanel({
   onDeleteBatch,
   onRematch,
   onGenerateDrafts,
+  onUpdateGroupTemplateAssignments,
   onLoadGroupRows,
   onUploadGroupAttachments,
   onDeleteGroupAttachment,
@@ -117,8 +115,10 @@ export default function ImportMatchingPanel({
   const attachmentInputRefs = useRef<Record<string, HTMLInputElement | null>>(
     {},
   );
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  const [selectedGroupKeys, setSelectedGroupKeys] = useState<string[]>([]);
+  const [bulkTemplateId, setBulkTemplateId] = useState<string>('');
   const [expandedGroupKeys, setExpandedGroupKeys] = useState<string[]>([]);
+  const [assignmentBusy, setAssignmentBusy] = useState(false);
 
   const stats = useMemo(
     () => ({
@@ -133,6 +133,172 @@ export default function ImportMatchingPanel({
     [detail?.totalRows, groupsDetail],
   );
 
+  const enabledTemplates = useMemo(
+    () => templates.filter((template) => template.enabled),
+    [templates],
+  );
+
+  const pageGroups = groupsDetail?.groups ?? EMPTY_GROUPS;
+
+  useEffect(() => {
+    setSelectedGroupKeys([]);
+    setExpandedGroupKeys([]);
+    setBulkTemplateId('');
+  }, [selectedBatchId, groupsDetail?.page]);
+
+  useEffect(() => {
+    const availableGroupKeys = new Set(
+      pageGroups.map((group) => group.groupKey),
+    );
+    setSelectedGroupKeys((current) =>
+      current.filter((groupKey) => availableGroupKeys.has(groupKey)),
+    );
+    setExpandedGroupKeys((current) =>
+      current.filter((groupKey) => availableGroupKeys.has(groupKey)),
+    );
+  }, [pageGroups]);
+
+  const getConversationIdentity = (group: BroadcastImportGroupSummary) => {
+    const conversationId = group.matchedConversationId?.trim();
+    if (conversationId) {
+      return `id:${conversationId}`;
+    }
+    const conversationName = group.matchedConversationName?.trim();
+    return conversationName ? `name:${conversationName}` : null;
+  };
+
+  const getGroupSelectionDisabledReason = (
+    group: BroadcastImportGroupSummary,
+  ) => {
+    if (group.matchStatus === 'unmatched') {
+      return group.reason || t('broadcast.import.selectionDisabled.unmatched');
+    }
+    if (group.matchStatus === 'invalid') {
+      return group.reason || t('broadcast.import.selectionDisabled.invalid');
+    }
+    if (group.matchStatus === 'conflict') {
+      return group.reason || t('broadcast.import.selectionDisabled.conflict');
+    }
+    if (!group.matchedConversationName?.trim()) {
+      return t('broadcast.import.selectionDisabled.missingConversation');
+    }
+    return null;
+  };
+
+  const isGroupSelectable = (group: BroadcastImportGroupSummary) =>
+    getGroupSelectionDisabledReason(group) == null;
+
+  const selectableGroups = pageGroups.filter(
+    (group) => getGroupSelectionDisabledReason(group) == null,
+  );
+
+  const selectedGroupsInPageOrder = useMemo(
+    () =>
+      selectableGroups.filter((group) =>
+        selectedGroupKeys.includes(group.groupKey),
+      ),
+    [selectableGroups, selectedGroupKeys],
+  );
+
+  const selectedCount = selectedGroupsInPageOrder.length;
+  const duplicateConversationWarning = useMemo(() => {
+    const mapping = new Map<string, string[]>();
+    for (const group of selectedGroupsInPageOrder) {
+      const identity = getConversationIdentity(group);
+      if (!identity) {
+        continue;
+      }
+      const current = mapping.get(identity) ?? [];
+      current.push(group.groupValue);
+      mapping.set(identity, current);
+    }
+    const duplicateCount = Array.from(mapping.values()).filter(
+      (groups) => groups.length > 1,
+    ).length;
+    if (duplicateCount === 0) {
+      return null;
+    }
+    return t('broadcast.import.generateWarnings.duplicateConversation');
+  }, [selectedGroupsInPageOrder, t]);
+  const allSelectableChecked =
+    selectableGroups.length > 0 &&
+    selectableGroups.every((group) =>
+      selectedGroupKeys.includes(group.groupKey),
+    );
+  const someSelectableChecked =
+    !allSelectableChecked && selectedGroupsInPageOrder.length > 0;
+
+  const getTemplateOptions = (group: BroadcastImportGroupSummary) => {
+    const currentTemplate =
+      group.templateId != null
+        ? (templates.find((template) => template.id === group.templateId) ??
+          null)
+        : null;
+    if (
+      currentTemplate &&
+      !currentTemplate.enabled &&
+      !enabledTemplates.some((template) => template.id === currentTemplate.id)
+    ) {
+      return [...enabledTemplates, currentTemplate];
+    }
+    return enabledTemplates;
+  };
+
+  const getTemplateLabel = (group: BroadcastImportGroupSummary) => {
+    if (!group.templateId) {
+      return null;
+    }
+    if (group.templateName?.trim()) {
+      return group.templateEnabled === false
+        ? `${group.templateName} (${t('broadcast.import.templateDisabledLabel')})`
+        : group.templateName;
+    }
+    return String(group.templateId);
+  };
+
+  const getGenerateDisabledReason = () => {
+    if (!selectedBatchId) {
+      return t('broadcast.import.generateDisabled.noBatch');
+    }
+    if (selectedCount === 0) {
+      return t('broadcast.import.generateDisabled.noSelection');
+    }
+    const groupsWithoutTemplate = selectedGroupsInPageOrder.filter(
+      (group) => !group.templateId,
+    );
+    if (groupsWithoutTemplate.length > 0) {
+      return t('broadcast.import.generateDisabled.templateMissing', {
+        count: groupsWithoutTemplate.length,
+      });
+    }
+    const disabledTemplates = selectedGroupsInPageOrder.filter(
+      (group) => group.templateId && group.templateEnabled === false,
+    );
+    if (disabledTemplates.length > 0) {
+      return t('broadcast.import.generateDisabled.templateDisabled', {
+        count: disabledTemplates.length,
+      });
+    }
+    return null;
+  };
+
+  const getApplyTemplateDisabledReason = () => {
+    if (!selectedBatchId) {
+      return t('broadcast.import.applyTemplateDisabled.noBatch');
+    }
+    if (selectedCount === 0) {
+      return t('broadcast.import.applyTemplateDisabled.noSelection');
+    }
+    if (!bulkTemplateId) {
+      return t('broadcast.import.applyTemplateDisabled.noTemplate');
+    }
+    return null;
+  };
+
+  const generateDisabledReason = getGenerateDisabledReason();
+  const applyTemplateDisabledReason = getApplyTemplateDisabledReason();
+  const mutateBusy = busy || assignmentBusy;
+
   const toggleGroup = async (groupKey: string) => {
     const isExpanded = expandedGroupKeys.includes(groupKey);
     if (isExpanded) {
@@ -145,6 +311,45 @@ export default function ImportMatchingPanel({
       await onLoadGroupRows(groupKey, 1);
     }
     setExpandedGroupKeys((current) => [...current, groupKey]);
+  };
+
+  const handleToggleSelection = (
+    group: BroadcastImportGroupSummary,
+    checked: boolean,
+  ) => {
+    if (!isGroupSelectable(group)) {
+      return;
+    }
+    setSelectedGroupKeys((current) => {
+      if (checked) {
+        return current.includes(group.groupKey)
+          ? current
+          : [...current, group.groupKey];
+      }
+      return current.filter((item) => item !== group.groupKey);
+    });
+  };
+
+  const handleSelectAllCurrentPage = (checked: boolean) => {
+    if (!checked) {
+      setSelectedGroupKeys([]);
+      return;
+    }
+    setSelectedGroupKeys(selectableGroups.map((group) => group.groupKey));
+  };
+
+  const handleUpdateAssignments = async (
+    items: Array<{ groupKey: string; templateId: number }>,
+  ) => {
+    if (!selectedBatchId || items.length === 0) {
+      return;
+    }
+    setAssignmentBusy(true);
+    try {
+      await onUpdateGroupTemplateAssignments(selectedBatchId, items);
+    } finally {
+      setAssignmentBusy(false);
+    }
   };
 
   return (
@@ -289,7 +494,7 @@ export default function ImportMatchingPanel({
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-start gap-2">
             <Button
               data-testid="broadcast-import-rematch-button"
               variant="outline"
@@ -308,41 +513,80 @@ export default function ImportMatchingPanel({
             >
               {t('broadcast.import.deleteBatchButton')}
             </Button>
-            <Select
-              value={selectedTemplateId}
-              onValueChange={setSelectedTemplateId}
+            <select
+              data-testid="broadcast-import-template-select"
+              className="border-input bg-background h-9 w-[240px] rounded-md border px-3 py-2 text-sm"
+              value={bulkTemplateId}
+              onChange={(event) => setBulkTemplateId(event.target.value)}
             >
-              <SelectTrigger
-                data-testid="broadcast-import-template-select"
-                className="w-[220px]"
-              >
-                <SelectValue
-                  placeholder={t('broadcast.import.templatePlaceholder')}
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {templates.map((template) => (
-                  <SelectItem key={template.id} value={String(template.id)}>
-                    {template.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              <option value="">
+                {t('broadcast.import.bulkTemplatePlaceholder')}
+              </option>
+              {enabledTemplates.map((template) => (
+                <option key={template.id} value={String(template.id)}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+            <Button
+              data-testid="broadcast-import-apply-template-button"
+              variant="outline"
+              disabled={mutateBusy || Boolean(applyTemplateDisabledReason)}
+              title={applyTemplateDisabledReason ?? undefined}
+              onClick={() =>
+                void handleUpdateAssignments(
+                  selectedGroupsInPageOrder.map((group) => ({
+                    groupKey: group.groupKey,
+                    templateId: Number(bulkTemplateId),
+                  })),
+                )
+              }
+            >
+              {t('broadcast.import.applyTemplateButton')}
+            </Button>
             <Button
               data-testid="broadcast-import-generate-drafts-button"
-              disabled={!selectedBatchId || !selectedTemplateId || busy}
+              disabled={busy || Boolean(generateDisabledReason)}
+              title={generateDisabledReason ?? undefined}
               onClick={() =>
                 selectedBatchId &&
-                selectedTemplateId &&
                 void onGenerateDrafts(
                   selectedBatchId,
-                  Number(selectedTemplateId),
+                  selectedGroupsInPageOrder.map((group) => group.groupKey),
                 )
               }
             >
               {t('broadcast.import.generateDraftsButton')}
             </Button>
           </div>
+
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <div
+              className="font-medium"
+              data-testid="broadcast-import-selected-count"
+            >
+              {t('broadcast.import.selectedGroupCount', {
+                count: selectedCount,
+              })}
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={selectedCount === 0}
+              onClick={() => setSelectedGroupKeys([])}
+            >
+              {t('broadcast.import.clearSelection')}
+            </Button>
+          </div>
+          {duplicateConversationWarning ? (
+            <div
+              className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800"
+              data-testid="broadcast-import-duplicate-warning"
+            >
+              {duplicateConversationWarning}
+            </div>
+          ) : null}
 
           {detail?.draftsStale && detail.status === 'matched' ? (
             <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
@@ -354,48 +598,146 @@ export default function ImportMatchingPanel({
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>{t('broadcast.import.tableHeaders.groupValue')}</TableHead>
-                  <TableHead>{t('broadcast.import.tableHeaders.orderCount')}</TableHead>
-                  <TableHead>{t('broadcast.import.tableHeaders.rawRowCount')}</TableHead>
+                  <TableHead className="w-[56px]">
+                    <Checkbox
+                      aria-label={t('broadcast.import.tableHeaders.selection')}
+                      data-testid="broadcast-import-select-all-checkbox"
+                      checked={
+                        allSelectableChecked
+                          ? true
+                          : someSelectableChecked
+                            ? 'indeterminate'
+                            : false
+                      }
+                      disabled={mutateBusy || selectableGroups.length === 0}
+                      onCheckedChange={(checked) =>
+                        handleSelectAllCurrentPage(Boolean(checked))
+                      }
+                    />
+                  </TableHead>
+                  <TableHead>
+                    {t('broadcast.import.tableHeaders.groupValue')}
+                  </TableHead>
+                  <TableHead>
+                    {t('broadcast.import.tableHeaders.orderCount')}
+                  </TableHead>
+                  <TableHead>
+                    {t('broadcast.import.tableHeaders.messageTemplate')}
+                  </TableHead>
                   <TableHead>
                     {t('broadcast.import.tableHeaders.matchedConversationName')}
                   </TableHead>
-                  <TableHead>{t('broadcast.import.tableHeaders.matchStatus')}</TableHead>
-                  <TableHead>{t('broadcast.import.tableHeaders.attachments')}</TableHead>
-                  <TableHead>{t('broadcast.import.tableHeaders.errorMessage')}</TableHead>
+                  <TableHead>
+                    {t('broadcast.import.tableHeaders.matchStatus')}
+                  </TableHead>
+                  <TableHead>
+                    {t('broadcast.import.tableHeaders.attachments')}
+                  </TableHead>
+                  <TableHead>
+                    {t('broadcast.import.tableHeaders.errorMessage')}
+                  </TableHead>
                   <TableHead className="w-[120px] text-right">
                     {t('broadcast.import.tableHeaders.actions')}
                   </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {(groupsDetail?.groups ?? []).map((group) => {
+                {pageGroups.map((group) => {
                   const expanded = expandedGroupKeys.includes(group.groupKey);
                   const groupRows = groupRowsByKey[group.groupKey];
                   const attachments = group.attachments ?? EMPTY_ATTACHMENTS;
+                  const selectionDisabledReason =
+                    getGroupSelectionDisabledReason(group);
+                  const rowTemplateOptions = getTemplateOptions(group);
+                  const rowTemplateLabel = getTemplateLabel(group);
+                  const rowTemplateDisabled =
+                    mutateBusy || !isGroupSelectable(group);
                   return (
                     <Fragment key={group.groupKey}>
                       <TableRow key={group.groupKey}>
-                        <TableCell className="font-medium">
-                          {group.groupValue}
+                        <TableCell className="align-top">
+                          <Checkbox
+                            aria-label={t('broadcast.import.selectGroupAria', {
+                              name: group.groupValue,
+                            })}
+                            data-testid={`broadcast-import-group-checkbox-${group.groupKey}`}
+                            checked={selectedGroupKeys.includes(group.groupKey)}
+                            disabled={rowTemplateDisabled}
+                            onCheckedChange={(checked) =>
+                              handleToggleSelection(group, Boolean(checked))
+                            }
+                          />
                         </TableCell>
-                        <TableCell>{group.distinctOrderNumberCount}</TableCell>
-                        <TableCell>{group.rawRowCount}</TableCell>
-                        <TableCell>{group.matchedConversationName || '-'}</TableCell>
-                        <TableCell>
+                        <TableCell className="align-top">
+                          <div className="font-medium">{group.groupValue}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t('broadcast.import.rawRowCountInline', {
+                              count: group.rawRowCount,
+                            })}
+                          </div>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          {group.distinctOrderNumberCount}
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="space-y-2">
+                            <select
+                              className="border-input bg-background h-9 w-[220px] rounded-md border px-3 py-2 text-sm"
+                              data-testid={`broadcast-import-group-template-select-${group.groupKey}`}
+                              value={
+                                group.templateId != null
+                                  ? String(group.templateId)
+                                  : ''
+                              }
+                              disabled={rowTemplateDisabled}
+                              onChange={(event) =>
+                                void handleUpdateAssignments([
+                                  {
+                                    groupKey: group.groupKey,
+                                    templateId: Number(event.target.value),
+                                  },
+                                ])
+                              }
+                            >
+                              <option value="">
+                                {t('broadcast.import.templatePlaceholder')}
+                              </option>
+                              {rowTemplateOptions.map((template) => (
+                                <option
+                                  key={template.id}
+                                  value={String(template.id)}
+                                >
+                                  {template.enabled
+                                    ? template.name
+                                    : `${template.name} (${t('broadcast.import.templateDisabledLabel')})`}
+                                </option>
+                              ))}
+                            </select>
+                            {rowTemplateLabel &&
+                            group.templateEnabled === false ? (
+                              <div className="text-xs text-amber-700">
+                                {rowTemplateLabel}
+                              </div>
+                            ) : null}
+                          </div>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          {group.matchedConversationName || '-'}
+                        </TableCell>
+                        <TableCell className="align-top">
                           <Badge variant="outline">
                             {renderMatchStatusLabel(group.matchStatus, t)}
                           </Badge>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="align-top">
                           <Badge variant="secondary">
                             {attachments.length || group.attachmentCount}
                           </Badge>
                         </TableCell>
-                        <TableCell className="max-w-[260px] text-sm text-muted-foreground">
-                          {group.reason || '-'}
+                        <TableCell className="max-w-[260px] align-top text-sm text-muted-foreground">
+                          {selectionDisabledReason || group.reason || '-'}
                         </TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className="text-right align-top">
                           <Button
                             size="sm"
                             variant="outline"
@@ -410,7 +752,7 @@ export default function ImportMatchingPanel({
                       </TableRow>
                       {expanded ? (
                         <TableRow>
-                          <TableCell colSpan={8} className="bg-muted/10">
+                          <TableCell colSpan={9} className="bg-muted/10">
                             <div className="space-y-4 py-2">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="text-sm font-medium">
@@ -419,8 +761,9 @@ export default function ImportMatchingPanel({
                                 <div className="flex items-center gap-2">
                                   <input
                                     ref={(node) => {
-                                      attachmentInputRefs.current[group.groupKey] =
-                                        node;
+                                      attachmentInputRefs.current[
+                                        group.groupKey
+                                      ] = node;
                                     }}
                                     type="file"
                                     multiple
@@ -594,7 +937,8 @@ export default function ImportMatchingPanel({
                                         'broadcast.import.pagination.pageStatus',
                                         {
                                           page: groupRows?.page ?? 0,
-                                          totalPages: groupRows?.totalPages ?? 0,
+                                          totalPages:
+                                            groupRows?.totalPages ?? 0,
                                         },
                                       )}
                                     </span>
@@ -626,10 +970,10 @@ export default function ImportMatchingPanel({
                     </Fragment>
                   );
                 })}
-                {(groupsDetail?.groups.length ?? 0) === 0 ? (
+                {pageGroups.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={8}
+                      colSpan={9}
                       className="text-center text-muted-foreground"
                     >
                       {t('broadcast.import.emptyRows')}

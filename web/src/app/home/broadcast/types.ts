@@ -86,6 +86,7 @@ export interface BroadcastGroupRule {
   sourceValue: string;
   matchType: BroadcastGroupMatchType;
   matchExpression: string;
+  targetConversationId?: string | null;
   targetConversationName: string;
   priority: number;
   enabled: boolean;
@@ -99,6 +100,7 @@ export interface BroadcastGroupRuleDraft {
   sourceValue: string;
   matchType: BroadcastGroupMatchType;
   matchExpression: string;
+  targetConversationId: string;
   targetConversationName: string;
   priority: number;
   enabled: boolean;
@@ -107,6 +109,7 @@ export interface BroadcastGroupRuleDraft {
 export interface BroadcastGroupMatchResult {
   matched: boolean;
   ruleId: number | null;
+  targetConversationId?: string | null;
   targetConversationName: string | null;
   matchType: BroadcastGroupMatchType | null;
 }
@@ -137,6 +140,7 @@ export interface BroadcastImportPreviewRow {
   matchStatus: BroadcastImportMatchStatus;
   errorMessage: string | null;
   customerName: string;
+  conversationId?: string | null;
   conversationName: string;
   templateName: string;
   variableSummary: string;
@@ -184,12 +188,16 @@ export interface BroadcastImportGroupSummary {
   groupValue: string;
   rawRowCount: number;
   distinctOrderNumberCount: number;
+  matchedConversationId?: string | null;
   matchedConversationName: string | null;
   matchStatus: BroadcastImportGroupMatchStatus;
   reason: string | null;
   attachmentCount: number;
   expandable: boolean;
   firstSourceRowNumber: number;
+  templateId?: number | null;
+  templateName?: string | null;
+  templateEnabled?: boolean | null;
   attachments?: BroadcastAttachment[];
 }
 
@@ -230,6 +238,18 @@ export interface BroadcastImportDraftGenerationResult {
   pendingReviewCount: number;
   invalidCount: number;
   unmatchedGroupCount: number;
+  createdCount?: number;
+  updatedCount?: number;
+  generatedGroupKeys?: string[];
+  draftIds?: number[];
+  draftResults?: BroadcastImportDraftGenerationItem[];
+}
+
+export interface BroadcastImportDraftGenerationItem {
+  groupKey: string;
+  draftId: number;
+  operation: 'created' | 'updated';
+  modifiedFields: string[];
 }
 
 export interface BroadcastDraft {
@@ -239,6 +259,7 @@ export interface BroadcastDraft {
   importBatchId?: number;
   groupValue: string;
   customerName: string;
+  conversationId?: string | null;
   conversationName: string;
   templateId?: number | null;
   templateName: string;
@@ -280,6 +301,7 @@ export interface BroadcastExecutionLog {
   attemptId: number;
   draftId: number | null;
   customerName: string;
+  conversationId?: string | null;
   conversationName: string;
   batchStatus: string;
   taskStatus: string;
@@ -356,8 +378,8 @@ export interface BroadcastExecutorCapability {
   requires_manual_conversation_open?: boolean;
   executor_version: string;
   runtime_min_version: string;
-  conversation_locator?: 'keyboard_search';
-  content_verification?: 'disabled';
+  conversation_locator?: 'keyboard_search' | 'external_id' | 'unknown';
+  content_verification?: 'disabled' | 'manual' | 'windows_uia' | 'unknown';
 }
 
 export interface BroadcastExecutorHealth {

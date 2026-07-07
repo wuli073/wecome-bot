@@ -11,8 +11,12 @@ async function prepareDraftReview(page: Page) {
     mimeType: 'text/csv',
     buffer: Buffer.from('customers', 'utf-8'),
   });
-  await page.getByTestId('broadcast-import-template-select').click();
-  await page.getByRole('option', { name: 'Arrival Reminder' }).click();
+  await page.getByTestId('broadcast-import-select-all-checkbox').click();
+  await page.getByTestId('broadcast-import-template-select').selectOption('1');
+  await page.getByTestId('broadcast-import-apply-template-button').click();
+  await expect(
+    page.getByTestId('broadcast-import-generate-drafts-button'),
+  ).toBeEnabled();
   await page.getByTestId('broadcast-import-generate-drafts-button').click();
   await page.locator('[role="tab"]').nth(2).click();
 }
@@ -25,7 +29,13 @@ test.describe('broadcast execution phase 4', () => {
       '系统将自动搜索并进入目标群聊，然后把正文和附件粘贴到输入框。系统不会自动发送，请人工确认后发送。',
     );
     expect(zhHans.broadcast.logs.capabilityPasteVerification).toBe('内容验证');
+    expect(zhHans.broadcast.logs.conversationLocatorExternalId).toBe(
+      '外部会话 ID',
+    );
     expect(zhHans.broadcast.logs.pasteVerificationMethod).toBe('验证方式');
+    expect(zhHans.broadcast.logs.pasteVerificationMethodManual).toBe(
+      '人工确认',
+    );
     expect(zhHans.broadcast.logs.pasteVerificationStatus).toBe('验证状态');
     expect(zhHans.broadcast.logs.pasteVerificationAvailable).toBe('可用');
     expect(zhHans.broadcast.logs.pasteVerificationUnavailable).toBe('未启用');
@@ -68,6 +78,99 @@ test.describe('broadcast execution phase 4', () => {
       zhHans.broadcast.logs.statusPasteVerified,
     );
     await expect(page.locator('body')).not.toContainText(/锟|鏀|楠岃瘉鏂瑰紡/);
+  });
+
+  test('shows backend conversation locator and manual verification labels faithfully', async ({
+    page,
+  }) => {
+    await installLangBotApiMocks(page, {
+      authenticated: true,
+      storage: {
+        langbot_language: 'zh-Hans',
+      },
+    });
+
+    await page.route(
+      '**/api/v1/broadcast/executors/capabilities*',
+      async (route) => {
+        if (route.request().method() !== 'GET') {
+          await route.fallback();
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            code: 0,
+            message: 'ok',
+            data: {
+              channel: 'wxwork_database',
+              supports_paste: true,
+              supports_paste_verification: false,
+              requires_manual_conversation_open: false,
+              conversation_locator: 'external_id',
+              content_verification: 'manual',
+              supports_send: false,
+              supports_cancel: true,
+              supports_status_query: true,
+              supports_clipboard_restore: true,
+              supports_evidence: true,
+              executor_version: 'fixture-phase7',
+              runtime_min_version: '1.0.0',
+            },
+            timestamp: Date.now(),
+          }),
+        });
+      },
+    );
+
+    await page.route('**/api/v1/broadcast/executors/health*', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: 0,
+          message: 'ok',
+          data: {
+            channel: 'wxwork_database',
+            status: 'ready',
+            protocol_version: '1.0.0',
+            runtime_version: '1.0.0',
+            capability: {
+              channel: 'wxwork_database',
+              supports_paste: true,
+              supports_paste_verification: false,
+              requires_manual_conversation_open: false,
+              conversation_locator: 'external_id',
+              content_verification: 'manual',
+              supports_send: false,
+              supports_cancel: true,
+              supports_status_query: true,
+              supports_clipboard_restore: true,
+              supports_evidence: true,
+              executor_version: 'fixture-phase7',
+              runtime_min_version: '1.0.0',
+            },
+            runtime_status: {},
+          },
+          timestamp: Date.now(),
+        }),
+      });
+    });
+
+    await page.goto('/home/broadcast');
+    await page.locator('[role="tab"]').nth(3).click();
+
+    await expect(page.locator('body')).toContainText(
+      zhHans.broadcast.logs.conversationLocatorExternalId,
+    );
+    await expect(page.locator('body')).toContainText(
+      zhHans.broadcast.logs.pasteVerificationMethodManual,
+    );
   });
 
   test('writes a single pending draft into the input box without sending', async ({
@@ -187,7 +290,7 @@ test.describe('broadcast execution phase 4', () => {
       .toBe(1);
   });
 
-  test('disables paste-only actions when paste verification is unavailable', async ({
+  test('keeps paste-only actions available when paste verification is unavailable', async ({
     page,
   }) => {
     await installLangBotApiMocks(page, {
@@ -295,13 +398,15 @@ test.describe('broadcast execution phase 4', () => {
 
     await expect(
       page.getByTestId('broadcast-draft-paste-button'),
-    ).toBeDisabled();
+    ).toBeEnabled();
     await expect(
       page.getByTestId('broadcast-draft-batch-write-button'),
-    ).toBeDisabled();
+    ).toBeEnabled();
     await expect(page.locator('body')).toContainText(
       zhHans.broadcast.logs.pasteVerificationUnavailableHint,
     );
+
+    await page.getByTestId('broadcast-draft-batch-write-button').click();
 
     await page.locator('[role="tab"]').nth(3).click();
     await expect(
@@ -326,14 +431,14 @@ test.describe('broadcast execution phase 4', () => {
         ({ method, path }) =>
           method === 'POST' && path === '/api/v1/broadcast/executions',
       ),
-    ).toBeFalsy();
+    ).toBeTruthy();
     expect(
       requestRecords.some(
         ({ method, path }) =>
           method === 'POST' &&
           /\/api\/v1\/broadcast\/executions\/\d+\/start$/.test(path),
       ),
-    ).toBeFalsy();
+    ).toBeTruthy();
   });
 
   test('stops polling execution history after the latest paste-only batch becomes terminal', async ({

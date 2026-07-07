@@ -38,10 +38,17 @@ interface ExecutionLogPanelProps {
   latestBatch?: BroadcastExecutionBatchSummary | null;
   executorCapability?: BroadcastExecutorCapability | null;
   executorHealth?: BroadcastExecutorHealth | null;
+  pasteExecutionAvailable?: boolean;
   pasteVerificationAvailable?: boolean;
-  pasteVerificationMethod?: 'windows_uia' | 'unavailable';
+  pasteVerificationMethod?:
+    | 'windows_uia'
+    | 'manual'
+    | 'disabled'
+    | 'unknown'
+    | 'unavailable';
   requiresManualConversationOpen?: boolean;
   pasteActionDisabledReason?: string | null;
+  pasteVerificationHint?: string | null;
   busy?: boolean;
   onStartBatch?: () => void;
   onPauseBatch?: () => void;
@@ -178,10 +185,12 @@ export default function ExecutionLogPanel({
   latestBatch,
   executorCapability,
   executorHealth,
+  pasteExecutionAvailable = false,
   pasteVerificationAvailable = false,
   pasteVerificationMethod = 'unavailable',
   requiresManualConversationOpen: _requiresManualConversationOpen = false,
   pasteActionDisabledReason = null,
+  pasteVerificationHint = null,
   busy = false,
   onStartBatch,
   onPauseBatch,
@@ -193,10 +202,20 @@ export default function ExecutionLogPanel({
   const pasteVerificationMethodLabel =
     pasteVerificationMethod === 'windows_uia'
       ? t('broadcast.logs.pasteVerificationMethodWindowsUia')
-      : t('broadcast.logs.pasteVerificationUnavailable');
+      : pasteVerificationMethod === 'manual'
+        ? t('broadcast.logs.pasteVerificationMethodManual')
+        : pasteVerificationMethod === 'disabled'
+          ? t('broadcast.logs.pasteVerificationMethodDisabled')
+          : t('broadcast.logs.pasteVerificationMethodUnknown');
   const pasteVerificationStatusLabel = pasteVerificationAvailable
     ? t('broadcast.logs.pasteVerificationAvailable')
     : t('broadcast.logs.pasteVerificationUnavailable');
+  const conversationLocatorLabel =
+    executorCapability?.conversation_locator === 'external_id'
+      ? t('broadcast.logs.conversationLocatorExternalId')
+      : executorCapability?.conversation_locator === 'keyboard_search'
+        ? t('broadcast.logs.conversationLocatorKeyboardSearch')
+        : t('broadcast.logs.conversationLocatorUnknown');
 
   const columns = useMemo<ColumnDef<BroadcastExecutionLog>[]>(
     () => [
@@ -242,7 +261,7 @@ export default function ExecutionLogPanel({
 
   const batchStatus = latestBatch?.status || '';
   const canRunLatestPasteBatch =
-    latestBatch?.mode === 'paste_only' ? pasteVerificationAvailable : true;
+    latestBatch?.mode === 'paste_only' ? pasteExecutionAvailable : true;
   const canStart =
     Boolean(onStartBatch) &&
     latestBatch != null &&
@@ -316,7 +335,7 @@ export default function ExecutionLogPanel({
               </Badge>
               <Badge variant="outline">
                 {t('broadcast.logs.capabilityConversationLocator')}:{' '}
-                {t('broadcast.logs.conversationLocatorKeyboardSearch')}
+                {conversationLocatorLabel}
               </Badge>
               <Badge variant="outline">
                 {t('broadcast.logs.pasteVerificationMethod')}:{' '}
@@ -332,12 +351,20 @@ export default function ExecutionLogPanel({
             </div>
             <div className="mt-3 text-xs text-muted-foreground">
               {t('broadcast.logs.executorVersion')}:{' '}
-              {executorCapability?.executor_version || '-'} ·
+              {executorCapability?.executor_version || '-'}
               {` ${t('broadcast.logs.runtimeMinVersion')}: ${executorCapability?.runtime_min_version || '-'}`}
             </div>
             {pasteActionDisabledReason ? (
               <div className="mt-3 text-xs text-muted-foreground">
                 {pasteActionDisabledReason}
+              </div>
+            ) : null}
+            {pasteVerificationHint ? (
+              <div
+                className="mt-2 text-xs text-muted-foreground"
+                data-testid="broadcast-paste-verification-hint"
+              >
+                {pasteVerificationHint}
               </div>
             ) : null}
           </div>
@@ -430,11 +457,19 @@ export default function ExecutionLogPanel({
               </div>
             </div>
 
-            {latestBatch.mode === 'paste_only' && pasteActionDisabledReason ? (
-              <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800">
-                {pasteActionDisabledReason}
-              </div>
-            ) : null}
+            <div className="mt-3 space-y-2">
+              {latestBatch.mode === 'paste_only' &&
+              pasteActionDisabledReason ? (
+                <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800">
+                  {pasteActionDisabledReason}
+                </div>
+              ) : null}
+              {latestBatch.mode === 'paste_only' && pasteVerificationHint ? (
+                <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
+                  {pasteVerificationHint}
+                </div>
+              ) : null}
+            </div>
 
             <div
               className="mt-4 overflow-x-auto"

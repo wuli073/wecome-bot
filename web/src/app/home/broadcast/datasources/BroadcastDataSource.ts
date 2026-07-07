@@ -141,6 +141,7 @@ function fromApiGroupRule(rule: ApiBroadcastGroupRule): BroadcastGroupRule {
     sourceValue: rule.source_value,
     matchType: rule.match_type,
     matchExpression: rule.match_expression,
+    targetConversationId: rule.target_conversation_id ?? null,
     targetConversationName: rule.target_conversation_name,
     priority: rule.priority,
     enabled: rule.enabled,
@@ -155,6 +156,7 @@ function toApiGroupRuleDraft(draft: BroadcastGroupRuleDraft) {
     source_value: draft.sourceValue,
     match_type: draft.matchType,
     match_expression: draft.matchExpression,
+    target_conversation_id: draft.targetConversationId,
     target_conversation_name: draft.targetConversationName,
     priority: draft.priority,
     enabled: draft.enabled,
@@ -167,6 +169,7 @@ function fromApiGroupMatchResult(
   return {
     matched: result.matched,
     ruleId: result.rule_id,
+    targetConversationId: result.target_conversation_id ?? null,
     targetConversationName: result.target_conversation_name,
     matchType: result.match_type,
   };
@@ -288,6 +291,9 @@ function fromApiImportGroupSummary(
     attachmentCount: summary.attachment_count,
     expandable: summary.expandable,
     firstSourceRowNumber: summary.first_source_row_number,
+    templateId: summary.template_id ?? null,
+    templateName: summary.template_name ?? null,
+    templateEnabled: summary.template_enabled ?? null,
   };
 }
 
@@ -339,6 +345,7 @@ function fromApiDraft(draft: ApiBroadcastDraft): BroadcastDraftDetail {
     importBatchId: draft.import_batch_id,
     groupValue: draft.group_value,
     customerName: draft.group_value,
+    conversationId: draft.target_conversation_id ?? null,
     conversationName: draft.target_conversation_name ?? '',
     templateId: draft.template_id,
     templateName: draft.template_name_snapshot,
@@ -411,6 +418,8 @@ function fromApiExecutionBatch(
 function fromApiExecutorCapability(
   payload: Record<string, unknown>,
 ): BroadcastExecutorCapability {
+  const conversationLocator = String(payload.conversation_locator || '').trim();
+  const contentVerification = String(payload.content_verification || '').trim();
   return {
     channel: String(payload.channel || 'wxwork_database'),
     supports_paste: Boolean(payload.supports_paste),
@@ -426,11 +435,16 @@ function fromApiExecutorCapability(
     executor_version: String(payload.executor_version || ''),
     runtime_min_version: String(payload.runtime_min_version || ''),
     conversation_locator:
-      payload.conversation_locator === 'keyboard_search'
-        ? 'keyboard_search'
-        : 'keyboard_search',
+      conversationLocator === 'keyboard_search' ||
+      conversationLocator === 'external_id'
+        ? (conversationLocator as 'keyboard_search' | 'external_id')
+        : 'unknown',
     content_verification:
-      payload.content_verification === 'disabled' ? 'disabled' : 'disabled',
+      contentVerification === 'disabled' ||
+      contentVerification === 'manual' ||
+      contentVerification === 'windows_uia'
+        ? (contentVerification as 'disabled' | 'manual' | 'windows_uia')
+        : 'unknown',
   };
 }
 
@@ -629,6 +643,11 @@ export interface BroadcastDataSource {
     importId: number,
     filters?: BroadcastImportFilters,
   ) => Promise<BroadcastImportGroupList>;
+  updateImportGroupTemplateAssignments: (
+    scope: BroadcastScope,
+    importId: number,
+    items: Array<{ groupKey: string; templateId: number }>,
+  ) => Promise<Array<{ groupKey: string; templateId: number }>>;
   getImportGroupRows: (
     scope: BroadcastScope,
     importId: number,
@@ -655,7 +674,11 @@ export interface BroadcastDataSource {
   generateImportDrafts: (
     scope: BroadcastScope,
     importId: number,
-    templateId: number,
+    payload: {
+      templateId?: number;
+      groupKeys?: string[];
+      overwriteExisting?: boolean;
+    },
   ) => Promise<BroadcastImportDraftGenerationResult>;
   listDrafts: (
     scope: BroadcastScope,
@@ -1015,6 +1038,21 @@ export function createBroadcastDataSource(): BroadcastDataSource {
           },
         ),
       ),
+    updateImportGroupTemplateAssignments: async (scope, importId, items) => {
+      const response =
+        await backendClient.updateBroadcastImportGroupTemplateAssignments(
+          toApiScope(scope),
+          importId,
+          items.map((item) => ({
+            group_key: item.groupKey,
+            template_id: item.templateId,
+          })),
+        );
+      return response.items.map((item) => ({
+        groupKey: item.group_key,
+        templateId: item.template_id,
+      }));
+    },
     getImportGroupRows: async (scope, importId, groupKey, filters) =>
       fromApiImportGroupRows(
         await backendClient.getBroadcastImportGroupRows(
@@ -1057,17 +1095,31 @@ export function createBroadcastDataSource(): BroadcastDataSource {
       fromApiImportDetail(
         await backendClient.rematchBroadcastImport(toApiScope(scope), importId),
       ),
-    generateImportDrafts: async (scope, importId, templateId) => {
+    generateImportDrafts: async (scope, importId, payload) => {
       const response = await backendClient.generateBroadcastImportDrafts(
         toApiScope(scope),
         importId,
-        templateId,
+        {
+          template_id: payload.templateId,
+          group_keys: payload.groupKeys,
+          overwrite_existing: payload.overwriteExisting,
+        },
       );
       return {
         totalGroupCount: response.total_group_count,
         pendingReviewCount: response.pending_review_count,
         invalidCount: response.invalid_count,
         unmatchedGroupCount: response.unmatched_group_count,
+        createdCount: response.created_count ?? 0,
+        updatedCount: response.updated_count ?? 0,
+        generatedGroupKeys: response.generated_group_keys ?? [],
+        draftIds: response.draft_ids ?? [],
+        draftResults: (response.draft_results ?? []).map((item) => ({
+          groupKey: item.group_key,
+          draftId: item.draft_id,
+          operation: item.operation,
+          modifiedFields: item.modified_fields ?? [],
+        })),
       };
     },
     listDrafts: async (scope, filters) =>

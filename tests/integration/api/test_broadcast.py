@@ -277,6 +277,70 @@ def _query_scope(bot_uuid: str = 'bot-1', connector_id: str = 'wxwork-local') ->
     return f'bot_uuid={bot_uuid}&connector_id={connector_id}'
 
 
+async def _get_import_group_key(
+    quart_test_client,
+    import_id: int,
+    *,
+    group_value: str,
+) -> str:
+    response = await quart_test_client.get(
+        f'/api/v1/broadcast/imports/{import_id}/groups?{_query_scope()}',
+        headers=_auth_headers(),
+    )
+    payload = await response.get_json()
+    assert response.status_code == 200
+    groups = payload['data']['groups']
+    return next(item['group_key'] for item in groups if item['group_value'] == group_value)
+
+
+async def _get_all_import_group_keys(
+    quart_test_client,
+    import_id: int,
+) -> list[str]:
+    response = await quart_test_client.get(
+        f'/api/v1/broadcast/imports/{import_id}/groups?{_query_scope()}',
+        headers=_auth_headers(),
+    )
+    payload = await response.get_json()
+    assert response.status_code == 200
+    return [item['group_key'] for item in payload['data']['groups']]
+
+
+async def _create_invalid_import_draft(
+    fake_broadcast_app,
+    *,
+    import_id: int,
+    template_id: int,
+    template_name: str,
+    template_content: str,
+    group_value: str,
+    error_message: str = '未匹配到群聊',
+) -> int:
+    repository = fake_broadcast_app.broadcast_service.repository
+    async with fake_broadcast_app.persistence_mgr.get_db_engine().begin() as conn:
+        return await repository.create_draft(
+            conn,
+            {
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'import_batch_id': import_id,
+                'group_value': group_value,
+                'target_conversation_name': None,
+
+                'target_conversation_id': None,
+                'template_id': template_id,
+                'template_name_snapshot': template_name,
+                'template_content_snapshot': template_content,
+                'render_variables': {},
+                'draft_text': '',
+                'status': 'invalid',
+                'send_status': 'pending',
+                'sent_at': None,
+                'error_message': error_message,
+            },
+        )
+
+
 @pytest.mark.usefixtures('mock_circular_import_chain')
 class TestBroadcastApi:
     @pytest.mark.asyncio
@@ -290,6 +354,826 @@ class TestBroadcastApi:
         payload = await response.get_json()
         assert payload['code'] == 0
         assert payload['data'] == {'group_field': None, 'mapping_rules': []}
+
+    @pytest.mark.asyncio
+    async def test_import_group_template_assignments_and_selected_group_generation(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Globex',
+                'match_type': 'exact',
+                'match_expression': 'Globex',
+                'target_conversation_name': 'Globex Group',
+
+                'target_conversation_id': 'Globex Group',
+                'priority': 9,
+                'enabled': True,
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\nGlobex\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        groups_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}/groups?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        groups_payload = (await groups_response.get_json())['data']
+        assert groups_response.status_code == 200
+        assert groups_payload['groups'][0]['template_id'] is None
+
+        template_a_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Template A',
+                'content': 'Hello {{customer_name}} from A',
+                'enabled': True,
+            },
+        )
+        template_b_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Template B',
+                'content': 'Hello {{customer_name}} from B',
+                'enabled': True,
+            },
+        )
+        template_a_id = (await template_a_response.get_json())['data']['id']
+        template_b_id = (await template_b_response.get_json())['data']['id']
+        group_key_by_value = {
+            item['group_value']: item['group_key'] for item in groups_payload['groups']
+        }
+
+        assignment_response = await quart_test_client.put(
+            f'/api/v1/broadcast/imports/{import_id}/group-template-assignments',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [
+                    {
+                        'group_key': group_key_by_value['Acme'],
+                        'template_id': template_a_id,
+                    },
+                    {
+                        'group_key': group_key_by_value['Globex'],
+                        'template_id': template_b_id,
+                    },
+                ],
+            },
+        )
+        assert assignment_response.status_code == 200
+
+        refreshed_groups_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}/groups?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        refreshed_groups = (await refreshed_groups_response.get_json())['data']['groups']
+        assert {
+            item['group_value']: item['template_name'] for item in refreshed_groups
+        } == {
+            'Acme': 'Template A',
+            'Globex': 'Template B',
+        }
+
+        generate_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_keys': [group_key_by_value['Globex']],
+                'overwrite_existing': False,
+            },
+        )
+        generated_payload = await generate_response.get_json()
+        assert generate_response.status_code == 200
+        assert generated_payload['data']['created_count'] == 1
+        assert generated_payload['data']['updated_count'] == 0
+        assert generated_payload['data']['generated_group_keys'] == [
+            group_key_by_value['Globex']
+        ]
+
+        drafts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+            headers=_auth_headers(),
+        )
+        drafts_payload = (await drafts_response.get_json())['data']
+        assert [item['group_value'] for item in drafts_payload] == ['Globex']
+        assert drafts_payload[0]['template_name_snapshot'] == 'Template B'
+
+    @pytest.mark.asyncio
+    async def test_generate_selected_group_drafts_requires_explicit_group_keys(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+            },
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        template_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Arrival Reminder',
+                'content': 'Hello {{customer_name}}',
+                'enabled': True,
+            },
+        )
+        template_id = (await template_response.get_json())['data']['id']
+
+        generate_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'template_id': template_id,
+            },
+        )
+        generate_payload = await generate_response.get_json()
+        assert generate_response.status_code == 400
+        assert generate_payload['message'] == '请先选择至少一个分组'
+
+        drafts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+            headers=_auth_headers(),
+        )
+        drafts_payload = await drafts_response.get_json()
+        assert drafts_response.status_code == 200
+        assert drafts_payload['data'] == []
+
+    @pytest.mark.asyncio
+    async def test_generate_selected_group_drafts_rejects_duplicate_target_conversations(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        for source_value in ['Acme', 'Globex']:
+            await quart_test_client.post(
+                '/api/v1/broadcast/group-rules',
+                headers=_auth_headers(),
+                json={
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'source_value': source_value,
+                    'match_type': 'exact',
+                    'match_expression': source_value,
+                    'target_conversation_id': 'shared-group-id',
+                    'target_conversation_name': 'Shared Group',
+
+                    'target_conversation_id': 'Shared Group',
+                    'priority': 10,
+                    'enabled': True,
+                },
+            )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\nGlobex\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        groups_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}/groups?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        groups_payload = (await groups_response.get_json())['data']
+        template_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Template A',
+                'content': 'Hello {{customer_name}}',
+                'enabled': True,
+            },
+        )
+        template_id = (await template_response.get_json())['data']['id']
+        await quart_test_client.put(
+            f'/api/v1/broadcast/imports/{import_id}/group-template-assignments',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [
+                    {
+                        'group_key': item['group_key'],
+                        'template_id': template_id,
+                    }
+                    for item in groups_payload['groups']
+                ],
+            },
+        )
+
+        generate_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_keys': [item['group_key'] for item in groups_payload['groups']],
+                'overwrite_existing': False,
+            },
+        )
+        generate_payload = await generate_response.get_json()
+        assert generate_response.status_code == 200
+        assert generate_payload['code'] == 0
+        assert generate_payload['data']['pending_review_count'] == 2
+
+        drafts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+            headers=_auth_headers(),
+        )
+        drafts_payload = (await drafts_response.get_json())['data']
+        assert len(drafts_payload) == 2
+
+        execution_response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [item['id'] for item in drafts_payload],
+                'mode': 'paste_only',
+                'operator': 'tester@example.com',
+            },
+        )
+        execution_payload = await execution_response.get_json()
+        assert execution_response.status_code == 409
+        assert execution_payload['msg'] == 'DUPLICATE_TARGET_CONVERSATION'
+
+    @pytest.mark.asyncio
+    async def test_generate_selected_group_drafts_overwrites_pending_in_place(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '瀹㈡埛鍚嶇О',
+                'mapping_rules': [
+                    {
+                        'source_field': '瀹㈡埛鍚嶇О',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Acme Group',
+                'target_conversation_id': 'acme-group-1',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('瀹㈡埛鍚嶇О\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        template_a_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Template A',
+                'content': 'Hello {{customer_name}} from A',
+                'enabled': True,
+            },
+        )
+        template_b_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Template B',
+                'content': 'Hello {{customer_name}} from B',
+                'enabled': True,
+            },
+        )
+        template_a_id = (await template_a_response.get_json())['data']['id']
+        template_b_id = (await template_b_response.get_json())['data']['id']
+        group_key = await _get_import_group_key(quart_test_client, import_id, group_value='Acme')
+        await quart_test_client.put(
+            f'/api/v1/broadcast/imports/{import_id}/group-template-assignments',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [{'group_key': group_key, 'template_id': template_a_id}],
+            },
+        )
+
+        first_generate_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_keys': [group_key],
+                'overwrite_existing': True,
+            },
+        )
+        first_generate_payload = await first_generate_response.get_json()
+        assert first_generate_response.status_code == 200
+        assert first_generate_payload['data']['created_count'] == 1
+        draft_id = first_generate_payload['data']['draft_ids'][0]
+
+        drafts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+            headers=_auth_headers(),
+        )
+        drafts_payload = (await drafts_response.get_json())['data']
+        assert drafts_payload[0]['id'] == draft_id
+        created_at = drafts_payload[0]['created_at']
+
+        await quart_test_client.put(
+            f'/api/v1/broadcast/imports/{import_id}/group-template-assignments',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [{'group_key': group_key, 'template_id': template_b_id}],
+            },
+        )
+
+        overwrite_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_keys': [group_key],
+                'overwrite_existing': True,
+            },
+        )
+        overwrite_payload = await overwrite_response.get_json()
+        assert overwrite_response.status_code == 200
+        assert overwrite_payload['data']['created_count'] == 0
+        assert overwrite_payload['data']['updated_count'] == 1
+        assert overwrite_payload['data']['draft_ids'] == [draft_id]
+        assert overwrite_payload['data']['draft_results'] == [
+            {
+                'group_key': group_key,
+                'draft_id': draft_id,
+                'operation': 'updated',
+                'modified_fields': [
+                    'template_id',
+                    'template_name_snapshot',
+                    'template_content_snapshot',
+                    'render_variables',
+                    'draft_text',
+                    'target_conversation_id',
+                    'target_conversation_name',
+                    'attachment_snapshots',
+                    'status',
+                    'error_message',
+                    'attachments_stale',
+                    'updated_at',
+                ],
+            }
+        ]
+
+        refreshed_drafts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+            headers=_auth_headers(),
+        )
+        refreshed_drafts = (await refreshed_drafts_response.get_json())['data']
+        assert len(refreshed_drafts) == 1
+        assert refreshed_drafts[0]['id'] == draft_id
+        assert refreshed_drafts[0]['created_at'] == created_at
+        assert refreshed_drafts[0]['template_name_snapshot'] == 'Template B'
+        assert refreshed_drafts[0]['draft_text'] == 'Hello Acme from B'
+        assert refreshed_drafts[0]['send_status'] == 'pending'
+
+    @pytest.mark.asyncio
+    async def test_generate_selected_group_drafts_rejects_sent_overwrite_atomically(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '瀹㈡埛鍚嶇О',
+                'mapping_rules': [
+                    {
+                        'source_field': '瀹㈡埛鍚嶇О',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        for priority, group_name in enumerate(['Acme', 'Globex'], start=9):
+            await quart_test_client.post(
+                '/api/v1/broadcast/group-rules',
+                headers=_auth_headers(),
+                json={
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'source_value': group_name,
+                    'match_type': 'exact',
+                    'match_expression': group_name,
+                    'target_conversation_name': f'{group_name} Group',
+                    'target_conversation_id': f'{group_name.lower()}-group',
+                    'priority': priority,
+                    'enabled': True,
+                },
+            )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('瀹㈡埛鍚嶇О\nAcme\nGlobex\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        template_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Template A',
+                'content': 'Hello {{customer_name}}',
+                'enabled': True,
+            },
+        )
+        template_id = (await template_response.get_json())['data']['id']
+        group_keys = await _get_all_import_group_keys(quart_test_client, import_id)
+        await quart_test_client.put(
+            f'/api/v1/broadcast/imports/{import_id}/group-template-assignments',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [
+                    {'group_key': group_key, 'template_id': template_id}
+                    for group_key in group_keys
+                ],
+            },
+        )
+        acme_group_key = await _get_import_group_key(quart_test_client, import_id, group_value='Acme')
+        first_generate_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_keys': [acme_group_key],
+                'overwrite_existing': True,
+            },
+        )
+        first_generate_payload = await first_generate_response.get_json()
+        draft_id = first_generate_payload['data']['draft_ids'][0]
+        mark_sent_response = await quart_test_client.post(
+            '/api/v1/broadcast/drafts/batch-status',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft_id],
+                'status': 'sent',
+            },
+        )
+        assert mark_sent_response.status_code == 200
+
+        reject_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_keys': group_keys,
+                'overwrite_existing': True,
+            },
+        )
+        reject_payload = await reject_response.get_json()
+        assert reject_response.status_code == 400
+        assert reject_payload['msg'] == 'BATCH_VALIDATION_FAILED'
+        assert reject_payload['message'] == 'Acme: 已发送草稿不允许覆盖，请先恢复为待发送'
+        assert reject_payload['details'] == ['Acme: 已发送草稿不允许覆盖，请先恢复为待发送']
+
+        drafts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+            headers=_auth_headers(),
+        )
+        drafts_payload = (await drafts_response.get_json())['data']
+        assert len(drafts_payload) == 1
+        assert drafts_payload[0]['id'] == draft_id
+        assert drafts_payload[0]['send_status'] == 'sent'
+
+    @pytest.mark.asyncio
+    async def test_generate_selected_group_drafts_supports_mixed_create_and_update(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '瀹㈡埛鍚嶇О',
+                'mapping_rules': [
+                    {
+                        'source_field': '瀹㈡埛鍚嶇О',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        for priority, group_name in enumerate(['Acme', 'Globex', 'Northwind'], start=8):
+            await quart_test_client.post(
+                '/api/v1/broadcast/group-rules',
+                headers=_auth_headers(),
+                json={
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'source_value': group_name,
+                    'match_type': 'exact',
+                    'match_expression': group_name,
+                    'target_conversation_name': f'{group_name} Group',
+                    'target_conversation_id': f'{group_name.lower()}-group',
+                    'priority': priority,
+                    'enabled': True,
+                },
+            )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('瀹㈡埛鍚嶇О\nAcme\nGlobex\nNorthwind\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        template_a_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Template A',
+                'content': 'Hello {{customer_name}} from A',
+                'enabled': True,
+            },
+        )
+        template_b_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Template B',
+                'content': 'Hello {{customer_name}} from B',
+                'enabled': True,
+            },
+        )
+        template_a_id = (await template_a_response.get_json())['data']['id']
+        template_b_id = (await template_b_response.get_json())['data']['id']
+        group_key_by_value = {
+            group_value: await _get_import_group_key(quart_test_client, import_id, group_value=group_value)
+            for group_value in ['Acme', 'Globex', 'Northwind']
+        }
+        await quart_test_client.put(
+            f'/api/v1/broadcast/imports/{import_id}/group-template-assignments',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [
+                    {'group_key': group_key, 'template_id': template_a_id}
+                    for group_key in group_key_by_value.values()
+                ],
+            },
+        )
+        first_generate_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_keys': [
+                    group_key_by_value['Acme'],
+                    group_key_by_value['Northwind'],
+                ],
+                'overwrite_existing': True,
+            },
+        )
+        first_generate_payload = await first_generate_response.get_json()
+        original_draft_ids = {
+            item['group_key']: item['draft_id']
+            for item in first_generate_payload['data']['draft_results']
+        }
+        drafts_before_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+            headers=_auth_headers(),
+        )
+        drafts_before = (await drafts_before_response.get_json())['data']
+        northwind_before = next(item for item in drafts_before if item['group_value'] == 'Northwind')
+
+        await quart_test_client.put(
+            f'/api/v1/broadcast/imports/{import_id}/group-template-assignments',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [
+                    {'group_key': group_key_by_value['Acme'], 'template_id': template_b_id},
+                    {'group_key': group_key_by_value['Globex'], 'template_id': template_b_id},
+                ],
+            },
+        )
+        second_generate_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_keys': [
+                    group_key_by_value['Acme'],
+                    group_key_by_value['Globex'],
+                ],
+                'overwrite_existing': True,
+            },
+        )
+        second_generate_payload = await second_generate_response.get_json()
+        assert second_generate_response.status_code == 200
+        assert second_generate_payload['data']['created_count'] == 1
+        assert second_generate_payload['data']['updated_count'] == 1
+        assert second_generate_payload['data']['draft_results'][0]['operation'] == 'updated'
+        assert second_generate_payload['data']['draft_results'][1]['operation'] == 'created'
+
+        drafts_after_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+            headers=_auth_headers(),
+        )
+        drafts_after = (await drafts_after_response.get_json())['data']
+        assert len(drafts_after) == 3
+        draft_by_group = {item['group_value']: item for item in drafts_after}
+        assert draft_by_group['Acme']['id'] == original_draft_ids[group_key_by_value['Acme']]
+        assert draft_by_group['Acme']['template_name_snapshot'] == 'Template B'
+        assert draft_by_group['Globex']['template_name_snapshot'] == 'Template B'
+        assert draft_by_group['Northwind']['id'] == original_draft_ids[group_key_by_value['Northwind']]
+        assert draft_by_group['Northwind']['draft_text'] == northwind_before['draft_text']
 
     @pytest.mark.asyncio
     async def test_template_crud_and_render_validation(self, quart_test_client):
@@ -491,6 +1375,8 @@ class TestBroadcastApi:
                 'match_type': 'exact',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Primary',
+
+                'target_conversation_id': 'Acme Primary',
                 'priority': 10,
                 'enabled': True,
             },
@@ -507,6 +1393,8 @@ class TestBroadcastApi:
                 'match_type': 'contains',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Backup',
+
+                'target_conversation_id': 'Acme Backup',
                 'priority': 1,
                 'enabled': True,
             },
@@ -522,6 +1410,8 @@ class TestBroadcastApi:
                 'match_type': 'regex',
                 'match_expression': '[',
                 'target_conversation_name': 'Broken Regex',
+
+                'target_conversation_id': 'Broken Regex',
                 'priority': 1,
                 'enabled': True,
             },
@@ -561,6 +1451,8 @@ class TestBroadcastApi:
                 'match_type': 'exact',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Primary',
+
+                'target_conversation_id': 'Acme Primary',
                 'priority': 10,
                 'enabled': False,
             },
@@ -679,6 +1571,8 @@ class TestBroadcastApi:
                 'match_type': 'exact',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
                 'priority': 10,
                 'enabled': True,
             },
@@ -693,6 +1587,8 @@ class TestBroadcastApi:
                 'match_type': 'contains',
                 'match_expression': 'North',
                 'target_conversation_name': 'Disabled Group',
+
+                'target_conversation_id': 'Disabled Group',
                 'priority': 99,
                 'enabled': False,
             },
@@ -855,6 +1751,8 @@ class TestBroadcastApi:
                 'match_type': 'exact',
                 'match_expression': '小满',
                 'target_conversation_name': '小满',
+
+                'target_conversation_id': '小满',
                 'priority': 10,
                 'enabled': True,
             },
@@ -895,6 +1793,7 @@ class TestBroadcastApi:
                 'bot_uuid': 'bot-1',
                 'connector_id': 'wxwork-local',
                 'template_id': template_id,
+                'group_keys': await _get_all_import_group_keys(quart_test_client, import_id),
             },
         )
         assert generate_response.status_code == 200
@@ -939,6 +1838,8 @@ class TestBroadcastApi:
                 'match_type': 'exact',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
                 'priority': 10,
                 'enabled': True,
             },
@@ -967,14 +1868,31 @@ class TestBroadcastApi:
             },
         )
         template_id = (await template_response.get_json())['data']['id']
-        await quart_test_client.post(
+        matched_group_key = await _get_import_group_key(
+            quart_test_client,
+            import_id,
+            group_value='Acme',
+        )
+        generate_response = await quart_test_client.post(
             f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
             headers=_auth_headers(),
             json={
                 'bot_uuid': 'bot-1',
                 'connector_id': 'wxwork-local',
+                'group_keys': [matched_group_key],
                 'template_id': template_id,
             },
+        )
+        generate_payload = await generate_response.get_json()
+        assert generate_response.status_code == 200
+        assert generate_payload['data']['generated_group_keys'] == [matched_group_key]
+        invalid_draft_id = await _create_invalid_import_draft(
+            fake_broadcast_app,
+            import_id=import_id,
+            template_id=template_id,
+            template_name='Arrival Reminder',
+            template_content='Hello {{customer_name}}',
+            group_value='Northwind',
         )
 
         list_response = await quart_test_client.get(
@@ -983,13 +1901,6 @@ class TestBroadcastApi:
         )
         drafts = (await list_response.get_json())['data']
         matched_draft = next(item for item in drafts if item['status'] == 'pending_review')
-        invalid_rows = await fake_broadcast_app.broadcast_service.repository.list_drafts(
-            bot_uuid='bot-1',
-            connector_id='wxwork-local',
-            import_batch_id=import_id,
-            status='invalid',
-        )
-        invalid_draft_id = int(invalid_rows[0].id)
 
         await quart_test_client.post(
             '/api/v1/broadcast/drafts/batch-status',
@@ -1031,7 +1942,11 @@ class TestBroadcastApi:
         assert invalid_confirm_payload['msg'] == 'BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN'
 
     @pytest.mark.asyncio
-    async def test_drafts_list_audit_filters_map_legacy_queries_and_hide_invalid(self, quart_test_client):
+    async def test_drafts_list_audit_filters_map_legacy_queries_and_hide_invalid(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
         await quart_test_client.put(
             '/api/v1/broadcast/variable-profile',
             headers=_auth_headers(),
@@ -1059,6 +1974,8 @@ class TestBroadcastApi:
                 'match_type': 'exact',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
                 'priority': 10,
                 'enabled': True,
             },
@@ -1087,14 +2004,31 @@ class TestBroadcastApi:
             },
         )
         template_id = (await template_response.get_json())['data']['id']
-        await quart_test_client.post(
+        matched_group_key = await _get_import_group_key(
+            quart_test_client,
+            import_id,
+            group_value='Acme',
+        )
+        generate_response = await quart_test_client.post(
             f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
             headers=_auth_headers(),
             json={
                 'bot_uuid': 'bot-1',
                 'connector_id': 'wxwork-local',
+                'group_keys': [matched_group_key],
                 'template_id': template_id,
             },
+        )
+        generate_payload = await generate_response.get_json()
+        assert generate_response.status_code == 200
+        assert generate_payload['data']['generated_group_keys'] == [matched_group_key]
+        await _create_invalid_import_draft(
+            fake_broadcast_app,
+            import_id=import_id,
+            template_id=template_id,
+            template_name='Arrival Reminder',
+            template_content='Hello {{customer_name}}',
+            group_value='Northwind',
         )
 
         all_response = await quart_test_client.get(
@@ -1160,6 +2094,8 @@ class TestBroadcastApi:
                 'match_type': 'exact',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
                 'priority': 10,
                 'enabled': True,
             },
@@ -1195,6 +2131,7 @@ class TestBroadcastApi:
                 'bot_uuid': 'bot-1',
                 'connector_id': 'wxwork-local',
                 'template_id': template_id,
+                'group_keys': await _get_all_import_group_keys(quart_test_client, import_id),
             },
         )
         drafts_response = await quart_test_client.get(
@@ -1440,6 +2377,8 @@ class TestBroadcastApi:
                 'match_type': 'exact',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
                 'priority': 10,
                 'enabled': True,
             },
@@ -1475,6 +2414,7 @@ class TestBroadcastApi:
                 'bot_uuid': 'bot-1',
                 'connector_id': 'wxwork-local',
                 'template_id': template_id,
+                'group_keys': await _get_all_import_group_keys(quart_test_client, import_id),
             },
         )
         drafts_response = await quart_test_client.get(
@@ -1566,6 +2506,8 @@ class TestBroadcastApi:
                 'match_type': 'exact',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
                 'priority': 10,
                 'enabled': True,
             },
@@ -1601,6 +2543,7 @@ class TestBroadcastApi:
                 'bot_uuid': 'bot-1',
                 'connector_id': 'wxwork-local',
                 'template_id': template_id,
+                'group_keys': await _get_all_import_group_keys(quart_test_client, import_id),
             },
         )
         drafts_response = await quart_test_client.get(
@@ -1756,6 +2699,8 @@ class TestBroadcastApi:
                 'match_type': 'exact',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
                 'priority': 10,
                 'enabled': True,
             },
@@ -1791,6 +2736,7 @@ class TestBroadcastApi:
                 'bot_uuid': 'bot-1',
                 'connector_id': 'wxwork-local',
                 'template_id': template_id,
+                'group_keys': await _get_all_import_group_keys(quart_test_client, import_id),
             },
         )
         drafts_response = await quart_test_client.get(

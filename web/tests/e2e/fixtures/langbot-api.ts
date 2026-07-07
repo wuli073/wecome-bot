@@ -295,6 +295,7 @@ interface LangBotApiMockState {
   broadcastSendConfirmations: BroadcastSendConfirmationMock[];
   broadcastExecutionTasks: BroadcastExecutionTaskMock[];
   broadcastGroupAttachments: Record<string, BroadcastAttachmentMock[]>;
+  broadcastGroupTemplateAssignments: Record<string, number>;
   broadcastGroupNames: BroadcastGroupNameMock[];
   broadcastGroupRules: BroadcastGroupRuleMock[];
   broadcastImportBatches: BroadcastImportBatchMock[];
@@ -415,6 +416,10 @@ function groupAttachmentMapKey(importId: number, groupKey: string) {
   return `${importId}:${groupKey}`;
 }
 
+function groupTemplateAssignmentMapKey(importId: number, groupKey: string) {
+  return `${importId}:${groupKey}`;
+}
+
 function cloneAttachment(
   attachment: BroadcastAttachmentMock,
 ): BroadcastAttachmentMock {
@@ -493,6 +498,15 @@ function buildImportGroupsResponse(
       const attachments = (
         state.broadcastGroupAttachments[attachmentKey] ?? []
       ).map(cloneAttachment);
+      const templateId =
+        state.broadcastGroupTemplateAssignments[
+          groupTemplateAssignmentMapKey(importId, groupKey)
+        ] ?? null;
+      const template =
+        templateId != null
+          ? (state.broadcastTemplates.find((item) => item.id === templateId) ??
+            null)
+          : null;
       return {
         group_key: groupKey,
         group_value: groupValue,
@@ -506,6 +520,9 @@ function buildImportGroupsResponse(
         reason: inferGroupReason(groupRows, matchStatus),
         attachment_count: attachments.length,
         attachments,
+        template_id: templateId,
+        template_name: template?.name ?? null,
+        template_enabled: template?.enabled ?? null,
         expandable: true,
         first_source_row_number: Math.min(
           ...groupRows.map((row) => row.source_row_number),
@@ -1924,93 +1941,325 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     });
   }
 
+  const templateAssignmentMatch = path.match(
+    /^\/api\/v1\/broadcast\/imports\/(\d+)\/group-template-assignments$/,
+  );
+  if (templateAssignmentMatch && method === 'PUT') {
+    const importId = Number(templateAssignmentMatch[1]);
+    const body = parseJsonBody(route);
+    const batch = state.broadcastImportBatches.find(
+      (item) => item.id === importId,
+    );
+    if (!batch) {
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_IMPORT_NOT_FOUND',
+        'Current import batch was not found',
+      );
+    }
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (items.length === 0) {
+      return fulfillError(
+        route,
+        400,
+        'DRAFT_GENERATION_VALIDATION_FAILED',
+        'Select at least one group template assignment',
+      );
+    }
+    const groupsResponse = buildImportGroupsResponse(state, importId, {
+      page: 1,
+      pageSize: 1000,
+      keyword: '',
+      matchStatus: null,
+    });
+    const groupByKey = new Map(
+      groupsResponse.groups.map((group) => [group.group_key, group] as const),
+    );
+    const seenGroupKeys = new Set<string>();
+    const normalizedItems: Array<{
+      group_key: string;
+      template_id: number;
+    }> = [];
+    for (const item of items) {
+      const groupKey = String((item as JsonRecord)?.group_key || '').trim();
+      const templateId = Number((item as JsonRecord)?.template_id || 0);
+      if (!groupKey || !groupByKey.has(groupKey)) {
+        return fulfillError(
+          route,
+          404,
+          'GROUP_NOT_FOUND',
+          'Selected group was not found',
+        );
+      }
+      if (seenGroupKeys.has(groupKey)) {
+        return fulfillError(
+          route,
+          400,
+          'DRAFT_GENERATION_VALIDATION_FAILED',
+          'Duplicate group assignment in the same request is not allowed',
+        );
+      }
+      seenGroupKeys.add(groupKey);
+      const template = state.broadcastTemplates.find(
+        (candidate) => candidate.id === templateId,
+      );
+      if (!template) {
+        return fulfillError(
+          route,
+          404,
+          'TEMPLATE_NOT_FOUND',
+          'Selected template was not found',
+        );
+      }
+      if (!template.enabled) {
+        return fulfillError(
+          route,
+          400,
+          'TEMPLATE_DISABLED',
+          'Disabled templates cannot be assigned to new drafts',
+        );
+      }
+      normalizedItems.push({
+        group_key: groupKey,
+        template_id: template.id,
+      });
+    }
+
+    for (const item of normalizedItems) {
+      state.broadcastGroupTemplateAssignments[
+        groupTemplateAssignmentMapKey(importId, item.group_key)
+      ] = item.template_id;
+    }
+    return fulfillJson(route, { items: normalizedItems });
+  }
+
   const generateDraftsMatch = path.match(
     /^\/api\/v1\/broadcast\/imports\/(\d+)\/generate-drafts$/,
   );
   if (generateDraftsMatch && method === 'POST') {
     const importId = Number(generateDraftsMatch[1]);
     const body = parseJsonBody(route);
-    const templateId = Number(body.template_id || 0);
-    const template = state.broadcastTemplates.find(
-      (item) => item.id === templateId,
-    );
     const batch = state.broadcastImportBatches.find(
       (item) => item.id === importId,
     );
-    if (!template || !batch) {
+    if (!batch) {
       return fulfillError(
         route,
         404,
-        'BROADCAST_TEMPLATE_NOT_FOUND',
-        '当前模板不存在或已被删除',
+        'BROADCAST_IMPORT_NOT_FOUND',
+        'Current import batch was not found',
       );
     }
-    const rows = state.broadcastImportRows.filter(
-      (item) => item.import_batch_id === importId,
+
+    const groupsResponse = buildImportGroupsResponse(state, importId, {
+      page: 1,
+      pageSize: 1000,
+      keyword: '',
+      matchStatus: null,
+    });
+    const groupByKey = new Map(
+      groupsResponse.groups.map((group) => [group.group_key, group] as const),
     );
-    state.broadcastDrafts = state.broadcastDrafts.filter(
-      (item) => item.import_batch_id !== importId,
+    const selectedGroupKeys = Array.isArray(body.group_keys)
+      ? body.group_keys
+          .map((item) => String(item || '').trim())
+          .filter((item) => item.length > 0)
+      : groupsResponse.groups.map((group) => group.group_key);
+    const fallbackTemplateId = Number(body.template_id || 0) || null;
+    const overwriteExisting = Boolean(body.overwrite_existing);
+
+    if (selectedGroupKeys.length === 0) {
+      return fulfillError(
+        route,
+        400,
+        'NO_GROUP_SELECTED',
+        'Select at least one group before generating drafts',
+      );
+    }
+
+    const validationErrors: string[] = [];
+    const selectedGroups = selectedGroupKeys.map((groupKey) => {
+      const group = groupByKey.get(groupKey) || null;
+      if (!group) {
+        validationErrors.push(`${groupKey}: group not found`);
+        return null;
+      }
+      return group;
+    });
+    if (validationErrors.length > 0) {
+      return fulfillError(
+        route,
+        400,
+        'DRAFT_GENERATION_VALIDATION_FAILED',
+        'Selected groups failed validation',
+        validationErrors,
+      );
+    }
+
+    const selectedMatchedGroups = selectedGroups.filter(
+      (group): group is NonNullable<typeof group> => group != null,
     );
-    const drafts: BroadcastDraftMock[] = rows
-      .slice()
-      .sort((left, right) => {
-        const leftRank = left.match_status === 'matched' ? 0 : 1;
-        const rightRank = right.match_status === 'matched' ? 0 : 1;
-        return leftRank - rightRank;
-      })
-      .map((row) => {
-        const valid = row.match_status === 'matched';
-        const rowGroupKey = makeGroupKey(
-          importId,
-          row.group_value || `invalid-${row.source_row_number}`,
+    for (const group of selectedMatchedGroups) {
+      if (
+        group.match_status !== 'matched' ||
+        !group.matched_conversation_name
+      ) {
+        validationErrors.push(
+          `${group.group_value}: ${group.reason || 'group is not eligible for draft generation'}`,
         );
-        return {
-          id: Number(nextId(state, 'broadcast-draft').split('-').pop()),
+        continue;
+      }
+    }
+
+    const modifiedFields = [
+      'template_id',
+      'template_name_snapshot',
+      'template_content_snapshot',
+      'render_variables',
+      'draft_text',
+      'target_conversation_id',
+      'target_conversation_name',
+      'attachment_snapshots',
+      'status',
+      'error_message',
+      'attachments_stale',
+      'updated_at',
+    ];
+    const draftOperations: Array<{
+      group: (typeof selectedMatchedGroups)[number];
+      draft: BroadcastDraftMock;
+      existingDraft: BroadcastDraftMock | null;
+    }> = [];
+    for (const group of selectedMatchedGroups) {
+      const templateId =
+        fallbackTemplateId ??
+        state.broadcastGroupTemplateAssignments[
+          groupTemplateAssignmentMapKey(importId, group.group_key)
+        ] ??
+        null;
+      if (!templateId) {
+        validationErrors.push(`${group.group_value}: template not selected`);
+        continue;
+      }
+      const template = state.broadcastTemplates.find(
+        (item) => item.id === templateId,
+      );
+      if (!template) {
+        validationErrors.push(`${group.group_value}: template not found`);
+        continue;
+      }
+      if (!template.enabled) {
+        validationErrors.push(`${group.group_value}: template disabled`);
+        continue;
+      }
+
+      const existingDraft = state.broadcastDrafts.find(
+        (item) =>
+          item.import_batch_id === importId &&
+          item.group_value === group.group_value,
+      );
+      if (existingDraft && existingDraft.send_status === 'sent') {
+        validationErrors.push(
+          `${group.group_value}: sent draft cannot be overwritten, restore it to pending first`,
+        );
+        continue;
+      }
+      if (existingDraft && !overwriteExisting) {
+        validationErrors.push(`${group.group_value}: draft already exists`);
+        continue;
+      }
+
+      const timestamp = now();
+      draftOperations.push({
+        group,
+        existingDraft: existingDraft ?? null,
+        draft: {
+          id:
+            existingDraft?.id ??
+            Number(nextId(state, 'broadcast-draft').split('-').pop()),
           bot_uuid: batch.bot_uuid,
           connector_id: batch.connector_id,
           import_batch_id: importId,
-          group_value: row.group_value || `invalid-${row.source_row_number}`,
-          target_conversation_name: row.matched_conversation_name,
+          group_value: group.group_value,
+          target_conversation_name: group.matched_conversation_name,
           template_id: template.id,
           template_name_snapshot: template.name,
           template_content_snapshot: template.content,
           render_variables: {
-            customer_name: row.group_value || '',
+            customer_name: group.group_value,
           },
-          draft_text: valid
-            ? template.content.replace(
-                '{{customer_name}}',
-                row.group_value || '',
-              )
-            : '',
-          status: valid ? 'pending_review' : 'invalid',
-          send_status: 'pending',
-          sent_at: null,
-          error_message: valid ? null : row.error_message || '未匹配到群聊',
+          draft_text: template.content.replace(
+            '{{customer_name}}',
+            group.group_value,
+          ),
+          status: 'pending_review',
+          legacy_status: 'pending_review',
+          send_status: existingDraft?.send_status ?? 'pending',
+          sent_at: existingDraft?.sent_at ?? null,
+          error_message: null,
           drafts_stale: false,
           attachments_stale: false,
           attachments: (
             state.broadcastGroupAttachments[
-              groupAttachmentMapKey(importId, rowGroupKey)
+              groupAttachmentMapKey(importId, group.group_key)
             ] ?? []
           ).map(cloneAttachment),
-          created_at: now(),
-          updated_at: now(),
-        };
+          created_at: existingDraft?.created_at ?? timestamp,
+          updated_at: timestamp,
+        },
       });
-    state.broadcastDrafts = [...drafts, ...state.broadcastDrafts];
+    }
+
+    if (validationErrors.length > 0) {
+      return fulfillError(
+        route,
+        400,
+        'BATCH_VALIDATION_FAILED',
+        validationErrors.length === 1
+          ? validationErrors[0]
+          : 'Selected groups failed validation',
+        validationErrors,
+      );
+    }
+
+    const createdDrafts = draftOperations
+      .filter((item) => item.existingDraft == null)
+      .map((item) => item.draft);
+    const updatedDrafts = draftOperations.filter(
+      (item) => item.existingDraft != null,
+    );
+    if (updatedDrafts.length > 0) {
+      const updatedDraftMap = new Map(
+        updatedDrafts.map((item) => [item.draft.id, item.draft] as const),
+      );
+      state.broadcastDrafts = state.broadcastDrafts.map(
+        (item) => updatedDraftMap.get(item.id) ?? item,
+      );
+    }
+    if (createdDrafts.length > 0) {
+      state.broadcastDrafts = [...createdDrafts, ...state.broadcastDrafts];
+    }
     batch.status = 'drafts_generated';
     batch.drafts_stale = false;
     batch.updated_at = now();
     return fulfillJson(route, {
-      total_group_count: drafts.length,
-      pending_review_count: drafts.filter(
-        (item) => item.status === 'pending_review',
-      ).length,
-      invalid_count: drafts.filter((item) => item.status === 'invalid').length,
-      unmatched_group_count: drafts.filter(
-        (item) => item.error_message === '未匹配到群聊',
-      ).length,
+      total_group_count: selectedMatchedGroups.length,
+      pending_review_count: draftOperations.length,
+      invalid_count: 0,
+      unmatched_group_count: 0,
+      created_count: createdDrafts.length,
+      updated_count: updatedDrafts.length,
+      generated_group_keys: selectedMatchedGroups.map(
+        (group) => group.group_key,
+      ),
+      draft_ids: draftOperations.map((item) => item.draft.id),
+      draft_results: draftOperations.map((item) => ({
+        group_key: item.group.group_key,
+        draft_id: item.draft.id,
+        operation: item.existingDraft ? 'updated' : 'created',
+        modified_fields: modifiedFields,
+      })),
     });
   }
 
@@ -2510,6 +2759,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       supports_paste: true,
       supports_paste_verification: true,
       requires_manual_conversation_open: true,
+      conversation_locator: 'keyboard_search',
+      content_verification: 'windows_uia',
       supports_send: state.broadcastSendEnabled,
       supports_cancel: true,
       supports_status_query: true,
@@ -2531,6 +2782,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         supports_paste: true,
         supports_paste_verification: true,
         requires_manual_conversation_open: true,
+        conversation_locator: 'keyboard_search',
+        content_verification: 'windows_uia',
         supports_send: state.broadcastSendEnabled,
         supports_cancel: true,
         supports_status_query: true,
@@ -3304,6 +3557,7 @@ export async function installLangBotApiMocks(
     broadcastSendConfirmations: [],
     broadcastExecutionTasks: [],
     broadcastGroupAttachments: {},
+    broadcastGroupTemplateAssignments: {},
     broadcastGroupNames: broadcastSeed.broadcastGroupNames,
     broadcastGroupRules: broadcastSeed.broadcastGroupRules,
     broadcastImportBatches: [],

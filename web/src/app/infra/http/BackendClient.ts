@@ -78,6 +78,7 @@ import {
   ApiBroadcastImportBatch,
   ApiBroadcastImportDetail,
   ApiBroadcastImportDraftGenerationResult,
+  ApiBroadcastImportGroupTemplateAssignment,
   ApiBroadcastScope,
   ApiBroadcastTemplate,
   ApiBroadcastTemplateRenderResult,
@@ -2019,6 +2020,7 @@ export class BackendClient extends BaseHttpClient {
       source_value: string;
       match_type: 'exact' | 'contains' | 'regex';
       match_expression: string;
+      target_conversation_id?: string;
       target_conversation_name: string;
       priority: number;
       enabled: boolean;
@@ -2041,6 +2043,7 @@ export class BackendClient extends BaseHttpClient {
       source_value: string;
       match_type: 'exact' | 'contains' | 'regex';
       match_expression: string;
+      target_conversation_id?: string;
       target_conversation_name: string;
       priority: number;
       enabled: boolean;
@@ -2197,6 +2200,21 @@ export class BackendClient extends BaseHttpClient {
     );
   }
 
+  public updateBroadcastImportGroupTemplateAssignments(
+    scope: ApiBroadcastScope,
+    importId: number,
+    items: ApiBroadcastImportGroupTemplateAssignment[],
+  ): Promise<{ items: ApiBroadcastImportGroupTemplateAssignment[] }> {
+    return this.requestBroadcast({
+      method: 'put',
+      url: `/api/v1/broadcast/imports/${importId}/group-template-assignments`,
+      data: {
+        ...scope,
+        items,
+      },
+    });
+  }
+
   public uploadBroadcastImportGroupAttachments(
     scope: ApiBroadcastScope,
     importId: number,
@@ -2256,14 +2274,18 @@ export class BackendClient extends BaseHttpClient {
   public generateBroadcastImportDrafts(
     scope: ApiBroadcastScope,
     importId: number,
-    templateId: number,
+    payload: {
+      template_id?: number;
+      group_keys?: string[];
+      overwrite_existing?: boolean;
+    },
   ): Promise<ApiBroadcastImportDraftGenerationResult> {
     return this.requestBroadcast<ApiBroadcastImportDraftGenerationResult>({
       method: 'post',
       url: `/api/v1/broadcast/imports/${importId}/generate-drafts`,
       data: {
         ...scope,
-        template_id: templateId,
+        ...payload,
       },
     });
   }

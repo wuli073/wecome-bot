@@ -76,6 +76,7 @@ class BroadcastGroupRule(Base):
     source_value = sqlalchemy.Column(sqlalchemy.String(255), nullable=False, index=True)
     match_type = sqlalchemy.Column(sqlalchemy.String(50), nullable=False, index=True)
     match_expression = sqlalchemy.Column(sqlalchemy.String(1024), nullable=False)
+    target_conversation_id = sqlalchemy.Column(sqlalchemy.String(255), nullable=True, index=True)
     target_conversation_name = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
     priority = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, index=True, server_default='0', default=0)
     enabled = sqlalchemy.Column(sqlalchemy.Boolean, nullable=False, server_default=sqlalchemy.true(), default=True)
@@ -172,6 +173,7 @@ class BroadcastImportRow(Base):
     source_row_number = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
     raw_data = sqlalchemy.Column(sqlalchemy.JSON, nullable=False)
     group_value = sqlalchemy.Column(sqlalchemy.String(255), nullable=True, index=True)
+    matched_conversation_id = sqlalchemy.Column(sqlalchemy.String(255), nullable=True, index=True)
     matched_conversation_name = sqlalchemy.Column(sqlalchemy.String(255), nullable=True)
     matched_rule_id = sqlalchemy.Column(
         sqlalchemy.Integer,
@@ -181,6 +183,44 @@ class BroadcastImportRow(Base):
     match_status = sqlalchemy.Column(sqlalchemy.String(32), nullable=False, index=True)
     error_message = sqlalchemy.Column(sqlalchemy.Text, nullable=True)
     created_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False, server_default=sqlalchemy.func.now())
+
+
+class BroadcastImportGroupTemplateAssignment(Base):
+    __tablename__ = 'broadcast_import_group_template_assignments'
+    __table_args__ = (
+        sqlalchemy.UniqueConstraint(
+            'import_batch_id',
+            'group_key',
+            name='uq_bc_imp_group_tpl_assign_batch_group',
+        ),
+        sqlalchemy.Index(
+            'ix_bc_imp_group_tpl_assign_batch',
+            'import_batch_id',
+            'group_key',
+        ),
+    )
+
+    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True, autoincrement=True)
+    import_batch_id = sqlalchemy.Column(
+        sqlalchemy.Integer,
+        sqlalchemy.ForeignKey('broadcast_import_batches.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    group_key = sqlalchemy.Column(sqlalchemy.String(128), nullable=False, index=True)
+    template_id = sqlalchemy.Column(
+        sqlalchemy.Integer,
+        sqlalchemy.ForeignKey('broadcast_templates.id', ondelete='SET NULL'),
+        nullable=True,
+        index=True,
+    )
+    created_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False, server_default=sqlalchemy.func.now())
+    updated_at = sqlalchemy.Column(
+        sqlalchemy.DateTime,
+        nullable=False,
+        server_default=sqlalchemy.func.now(),
+        onupdate=sqlalchemy.func.now(),
+    )
 
 
 class BroadcastDraft(Base):
@@ -204,6 +244,7 @@ class BroadcastDraft(Base):
         index=True,
     )
     group_value = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
+    target_conversation_id = sqlalchemy.Column(sqlalchemy.String(255), nullable=True, index=True)
     target_conversation_name = sqlalchemy.Column(sqlalchemy.String(255), nullable=True)
     template_id = sqlalchemy.Column(
         sqlalchemy.Integer,

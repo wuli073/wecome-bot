@@ -57,6 +57,7 @@ function toRuleDraft(rule: BroadcastGroupRule | null): BroadcastGroupRuleDraft {
       sourceValue: '',
       matchType: 'exact',
       matchExpression: '',
+      targetConversationId: '',
       targetConversationName: '',
       priority: 0,
       enabled: true,
@@ -68,6 +69,7 @@ function toRuleDraft(rule: BroadcastGroupRule | null): BroadcastGroupRuleDraft {
     sourceValue: rule.sourceValue,
     matchType: rule.matchType,
     matchExpression: rule.matchExpression,
+    targetConversationId: rule.targetConversationId ?? '',
     targetConversationName: rule.targetConversationName,
     priority: rule.priority,
     enabled: rule.enabled,
@@ -75,7 +77,7 @@ function toRuleDraft(rule: BroadcastGroupRule | null): BroadcastGroupRuleDraft {
 }
 
 export default function GroupMatchingPanel({
-  scope,
+  scope: _scope,
   rules,
   groupNames,
   loading,
@@ -100,19 +102,42 @@ export default function GroupMatchingPanel({
   const [matchResult, setMatchResult] =
     useState<BroadcastGroupMatchResult | null>(null);
   const [groupNamesInput, setGroupNamesInput] = useState('');
+  const [targetConversationKeyword, setTargetConversationKeyword] = useState(
+    rules[0]?.targetConversationName ?? '',
+  );
+  const [selectionError, setSelectionError] = useState<string | null>(null);
 
   const activeRule =
     activeRuleId === 'new'
       ? null
-      : rules.find((rule) => rule.id === activeRuleId) ?? null;
+      : (rules.find((rule) => rule.id === activeRuleId) ?? null);
 
   useEffect(() => {
     setDraft(toRuleDraft(activeRule));
+    setTargetConversationKeyword(activeRule?.targetConversationName ?? '');
+    setSelectionError(null);
   }, [activeRule]);
 
   const enabledRules = rules.filter((rule) => rule.enabled);
+  const selectableGroupNames = groupNames.filter((item) =>
+    Boolean(item.externalConversationId?.trim()),
+  );
+  const filteredGroupNames = selectableGroupNames.filter((item) =>
+    item.name.toLowerCase().includes(targetConversationKeyword.toLowerCase()),
+  );
+  const requiresTargetConversationReselect =
+    Boolean(activeRule) &&
+    !draft.targetConversationId.trim() &&
+    Boolean(draft.targetConversationName.trim());
 
   const handleSaveRule = async () => {
+    if (!draft.targetConversationId.trim()) {
+      setSelectionError(
+        t('broadcast.groupRule.targetConversationSelectionRequired'),
+      );
+      return;
+    }
+    setSelectionError(null);
     if (activeRule) {
       await onUpdateRule(activeRule.id, draft);
       return;
@@ -188,9 +213,9 @@ export default function GroupMatchingPanel({
               {t('common.loading')}
             </div>
           ) : null}
-          {error ? (
+          {error || selectionError ? (
             <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
+              <AlertDescription>{selectionError || error}</AlertDescription>
             </Alert>
           ) : null}
 
@@ -253,15 +278,62 @@ export default function GroupMatchingPanel({
                 {t('broadcast.fields.targetConversationName')}
               </Label>
               <Input
-                id="broadcast-group-rule-target-conversation-name"
-                value={draft.targetConversationName}
-                onChange={(event) =>
+                id="broadcast-group-rule-target-conversation-search"
+                value={targetConversationKeyword}
+                placeholder={t(
+                  'broadcast.groupRule.targetConversationSearchPlaceholder',
+                )}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  setTargetConversationKeyword(nextValue);
+                  setSelectionError(null);
                   setDraft((current) => ({
                     ...current,
-                    targetConversationName: event.target.value,
-                  }))
-                }
+                    targetConversationId:
+                      nextValue === current.targetConversationName
+                        ? current.targetConversationId
+                        : '',
+                    targetConversationName: nextValue,
+                  }));
+                }}
               />
+              <select
+                id="broadcast-group-rule-target-conversation-name"
+                className="border-input bg-background h-9 w-full rounded-md border px-3 py-2 text-sm"
+                data-testid="broadcast-group-rule-target-conversation-select"
+                value={draft.targetConversationId}
+                onChange={(event) => {
+                  const selectedId = event.target.value;
+                  const selectedGroup = selectableGroupNames.find(
+                    (item) => item.externalConversationId === selectedId,
+                  );
+                  setSelectionError(null);
+                  setDraft((current) => ({
+                    ...current,
+                    targetConversationId:
+                      selectedGroup?.externalConversationId ?? '',
+                    targetConversationName: selectedGroup?.name ?? '',
+                  }));
+                  setTargetConversationKeyword(selectedGroup?.name ?? '');
+                }}
+              >
+                <option value="">
+                  {t('broadcast.groupRule.targetConversationSelectPlaceholder')}
+                </option>
+                {filteredGroupNames.map((groupName) => (
+                  <option
+                    key={groupName.id}
+                    value={groupName.externalConversationId ?? ''}
+                  >
+                    {groupName.name}
+                  </option>
+                ))}
+              </select>
+              {requiresTargetConversationReselect ? (
+                <div className="text-xs text-amber-700">
+                  {t('broadcast.groupRule.targetConversationLegacyReselect')}
+                </div>
+              ) : null}
             </div>
             <div className="space-y-2">
               <Label htmlFor="broadcast-group-rule-priority">

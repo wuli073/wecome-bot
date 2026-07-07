@@ -71,6 +71,7 @@ class _MiniPersistenceManager:
             await conn.run_sync(persistence_broadcast.BroadcastGroupName.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastImportBatch.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastImportRow.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastImportGroupTemplateAssignment.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastDraft.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastAttachmentAsset.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastImportGroupAttachment.__table__.create)
@@ -312,6 +313,42 @@ def _scope(bot_uuid: str = 'bot-1', connector_id: str = 'wxwork-local') -> dict[
     }
 
 
+async def _all_import_group_keys(service, import_id: int) -> list[str]:
+    groups = await service.list_import_groups(import_id, _scope(), {})
+    return [item['group_key'] for item in groups['groups']]
+
+
+async def _create_invalid_import_draft(
+    service,
+    *,
+    import_id: int,
+    template: dict[str, object],
+    group_value: str,
+    error_message: str = '未匹配到群聊',
+) -> int:
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        return await service.repository.create_draft(
+            conn,
+            {
+                **_scope(),
+                'import_batch_id': import_id,
+                'group_value': group_value,
+                'target_conversation_name': None,
+
+                'target_conversation_id': None,
+                'template_id': int(template['id']),
+                'template_name_snapshot': str(template['name']),
+                'template_content_snapshot': str(template['content']),
+                'render_variables': {},
+                'draft_text': '',
+                'status': 'invalid',
+                'send_status': 'pending',
+                'sent_at': None,
+                'error_message': error_message,
+            },
+        )
+
+
 async def _prepare_ready_drafts_for_execution(
     service,
     draft_specs: list[tuple[str, str]] | None = None,
@@ -339,6 +376,8 @@ async def _prepare_ready_drafts_for_execution(
                 'match_type': 'exact',
                 'match_expression': source_value,
                 'target_conversation_name': target_conversation_name,
+
+                'target_conversation_id': target_conversation_name,
                 'priority': index * 10,
                 'enabled': True,
             },
@@ -362,7 +401,14 @@ async def _prepare_ready_drafts_for_execution(
             'enabled': True,
         },
     )
-    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'template_id': template['id'],
+            'group_keys': await _all_import_group_keys(service, created['id']),
+        },
+    )
     generated_drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
     draft_ids = [
         next(item['id'] for item in generated_drafts if item['group_value'] == source_value)
@@ -540,6 +586,8 @@ async def test_create_group_rule_rejects_invalid_regex(service_fixture):
                 'match_type': 'regex',
                 'match_expression': '[',
                 'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
                 'priority': 1,
                 'enabled': True,
             },
@@ -699,6 +747,8 @@ async def test_match_group_rule_ignores_invalid_placeholder_history_rule(service
                     'match_type': 'exact',
                     'match_expression': '??',
                     'target_conversation_name': '??',
+
+                    'target_conversation_id': '??',
                     'priority': 100,
                     'enabled': True,
                 }
@@ -720,6 +770,8 @@ async def test_match_group_rule_ignores_invalid_placeholder_history_rule(service
         'matched': False,
         'rule_id': None,
         'target_conversation_name': None,
+
+        'target_conversation_id': None,
         'match_type': None,
     }
 
@@ -738,7 +790,7 @@ async def test_match_group_rule_ignores_invalid_placeholder_history_rule(service
     assert rows['小满']['matched_conversation_name'] == '小满'
 
 
-async def test_create_group_rule_rejects_placeholder_and_unknown_target_group(service_fixture):
+async def test_create_group_rule_rejects_placeholder_and_requires_target_conversation_id(service_fixture):
     service, persistence_mgr = service_fixture
 
     async with persistence_mgr.engine.begin() as conn:
@@ -760,26 +812,45 @@ async def test_create_group_rule_rejects_placeholder_and_unknown_target_group(se
                 'source_value': '??',
                 'match_type': 'exact',
                 'match_expression': '??',
+                'target_conversation_id': 'placeholder-id',
                 'target_conversation_name': '??',
+
+                'target_conversation_id': '??',
                 'priority': 1,
                 'enabled': True,
             },
         )
     assert placeholder_error.value.code == BROADCAST_GROUP_RULE_REGEX_INVALID
 
-    with pytest.raises(BroadcastError) as unknown_target_error:
+    created = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': '小满',
+            'match_type': 'exact',
+            'match_expression': '小满',
+            'target_conversation_id': 'conversation-stable-id',
+            'target_conversation_name': '不存在的群',
+            'priority': 1,
+            'enabled': True,
+        },
+    )
+    assert created['target_conversation_name'] == '不存在的群'
+    assert created['target_conversation_id'] == 'conversation-stable-id'
+
+    with pytest.raises(BroadcastError) as missing_id_error:
         await service.create_group_rule(
             _scope(),
             {
                 'source_value': '小满',
                 'match_type': 'exact',
                 'match_expression': '小满',
+                'target_conversation_id': '',
                 'target_conversation_name': '不存在的群',
                 'priority': 1,
                 'enabled': True,
             },
         )
-    assert unknown_target_error.value.code == BROADCAST_GROUP_RULE_REGEX_INVALID
+    assert missing_id_error.value.code == BROADCAST_GROUP_RULE_REGEX_INVALID
 
 
 async def test_validate_scope_rejects_connector_mismatch(service_fixture):
@@ -879,6 +950,8 @@ async def test_upload_import_keeps_existing_batches_when_new_upload_validation_f
             'match_type': 'exact',
             'match_expression': '小满',
             'target_conversation_name': '小满',
+
+            'target_conversation_id': '小满',
             'priority': 10,
             'enabled': True,
         },
@@ -939,6 +1012,8 @@ async def test_generate_import_drafts_renders_chinese_variable_values(service_fi
             'match_type': 'exact',
             'match_expression': '小满',
             'target_conversation_name': '小满',
+
+            'target_conversation_id': '小满',
             'priority': 10,
             'enabled': True,
         },
@@ -962,7 +1037,10 @@ async def test_generate_import_drafts_renders_chinese_variable_values(service_fi
     result = await service.generate_import_drafts(
         created['id'],
         _scope(),
-        {'template_id': template['id']},
+        {
+            'template_id': template['id'],
+            'group_keys': await _all_import_group_keys(service, created['id']),
+        },
     )
 
     drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
@@ -981,6 +1059,8 @@ async def test_group_rule_crud_match_and_scope_isolation(service_fixture):
             'match_type': 'contains',
             'match_expression': 'Acme',
             'target_conversation_name': 'Acme Backup',
+
+            'target_conversation_id': 'Acme Backup',
             'priority': 1,
             'enabled': True,
         },
@@ -992,6 +1072,8 @@ async def test_group_rule_crud_match_and_scope_isolation(service_fixture):
             'match_type': 'exact',
             'match_expression': 'Acme',
             'target_conversation_name': 'Acme Primary',
+
+            'target_conversation_id': 'Acme Primary',
             'priority': 10,
             'enabled': True,
         },
@@ -1003,6 +1085,8 @@ async def test_group_rule_crud_match_and_scope_isolation(service_fixture):
             'match_type': 'exact',
             'match_expression': 'Acme',
             'target_conversation_name': 'Other Scope',
+
+            'target_conversation_id': 'Other Scope',
             'priority': 99,
             'enabled': True,
         },
@@ -1021,6 +1105,8 @@ async def test_group_rule_crud_match_and_scope_isolation(service_fixture):
         'matched': True,
         'rule_id': high_priority['id'],
         'target_conversation_name': 'Acme Primary',
+
+        'target_conversation_id': 'Acme Primary',
         'match_type': 'exact',
     }
 
@@ -1032,6 +1118,8 @@ async def test_group_rule_crud_match_and_scope_isolation(service_fixture):
             'match_type': 'regex',
             'match_expression': '^Acme$',
             'target_conversation_name': 'Acme Regex',
+
+            'target_conversation_id': 'Acme Regex',
             'priority': 15,
             'enabled': False,
         },
@@ -1049,6 +1137,8 @@ async def test_group_rule_crud_match_and_scope_isolation(service_fixture):
         'matched': True,
         'rule_id': low_priority['id'],
         'target_conversation_name': 'Acme Backup',
+
+        'target_conversation_id': 'Acme Backup',
         'match_type': 'contains',
     }
 
@@ -1111,6 +1201,8 @@ async def test_upload_import_creates_first_match_results_immediately(service_fix
             'match_type': 'exact',
             'match_expression': 'Acme',
             'target_conversation_name': 'Acme Group',
+
+            'target_conversation_id': 'Acme Group',
             'priority': 10,
             'enabled': True,
         },
@@ -1122,6 +1214,8 @@ async def test_upload_import_creates_first_match_results_immediately(service_fix
             'match_type': 'contains',
             'match_expression': 'North',
             'target_conversation_name': 'Disabled Group',
+
+            'target_conversation_id': 'Disabled Group',
             'priority': 999,
             'enabled': False,
         },
@@ -1277,6 +1371,8 @@ async def test_list_import_groups_aggregates_rows_and_distinct_order_numbers(ser
             'match_type': 'exact',
             'match_expression': '1932亚鹏',
             'target_conversation_name': '小满',
+
+            'target_conversation_id': '小满',
             'priority': 10,
             'enabled': True,
         },
@@ -1349,6 +1445,8 @@ async def test_list_import_groups_marks_conflicts_and_missing_order_field(servic
             'match_type': 'exact',
             'match_expression': 'Acme',
             'target_conversation_name': 'Acme Group',
+
+            'target_conversation_id': 'Acme Group',
             'priority': 10,
             'enabled': True,
         },
@@ -1377,6 +1475,7 @@ async def test_list_import_groups_marks_conflicts_and_missing_order_field(servic
             bot_uuid='bot-1',
             connector_id='wxwork-local',
             updates={
+                'matched_conversation_id': 'other-group-id',
                 'matched_conversation_name': 'Other Group',
                 'matched_rule_id': None,
                 'match_status': 'matched',
@@ -1425,6 +1524,8 @@ async def test_group_and_draft_attachments_use_snapshots_and_ready_draft_returns
             'match_type': 'exact',
             'match_expression': '小满',
             'target_conversation_name': '小满',
+
+            'target_conversation_id': '小满',
             'priority': 10,
             'enabled': True,
         },
@@ -1462,7 +1563,14 @@ async def test_group_and_draft_attachments_use_snapshots_and_ready_draft_returns
             'enabled': True,
         },
     )
-    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'template_id': template['id'],
+            'group_keys': await _all_import_group_keys(service, created['id']),
+        },
+    )
 
     draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
     assert len(draft['attachments']) == 1
@@ -1603,6 +1711,8 @@ async def test_rematch_uses_latest_profile_and_marks_drafts_stale_only_when_old_
             'match_type': 'exact',
             'match_expression': 'Acme',
             'target_conversation_name': 'Acme Group',
+
+            'target_conversation_id': 'Acme Group',
             'priority': 10,
             'enabled': True,
         },
@@ -1612,7 +1722,14 @@ async def test_rematch_uses_latest_profile_and_marks_drafts_stale_only_when_old_
     assert rematched['drafts_stale'] is False
 
     template = (await service.list_templates(_scope()))[0]
-    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'template_id': template['id'],
+            'group_keys': await _all_import_group_keys(service, created['id']),
+        },
+    )
 
     second_rematch = await service.rematch_import(created['id'], _scope())
     assert second_rematch['drafts_stale'] is True
@@ -1698,6 +1815,8 @@ async def test_list_and_get_drafts_are_scoped_and_filterable(service_fixture):
             'match_type': 'exact',
             'match_expression': 'Acme',
             'target_conversation_name': 'Acme Group',
+
+            'target_conversation_id': 'Acme Group',
             'priority': 10,
             'enabled': True,
         },
@@ -1717,7 +1836,24 @@ async def test_list_and_get_drafts_are_scoped_and_filterable(service_fixture):
             'enabled': True,
         },
     )
-    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    groups = await service.list_import_groups(created['id'], _scope(), {})
+    matched_group = next(
+        item for item in groups['groups'] if item['group_value'] == 'Acme'
+    )
+    await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'group_keys': [matched_group['group_key']],
+            'template_id': template['id'],
+        },
+    )
+    await _create_invalid_import_draft(
+        service,
+        import_id=created['id'],
+        template=template,
+        group_value='Northwind',
+    )
 
     drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id'], 'status': 'invalid'})
     assert drafts == []
@@ -1759,6 +1895,8 @@ async def test_edit_ready_draft_rolls_back_to_pending_review_with_message(servic
             'match_type': 'exact',
             'match_expression': 'Acme',
             'target_conversation_name': 'Acme Group',
+
+            'target_conversation_id': 'Acme Group',
             'priority': 10,
             'enabled': True,
         },
@@ -1778,7 +1916,14 @@ async def test_edit_ready_draft_rolls_back_to_pending_review_with_message(servic
             'enabled': True,
         },
     )
-    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'template_id': template['id'],
+            'group_keys': await _all_import_group_keys(service, created['id']),
+        },
+    )
     draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
     await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
 
@@ -1820,20 +1965,13 @@ async def test_edit_invalid_draft_keeps_invalid_and_cannot_be_confirmed(service_
             'enabled': True,
         },
     )
-    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
-    draft = await service.get_draft_detail(
-        int(
-            (
-                await service.repository.list_drafts(
-                    bot_uuid='bot-1',
-                    connector_id='wxwork-local',
-                    import_batch_id=created['id'],
-                    status='invalid',
-                )
-            )[0].id
-        ),
-        _scope(),
+    draft_id = await _create_invalid_import_draft(
+        service,
+        import_id=created['id'],
+        template=template,
+        group_value='Northwind',
     )
+    draft = await service.get_draft_detail(draft_id, _scope())
 
     updated = await service.update_draft_text(draft['id'], _scope(), {'draft_text': 'Manual preview'})
     assert updated['status'] == 'invalid'
@@ -1867,6 +2005,8 @@ async def test_list_drafts_excludes_invalid_from_audit_send_filters(service_fixt
             'match_type': 'exact',
             'match_expression': 'Acme',
             'target_conversation_name': 'Acme Group',
+
+            'target_conversation_id': 'Acme Group',
             'priority': 10,
             'enabled': True,
         },
@@ -1886,7 +2026,24 @@ async def test_list_drafts_excludes_invalid_from_audit_send_filters(service_fixt
             'enabled': True,
         },
     )
-    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    groups = await service.list_import_groups(created['id'], _scope(), {})
+    matched_group = next(
+        item for item in groups['groups'] if item['group_value'] == 'Acme'
+    )
+    await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'group_keys': [matched_group['group_key']],
+            'template_id': template['id'],
+        },
+    )
+    await _create_invalid_import_draft(
+        service,
+        import_id=created['id'],
+        template=template,
+        group_value='Northwind',
+    )
     drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
     valid_draft = next(item for item in drafts if item['group_value'] == 'Acme')
 
@@ -2007,6 +2164,8 @@ async def test_update_draft_statuses_rejects_mixed_send_status_selection(service
             'match_type': 'exact',
             'match_expression': 'Northwind',
             'target_conversation_name': 'Northwind Group',
+
+            'target_conversation_id': 'Northwind Group',
             'priority': 20,
             'enabled': True,
         },
@@ -2026,7 +2185,14 @@ async def test_update_draft_statuses_rejects_mixed_send_status_selection(service
             'enabled': True,
         },
     )
-    await service.generate_import_drafts(second_import['id'], _scope(), {'template_id': template['id']})
+    await service.generate_import_drafts(
+        second_import['id'],
+        _scope(),
+        {
+            'template_id': template['id'],
+            'group_keys': await _all_import_group_keys(service, second_import['id']),
+        },
+    )
     second_draft = (await service.list_drafts(_scope(), {'import_batch_id': second_import['id']}))[0]
 
     await service.update_draft_statuses(
@@ -2115,6 +2281,8 @@ async def test_stale_draft_cannot_be_confirmed_and_cross_scope_ids_reject_whole_
             'match_type': 'exact',
             'match_expression': 'Acme',
             'target_conversation_name': 'Acme Group',
+
+            'target_conversation_id': 'Acme Group',
             'priority': 10,
             'enabled': True,
         },
@@ -2134,7 +2302,14 @@ async def test_stale_draft_cannot_be_confirmed_and_cross_scope_ids_reject_whole_
             'enabled': True,
         },
     )
-    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'template_id': template['id'],
+            'group_keys': await _all_import_group_keys(service, created['id']),
+        },
+    )
     draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
 
     await service.save_variable_profile(
@@ -2338,6 +2513,8 @@ async def test_create_execution_batch_rejects_duplicate_target_conversations_ato
             'match_type': 'exact',
             'match_expression': 'Second',
             'target_conversation_name': 'Second Group',
+
+            'target_conversation_id': 'Second Group',
             'priority': 20,
             'enabled': True,
         },
@@ -2357,14 +2534,26 @@ async def test_create_execution_batch_rejects_duplicate_target_conversations_ato
             'enabled': True,
         },
     )
-    await service.generate_import_drafts(created['id'], _scope(), {'template_id': template['id']})
+    await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'template_id': template['id'],
+            'group_keys': await _all_import_group_keys(service, created['id']),
+        },
+    )
     second_draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
 
     async with persistence_mgr.engine.begin() as conn:
         await conn.execute(
             sqlalchemy.update(persistence_broadcast.BroadcastDraft)
             .where(persistence_broadcast.BroadcastDraft.id == second_draft['id'])
-            .values({'target_conversation_name': 'Acme Group'})
+            .values(
+                {
+                    'target_conversation_id': first_draft['target_conversation_id'],
+                    'target_conversation_name': 'Acme Group',
+                }
+            )
         )
 
     with pytest.raises(BroadcastError, match='DUPLICATE_TARGET_CONVERSATION') as exc_info:
@@ -4154,3 +4343,870 @@ async def test_run_next_execution_task_preserves_fifo_and_continues_after_mid_ba
         'pending',
         'pending',
     ]
+
+
+async def test_upsert_import_group_template_assignments_persists_and_survives_group_listing(
+    service_fixture,
+):
+    service, _ = service_fixture
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_name': 'Acme Group',
+
+            'target_conversation_id': 'Acme Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nAcme\n'.encode('utf-8'),
+        },
+    )
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': 'Arrival Reminder',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+
+    groups_before = await service.list_import_groups(created['id'], _scope(), {})
+    group_key = groups_before['groups'][0]['group_key']
+
+    saved = await service.upsert_import_group_template_assignments(
+        created['id'],
+        _scope(),
+        {
+            'items': [
+                {
+                    'group_key': group_key,
+                    'template_id': template['id'],
+                }
+            ]
+        },
+    )
+
+    assert saved['items'] == [
+        {
+            'group_key': group_key,
+            'template_id': template['id'],
+        }
+    ]
+
+    groups_after = await service.list_import_groups(created['id'], _scope(), {})
+    assert groups_after['groups'][0]['template_id'] == template['id']
+    assert groups_after['groups'][0]['template_name'] == 'Arrival Reminder'
+    assert groups_after['groups'][0]['template_enabled'] is True
+
+
+async def test_generate_import_drafts_only_creates_selected_groups_in_requested_order(
+    service_fixture,
+):
+    service, _ = service_fixture
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_name': 'Acme Group',
+
+            'target_conversation_id': 'Acme Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Globex',
+            'match_type': 'exact',
+            'match_expression': 'Globex',
+            'target_conversation_name': 'Globex Group',
+
+            'target_conversation_id': 'Globex Group',
+            'priority': 9,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nAcme\nGlobex\n'.encode('utf-8'),
+        },
+    )
+    template_a = await service.create_template(
+        _scope(),
+        {
+            'name': 'Template A',
+            'content': 'Hello {{customer_name}} from A',
+            'enabled': True,
+        },
+    )
+    template_b = await service.create_template(
+        _scope(),
+        {
+            'name': 'Template B',
+            'content': 'Hello {{customer_name}} from B',
+            'enabled': True,
+        },
+    )
+    groups = await service.list_import_groups(created['id'], _scope(), {})
+    group_key_by_value = {item['group_value']: item['group_key'] for item in groups['groups']}
+    await service.upsert_import_group_template_assignments(
+        created['id'],
+        _scope(),
+        {
+            'items': [
+                {'group_key': group_key_by_value['Acme'], 'template_id': template_a['id']},
+                {'group_key': group_key_by_value['Globex'], 'template_id': template_b['id']},
+            ]
+        },
+    )
+
+    result = await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'group_keys': [
+                group_key_by_value['Globex'],
+                group_key_by_value['Acme'],
+            ],
+            'overwrite_existing': False,
+        },
+    )
+
+    assert result['total_group_count'] == 2
+    assert result['created_count'] == 2
+    assert result['updated_count'] == 0
+    assert [item['operation'] for item in result['draft_results']] == ['created', 'created']
+    assert result['generated_group_keys'] == [
+        group_key_by_value['Globex'],
+        group_key_by_value['Acme'],
+    ]
+
+    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
+    assert [item['group_value'] for item in drafts] == ['Globex', 'Acme']
+    assert [item['template_name_snapshot'] for item in drafts] == ['Template B', 'Template A']
+
+
+async def test_generate_import_drafts_overwrites_pending_draft_in_place_and_preserves_metadata(
+    service_fixture,
+):
+    service, _ = service_fixture
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '瀹㈡埛鍚嶇О',
+            'mapping_rules': [
+                {
+                    'source_field': '瀹㈡埛鍚嶇О',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    group_rule = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_name': 'Acme Group',
+            'target_conversation_id': 'acme-group-1',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '瀹㈡埛鍚嶇О\nAcme\n'.encode('utf-8'),
+        },
+    )
+    template_a = await service.create_template(
+        _scope(),
+        {
+            'name': 'Template A',
+            'content': 'Hello {{customer_name}} from A',
+            'enabled': True,
+        },
+    )
+    template_b = await service.create_template(
+        _scope(),
+        {
+            'name': 'Template B',
+            'content': 'Updated hello {{customer_name}} from B',
+            'enabled': True,
+        },
+    )
+    groups = await service.list_import_groups(created['id'], _scope(), {})
+    group_key = groups['groups'][0]['group_key']
+    await service.upsert_import_group_template_assignments(
+        created['id'],
+        _scope(),
+        {
+            'items': [{'group_key': group_key, 'template_id': template_a['id']}],
+        },
+    )
+    await service.add_import_group_attachments(
+        created['id'],
+        group_key,
+        _scope(),
+        [
+            {
+                'filename': 'first.txt',
+                'body': b'first attachment',
+                'content_type': 'text/plain',
+            }
+        ],
+    )
+
+    first_result = await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'group_keys': [group_key],
+            'overwrite_existing': True,
+        },
+    )
+    assert first_result['created_count'] == 1
+    draft_id = first_result['draft_ids'][0]
+    first_detail = await service.get_draft_detail(draft_id, _scope())
+    assert first_detail['send_status'] == 'pending'
+    assert first_detail['status'] == 'pending_review'
+    assert first_detail['target_conversation_id'] == 'acme-group-1'
+    assert [item['original_name'] for item in first_detail['attachments']] == ['first.txt']
+    created_at = first_detail['created_at']
+
+    await service.update_draft_statuses(
+        _scope(),
+        {'draft_ids': [draft_id], 'status': 'ready'},
+    )
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        await service.ap.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastImportRow)
+            .where(
+                persistence_broadcast.BroadcastImportRow.import_batch_id == created['id'],
+                persistence_broadcast.BroadcastImportRow.group_value == 'Acme',
+            )
+            .values(
+                {
+                    'matched_conversation_name': 'Acme VIP Group',
+                    'matched_conversation_id': 'acme-group-2',
+                }
+            ),
+            conn=conn,
+        )
+    await service.upsert_import_group_template_assignments(
+        created['id'],
+        _scope(),
+        {
+            'items': [{'group_key': group_key, 'template_id': template_b['id']}],
+        },
+    )
+    await service.add_import_group_attachments(
+        created['id'],
+        group_key,
+        _scope(),
+        [
+            {
+                'filename': 'second.txt',
+                'body': b'second attachment',
+                'content_type': 'text/plain',
+            }
+        ],
+    )
+
+    stale_detail = await service.get_draft_detail(draft_id, _scope())
+    assert stale_detail['attachments_stale'] is True
+    assert stale_detail['status'] == 'ready'
+
+    overwrite_result = await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'group_keys': [group_key],
+            'overwrite_existing': True,
+        },
+    )
+
+    assert overwrite_result['created_count'] == 0
+    assert overwrite_result['updated_count'] == 1
+    assert overwrite_result['draft_ids'] == [draft_id]
+    assert overwrite_result['draft_results'] == [
+        {
+            'group_key': group_key,
+            'draft_id': draft_id,
+            'operation': 'updated',
+            'modified_fields': [
+                'template_id',
+                'template_name_snapshot',
+                'template_content_snapshot',
+                'render_variables',
+                'draft_text',
+                'target_conversation_id',
+                'target_conversation_name',
+                'attachment_snapshots',
+                'status',
+                'error_message',
+                'attachments_stale',
+                'updated_at',
+            ],
+        }
+    ]
+
+    updated_detail = await service.get_draft_detail(draft_id, _scope())
+    assert updated_detail['id'] == draft_id
+    assert updated_detail['created_at'] == created_at
+    assert updated_detail['template_id'] == template_b['id']
+    assert updated_detail['template_name_snapshot'] == 'Template B'
+    assert updated_detail['draft_text'] == 'Updated hello Acme from B'
+    assert updated_detail['target_conversation_id'] == 'acme-group-2'
+    assert updated_detail['target_conversation_name'] == 'Acme VIP Group'
+    assert updated_detail['status'] == 'pending_review'
+    assert updated_detail['send_status'] == 'pending'
+    assert updated_detail['error_message'] is None
+    assert updated_detail['attachments_stale'] is False
+    assert [item['original_name'] for item in updated_detail['attachments']] == [
+        'first.txt',
+        'second.txt',
+    ]
+    assert service.ap.desktop_automation_service.runtime_client.requests == []
+
+
+async def test_generate_import_drafts_rejects_sent_drafts_atomically(service_fixture):
+    service, _ = service_fixture
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '瀹㈡埛鍚嶇О',
+            'mapping_rules': [
+                {
+                    'source_field': '瀹㈡埛鍚嶇О',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_name': 'Shared Group',
+            'target_conversation_id': 'shared-group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Globex',
+            'match_type': 'exact',
+            'match_expression': 'Globex',
+            'target_conversation_name': 'Shared Group',
+            'target_conversation_id': 'shared-group',
+            'priority': 9,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '瀹㈡埛鍚嶇О\nAcme\nGlobex\n'.encode('utf-8'),
+        },
+    )
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': 'Template A',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+    groups = await service.list_import_groups(created['id'], _scope(), {})
+    group_key_by_value = {item['group_value']: item['group_key'] for item in groups['groups']}
+    await service.upsert_import_group_template_assignments(
+        created['id'],
+        _scope(),
+        {
+            'items': [
+                {'group_key': item['group_key'], 'template_id': template['id']}
+                for item in groups['groups']
+            ],
+        },
+    )
+
+    first_result = await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'group_keys': [group_key_by_value['Acme']],
+            'overwrite_existing': True,
+        },
+    )
+    draft_id = first_result['draft_ids'][0]
+    await service.update_draft_statuses(
+        _scope(),
+        {'draft_ids': [draft_id], 'status': 'sent'},
+    )
+    sent_before = await service.get_draft_detail(draft_id, _scope())
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.generate_import_drafts(
+            created['id'],
+            _scope(),
+            {
+                'group_keys': [
+                    group_key_by_value['Acme'],
+                    group_key_by_value['Globex'],
+                ],
+                'overwrite_existing': True,
+            },
+        )
+
+    assert exc_info.value.code == 'BATCH_VALIDATION_FAILED'
+    assert exc_info.value.details == ['Acme: 已发送草稿不允许覆盖，请先恢复为待发送']
+
+    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
+    assert len(drafts) == 1
+    assert drafts[0]['id'] == draft_id
+    assert drafts[0]['send_status'] == 'sent'
+    sent_after = await service.get_draft_detail(draft_id, _scope())
+    assert sent_after['draft_text'] == sent_before['draft_text']
+    assert service.ap.desktop_automation_service.runtime_client.requests == []
+
+
+async def test_generate_import_drafts_supports_mixed_create_update_and_leaves_unselected_drafts_unchanged(
+    service_fixture,
+):
+    service, _ = service_fixture
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '瀹㈡埛鍚嶇О',
+            'mapping_rules': [
+                {
+                    'source_field': '瀹㈡埛鍚嶇О',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    for priority, group_name in enumerate(['Acme', 'Globex', 'Northwind'], start=8):
+        await service.create_group_rule(
+            _scope(),
+            {
+                'source_value': group_name,
+                'match_type': 'exact',
+                'match_expression': group_name,
+                'target_conversation_name': f'{group_name} Group',
+                'target_conversation_id': f'{group_name.lower()}-group',
+                'priority': priority,
+                'enabled': True,
+            },
+        )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '瀹㈡埛鍚嶇О\nAcme\nGlobex\nNorthwind\n'.encode('utf-8'),
+        },
+    )
+    template_a = await service.create_template(
+        _scope(),
+        {
+            'name': 'Template A',
+            'content': 'Hello {{customer_name}} from A',
+            'enabled': True,
+        },
+    )
+    template_b = await service.create_template(
+        _scope(),
+        {
+            'name': 'Template B',
+            'content': 'Hello {{customer_name}} from B',
+            'enabled': True,
+        },
+    )
+    groups = await service.list_import_groups(created['id'], _scope(), {})
+    group_key_by_value = {item['group_value']: item['group_key'] for item in groups['groups']}
+    await service.upsert_import_group_template_assignments(
+        created['id'],
+        _scope(),
+        {
+            'items': [
+                {'group_key': item['group_key'], 'template_id': template_a['id']}
+                for item in groups['groups']
+            ],
+        },
+    )
+
+    first_result = await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'group_keys': [
+                group_key_by_value['Acme'],
+                group_key_by_value['Northwind'],
+            ],
+            'overwrite_existing': True,
+        },
+    )
+    original_ids = {
+        result['group_key']: result['draft_id'] for result in first_result['draft_results']
+    }
+    northwind_before = await service.get_draft_detail(
+        original_ids[group_key_by_value['Northwind']],
+        _scope(),
+    )
+
+    await service.upsert_import_group_template_assignments(
+        created['id'],
+        _scope(),
+        {
+            'items': [
+                {'group_key': group_key_by_value['Acme'], 'template_id': template_b['id']},
+                {'group_key': group_key_by_value['Globex'], 'template_id': template_b['id']},
+            ],
+        },
+    )
+
+    second_result = await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'group_keys': [
+                group_key_by_value['Acme'],
+                group_key_by_value['Globex'],
+            ],
+            'overwrite_existing': True,
+        },
+    )
+
+    assert second_result['created_count'] == 1
+    assert second_result['updated_count'] == 1
+    assert second_result['draft_results'][0]['group_key'] == group_key_by_value['Acme']
+    assert second_result['draft_results'][0]['draft_id'] == original_ids[group_key_by_value['Acme']]
+    assert second_result['draft_results'][0]['operation'] == 'updated'
+    assert second_result['draft_results'][1]['group_key'] == group_key_by_value['Globex']
+    assert second_result['draft_results'][1]['operation'] == 'created'
+
+    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
+    assert len(drafts) == 3
+    draft_by_group = {draft['group_value']: draft for draft in drafts}
+    assert draft_by_group['Acme']['id'] == original_ids[group_key_by_value['Acme']]
+    assert draft_by_group['Acme']['template_name_snapshot'] == 'Template B'
+    assert draft_by_group['Acme']['send_status'] == 'pending'
+    assert draft_by_group['Globex']['template_name_snapshot'] == 'Template B'
+    assert draft_by_group['Northwind']['id'] == original_ids[group_key_by_value['Northwind']]
+    assert draft_by_group['Northwind']['template_name_snapshot'] == northwind_before['template_name_snapshot']
+    assert draft_by_group['Northwind']['draft_text'] == northwind_before['draft_text']
+
+
+async def test_generate_import_drafts_rolls_back_all_writes_when_any_write_fails(service_fixture, monkeypatch):
+    service, _ = service_fixture
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '瀹㈡埛鍚嶇О',
+            'mapping_rules': [
+                {
+                    'source_field': '瀹㈡埛鍚嶇О',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    for priority, group_name in enumerate(['Acme', 'Globex'], start=9):
+        await service.create_group_rule(
+            _scope(),
+            {
+                'source_value': group_name,
+                'match_type': 'exact',
+                'match_expression': group_name,
+                'target_conversation_name': f'{group_name} Group',
+                'target_conversation_id': f'{group_name.lower()}-group',
+                'priority': priority,
+                'enabled': True,
+            },
+        )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '瀹㈡埛鍚嶇О\nAcme\nGlobex\n'.encode('utf-8'),
+        },
+    )
+    template_a = await service.create_template(
+        _scope(),
+        {
+            'name': 'Template A',
+            'content': 'Hello {{customer_name}} from A',
+            'enabled': True,
+        },
+    )
+    template_b = await service.create_template(
+        _scope(),
+        {
+            'name': 'Template B',
+            'content': 'Hello {{customer_name}} from B',
+            'enabled': True,
+        },
+    )
+    groups = await service.list_import_groups(created['id'], _scope(), {})
+    group_key_by_value = {item['group_value']: item['group_key'] for item in groups['groups']}
+    await service.upsert_import_group_template_assignments(
+        created['id'],
+        _scope(),
+        {
+            'items': [
+                {'group_key': item['group_key'], 'template_id': template_a['id']}
+                for item in groups['groups']
+            ],
+        },
+    )
+    first_result = await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'group_keys': [group_key_by_value['Acme']],
+            'overwrite_existing': True,
+        },
+    )
+    acme_draft_id = first_result['draft_ids'][0]
+    before_detail = await service.get_draft_detail(acme_draft_id, _scope())
+
+    await service.upsert_import_group_template_assignments(
+        created['id'],
+        _scope(),
+        {
+            'items': [
+                {'group_key': group_key_by_value['Acme'], 'template_id': template_b['id']},
+                {'group_key': group_key_by_value['Globex'], 'template_id': template_b['id']},
+            ],
+        },
+    )
+
+    original_create_draft = service.repository.create_draft
+
+    async def failing_create_draft(conn, payload):
+        if payload['group_value'] == 'Globex':
+            raise RuntimeError('simulated draft create failure')
+        return await original_create_draft(conn, payload)
+
+    monkeypatch.setattr(service.repository, 'create_draft', failing_create_draft)
+
+    with pytest.raises(RuntimeError, match='simulated draft create failure'):
+        await service.generate_import_drafts(
+            created['id'],
+            _scope(),
+            {
+                'group_keys': [
+                    group_key_by_value['Acme'],
+                    group_key_by_value['Globex'],
+                ],
+                'overwrite_existing': True,
+            },
+        )
+
+    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
+    assert len(drafts) == 1
+    assert drafts[0]['id'] == acme_draft_id
+    after_detail = await service.get_draft_detail(acme_draft_id, _scope())
+    assert after_detail['template_name_snapshot'] == before_detail['template_name_snapshot']
+    assert after_detail['draft_text'] == before_detail['draft_text']
+
+
+async def test_generate_import_drafts_rejects_missing_group_keys(service_fixture):
+    service, _ = service_fixture
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_name': 'Acme Group',
+
+            'target_conversation_id': 'Acme Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nAcme\n'.encode('utf-8'),
+        },
+    )
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': 'Arrival Reminder',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.generate_import_drafts(
+            created['id'],
+            _scope(),
+            {
+                'template_id': template['id'],
+            },
+        )
+    assert exc_info.value.message == '请先选择至少一个分组'
+
+    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
+    assert drafts == []
+
+
+async def test_generate_import_drafts_rejects_duplicate_target_conversations_without_creating_drafts(
+    service_fixture,
+):
+    service, _ = service_fixture
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    for source_value in ['Acme', 'Globex']:
+        await service.create_group_rule(
+            _scope(),
+            {
+                'source_value': source_value,
+                'match_type': 'exact',
+                'match_expression': source_value,
+                'target_conversation_name': 'Shared Group',
+
+                'target_conversation_id': 'Shared Group',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nAcme\nGlobex\n'.encode('utf-8'),
+        },
+    )
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': 'Template A',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+    groups = await service.list_import_groups(created['id'], _scope(), {})
+    await service.upsert_import_group_template_assignments(
+        created['id'],
+        _scope(),
+        {
+            'items': [
+                {'group_key': item['group_key'], 'template_id': template['id']}
+                for item in groups['groups']
+            ]
+        },
+    )
+
+    result = await service.generate_import_drafts(
+        created['id'],
+        _scope(),
+        {
+            'group_keys': [item['group_key'] for item in groups['groups']],
+            'overwrite_existing': False,
+        },
+    )
+
+    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
+    assert result['pending_review_count'] == 2
+    assert len(drafts) == 2
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.create_execution_batch(
+            _scope(),
+            {
+                'draft_ids': [item['id'] for item in drafts],
+                'mode': 'paste_only',
+                'operator': 'tester@example.com',
+            },
+        )
+
+    assert exc_info.value.code == 'DUPLICATE_TARGET_CONVERSATION'

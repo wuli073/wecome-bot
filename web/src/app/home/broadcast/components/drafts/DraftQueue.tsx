@@ -36,6 +36,7 @@ interface DraftQueueProps {
   selectedDraftIds: number[];
   busy?: boolean;
   canBatchWrite?: boolean;
+  batchWriteDisabledReason?: string | null;
   canBatchMarkSent?: boolean;
   canBatchRestorePending?: boolean;
   onImportBatchChange: (importBatchId: number | null) => void;
@@ -67,6 +68,7 @@ export default function DraftQueue({
   selectedDraftIds,
   busy = false,
   canBatchWrite = false,
+  batchWriteDisabledReason = null,
   canBatchMarkSent = false,
   canBatchRestorePending = false,
   onImportBatchChange,
@@ -181,13 +183,25 @@ export default function DraftQueue({
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button
-                data-testid="broadcast-draft-batch-write-button"
-                onClick={onBatchWrite}
-                disabled={selectedCount === 0 || busy || !canBatchWrite}
-              >
-                {t('broadcast.drafts.batchWriteSelected')}
-              </Button>
+              <div className="space-y-1">
+                <Button
+                  data-testid="broadcast-draft-batch-write-button"
+                  onClick={onBatchWrite}
+                  disabled={selectedCount === 0 || busy || !canBatchWrite}
+                  title={
+                    !canBatchWrite && batchWriteDisabledReason
+                      ? batchWriteDisabledReason
+                      : undefined
+                  }
+                >
+                  {t('broadcast.drafts.batchWriteSelected')}
+                </Button>
+                {!canBatchWrite && batchWriteDisabledReason ? (
+                  <div className="text-xs text-muted-foreground">
+                    {batchWriteDisabledReason}
+                  </div>
+                ) : null}
+              </div>
               <Button
                 data-testid="broadcast-draft-batch-mark-sent-button"
                 variant="outline"

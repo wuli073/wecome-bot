@@ -38,6 +38,8 @@ def test_match_group_prefers_priority_desc_then_id_asc_for_exact_contains_and_re
     assert result == {
         'matched': True,
         'matched_conversation_name': 'Exact Group',
+
+        'matched_conversation_id': None,
         'matched_rule_id': 5,
     }
 
@@ -71,6 +73,8 @@ def test_match_group_skips_disabled_rules():
     assert result == {
         'matched': True,
         'matched_conversation_name': 'Enabled Group',
+
+        'matched_conversation_id': None,
         'matched_rule_id': 2,
     }
 
@@ -96,6 +100,8 @@ def test_match_group_falls_back_to_same_name_group_when_no_rule_matches():
     assert result == {
         'matched': True,
         'matched_conversation_name': 'Northwind Team',
+
+        'matched_conversation_id': None,
         'matched_rule_id': None,
     }
 
@@ -112,6 +118,8 @@ def test_match_group_returns_unmatched_when_no_rule_or_same_name_group_matches()
     assert result == {
         'matched': False,
         'matched_conversation_name': None,
+
+        'matched_conversation_id': None,
         'matched_rule_id': None,
     }
 

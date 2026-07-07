@@ -21,6 +21,7 @@ interface DraftDetailProps {
   busy?: boolean;
   canPasteDraft?: boolean;
   pasteDisabledReason?: string | null;
+  pasteHint?: string | null;
   onStartEdit: (draft: BroadcastDraft) => void;
   onDraftEditorTextChange: (value: string) => void;
   onSaveDraft: () => void;
@@ -39,6 +40,7 @@ export default function DraftDetail({
   busy = false,
   canPasteDraft = true,
   pasteDisabledReason = null,
+  pasteHint = null,
   onStartEdit,
   onDraftEditorTextChange,
   onSaveDraft,
@@ -181,6 +183,10 @@ export default function DraftDetail({
           <div className="text-sm text-muted-foreground">
             {pasteDisabledReason}
           </div>
+        ) : null}
+
+        {pasteHint ? (
+          <div className="text-sm text-muted-foreground">{pasteHint}</div>
         ) : null}
 
         <div className="space-y-2">

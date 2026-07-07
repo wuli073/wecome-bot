@@ -50,6 +50,7 @@ def classify_import_rows(
             'source_row_number': row['source_row_number'],
             'raw_data': raw_data,
             'group_value': group_value or None,
+            'matched_conversation_id': None,
             'matched_conversation_name': None,
             'matched_rule_id': None,
             'match_status': 'invalid',
@@ -65,6 +66,7 @@ def classify_import_rows(
             classified_row.update(
                 {
                     'group_value': group_value,
+                    'matched_conversation_id': match_result.get('matched_conversation_id'),
                     'matched_conversation_name': match_result.get('matched_conversation_name'),
                     'matched_rule_id': match_result.get('matched_rule_id'),
                     'match_status': 'matched',

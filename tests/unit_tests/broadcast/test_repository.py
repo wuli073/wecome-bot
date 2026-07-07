@@ -32,6 +32,7 @@ class _RawConnectionPersistenceManager:
             await conn.run_sync(persistence_broadcast.BroadcastGroupName.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastImportBatch.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastImportRow.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastImportGroupTemplateAssignment.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastDraft.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastAttachmentAsset.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastImportGroupAttachment.__table__.create)
@@ -223,6 +224,8 @@ async def test_group_rules_are_ordered_by_priority_desc_then_id_desc(repository_
                 'match_type': 'exact',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
                 'priority': 10,
                 'enabled': True,
             },
@@ -235,6 +238,8 @@ async def test_group_rules_are_ordered_by_priority_desc_then_id_desc(repository_
                 'match_type': 'contains',
                 'match_expression': 'Globex',
                 'target_conversation_name': 'Globex Group',
+
+                'target_conversation_id': 'Globex Group',
                 'priority': 10,
                 'enabled': True,
             },
@@ -247,6 +252,8 @@ async def test_group_rules_are_ordered_by_priority_desc_then_id_desc(repository_
                 'match_type': 'regex',
                 'match_expression': '^North',
                 'target_conversation_name': 'Northwind Group',
+
+                'target_conversation_id': 'Northwind Group',
                 'priority': 5,
                 'enabled': False,
             },
@@ -338,6 +345,152 @@ async def test_import_batch_crud_is_scoped_and_uses_passed_connection(repository
     assert await repository.list_import_batches(**_scope()) == []
 
 
+async def test_import_group_template_assignments_can_be_upserted_listed_and_cleared_on_batch_delete(
+    repository_fixture,
+):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        import_batch_id = await repository.create_import_batch(
+            conn,
+            {
+                **_scope(),
+                'original_file_name': 'customers.csv',
+                'file_type': 'csv',
+                'worksheet_name': None,
+                'status': 'imported',
+                'drafts_stale': False,
+                'total_rows': 2,
+                'valid_rows': 2,
+                'invalid_rows': 0,
+                'matched_rows': 2,
+                'unmatched_rows': 0,
+            },
+        )
+        template_id_1 = await repository.create_template(
+            conn,
+            {
+                **_scope(),
+                'name': 'Template A',
+                'content': 'Hello A',
+                'variables': [],
+                'enabled': True,
+            },
+        )
+        template_id_2 = await repository.create_template(
+            conn,
+            {
+                **_scope(),
+                'name': 'Template B',
+                'content': 'Hello B',
+                'variables': [],
+                'enabled': True,
+            },
+        )
+
+        await repository.upsert_import_group_template_assignments(
+            conn,
+            import_batch_id=import_batch_id,
+            items=[
+                {'group_key': 'group-a', 'template_id': template_id_1},
+                {'group_key': 'group-b', 'template_id': template_id_2},
+            ],
+        )
+
+    assignments = await repository.list_import_group_template_assignments(
+        import_batch_id=import_batch_id,
+        bot_uuid='bot-1',
+        connector_id='wxwork-local',
+    )
+    assert [(item.group_key, item.template_id) for item in assignments] == [
+        ('group-a', template_id_1),
+        ('group-b', template_id_2),
+    ]
+
+    async with persistence_mgr.engine.begin() as conn:
+        await repository.upsert_import_group_template_assignments(
+            conn,
+            import_batch_id=import_batch_id,
+            items=[{'group_key': 'group-a', 'template_id': template_id_2}],
+        )
+
+    refreshed = await repository.list_import_group_template_assignments(
+        import_batch_id=import_batch_id,
+        bot_uuid='bot-1',
+        connector_id='wxwork-local',
+    )
+    assert [(item.group_key, item.template_id) for item in refreshed] == [
+        ('group-a', template_id_2),
+        ('group-b', template_id_2),
+    ]
+
+    deleted = await repository.delete_import_batch(
+        import_batch_id,
+        bot_uuid='bot-1',
+        connector_id='wxwork-local',
+    )
+    assert deleted is True
+    assert (
+        await repository.list_import_group_template_assignments(
+            import_batch_id=import_batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+        )
+    ) == []
+
+
+async def test_import_group_template_assignment_unique_constraint_blocks_duplicates(
+    repository_fixture,
+):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        import_batch_id = await repository.create_import_batch(
+            conn,
+            {
+                **_scope(),
+                'original_file_name': 'customers.csv',
+                'file_type': 'csv',
+                'worksheet_name': None,
+                'status': 'imported',
+                'drafts_stale': False,
+                'total_rows': 1,
+                'valid_rows': 1,
+                'invalid_rows': 0,
+                'matched_rows': 1,
+                'unmatched_rows': 0,
+            },
+        )
+        template_id = await repository.create_template(
+            conn,
+            {
+                **_scope(),
+                'name': 'Template A',
+                'content': 'Hello',
+                'variables': [],
+                'enabled': True,
+            },
+        )
+        await repository.create_import_group_template_assignment(
+            conn,
+            {
+                'import_batch_id': import_batch_id,
+                'group_key': 'group-a',
+                'template_id': template_id,
+            },
+        )
+
+        with pytest.raises(IntegrityError):
+            await repository.create_import_group_template_assignment(
+                conn,
+                {
+                    'import_batch_id': import_batch_id,
+                    'group_key': 'group-a',
+                    'template_id': template_id,
+                },
+            )
+
+
 async def test_update_template_and_group_rule_return_uncommitted_values_within_transaction(repository_fixture):
     repository, persistence_mgr = repository_fixture
 
@@ -362,6 +515,8 @@ async def test_update_template_and_group_rule_return_uncommitted_values_within_t
                 'match_type': 'exact',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
                 'priority': 10,
                 'enabled': True,
             },
@@ -385,6 +540,8 @@ async def test_update_template_and_group_rule_return_uncommitted_values_within_t
             connector_id='wxwork-local',
             updates={
                 'target_conversation_name': 'Acme Group Updated',
+
+                'target_conversation_id': 'Acme Group Updated',
                 'enabled': False,
             },
             conn=conn,
@@ -592,6 +749,8 @@ async def test_drafts_can_be_rebuilt_queried_updated_and_deleted_in_scope(reposi
                     'import_batch_id': batch_id,
                     'group_value': 'Acme',
                     'target_conversation_name': 'Acme Group',
+
+                    'target_conversation_id': 'Acme Group',
                     'template_id': template_id,
                     'template_name_snapshot': 'Arrival Reminder',
                     'template_content_snapshot': 'Hello {{customer_name}}',
@@ -606,6 +765,8 @@ async def test_drafts_can_be_rebuilt_queried_updated_and_deleted_in_scope(reposi
                     'import_batch_id': batch_id,
                     'group_value': 'Northwind',
                     'target_conversation_name': None,
+
+                    'target_conversation_id': None,
                     'template_id': template_id,
                     'template_name_snapshot': 'Arrival Reminder',
                     'template_content_snapshot': 'Hello {{customer_name}}',
@@ -694,6 +855,8 @@ async def test_batch_update_draft_statuses_is_scoped_and_atomic(repository_fixtu
                     'import_batch_id': batch_id,
                     'group_value': 'Acme',
                     'target_conversation_name': 'Acme Group',
+
+                    'target_conversation_id': 'Acme Group',
                     'template_id': template_id,
                     'template_name_snapshot': 'Arrival Reminder',
                     'template_content_snapshot': 'Hello {{customer_name}}',
@@ -708,6 +871,8 @@ async def test_batch_update_draft_statuses_is_scoped_and_atomic(repository_fixtu
                     'import_batch_id': batch_id,
                     'group_value': 'Globex',
                     'target_conversation_name': 'Globex Group',
+
+                    'target_conversation_id': 'Globex Group',
                     'template_id': template_id,
                     'template_name_snapshot': 'Arrival Reminder',
                     'template_content_snapshot': 'Hello {{customer_name}}',
@@ -746,6 +911,8 @@ async def test_batch_update_draft_statuses_is_scoped_and_atomic(repository_fixtu
                     'import_batch_id': other_batch_id,
                     'group_value': 'Other',
                     'target_conversation_name': 'Other Group',
+
+                    'target_conversation_id': 'Other Group',
                     'template_id': template_id,
                     'template_name_snapshot': 'Arrival Reminder',
                     'template_content_snapshot': 'Hello {{customer_name}}',
@@ -803,6 +970,8 @@ async def test_delete_operations_preserve_phase3_semantics_without_sqlite_foreig
                 'match_type': 'exact',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
                 'priority': 10,
                 'enabled': True,
             },
@@ -850,6 +1019,8 @@ async def test_delete_operations_preserve_phase3_semantics_without_sqlite_foreig
                     'import_batch_id': batch_id,
                     'group_value': 'Acme',
                     'target_conversation_name': 'Acme Group',
+
+                    'target_conversation_id': 'Acme Group',
                     'template_id': template_id,
                     'template_name_snapshot': 'Arrival Reminder',
                     'template_content_snapshot': 'Hello {{customer_name}}',
@@ -931,6 +1102,8 @@ async def test_delete_operations_do_not_mutate_other_scope_when_sqlite_foreign_k
                 'match_type': 'exact',
                 'match_expression': 'Acme',
                 'target_conversation_name': 'Acme Group',
+
+                'target_conversation_id': 'Acme Group',
                 'priority': 10,
                 'enabled': True,
             },
@@ -978,6 +1151,8 @@ async def test_delete_operations_do_not_mutate_other_scope_when_sqlite_foreign_k
                     'import_batch_id': batch_id,
                     'group_value': 'Acme',
                     'target_conversation_name': 'Acme Group',
+
+                    'target_conversation_id': 'Acme Group',
                     'template_id': template_id,
                     'template_name_snapshot': 'Arrival Reminder',
                     'template_content_snapshot': 'Hello {{customer_name}}',
@@ -1067,6 +1242,8 @@ async def test_execution_batch_task_attempt_and_evidence_crud(repository_fixture
                     'import_batch_id': import_batch_id,
                     'group_value': 'Acme',
                     'target_conversation_name': 'Acme Group',
+
+                    'target_conversation_id': 'Acme Group',
                     'template_id': template_id,
                     'template_name_snapshot': 'Execution Template',
                     'template_content_snapshot': 'Hello {{customer_name}}',
@@ -1688,6 +1865,8 @@ async def test_attachment_asset_relative_path_is_visible_in_attachment_queries(r
                         'import_batch_id': import_batch_id,
                         'group_value': 'Acme',
                         'target_conversation_name': 'Acme Group',
+
+                        'target_conversation_id': 'Acme Group',
                         'template_id': None,
                         'template_name_snapshot': 'Arrival Reminder',
                         'template_content_snapshot': 'Hello {{customer_name}}',

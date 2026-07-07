@@ -786,6 +786,7 @@ export interface ApiBroadcastGroupRule {
   source_value: string;
   match_type: 'exact' | 'contains' | 'regex';
   match_expression: string;
+  target_conversation_id?: string | null;
   target_conversation_name: string;
   priority: number;
   enabled: boolean;
@@ -798,6 +799,7 @@ export interface ApiBroadcastGroupRule {
 export interface ApiBroadcastGroupMatchResult {
   matched: boolean;
   rule_id: number | null;
+  target_conversation_id?: string | null;
   target_conversation_name: string | null;
   match_type: 'exact' | 'contains' | 'regex' | null;
 }
@@ -860,6 +862,7 @@ export interface ApiBroadcastImportRow {
   source_row_number: number;
   raw_data: Record<string, string>;
   group_value: string | null;
+  matched_conversation_id?: string | null;
   matched_conversation_name: string | null;
   matched_rule_id: number | null;
   match_status: ApiBroadcastImportMatchStatus;
@@ -894,12 +897,16 @@ export interface ApiBroadcastImportGroupSummary {
   group_value: string;
   raw_row_count: number;
   distinct_order_number_count: number;
+  matched_conversation_id?: string | null;
   matched_conversation_name: string | null;
   match_status: ApiBroadcastImportGroupMatchStatus;
   reason: string | null;
   attachment_count: number;
   expandable: boolean;
   first_source_row_number: number;
+  template_id?: number | null;
+  template_name?: string | null;
+  template_enabled?: boolean | null;
 }
 
 export interface ApiBroadcastImportGroupsResponse {
@@ -940,6 +947,7 @@ export interface ApiBroadcastDraft {
   connector_id: string;
   import_batch_id: number;
   group_value: string;
+  target_conversation_id?: string | null;
   target_conversation_name: string | null;
   template_id: number | null;
   template_name_snapshot: string;
@@ -959,11 +967,28 @@ export interface ApiBroadcastDraft {
   message?: string | null;
 }
 
+export interface ApiBroadcastImportDraftGenerationItem {
+  group_key: string;
+  draft_id: number;
+  operation: 'created' | 'updated';
+  modified_fields: string[];
+}
+
 export interface ApiBroadcastImportDraftGenerationResult {
   total_group_count: number;
   pending_review_count: number;
   invalid_count: number;
   unmatched_group_count: number;
+  created_count?: number;
+  updated_count?: number;
+  generated_group_keys?: string[];
+  draft_ids?: number[];
+  draft_results?: ApiBroadcastImportDraftGenerationItem[];
+}
+
+export interface ApiBroadcastImportGroupTemplateAssignment {
+  group_key: string;
+  template_id: number;
 }
 
 export interface ApiBroadcastDraftStatusUpdateResult {

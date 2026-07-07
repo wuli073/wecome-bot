@@ -31,8 +31,14 @@ test.describe('broadcast workflow', () => {
       mimeType: 'text/csv',
       buffer: Buffer.from('customers', 'utf-8'),
     });
-    await page.getByTestId('broadcast-import-template-select').click();
-    await page.getByRole('option', { name: 'Arrival Reminder' }).click();
+    await page.getByTestId('broadcast-import-select-all-checkbox').click();
+    await page
+      .getByTestId('broadcast-import-template-select')
+      .selectOption({ label: 'Arrival Reminder' });
+    await page.getByTestId('broadcast-import-apply-template-button').click();
+    await expect(
+      page.getByTestId('broadcast-import-generate-drafts-button'),
+    ).toBeEnabled();
     await page.getByTestId('broadcast-import-generate-drafts-button').click();
 
     await page.locator('[role="tab"]').nth(2).click();

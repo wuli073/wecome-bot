@@ -87,6 +87,8 @@ async def _make_client():
                     'match_type': 'exact',
                     'match_expression': 'Acme',
                     'target_conversation_name': 'Acme Group',
+
+                    'target_conversation_id': 'Acme Group',
                     'priority': 1,
                     'enabled': True,
                 }
@@ -98,6 +100,8 @@ async def _make_client():
                     'match_type': 'exact',
                     'match_expression': 'Acme',
                     'target_conversation_name': 'Acme Group',
+
+                    'target_conversation_id': 'Acme Group',
                     'priority': 2,
                     'enabled': False,
                 }
@@ -108,6 +112,8 @@ async def _make_client():
                     'matched': True,
                     'rule_id': 1,
                     'target_conversation_name': 'Acme Group',
+
+                    'target_conversation_id': 'Acme Group',
                     'match_type': 'exact',
                 }
             ),
@@ -142,6 +148,32 @@ async def _make_client():
                 }
             ),
             list_import_batches=AsyncMock(return_value=[]),
+            list_import_groups=AsyncMock(
+                return_value={
+                    'page': 1,
+                    'page_size': 50,
+                    'total': 1,
+                    'total_pages': 1,
+                    'raw_row_total': 1,
+                    'group_total': 1,
+                    'matched_group_total': 1,
+                    'unmatched_group_total': 0,
+                    'invalid_group_total': 0,
+                    'conflict_group_total': 0,
+                    'order_number_field_configured': False,
+                    'groups': [],
+                }
+            ),
+            upsert_import_group_template_assignments=AsyncMock(
+                return_value={
+                    'items': [
+                        {
+                            'group_key': 'group-a',
+                            'template_id': 12,
+                        }
+                    ]
+                }
+            ),
             get_import_detail=AsyncMock(
                 return_value={
                     'id': 11,
@@ -673,3 +705,57 @@ async def test_upload_import_reads_bytes_from_file_stream_when_filestorage_has_n
 
     assert payload['filename'] == 'customers.csv'
     assert payload['body'] == '客户,运单号\n小满,TEST-20260704-001\n'.encode('utf-8')
+
+
+async def test_put_import_group_template_assignments_uses_body_scope():
+    client, ap = await _make_client()
+
+    response = await client.put(
+        '/api/v1/broadcast/imports/11/group-template-assignments',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        json={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'items': [{'group_key': 'group-a', 'template_id': 12}],
+        },
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload['data']['items'][0]['group_key'] == 'group-a'
+    ap.broadcast_service.upsert_import_group_template_assignments.assert_awaited_once_with(
+        11,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        {
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'items': [{'group_key': 'group-a', 'template_id': 12}],
+        },
+    )
+
+
+async def test_generate_import_drafts_route_passes_group_keys_payload():
+    client, ap = await _make_client()
+
+    response = await client.post(
+        '/api/v1/broadcast/imports/11/generate-drafts',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        json={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'group_keys': ['group-b', 'group-a'],
+            'overwrite_existing': False,
+        },
+    )
+
+    assert response.status_code == 200
+    ap.broadcast_service.generate_import_drafts.assert_awaited_once_with(
+        11,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        {
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'group_keys': ['group-b', 'group-a'],
+            'overwrite_existing': False,
+        },
+    )

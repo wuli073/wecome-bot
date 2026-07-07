@@ -114,6 +114,18 @@ class BroadcastRepository:
             conn=conn,
         )
         await self.persistence_mgr.execute_async(
+            sqlalchemy.delete(persistence_broadcast.BroadcastImportGroupTemplateAssignment).where(
+                persistence_broadcast.BroadcastImportGroupTemplateAssignment.import_batch_id.in_(
+                    self._scoped_import_batch_ids(
+                        import_batch_id,
+                        bot_uuid=bot_uuid,
+                        connector_id=connector_id,
+                    )
+                ),
+            ),
+            conn=conn,
+        )
+        await self.persistence_mgr.execute_async(
             sqlalchemy.delete(persistence_broadcast.BroadcastDraft).where(
                 persistence_broadcast.BroadcastDraft.import_batch_id.in_(
                     self._scoped_import_batch_ids(
@@ -188,6 +200,20 @@ class BroadcastRepository:
         return await self.get_template(template_id, bot_uuid=bot_uuid, connector_id=connector_id, conn=conn)
 
     async def delete_template(self, template_id: int, *, bot_uuid: str, connector_id: str, conn=None) -> bool:
+        await self.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastImportGroupTemplateAssignment)
+            .where(
+                persistence_broadcast.BroadcastImportGroupTemplateAssignment.template_id == template_id,
+                persistence_broadcast.BroadcastImportGroupTemplateAssignment.import_batch_id.in_(
+                    sqlalchemy.select(persistence_broadcast.BroadcastImportBatch.id).where(
+                        persistence_broadcast.BroadcastImportBatch.bot_uuid == bot_uuid,
+                        persistence_broadcast.BroadcastImportBatch.connector_id == connector_id,
+                    )
+                ),
+            )
+            .values({'template_id': None}),
+            conn=conn,
+        )
         await self.persistence_mgr.execute_async(
             sqlalchemy.update(persistence_broadcast.BroadcastDraft)
             .where(
@@ -555,6 +581,102 @@ class BroadcastRepository:
         )
         return bool(result.rowcount)
 
+    async def create_import_group_template_assignment(self, conn, payload: dict[str, Any]) -> int:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.insert(persistence_broadcast.BroadcastImportGroupTemplateAssignment).values(payload),
+            conn=conn,
+        )
+        return int(result.inserted_primary_key[0])
+
+    async def list_import_group_template_assignments(
+        self,
+        *,
+        import_batch_id: int,
+        bot_uuid: str,
+        connector_id: str,
+        conn=None,
+    ):
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_broadcast.BroadcastImportGroupTemplateAssignment)
+            .join(
+                persistence_broadcast.BroadcastImportBatch,
+                persistence_broadcast.BroadcastImportBatch.id
+                == persistence_broadcast.BroadcastImportGroupTemplateAssignment.import_batch_id,
+            )
+            .where(
+                persistence_broadcast.BroadcastImportGroupTemplateAssignment.import_batch_id == import_batch_id,
+                persistence_broadcast.BroadcastImportBatch.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastImportBatch.connector_id == connector_id,
+            )
+            .order_by(
+                persistence_broadcast.BroadcastImportGroupTemplateAssignment.group_key.asc(),
+                persistence_broadcast.BroadcastImportGroupTemplateAssignment.id.asc(),
+            ),
+            conn=conn,
+        )
+        return self._all_models(result)
+
+    async def upsert_import_group_template_assignments(
+        self,
+        conn,
+        *,
+        import_batch_id: int,
+        items: list[dict[str, Any]],
+    ) -> None:
+        for item in items:
+            existing = await self.persistence_mgr.execute_async(
+                sqlalchemy.select(persistence_broadcast.BroadcastImportGroupTemplateAssignment.id).where(
+                    persistence_broadcast.BroadcastImportGroupTemplateAssignment.import_batch_id == import_batch_id,
+                    persistence_broadcast.BroadcastImportGroupTemplateAssignment.group_key == item['group_key'],
+                ),
+                conn=conn,
+            )
+            existing_id = existing.scalar()
+            payload = {
+                'import_batch_id': import_batch_id,
+                'group_key': item['group_key'],
+                'template_id': item.get('template_id'),
+            }
+            if existing_id is None:
+                await self.persistence_mgr.execute_async(
+                    sqlalchemy.insert(persistence_broadcast.BroadcastImportGroupTemplateAssignment).values(payload),
+                    conn=conn,
+                )
+            else:
+                await self.persistence_mgr.execute_async(
+                    sqlalchemy.update(persistence_broadcast.BroadcastImportGroupTemplateAssignment)
+                    .where(persistence_broadcast.BroadcastImportGroupTemplateAssignment.id == existing_id)
+                    .values(payload),
+                    conn=conn,
+                )
+
+    async def get_draft_by_group_value(
+        self,
+        *,
+        import_batch_id: int,
+        bot_uuid: str,
+        connector_id: str,
+        group_value: str,
+        conn=None,
+    ):
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_broadcast.BroadcastDraft).where(
+                persistence_broadcast.BroadcastDraft.import_batch_id == import_batch_id,
+                persistence_broadcast.BroadcastDraft.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastDraft.connector_id == connector_id,
+                persistence_broadcast.BroadcastDraft.group_value == group_value,
+            ),
+            conn=conn,
+        )
+        return self._first_model(result)
+
+    async def create_draft(self, conn, payload: dict[str, Any]) -> int:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.insert(persistence_broadcast.BroadcastDraft).values(payload),
+            conn=conn,
+        )
+        return int(result.inserted_primary_key[0])
+
     def _build_import_group_summary_stmt(
         self,
         *,
@@ -565,6 +687,15 @@ class BroadcastRepository:
         keyword: str | None = None,
     ):
         order_value_expr = self._order_value_expr(order_number_source_field)
+        matched_conversation_id_expr = sqlalchemy.func.nullif(
+            sqlalchemy.func.trim(
+                sqlalchemy.func.coalesce(
+                    persistence_broadcast.BroadcastImportRow.matched_conversation_id,
+                    '',
+                )
+            ),
+            '',
+        )
         matched_conversation_expr = sqlalchemy.func.nullif(
             sqlalchemy.func.trim(
                 sqlalchemy.func.coalesce(
@@ -595,11 +726,19 @@ class BroadcastRepository:
                     )
                 ).label('match_status_count'),
                 sqlalchemy.func.min(
+                    matched_conversation_id_expr
+                ).label('matched_conversation_id'),
+                sqlalchemy.func.min(
                     matched_conversation_expr
                 ).label('matched_conversation_name'),
                 sqlalchemy.func.count(
-                    sqlalchemy.distinct(matched_conversation_expr)
-                ).label('matched_conversation_name_count'),
+                    sqlalchemy.distinct(
+                        sqlalchemy.func.coalesce(
+                            matched_conversation_id_expr,
+                            matched_conversation_expr,
+                        )
+                    )
+                ).label('matched_conversation_identity_count'),
                 sqlalchemy.func.min(
                     persistence_broadcast.BroadcastImportRow.error_message
                 ).label('first_error_message'),
@@ -878,6 +1017,17 @@ class BroadcastRepository:
         if not result.rowcount:
             return None
         return await self.get_draft(draft_id, bot_uuid=bot_uuid, connector_id=connector_id, conn=conn)
+
+    async def delete_draft(self, draft_id: int, *, bot_uuid: str, connector_id: str, conn=None) -> bool:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.delete(persistence_broadcast.BroadcastDraft).where(
+                persistence_broadcast.BroadcastDraft.id == draft_id,
+                persistence_broadcast.BroadcastDraft.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastDraft.connector_id == connector_id,
+            ),
+            conn=conn,
+        )
+        return bool(result.rowcount)
 
     async def create_attachment_asset(self, conn, payload: dict[str, Any]) -> int:
         result = await self.persistence_mgr.execute_async(
