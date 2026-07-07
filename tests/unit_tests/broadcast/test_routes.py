@@ -20,6 +20,8 @@ from langbot.pkg.api.http.controller.groups.broadcast import (  # noqa: E402
 )
 from langbot.pkg.broadcast.errors import (  # noqa: E402
     BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN,
+    BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED,
+    BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED,
     BROADCAST_SCOPE_REQUIRED,
     BroadcastError,
 )
@@ -164,6 +166,26 @@ async def _make_client():
                     'groups': [],
                 }
             ),
+            list_group_rule_candidates=AsyncMock(
+                return_value={
+                    'import_batch_id': 11,
+                    'group_field_used': '客户名称',
+                    'raw_row_total': 5,
+                    'unique_customer_total': 5,
+                    'stats': {
+                        'new_count': 1,
+                        'configured_count': 1,
+                        'needs_repair_count': 1,
+                        'conflict_count': 1,
+                        'invalid_count': 1,
+                    },
+                    'items': [],
+                    'page': 1,
+                    'page_size': 50,
+                    'total': 1,
+                    'total_pages': 1,
+                }
+            ),
             upsert_import_group_template_assignments=AsyncMock(
                 return_value={
                     'items': [
@@ -172,6 +194,22 @@ async def _make_client():
                             'template_id': 12,
                         }
                     ]
+                }
+            ),
+            bulk_assign_import_group_rules=AsyncMock(
+                return_value={
+                    'created_count': 1,
+                    'group_field_used': '瀹㈡埛鍚嶇О',
+                    'group_field_source': 'configured',
+                    'items': [
+                        {
+                            'group_key': 'group-a',
+                            'customer_name': 'Acme',
+                            'rule_id': 31,
+                            'target_conversation_id': 'group-1',
+                            'target_conversation_name': 'Acme Group',
+                        }
+                    ],
                 }
             ),
             get_import_detail=AsyncMock(
@@ -432,6 +470,37 @@ async def test_upload_import_uses_multipart_and_body_scope():
     ap.broadcast_service.upload_import.assert_awaited_once()
 
 
+async def test_upload_import_passes_group_field_override_from_form():
+    client, ap = await _make_client()
+
+    response = await client.post(
+        '/api/v1/broadcast/imports',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        form={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'group_field_override': '用户名',
+        },
+        files={
+            'file': FileStorage(
+                stream=BytesIO('客户名称,订单号\nAcme,SO-001\n'.encode('utf-8')),
+                filename='customers.csv',
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    ap.broadcast_service.upload_import.assert_awaited_once_with(
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称,订单号\nAcme,SO-001\n'.encode('utf-8'),
+            'content_type': '',
+            'group_field_override': '用户名',
+        },
+    )
+
+
 async def test_sync_group_names_uses_query_scope():
     client, ap = await _make_client()
 
@@ -470,6 +539,56 @@ async def test_get_import_detail_uses_query_scope_and_filters():
     )
 
 
+async def test_get_group_rule_candidates_defaults_status_to_new():
+    client, ap = await _make_client()
+
+    response = await client.get(
+        '/api/v1/broadcast/imports/11/group-rule-candidates?bot_uuid=bot-1&connector_id=wxwork-local',
+        headers={'Authorization': 'Bearer valid-user-token'},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload['data']['import_batch_id'] == 11
+    ap.broadcast_service.list_group_rule_candidates.assert_awaited_once_with(
+        11,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        {'status': 'new', 'keyword': None, 'page': None, 'page_size': None},
+    )
+
+
+async def test_get_group_rule_candidates_uses_query_filters():
+    client, ap = await _make_client()
+
+    response = await client.get(
+        '/api/v1/broadcast/imports/11/group-rule-candidates?bot_uuid=bot-1&connector_id=wxwork-local&status=conflict&keyword=Acme&page=2&page_size=10',
+        headers={'Authorization': 'Bearer valid-user-token'},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload['data']['page'] == 1
+    ap.broadcast_service.list_group_rule_candidates.assert_awaited_once_with(
+        11,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        {'status': 'conflict', 'keyword': 'Acme', 'page': 2, 'page_size': 10},
+    )
+
+
+async def test_get_group_rule_candidates_rejects_non_numeric_pagination():
+    client, ap = await _make_client()
+
+    response = await client.get(
+        '/api/v1/broadcast/imports/11/group-rule-candidates?bot_uuid=bot-1&connector_id=wxwork-local&page=abc',
+        headers={'Authorization': 'Bearer valid-user-token'},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 400
+    assert payload['msg'] == 'BROADCAST_IMPORT_FILE_INVALID'
+    ap.broadcast_service.list_group_rule_candidates.assert_not_awaited()
+
+
 async def test_import_error_keeps_chinese_message_and_details():
     client, ap = await _make_client()
     ap.broadcast_service.upload_import = AsyncMock(
@@ -501,6 +620,128 @@ async def test_import_error_keeps_chinese_message_and_details():
     assert payload['message'] == '导入文件缺少以下字段：客户名称、订单号'
     assert payload['details'] == ['客户名称', '订单号']
 
+
+async def test_import_group_field_confirmation_error_keeps_object_details_shape():
+    client, ap = await _make_client()
+    ap.broadcast_service.upload_import = AsyncMock(
+        side_effect=BroadcastError(
+            'BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED',
+            '无法唯一确定客户分组字段，请确认后继续导入',
+            {
+                'headers': ['用户名', '客户名称', '运单号'],
+                'candidates': ['用户名', '客户名称'],
+                'configured_group_field': '客户',
+                'original_file_name': 'customers.csv',
+            },
+        )
+    )
+
+    response = await client.post(
+        '/api/v1/broadcast/imports',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        form={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+        },
+        files={
+            'file': FileStorage(
+                stream=BytesIO('运单号\nSO-001\n'.encode('utf-8')),
+                filename='customers.csv',
+            ),
+        },
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 400
+    assert payload['msg'] == 'BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED'
+    assert payload['details'] == {
+        'headers': ['用户名', '客户名称', '运单号'],
+        'candidates': ['用户名', '客户名称'],
+        'configured_group_field': '客户',
+        'original_file_name': 'customers.csv',
+    }
+
+
+async def test_import_group_field_override_invalid_error_keeps_object_details_shape():
+    client, ap = await _make_client()
+    ap.broadcast_service.upload_import = AsyncMock(
+        side_effect=BroadcastError(
+            'BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID',
+            '指定的客户分组字段不存在：用户名',
+            {
+                'group_field_override': '用户名',
+                'headers': ['客户名称', '运单号'],
+                'original_file_name': 'customers.csv',
+            },
+        )
+    )
+
+    response = await client.post(
+        '/api/v1/broadcast/imports',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        form={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'group_field_override': '用户名',
+        },
+        files={
+            'file': FileStorage(
+                stream=BytesIO('运单号\nSO-001\n'.encode('utf-8')),
+                filename='customers.csv',
+            ),
+        },
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 400
+    assert payload['msg'] == 'BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID'
+    assert payload['details'] == {
+        'group_field_override': '用户名',
+        'headers': ['客户名称', '运单号'],
+        'original_file_name': 'customers.csv',
+    }
+
+
+
+
+async def test_import_group_field_confirmation_error_preserves_structured_details():
+    client, ap = await _make_client()
+    ap.broadcast_service.upload_import = AsyncMock(
+        side_effect=BroadcastError(
+            BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED,
+            '无法唯一确定客户分组字段，请确认后继续导入',
+            {
+                'headers': ['客户', '姓名', '订单号'],
+                'candidates': ['客户', '姓名'],
+                'configured_group_field': '历史客户字段',
+                'original_file_name': 'customers.csv',
+            },
+        )
+    )
+
+    response = await client.post(
+        '/api/v1/broadcast/imports',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        form={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+        },
+        files={
+            'file': FileStorage(
+                stream=BytesIO('客户,姓名,订单号\nAcme,张三,SO-001\n'.encode('utf-8')),
+                filename='customers.csv',
+            ),
+        },
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 400
+    assert payload['msg'] == BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED
+    assert isinstance(payload['details'], dict)
+    assert payload['details']['headers'] == ['客户', '姓名', '订单号']
+    assert payload['details']['candidates'] == ['客户', '姓名']
+    assert payload['details']['configured_group_field'] == '历史客户字段'
+    assert payload['details']['original_file_name'] == 'customers.csv'
 
 async def test_get_and_put_draft_routes_use_scope_and_payload():
     client, ap = await _make_client()
@@ -732,6 +973,110 @@ async def test_put_import_group_template_assignments_uses_body_scope():
             'items': [{'group_key': 'group-a', 'template_id': 12}],
         },
     )
+
+
+async def test_put_import_group_template_assignments_accepts_null_template_id():
+    client, ap = await _make_client()
+
+    response = await client.put(
+        '/api/v1/broadcast/imports/11/group-template-assignments',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        json={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'items': [{'group_key': 'group-a', 'template_id': None}],
+        },
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload['data']['items'][0]['template_id'] == 12
+    ap.broadcast_service.upsert_import_group_template_assignments.assert_awaited_once_with(
+        11,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        {
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'items': [{'group_key': 'group-a', 'template_id': None}],
+        },
+    )
+
+
+async def test_post_import_group_rule_bulk_assign_uses_body_scope():
+    client, ap = await _make_client()
+
+    response = await client.post(
+        '/api/v1/broadcast/imports/11/group-rules/bulk-assign',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        json={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'items': [
+                {
+                    'group_key': 'group-a',
+                    'target_conversation_id': 'group-1',
+                }
+            ],
+        },
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload['data']['created_count'] == 1
+    ap.broadcast_service.bulk_assign_import_group_rules.assert_awaited_once_with(
+        11,
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        {
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'items': [
+                {
+                    'group_key': 'group-a',
+                    'target_conversation_id': 'group-1',
+                }
+            ],
+        },
+    )
+
+
+async def test_post_import_group_rule_bulk_assign_preserves_structured_error_details():
+    client, ap = await _make_client()
+    ap.broadcast_service.bulk_assign_import_group_rules = AsyncMock(
+        side_effect=BroadcastError(
+            BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED,
+            '部分分组规则分配失败，请按明细修正后重试',
+            {
+                'items': [
+                    {
+                        'code': 'BROADCAST_GROUP_NAME_NOT_FOUND',
+                        'message': '目标群聊不存在或未同步稳定 ID',
+                        'group_key': 'group-a',
+                        'customer_name': 'Acme',
+                    }
+                ]
+            },
+        )
+    )
+
+    response = await client.post(
+        '/api/v1/broadcast/imports/11/group-rules/bulk-assign',
+        headers={'Authorization': 'Bearer valid-user-token'},
+        json={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'items': [
+                {
+                    'group_key': 'group-a',
+                    'target_conversation_id': 'group-404',
+                }
+            ],
+        },
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 400
+    assert payload['msg'] == BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED
+    assert payload['details']['items'][0]['group_key'] == 'group-a'
 
 
 async def test_generate_import_drafts_route_passes_group_keys_payload():

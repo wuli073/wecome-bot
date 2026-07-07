@@ -306,6 +306,28 @@ async def _get_all_import_group_keys(
     return [item['group_key'] for item in payload['data']['groups']]
 
 
+async def _insert_group_name(
+    fake_broadcast_app,
+    *,
+    external_conversation_id: str,
+    name: str,
+) -> None:
+    from langbot.pkg.entity.persistence import broadcast as persistence_broadcast
+
+    async with fake_broadcast_app.persistence_mgr.get_db_engine().begin() as conn:
+        await fake_broadcast_app.persistence_mgr.execute_async(
+            sqlalchemy.insert(persistence_broadcast.BroadcastGroupName).values(
+                {
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'name': name,
+                    'external_conversation_id': external_conversation_id,
+                }
+            ),
+            conn=conn,
+        )
+
+
 async def _create_invalid_import_draft(
     fake_broadcast_app,
     *,
@@ -723,6 +745,226 @@ class TestBroadcastApi:
         execution_payload = await execution_response.get_json()
         assert execution_response.status_code == 409
         assert execution_payload['msg'] == 'DUPLICATE_TARGET_CONVERSATION'
+
+    @pytest.mark.asyncio
+    async def test_import_group_template_assignments_support_explicit_clear(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Acme Group',
+                'target_conversation_id': 'acme-group-1',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        group_key = await _get_import_group_key(
+            quart_test_client,
+            import_id,
+            group_value='Acme',
+        )
+        template_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Template A',
+                'content': 'Hello {{customer_name}}',
+                'enabled': True,
+            },
+        )
+        template_id = (await template_response.get_json())['data']['id']
+
+        assign_response = await quart_test_client.put(
+            f'/api/v1/broadcast/imports/{import_id}/group-template-assignments',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [{'group_key': group_key, 'template_id': template_id}],
+            },
+        )
+        assert assign_response.status_code == 200
+
+        clear_response = await quart_test_client.put(
+            f'/api/v1/broadcast/imports/{import_id}/group-template-assignments',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [{'group_key': group_key, 'template_id': None}],
+            },
+        )
+        clear_payload = await clear_response.get_json()
+        assert clear_response.status_code == 200
+        assert clear_payload['data']['items'] == [
+            {'group_key': group_key, 'template_id': None}
+        ]
+
+        groups_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}/groups?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        groups_payload = (await groups_response.get_json())['data']
+        assert groups_payload['groups'][0]['template_id'] is None
+        assert groups_payload['groups'][0]['template_name'] is None
+        assert groups_payload['groups'][0]['template_enabled'] is None
+
+    @pytest.mark.asyncio
+    async def test_import_group_template_assignments_are_atomic_when_any_item_is_invalid(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        for priority, group_name in enumerate(['Acme', 'Globex'], start=9):
+            await quart_test_client.post(
+                '/api/v1/broadcast/group-rules',
+                headers=_auth_headers(),
+                json={
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'source_value': group_name,
+                    'match_type': 'exact',
+                    'match_expression': group_name,
+                    'target_conversation_name': f'{group_name} Group',
+                    'target_conversation_id': f'{group_name.lower()}-group',
+                    'priority': priority,
+                    'enabled': True,
+                },
+            )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\nGlobex\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        group_key_by_value = {
+            group_value: await _get_import_group_key(
+                quart_test_client,
+                import_id,
+                group_value=group_value,
+            )
+            for group_value in ['Acme', 'Globex']
+        }
+        template_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Template A',
+                'content': 'Hello {{customer_name}}',
+                'enabled': True,
+            },
+        )
+        template_id = (await template_response.get_json())['data']['id']
+        await quart_test_client.put(
+            f'/api/v1/broadcast/imports/{import_id}/group-template-assignments',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [
+                    {
+                        'group_key': group_key_by_value['Acme'],
+                        'template_id': template_id,
+                    }
+                ],
+            },
+        )
+
+        response = await quart_test_client.put(
+            f'/api/v1/broadcast/imports/{import_id}/group-template-assignments',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [
+                    {
+                        'group_key': group_key_by_value['Acme'],
+                        'template_id': None,
+                    },
+                    {
+                        'group_key': group_key_by_value['Globex'],
+                        'template_id': 999999,
+                    },
+                ],
+            },
+        )
+        payload = await response.get_json()
+        assert response.status_code == 404
+        assert payload['msg'] == 'BROADCAST_TEMPLATE_NOT_FOUND'
+
+        groups_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}/groups?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        groups_payload = (await groups_response.get_json())['data']
+        group_by_value = {
+            item['group_value']: item for item in groups_payload['groups']
+        }
+        assert group_by_value['Acme']['template_id'] == template_id
+        assert group_by_value['Globex']['template_id'] is None
 
     @pytest.mark.asyncio
     async def test_generate_selected_group_drafts_overwrites_pending_in_place(
@@ -1670,6 +1912,1192 @@ class TestBroadcastApi:
         assert second_page_payload['data']['total'] == 3
         assert second_page_payload['data']['total_pages'] == 2
         assert [row['source_row_number'] for row in second_page_payload['data']['rows']] == [4]
+
+    @pytest.mark.asyncio
+    async def test_import_upload_persists_auto_detected_batch_group_field(
+        self,
+        quart_test_client,
+    ):
+        group_field = '\u5ba2\u6237\u540d\u79f0'
+        order_field = '\u8ba2\u5355\u53f7'
+        username_field = '\u7528\u6237\u540d'
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': group_field,
+                'mapping_rules': [
+                    {
+                        'source_field': order_field,
+                        'variable_key': 'order_no',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'legacy-acme',
+                'match_type': 'exact',
+                'match_expression': 'legacy-acme',
+                'target_conversation_name': 'Acme Group',
+                'target_conversation_id': 'acme-group-1',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+            },
+            files={
+                'file': FileStorage(
+                    stream=BytesIO(f'{username_field},{order_field}\nlegacy-acme,SO-001\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 200
+        assert payload['data']['group_field_used'] == username_field
+        assert payload['data']['group_field_source'] == 'auto_detected'
+
+        import_id = payload['data']['id']
+        detail_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        detail_payload = await detail_response.get_json()
+        assert detail_response.status_code == 200
+        assert detail_payload['data']['rows'][0]['group_value'] == 'legacy-acme'
+        assert detail_payload['data']['rows'][0]['match_status'] == 'matched'
+
+    @pytest.mark.asyncio
+    async def test_import_upload_returns_object_details_when_group_field_confirmation_is_required(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户',
+                'mapping_rules': [
+                    {
+                        'source_field': '运单号',
+                        'variable_key': 'tracking_no',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+            },
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('运单号,联系人手机号\nSO-001,13800138000\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 400
+        assert payload['msg'] == 'BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED'
+        assert isinstance(payload['details'], dict)
+        assert payload['details'] == {
+            'headers': ['运单号', '联系人手机号'],
+            'candidates': [],
+            'configured_group_field': '客户',
+            'original_file_name': 'customers.csv',
+        }
+
+    @pytest.mark.asyncio
+    async def test_import_upload_returns_object_details_when_group_field_override_is_invalid(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '运单号',
+                        'variable_key': 'tracking_no',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field_override': '用户名',
+            },
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称,运单号\nAcme,SO-001\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 400
+        assert payload['msg'] == 'BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID'
+        assert isinstance(payload['details'], dict)
+        assert payload['details'] == {
+            'group_field_override': '用户名',
+            'headers': ['客户名称', '运单号'],
+            'original_file_name': 'customers.csv',
+        }
+
+
+
+    @pytest.mark.asyncio
+    async def test_import_upload_requires_group_field_confirmation_for_ambiguous_alias_headers(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '历史客户字段',
+                'mapping_rules': [
+                    {
+                        'source_field': '订单号',
+                        'variable_key': 'order_no',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+            },
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户,姓名,订单号\nAcme,张三,SO-001\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 400
+        assert payload['msg'] == 'BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED'
+        assert isinstance(payload['details'], dict)
+        assert payload['details']['headers'] == ['客户', '姓名', '订单号']
+        assert payload['details']['candidates'] == ['客户', '姓名']
+        assert payload['details']['configured_group_field'] == '历史客户字段'
+        assert payload['details']['original_file_name'] == 'customers.csv'
+
+
+    @pytest.mark.asyncio
+    async def test_import_upload_requires_group_field_confirmation_when_no_candidate_header_matches(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '历史客户字段',
+                'mapping_rules': [
+                    {
+                        'source_field': '订单号',
+                        'variable_key': 'order_no',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+            },
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('订单号,联系人手机号\nSO-001,13800000000\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 400
+        assert payload['msg'] == 'BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED'
+        assert isinstance(payload['details'], dict)
+        assert payload['details']['headers'] == ['订单号', '联系人手机号']
+        assert payload['details']['candidates'] == []
+        assert payload['details']['configured_group_field'] == '历史客户字段'
+        assert payload['details']['original_file_name'] == 'customers.csv'
+
+
+    @pytest.mark.asyncio
+    async def test_import_upload_rejects_invalid_group_field_override_with_structured_details(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '订单号',
+                        'variable_key': 'order_no',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field_override': '用户名',
+            },
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称,订单号\nAcme,SO-001\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 400
+        assert payload['msg'] == 'BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID'
+        assert isinstance(payload['details'], dict)
+        assert payload['details']['group_field_override'] == '用户名'
+        assert payload['details']['headers'] == ['客户名称', '订单号']
+        assert payload['details']['original_file_name'] == 'customers.csv'
+
+
+    @pytest.mark.asyncio
+    async def test_import_rematch_uses_persisted_batch_group_field_after_profile_change(
+        self,
+        quart_test_client,
+    ):
+        group_field = '\u5ba2\u6237\u540d\u79f0'
+        username_field = '\u7528\u6237\u540d'
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': group_field,
+                'mapping_rules': [
+                    {
+                        'source_field': group_field,
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'legacy-acme',
+                'match_type': 'exact',
+                'match_expression': 'legacy-acme',
+                'target_conversation_name': 'Acme Group',
+                'target_conversation_id': 'acme-group-1',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+            },
+            files={
+                'file': FileStorage(
+                    stream=BytesIO(f'{username_field},{group_field}\nlegacy-acme,Acme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        upload_payload = await upload_response.get_json()
+        assert upload_response.status_code == 200
+        assert upload_payload['data']['group_field_used'] == username_field
+        import_id = upload_payload['data']['id']
+
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': group_field,
+                'mapping_rules': [
+                    {
+                        'source_field': group_field,
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+
+        rematch_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/rematch',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+            },
+        )
+        rematch_payload = await rematch_response.get_json()
+
+        assert rematch_response.status_code == 200
+        assert rematch_payload['data']['group_field_used'] == username_field
+        assert rematch_payload['data']['group_field_source'] == 'auto_detected'
+        assert rematch_payload['data']['rows'][0]['group_value'] == 'legacy-acme'
+        assert rematch_payload['data']['rows'][0]['match_status'] == 'matched'
+
+
+    @pytest.mark.asyncio
+    async def test_import_rematch_blocks_legacy_unresolvable_batch(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        from langbot.pkg.entity.persistence import broadcast as persistence_broadcast
+
+        group_field = '\u5ba2\u6237\u540d\u79f0'
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': group_field,
+                'mapping_rules': [
+                    {
+                        'source_field': group_field,
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+            },
+            files={
+                'file': FileStorage(
+                    stream=BytesIO(f'{group_field}\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        assert upload_response.status_code == 200
+        import_id = (await upload_response.get_json())['data']['id']
+
+        async with fake_broadcast_app.persistence_mgr.get_db_engine().begin() as conn:
+            await fake_broadcast_app.persistence_mgr.execute_async(
+                sqlalchemy.update(persistence_broadcast.BroadcastImportBatch)
+                .where(persistence_broadcast.BroadcastImportBatch.id == import_id)
+                .values({'group_field_used': None, 'group_field_source': None}),
+                conn=conn,
+            )
+            await fake_broadcast_app.persistence_mgr.execute_async(
+                sqlalchemy.update(persistence_broadcast.BroadcastVariableProfile)
+                .where(
+                    persistence_broadcast.BroadcastVariableProfile.bot_uuid == 'bot-1',
+                    persistence_broadcast.BroadcastVariableProfile.connector_id == 'wxwork-local',
+                )
+                .values({'group_field': None}),
+                conn=conn,
+            )
+
+        rematch_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/rematch',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+            },
+        )
+        rematch_payload = await rematch_response.get_json()
+
+        assert rematch_response.status_code == 400
+        assert rematch_payload['msg'] == 'BROADCAST_IMPORT_GROUP_FIELD_UNRESOLVABLE'
+
+        detail_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        detail_payload = await detail_response.get_json()
+        assert detail_response.status_code == 200
+        assert detail_payload['data']['group_field_used'] is None
+        assert detail_payload['data']['group_field_source'] is None
+
+
+    @pytest.mark.asyncio
+    async def test_import_rematch_returns_runtime_legacy_fallback_metadata_without_persisting_batch(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        from langbot.pkg.entity.persistence import broadcast as persistence_broadcast
+
+        group_field = '客户名称'
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': group_field,
+                'mapping_rules': [
+                    {
+                        'source_field': group_field,
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Acme Group',
+                'target_conversation_id': 'acme-group-1',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+            },
+            files={
+                'file': FileStorage(
+                    stream=BytesIO(f'{group_field}\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        assert upload_response.status_code == 200
+        import_id = (await upload_response.get_json())['data']['id']
+
+        async with fake_broadcast_app.persistence_mgr.get_db_engine().begin() as conn:
+            await fake_broadcast_app.persistence_mgr.execute_async(
+                sqlalchemy.update(persistence_broadcast.BroadcastImportBatch)
+                .where(persistence_broadcast.BroadcastImportBatch.id == import_id)
+                .values({'group_field_used': None, 'group_field_source': None}),
+                conn=conn,
+            )
+
+        rematch_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/rematch',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+            },
+        )
+        rematch_payload = await rematch_response.get_json()
+
+        assert rematch_response.status_code == 200
+        assert rematch_payload['data']['group_field_used'] == group_field
+        assert rematch_payload['data']['group_field_source'] == 'legacy_fallback'
+        assert rematch_payload['data']['rows'][0]['group_value'] == 'Acme'
+        assert rematch_payload['data']['rows'][0]['match_status'] == 'matched'
+
+        detail_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        detail_payload = await detail_response.get_json()
+        assert detail_response.status_code == 200
+        assert detail_payload['data']['group_field_used'] is None
+        assert detail_payload['data']['group_field_source'] is None
+
+
+    @pytest.mark.asyncio
+    async def test_group_rule_candidates_api_supports_default_status_pagination_and_filters(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        from langbot.pkg.entity.persistence import broadcast as persistence_broadcast
+
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Configured Co',
+                'match_type': 'exact',
+                'match_expression': 'Configured Co',
+                'target_conversation_name': 'Configured Group',
+                'target_conversation_id': 'group-1',
+                'priority': 0,
+                'enabled': True,
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Repair Co',
+                'match_type': 'exact',
+                'match_expression': 'Repair Co',
+                'target_conversation_name': 'Repair Valid Group',
+                'target_conversation_id': 'group-1',
+                'priority': 0,
+                'enabled': True,
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Repair Co',
+                'match_type': 'exact',
+                'match_expression': 'Repair Co Backup',
+                'target_conversation_name': 'Repair Missing Group',
+                'target_conversation_id': 'repair-missing-group',
+                'priority': -1,
+                'enabled': False,
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Ac',
+                'match_type': 'contains',
+                'match_expression': 'Ac',
+                'target_conversation_name': 'Contains Group',
+                'target_conversation_id': 'group-1',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nFresh Co\nConfigured Co\nRepair Co\nAcme\n"   "\n'.encode('utf-8')),
+                    filename='customers.csv',
+                )
+            },
+        )
+        upload_payload = await upload_response.get_json()
+        assert upload_response.status_code == 200
+        import_id = upload_payload['data']['id']
+        async with fake_broadcast_app.persistence_mgr.get_db_engine().begin() as conn:
+            await fake_broadcast_app.persistence_mgr.execute_async(
+                sqlalchemy.insert(persistence_broadcast.BroadcastImportRow).values(
+                    {
+                        'import_batch_id': import_id,
+                        'source_row_number': 6,
+                        'raw_data': {'????': '   '},
+                        'group_value': None,
+                        'matched_conversation_id': None,
+                        'matched_conversation_name': None,
+                        'matched_rule_id': None,
+                        'match_status': 'invalid',
+                        'error_message': None,
+                    }
+                ),
+                conn=conn,
+            )
+            await fake_broadcast_app.persistence_mgr.execute_async(
+                sqlalchemy.update(persistence_broadcast.BroadcastImportBatch)
+                .where(persistence_broadcast.BroadcastImportBatch.id == import_id)
+                .values(
+                    {
+                        'total_rows': 5,
+                        'valid_rows': 4,
+                        'invalid_rows': 1,
+                        'matched_rows': 3,
+                        'unmatched_rows': 1,
+                    }
+                ),
+                conn=conn,
+            )
+
+
+        default_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}/group-rule-candidates?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        default_payload = await default_response.get_json()
+        assert default_response.status_code == 200
+        assert default_payload['data']['group_field_used'] == '客户名称'
+        assert default_payload['data']['group_field_source'] == 'configured'
+        assert default_payload['data']['stats'] == {
+            'new_count': 1,
+            'configured_count': 1,
+            'needs_repair_count': 1,
+            'conflict_count': 1,
+            'invalid_count': 1,
+        }
+        assert [item['customer_name'] for item in default_payload['data']['items']] == ['Fresh Co']
+        assert default_payload['data']['items'][0]['status'] == 'new'
+
+        paged_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}/group-rule-candidates?{_query_scope()}&status=all&page=2&page_size=2',
+            headers=_auth_headers(),
+        )
+        paged_payload = await paged_response.get_json()
+        assert paged_response.status_code == 200
+        assert paged_payload['data']['total'] == 5
+        assert paged_payload['data']['total_pages'] == 3
+        assert [item['customer_name'] for item in paged_payload['data']['items']] == ['Repair Co', 'Acme']
+
+        repair_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}/group-rule-candidates?{_query_scope()}&status=needs_repair&keyword=Repair',
+            headers=_auth_headers(),
+        )
+        repair_payload = await repair_response.get_json()
+        assert repair_response.status_code == 200
+        assert repair_payload['data']['total'] == 1
+        repair_item = repair_payload['data']['items'][0]
+        assert repair_item['customer_name'] == 'Repair Co'
+        assert repair_item['status'] == 'needs_repair'
+        assert len(repair_item['existing_rule_ids']) == 2
+        assert repair_item['current_match_type'] == 'exact'
+
+        conflict_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}/group-rule-candidates?{_query_scope()}&status=conflict',
+            headers=_auth_headers(),
+        )
+        conflict_payload = await conflict_response.get_json()
+        assert conflict_response.status_code == 200
+        assert conflict_payload['data']['total'] == 1
+        assert conflict_payload['data']['items'][0]['customer_name'] == 'Acme'
+        assert conflict_payload['data']['items'][0]['current_match_type'] == 'contains'
+
+
+    @pytest.mark.asyncio
+    async def test_group_rule_candidates_api_uses_runtime_legacy_fallback_without_persisting_batch(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        from langbot.pkg.entity.persistence import broadcast as persistence_broadcast
+
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                )
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        async with fake_broadcast_app.persistence_mgr.get_db_engine().begin() as conn:
+            await fake_broadcast_app.persistence_mgr.execute_async(
+                sqlalchemy.update(persistence_broadcast.BroadcastImportBatch)
+                .where(persistence_broadcast.BroadcastImportBatch.id == import_id)
+                .values({'group_field_used': None, 'group_field_source': None}),
+                conn=conn,
+            )
+
+        response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}/group-rule-candidates?{_query_scope()}&status=all',
+            headers=_auth_headers(),
+        )
+        payload = await response.get_json()
+        assert response.status_code == 200
+        assert payload['data']['group_field_used'] == '客户名称'
+        assert payload['data']['group_field_source'] == 'legacy_fallback'
+
+        detail_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        detail_payload = await detail_response.get_json()
+        assert detail_response.status_code == 200
+        assert detail_payload['data']['group_field_used'] is None
+        assert detail_payload['data']['group_field_source'] is None
+
+
+    @pytest.mark.asyncio
+    async def test_group_rule_candidates_api_rejects_legacy_unresolvable_batch(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        from langbot.pkg.entity.persistence import broadcast as persistence_broadcast
+
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                )
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        async with fake_broadcast_app.persistence_mgr.get_db_engine().begin() as conn:
+            await fake_broadcast_app.persistence_mgr.execute_async(
+                sqlalchemy.update(persistence_broadcast.BroadcastImportBatch)
+                .where(persistence_broadcast.BroadcastImportBatch.id == import_id)
+                .values({'group_field_used': None, 'group_field_source': None}),
+                conn=conn,
+            )
+            await fake_broadcast_app.persistence_mgr.execute_async(
+                sqlalchemy.update(persistence_broadcast.BroadcastVariableProfile)
+                .where(
+                    persistence_broadcast.BroadcastVariableProfile.bot_uuid == 'bot-1',
+                    persistence_broadcast.BroadcastVariableProfile.connector_id == 'wxwork-local',
+                )
+                .values({'group_field': None}),
+                conn=conn,
+            )
+
+        response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}/group-rule-candidates?{_query_scope()}&status=all',
+            headers=_auth_headers(),
+        )
+        payload = await response.get_json()
+        assert response.status_code == 400
+        assert payload['msg'] == 'BROADCAST_IMPORT_GROUP_FIELD_UNRESOLVABLE'
+
+
+    @pytest.mark.asyncio
+    async def test_bulk_assign_group_rules_happy_path(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                )
+            },
+        )
+        upload_payload = await upload_response.get_json()
+        assert upload_response.status_code == 200
+        import_id = upload_payload['data']['id']
+        await _insert_group_name(
+            fake_broadcast_app,
+            external_conversation_id='group-acme',
+            name='Acme Group',
+        )
+        group_key = await _get_import_group_key(
+            quart_test_client,
+            import_id,
+            group_value='Acme',
+        )
+
+        bulk_assign_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/group-rules/bulk-assign',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [
+                    {
+                        'group_key': group_key,
+                        'target_conversation_id': 'group-acme',
+                    }
+                ],
+            },
+        )
+        bulk_assign_payload = await bulk_assign_response.get_json()
+        assert bulk_assign_response.status_code == 200
+        assert bulk_assign_payload['data']['created_count'] == 1
+        assert bulk_assign_payload['data']['group_field_used'] == '客户名称'
+        assert bulk_assign_payload['data']['group_field_source'] == 'configured'
+        created_rule_id = bulk_assign_payload['data']['items'][0]['rule_id']
+
+        rules_response = await quart_test_client.get(
+            f'/api/v1/broadcast/group-rules?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        rules_payload = await rules_response.get_json()
+        assert rules_response.status_code == 200
+        assert len(rules_payload['data']) == 1
+        assert rules_payload['data'][0]['id'] == created_rule_id
+        assert rules_payload['data'][0]['source_value'] == 'Acme'
+        assert rules_payload['data'][0]['match_type'] == 'exact'
+        assert rules_payload['data'][0]['match_expression'] == 'Acme'
+        assert rules_payload['data'][0]['target_conversation_id'] == 'group-acme'
+        assert rules_payload['data'][0]['target_conversation_name'] == 'Acme Group'
+
+        detail_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        detail_payload = await detail_response.get_json()
+        assert detail_response.status_code == 200
+        assert detail_payload['data']['rows'][0]['group_value'] == 'Acme'
+        assert detail_payload['data']['rows'][0]['matched_conversation_id'] == 'group-acme'
+        assert detail_payload['data']['rows'][0]['matched_conversation_name'] == 'Acme Group'
+        assert detail_payload['data']['rows'][0]['matched_rule_id'] == created_rule_id
+
+
+    @pytest.mark.asyncio
+    async def test_bulk_assign_group_rules_uses_legacy_fallback_without_persisting_batch(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        from langbot.pkg.entity.persistence import broadcast as persistence_broadcast
+
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                )
+            },
+        )
+        upload_payload = await upload_response.get_json()
+        assert upload_response.status_code == 200
+        import_id = upload_payload['data']['id']
+        await _insert_group_name(
+            fake_broadcast_app,
+            external_conversation_id='group-acme',
+            name='Acme Group',
+        )
+        async with fake_broadcast_app.persistence_mgr.get_db_engine().begin() as conn:
+            await fake_broadcast_app.persistence_mgr.execute_async(
+                sqlalchemy.update(persistence_broadcast.BroadcastImportBatch)
+                .where(persistence_broadcast.BroadcastImportBatch.id == import_id)
+                .values({'group_field_used': None, 'group_field_source': None}),
+                conn=conn,
+            )
+        group_key = await _get_import_group_key(
+            quart_test_client,
+            import_id,
+            group_value='Acme',
+        )
+
+        bulk_assign_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/group-rules/bulk-assign',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [
+                    {
+                        'group_key': group_key,
+                        'target_conversation_id': 'group-acme',
+                    }
+                ],
+            },
+        )
+        bulk_assign_payload = await bulk_assign_response.get_json()
+        assert bulk_assign_response.status_code == 200
+        assert bulk_assign_payload['data']['group_field_used'] == '客户名称'
+        assert bulk_assign_payload['data']['group_field_source'] == 'legacy_fallback'
+
+        detail_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        detail_payload = await detail_response.get_json()
+        assert detail_response.status_code == 200
+        assert detail_payload['data']['group_field_used'] is None
+        assert detail_payload['data']['group_field_source'] is None
+        assert detail_payload['data']['rows'][0]['matched_conversation_id'] == 'group-acme'
+
+
+    @pytest.mark.asyncio
+    async def test_bulk_assign_group_rules_rolls_back_when_formal_match_conflicts(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+        monkeypatch,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '客户名称',
+                'mapping_rules': [
+                    {
+                        'source_field': '客户名称',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('客户名称\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                )
+            },
+        )
+        upload_payload = await upload_response.get_json()
+        assert upload_response.status_code == 200
+        import_id = upload_payload['data']['id']
+        await _insert_group_name(
+            fake_broadcast_app,
+            external_conversation_id='group-acme',
+            name='Acme Group',
+        )
+        group_key = await _get_import_group_key(
+            quart_test_client,
+            import_id,
+            group_value='Acme',
+        )
+
+        repository = fake_broadcast_app.broadcast_service.repository
+        original_create_group_rule = repository.create_group_rule
+
+        async def create_group_rule_with_interceptor(conn, payload):
+            rule_id = await original_create_group_rule(conn, payload)
+            if payload.get('source_value') == 'Acme' and payload.get('match_type') == 'exact':
+                await original_create_group_rule(
+                    conn,
+                    {
+                        'bot_uuid': 'bot-1',
+                        'connector_id': 'wxwork-local',
+                        'source_value': 'Ac',
+                        'match_type': 'contains',
+                        'match_expression': 'Acme',
+                        'target_conversation_id': 'steal-group',
+                        'target_conversation_name': 'Steal Group',
+                        'priority': 99,
+                        'enabled': True,
+                    },
+                )
+            return rule_id
+
+        monkeypatch.setattr(repository, 'create_group_rule', create_group_rule_with_interceptor)
+
+        bulk_assign_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/group-rules/bulk-assign',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'items': [
+                    {
+                        'group_key': group_key,
+                        'target_conversation_id': 'group-acme',
+                    }
+                ],
+            },
+        )
+        bulk_assign_payload = await bulk_assign_response.get_json()
+        assert bulk_assign_response.status_code == 400
+        assert bulk_assign_payload['msg'] == 'BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED'
+        assert bulk_assign_payload['details']['items'][0]['customer_name'] == 'Acme'
+
+        rules_response = await quart_test_client.get(
+            f'/api/v1/broadcast/group-rules?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        rules_payload = await rules_response.get_json()
+        assert rules_response.status_code == 200
+        assert rules_payload['data'] == []
+
+        detail_response = await quart_test_client.get(
+            f'/api/v1/broadcast/imports/{import_id}?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        detail_payload = await detail_response.get_json()
+        assert detail_response.status_code == 200
+        assert detail_payload['data']['rows'][0]['matched_rule_id'] is None
+        assert detail_payload['data']['rows'][0]['matched_conversation_id'] is None
+
 
     @pytest.mark.asyncio
     async def test_import_upload_rejects_missing_required_fields_with_chinese_error(self, quart_test_client):

@@ -120,7 +120,10 @@ export default function DraftDetail({
           </div>
         ) : null}
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div
+          className="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-xl border bg-background/95 p-3 backdrop-blur supports-[backdrop-filter]:bg-background/80"
+          data-testid="broadcast-draft-detail-sticky-actions"
+        >
           {!isEditing ? (
             <Button
               data-testid="broadcast-draft-edit-button"

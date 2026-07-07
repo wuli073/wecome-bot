@@ -73,8 +73,10 @@ import {
   ApiBroadcastExecutionBatch,
   ApiBroadcastExecutionEvidence,
   ApiBroadcastExecutionTask,
+  ApiBroadcastBulkAssignResult,
   ApiBroadcastImportGroupRowsResponse,
   ApiBroadcastImportGroupsResponse,
+  ApiBroadcastImportGroupRuleCandidatesResponse,
   ApiBroadcastImportBatch,
   ApiBroadcastImportDetail,
   ApiBroadcastImportDraftGenerationResult,
@@ -155,9 +157,7 @@ export class BackendClient extends BaseHttpClient {
               responseData.message.trim()
                 ? responseData.message
                 : String(responseData?.msg ?? error.message),
-            details: Array.isArray(responseData?.details)
-              ? responseData.details
-              : [],
+            details: responseData?.details ?? [],
           },
         };
       }
@@ -2132,16 +2132,55 @@ export class BackendClient extends BaseHttpClient {
   public uploadBroadcastImport(
     scope: ApiBroadcastScope,
     file: File,
+    options?: {
+      group_field_override?: string;
+    },
   ): Promise<ApiBroadcastImportBatch> {
     const formData = new FormData();
     formData.append('bot_uuid', scope.bot_uuid);
     formData.append('connector_id', scope.connector_id);
     formData.append('file', file);
+    if (options?.group_field_override) {
+      formData.append('group_field_override', options.group_field_override);
+    }
     return this.requestBroadcast<ApiBroadcastImportBatch>({
       method: 'post',
       url: '/api/v1/broadcast/imports',
       data: formData,
     });
+  }
+
+  public getBroadcastImportGroupRuleCandidates(
+    scope: ApiBroadcastScope,
+    importId: number,
+    filters?: {
+      status?:
+        | 'new'
+        | 'configured'
+        | 'needs_repair'
+        | 'conflict'
+        | 'invalid'
+        | 'all';
+      keyword?: string;
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<ApiBroadcastImportGroupRuleCandidatesResponse> {
+    return this.requestBroadcast<ApiBroadcastImportGroupRuleCandidatesResponse>(
+      {
+        method: 'get',
+        url: `/api/v1/broadcast/imports/${importId}/group-rule-candidates?${this.toSearchParams(
+          {
+            bot_uuid: scope.bot_uuid,
+            connector_id: scope.connector_id,
+            status: filters?.status,
+            keyword: filters?.keyword,
+            page: filters?.page,
+            page_size: filters?.page_size,
+          },
+        )}`,
+      },
+    );
   }
 
   public getBroadcastImportBatches(
@@ -2268,6 +2307,21 @@ export class BackendClient extends BaseHttpClient {
       method: 'post',
       url: `/api/v1/broadcast/imports/${importId}/rematch`,
       data: scope,
+    });
+  }
+
+  public bulkAssignBroadcastImportGroupRules(
+    scope: ApiBroadcastScope,
+    importId: number,
+    items: Array<{ group_key: string; target_conversation_id: string }>,
+  ): Promise<ApiBroadcastBulkAssignResult> {
+    return this.requestBroadcast<ApiBroadcastBulkAssignResult>({
+      method: 'post',
+      url: `/api/v1/broadcast/imports/${importId}/group-rules/bulk-assign`,
+      data: {
+        ...scope,
+        items,
+      },
     });
   }
 

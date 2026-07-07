@@ -799,9 +799,15 @@ export interface ApiBroadcastGroupRule {
 export interface ApiBroadcastGroupMatchResult {
   matched: boolean;
   rule_id: number | null;
+  matched_rule_id?: number | null;
+  source_value?: string;
   target_conversation_id?: string | null;
   target_conversation_name: string | null;
   match_type: 'exact' | 'contains' | 'regex' | null;
+  candidate_count?: number;
+  candidate_rules?: ApiBroadcastGroupRule[];
+  conflict?: boolean;
+  reason?: string | null;
 }
 
 export interface ApiBroadcastGroupName {
@@ -838,6 +844,12 @@ export type ApiBroadcastImportGroupMatchStatus =
   | ApiBroadcastImportMatchStatus
   | 'conflict';
 
+export type ApiBroadcastImportGroupFieldSource =
+  | 'configured'
+  | 'auto_detected'
+  | 'user_confirmed'
+  | 'legacy_fallback';
+
 export interface ApiBroadcastImportBatch {
   id: number;
   bot_uuid: string;
@@ -852,6 +864,8 @@ export interface ApiBroadcastImportBatch {
   invalid_rows: number;
   matched_rows: number;
   unmatched_rows: number;
+  group_field_used?: string | null;
+  group_field_source?: ApiBroadcastImportGroupFieldSource | null;
   created_at: string;
   updated_at: string;
 }
@@ -924,6 +938,62 @@ export interface ApiBroadcastImportGroupsResponse {
   groups: ApiBroadcastImportGroupSummary[];
 }
 
+export type ApiBroadcastGroupRuleCandidateStatus =
+  | 'new'
+  | 'configured'
+  | 'needs_repair'
+  | 'conflict'
+  | 'invalid';
+
+export interface ApiBroadcastGroupRuleCandidateItem {
+  group_key: string;
+  customer_name: string;
+  raw_row_count: number;
+  status: ApiBroadcastGroupRuleCandidateStatus;
+  reason: string | null;
+  existing_rule_ids: number[];
+  existing_rules: ApiBroadcastGroupRule[];
+  current_matched_rule: ApiBroadcastGroupRule | null;
+  current_target_conversation_id?: string | null;
+  current_target_conversation_name: string | null;
+  current_match_type: 'exact' | 'contains' | 'regex' | null;
+}
+
+export interface ApiBroadcastImportGroupRuleCandidatesResponse {
+  import_batch_id: number;
+  group_field_used: string;
+  group_field_source: ApiBroadcastImportGroupFieldSource;
+  raw_row_total: number;
+  unique_customer_total: number;
+  stats: {
+    new_count: number;
+    configured_count: number;
+    needs_repair_count: number;
+    conflict_count: number;
+    invalid_count: number;
+  };
+  items: ApiBroadcastGroupRuleCandidateItem[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}
+
+export interface ApiBroadcastBulkAssignResultItem {
+  group_key: string;
+  customer_name: string;
+  rule_id: number;
+  target_conversation_id: string;
+  target_conversation_name: string;
+}
+
+export interface ApiBroadcastBulkAssignResult {
+  created_count: number;
+  group_field_used: string;
+  group_field_source: ApiBroadcastImportGroupFieldSource;
+  items: ApiBroadcastBulkAssignResultItem[];
+}
+
 export interface ApiBroadcastImportGroupRowsResponse {
   group_key: string;
   group_value: string | null;
@@ -988,7 +1058,7 @@ export interface ApiBroadcastImportDraftGenerationResult {
 
 export interface ApiBroadcastImportGroupTemplateAssignment {
   group_key: string;
-  template_id: number;
+  template_id: number | null;
 }
 
 export interface ApiBroadcastDraftStatusUpdateResult {

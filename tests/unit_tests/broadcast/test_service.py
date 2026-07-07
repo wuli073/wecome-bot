@@ -15,6 +15,15 @@ from langbot.pkg.entity.persistence import bot as persistence_bot
 from langbot.pkg.entity.persistence import broadcast as persistence_broadcast
 from langbot.pkg.entity.persistence import database_mode as persistence_database_mode
 from langbot.pkg.broadcast.errors import (
+    BATCH_VALIDATION_FAILED,
+    BROADCAST_GROUP_NAME_NOT_FOUND,
+    BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED,
+    BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID,
+    BROADCAST_IMPORT_GROUP_FIELD_UNRESOLVABLE,
+    BROADCAST_IMPORT_GROUP_NOT_FOUND,
+    BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED,
+    BROADCAST_IMPORT_READY_DRAFT_EXISTS,
+    BROADCAST_GROUP_RULE_DUPLICATE,
     BROADCAST_GROUP_RULE_REGEX_INVALID,
     BROADCAST_VARIABLE_PROFILE_INVALID,
     BroadcastError,
@@ -313,9 +322,259 @@ def _scope(bot_uuid: str = 'bot-1', connector_id: str = 'wxwork-local') -> dict[
     }
 
 
+def test_normalize_group_customer_name_preserves_falsey_non_none_values():
+    from langbot.pkg.broadcast.service import normalize_group_customer_name
+
+    assert normalize_group_customer_name(None) == ''
+    assert normalize_group_customer_name(0) == '0'
+    assert normalize_group_customer_name(False) == 'False'
+
+
 async def _all_import_group_keys(service, import_id: int) -> list[str]:
     groups = await service.list_import_groups(import_id, _scope(), {})
     return [item['group_key'] for item in groups['groups']]
+
+
+async def _prepare_group_rule_candidate_batch(service) -> dict[str, object]:
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    configured_rule = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Configured Co',
+            'match_type': 'exact',
+            'match_expression': 'Configured Co',
+            'target_conversation_id': 'configured-group',
+            'target_conversation_name': 'Configured Group',
+            'priority': 0,
+            'enabled': True,
+        },
+    )
+    repair_rule = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Repair Co',
+            'match_type': 'exact',
+            'match_expression': 'Repair Co',
+            'target_conversation_id': 'repair-group',
+            'target_conversation_name': 'Repair Group',
+            'priority': 0,
+            'enabled': False,
+        },
+    )
+    contains_rule = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Ac',
+            'match_type': 'contains',
+            'match_expression': 'Ac',
+            'target_conversation_id': 'contains-group',
+            'target_conversation_name': 'Contains Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nFresh Co\nConfigured Co\nRepair Co\nAcme\n'.encode('utf-8'),
+        },
+    )
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        await service.ap.persistence_mgr.execute_async(
+            sqlalchemy.insert(persistence_broadcast.BroadcastImportRow).values(
+                {
+                    'import_batch_id': created['id'],
+                    'source_row_number': 6,
+                    'raw_data': {'客户名称': '   '},
+                    'group_value': None,
+                    'matched_conversation_id': None,
+                    'matched_conversation_name': None,
+                    'matched_rule_id': None,
+                    'match_status': 'invalid',
+                    'error_message': None,
+                }
+            ),
+            conn=conn,
+        )
+        await service.ap.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastImportBatch)
+            .where(persistence_broadcast.BroadcastImportBatch.id == created['id'])
+            .values(
+                {
+                    'total_rows': 5,
+                    'valid_rows': 4,
+                    'invalid_rows': 1,
+                    'matched_rows': 3,
+                    'unmatched_rows': 1,
+                }
+            ),
+            conn=conn,
+        )
+    return {
+        'import_id': created['id'],
+        'configured_rule': configured_rule,
+        'repair_rule': repair_rule,
+        'contains_rule': contains_rule,
+    }
+
+
+async def _prepare_group_rule_candidate_status_batch(service) -> dict[str, object]:
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        await service.ap.persistence_mgr.execute_async(
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                [
+                    {
+                        'connector_id': 'wxwork-local',
+                        'source': 'wxwork',
+                        'external_conversation_id': 'configured-group',
+                        'conversation_name': 'Configured Group',
+                        'conversation_type': 'group',
+                    },
+                    {
+                        'connector_id': 'wxwork-local',
+                        'source': 'wxwork',
+                        'external_conversation_id': 'repair-valid-group',
+                        'conversation_name': 'Repair Valid Group',
+                        'conversation_type': 'group',
+                    },
+                    {
+                        'connector_id': 'wxwork-local',
+                        'source': 'wxwork',
+                        'external_conversation_id': 'contains-group',
+                        'conversation_name': 'Contains Group',
+                        'conversation_type': 'group',
+                    },
+                ]
+            ),
+            conn=conn,
+        )
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    configured_rule = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Configured Co',
+            'match_type': 'exact',
+            'match_expression': 'Configured Co',
+            'target_conversation_id': 'configured-group',
+            'target_conversation_name': 'Configured Group',
+            'priority': 0,
+            'enabled': True,
+        },
+    )
+    repair_rule = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Repair Co',
+            'match_type': 'exact',
+            'match_expression': 'Repair Co',
+            'target_conversation_id': 'repair-valid-group',
+            'target_conversation_name': 'Repair Valid Group',
+            'priority': 0,
+            'enabled': True,
+        },
+    )
+    repair_disabled_rule = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Repair Co',
+            'match_type': 'exact',
+            'match_expression': 'Repair Co Backup',
+            'target_conversation_id': 'repair-missing-group',
+            'target_conversation_name': 'Repair Missing Group',
+            'priority': -1,
+            'enabled': False,
+        },
+    )
+    contains_rule = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Ac',
+            'match_type': 'contains',
+            'match_expression': 'Ac',
+            'target_conversation_id': 'contains-group',
+            'target_conversation_name': 'Contains Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': (
+                '客户名称\n'
+                'Fresh Co\n'
+                'Configured Co\n'
+                'Repair Co\n'
+                'Acme\n'
+            ).encode('utf-8'),
+        },
+    )
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        await service.ap.persistence_mgr.execute_async(
+            sqlalchemy.insert(persistence_broadcast.BroadcastImportRow).values(
+                {
+                    'import_batch_id': created['id'],
+                    'source_row_number': 6,
+                    'raw_data': {'客户名称': '   '},
+                    'group_value': None,
+                    'matched_conversation_id': None,
+                    'matched_conversation_name': None,
+                    'matched_rule_id': None,
+                    'match_status': 'invalid',
+                    'error_message': None,
+                }
+            ),
+            conn=conn,
+        )
+        await service.ap.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastImportBatch)
+            .where(persistence_broadcast.BroadcastImportBatch.id == created['id'])
+            .values(
+                {
+                    'total_rows': 5,
+                    'valid_rows': 4,
+                    'invalid_rows': 1,
+                    'matched_rows': 3,
+                    'unmatched_rows': 1,
+                }
+            ),
+            conn=conn,
+        )
+    return {
+        'import_id': created['id'],
+        'configured_rule': configured_rule,
+        'repair_rule': repair_rule,
+        'repair_disabled_rule': repair_disabled_rule,
+        'contains_rule': contains_rule,
+    }
 
 
 async def _create_invalid_import_draft(
@@ -345,6 +604,103 @@ async def _create_invalid_import_draft(
                 'send_status': 'pending',
                 'sent_at': None,
                 'error_message': error_message,
+            },
+        )
+
+
+async def _prepare_bulk_assign_batch(
+    service,
+    *,
+    header: str = '瀹㈡埛鍚嶇О',
+    rows: list[str] | None = None,
+    target_groups: list[tuple[str, str]] | None = None,
+) -> dict[str, object]:
+    batch_rows = rows or ['Acme', 'Globex']
+    groups = target_groups or [
+        ('group-acme', 'Acme Group'),
+        ('group-globex', 'Globex Group'),
+    ]
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': header,
+            'mapping_rules': [
+                {
+                    'source_field': header,
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': (header + '\n' + '\n'.join(batch_rows) + '\n').encode('utf-8'),
+        },
+    )
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        await service.ap.persistence_mgr.execute_async(
+            sqlalchemy.insert(persistence_broadcast.BroadcastGroupName).values(
+                [
+                    {
+                        'bot_uuid': 'bot-1',
+                        'connector_id': 'wxwork-local',
+                        'name': name,
+                        'external_conversation_id': external_id,
+                    }
+                    for external_id, name in groups
+                ]
+            ),
+            conn=conn,
+        )
+    import_groups = await service.list_import_groups(created['id'], _scope(), {})
+    return {
+        'import_id': created['id'],
+        'group_key_by_value': {
+            item['group_value']: item['group_key']
+            for item in import_groups['groups']
+        },
+        'target_groups': {
+            external_id: name for external_id, name in groups
+        },
+    }
+
+
+async def _create_ready_import_draft(
+    service,
+    *,
+    import_id: int,
+    group_value: str,
+) -> int:
+    template = await service.create_template(
+        _scope(),
+        {
+            'name': 'Ready Template',
+            'content': 'Hello {{customer_name}}',
+            'enabled': True,
+        },
+    )
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        return await service.repository.create_draft(
+            conn,
+            {
+                **_scope(),
+                'import_batch_id': import_id,
+                'group_value': group_value,
+                'target_conversation_name': 'Ready Group',
+                'target_conversation_id': 'ready-group',
+                'template_id': int(template['id']),
+                'template_name_snapshot': str(template['name']),
+                'template_content_snapshot': str(template['content']),
+                'render_variables': {'customer_name': group_value},
+                'draft_text': f'Hello {group_value}',
+                'status': 'ready',
+                'send_status': 'pending',
+                'sent_at': None,
+                'error_message': None,
             },
         )
 
@@ -484,6 +840,695 @@ async def test_save_variable_profile_rejects_duplicate_variable_keys_and_invalid
                 ],
             },
         )
+
+
+async def test_resolve_persisted_batch_group_field_uses_legacy_fallback_without_persisting(service_fixture):
+    service, _ = service_fixture
+
+    resolved = service._resolve_persisted_batch_group_field(
+        batch=SimpleNamespace(group_field_used=None, group_field_source=None),
+        variable_profile=SimpleNamespace(group_field='客户名称'),
+    )
+
+    assert resolved['group_field'] == '客户名称'
+    assert resolved['source'] == 'legacy_fallback'
+
+
+async def test_resolve_persisted_batch_group_field_keeps_contract_source_when_batch_field_exists(
+    service_fixture,
+):
+    service, _ = service_fixture
+
+    resolved = service._resolve_persisted_batch_group_field(
+        batch=SimpleNamespace(group_field_used='客户名称', group_field_source='auto_detected'),
+        variable_profile=SimpleNamespace(group_field='其他字段'),
+    )
+
+    assert resolved['group_field'] == '客户名称'
+    assert resolved['source'] == 'auto_detected'
+
+
+async def test_resolve_persisted_batch_group_field_falls_back_to_configured_source_when_batch_source_missing(
+    service_fixture,
+):
+    service, _ = service_fixture
+
+    resolved = service._resolve_persisted_batch_group_field(
+        batch=SimpleNamespace(group_field_used='客户名称', group_field_source=None),
+        variable_profile=SimpleNamespace(group_field='其他字段'),
+    )
+
+    assert resolved['group_field'] == '客户名称'
+    assert resolved['source'] == 'configured'
+
+
+async def test_resolve_persisted_batch_group_field_raises_when_legacy_fallback_is_unavailable(
+    service_fixture,
+):
+    service, _ = service_fixture
+
+    with pytest.raises(BroadcastError) as exc_info:
+        service._resolve_persisted_batch_group_field(
+            batch=SimpleNamespace(group_field_used=None, group_field_source=None),
+            variable_profile=SimpleNamespace(group_field=''),
+        )
+
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_FIELD_UNRESOLVABLE
+
+
+async def test_resolve_upload_group_field_maps_confirmation_required_to_object_details_with_filename(
+    service_fixture,
+):
+    service, _ = service_fixture
+
+    with pytest.raises(BroadcastError) as exc_info:
+        service._resolve_upload_group_field(
+            headers=['客户', '姓名', '订单号'],
+            variable_profile={'group_field': '配置客户字段', 'mapping_rules': []},
+            original_file_name='customers.csv',
+        )
+
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED
+    assert exc_info.value.details == {
+        'headers': ['客户', '姓名', '订单号'],
+        'candidates': ['客户', '姓名'],
+        'configured_group_field': '配置客户字段',
+        'original_file_name': 'customers.csv',
+    }
+
+
+async def test_resolve_upload_group_field_keeps_empty_candidates_and_filename_for_unresolved_confirmation(
+    service_fixture,
+):
+    service, _ = service_fixture
+
+    with pytest.raises(BroadcastError) as exc_info:
+        service._resolve_upload_group_field(
+            headers=['订单号', '联系人手机号'],
+            variable_profile={'group_field': None, 'mapping_rules': []},
+            original_file_name='customers.csv',
+        )
+
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED
+    assert exc_info.value.details == {
+        'headers': ['订单号', '联系人手机号'],
+        'candidates': [],
+        'configured_group_field': None,
+        'original_file_name': 'customers.csv',
+    }
+
+
+async def test_resolve_upload_group_field_maps_invalid_override_to_object_details_with_filename(
+    service_fixture,
+):
+    service, _ = service_fixture
+
+    with pytest.raises(BroadcastError) as exc_info:
+        service._resolve_upload_group_field(
+            headers=['客户名称', '订单号'],
+            variable_profile={'group_field': '客户名称', 'mapping_rules': []},
+            group_field_override='用户名',
+            original_file_name='customers.csv',
+        )
+
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID
+    assert exc_info.value.details == {
+        'group_field_override': '用户名',
+        'headers': ['客户名称', '订单号'],
+        'original_file_name': 'customers.csv',
+    }
+
+
+async def test_list_group_rule_candidates_defaults_to_new_and_returns_batch_stats(
+    service_fixture,
+):
+    service, _ = service_fixture
+    setup = await _prepare_group_rule_candidate_status_batch(service)
+
+    result = await service.list_group_rule_candidates(
+        setup['import_id'],
+        _scope(),
+        {},
+    )
+
+    assert result['import_batch_id'] == setup['import_id']
+    assert result['group_field_used'] == '客户名称'
+    assert result['group_field_source'] == 'configured'
+    assert result['raw_row_total'] == 5
+    assert result['unique_customer_total'] == 5
+    assert result['stats'] == {
+        'new_count': 1,
+        'configured_count': 1,
+        'needs_repair_count': 1,
+        'conflict_count': 1,
+        'invalid_count': 1,
+    }
+    assert result['page'] == 1
+    assert result['page_size'] == 50
+    assert result['total'] == 1
+    assert result['total_pages'] == 1
+    assert len(result['items']) == 1
+    assert result['items'][0]['customer_name'] == 'Fresh Co'
+    assert result['items'][0]['status'] == 'new'
+    assert result['items'][0]['existing_rule_ids'] == []
+    assert result['items'][0]['existing_rules'] == []
+    assert result['items'][0]['current_matched_rule'] is None
+    assert result['items'][0]['current_target_conversation_id'] is None
+    assert result['items'][0]['current_target_conversation_name'] is None
+    assert result['items'][0]['current_match_type'] is None
+
+
+async def test_list_group_rule_candidates_distinguishes_configured_repair_conflict_and_invalid(
+    service_fixture,
+):
+    service, _ = service_fixture
+    setup = await _prepare_group_rule_candidate_status_batch(service)
+
+    result = await service.list_group_rule_candidates(
+        setup['import_id'],
+        _scope(),
+        {'status': 'all'},
+    )
+    items_by_name = {
+        item['customer_name']: item for item in result['items'] if item['customer_name']
+    }
+    invalid_items = [item for item in result['items'] if not item['customer_name']]
+
+    configured = items_by_name['Configured Co']
+    assert configured['status'] == 'configured'
+    assert configured['existing_rule_ids'] == [setup['configured_rule']['id']]
+    assert [item['id'] for item in configured['existing_rules']] == [
+        setup['configured_rule']['id']
+    ]
+    assert configured['current_matched_rule']['id'] == setup['configured_rule']['id']
+    assert configured['current_target_conversation_id'] == 'configured-group'
+    assert configured['current_target_conversation_name'] == 'Configured Group'
+    assert configured['current_match_type'] == 'exact'
+
+    repair = items_by_name['Repair Co']
+    assert repair['status'] == 'needs_repair'
+    assert set(repair['existing_rule_ids']) == {
+        setup['repair_rule']['id'],
+        setup['repair_disabled_rule']['id'],
+    }
+    assert {item['id'] for item in repair['existing_rules']} == {
+        setup['repair_rule']['id'],
+        setup['repair_disabled_rule']['id'],
+    }
+    assert repair['current_matched_rule']['id'] == setup['repair_rule']['id']
+    assert repair['current_target_conversation_id'] == 'repair-valid-group'
+    assert repair['current_target_conversation_name'] == 'Repair Valid Group'
+    assert repair['current_match_type'] == 'exact'
+    assert repair['reason']
+
+    conflict = items_by_name['Acme']
+    assert conflict['status'] == 'conflict'
+    assert conflict['existing_rule_ids'] == []
+    assert conflict['existing_rules'] == []
+    assert conflict['current_matched_rule']['id'] == setup['contains_rule']['id']
+    assert conflict['current_target_conversation_id'] == 'contains-group'
+    assert conflict['current_target_conversation_name'] == 'Contains Group'
+    assert conflict['current_match_type'] == 'contains'
+    assert conflict['reason']
+
+    assert len(invalid_items) == 1
+    assert invalid_items[0]['status'] == 'invalid'
+    assert invalid_items[0]['customer_name'] == ''
+    assert invalid_items[0]['existing_rule_ids'] == []
+    assert invalid_items[0]['current_matched_rule'] is None
+
+
+async def test_list_group_rule_candidates_supports_status_filter_pagination_and_keyword(
+    service_fixture,
+):
+    service, _ = service_fixture
+    setup = await _prepare_group_rule_candidate_status_batch(service)
+
+    paged = await service.list_group_rule_candidates(
+        setup['import_id'],
+        _scope(),
+        {'status': 'all', 'page': 2, 'page_size': 2},
+    )
+    assert paged['total'] == 5
+    assert paged['total_pages'] == 3
+    assert [item['customer_name'] for item in paged['items']] == ['Repair Co', 'Acme']
+
+    conflict_only = await service.list_group_rule_candidates(
+        setup['import_id'],
+        _scope(),
+        {'status': 'conflict'},
+    )
+    assert conflict_only['total'] == 1
+    assert [item['customer_name'] for item in conflict_only['items']] == ['Acme']
+
+    keyword_filtered = await service.list_group_rule_candidates(
+        setup['import_id'],
+        _scope(),
+        {'status': 'all', 'keyword': 'Repair'},
+    )
+    assert keyword_filtered['total'] == 1
+    assert keyword_filtered['items'][0]['customer_name'] == 'Repair Co'
+    assert keyword_filtered['items'][0]['status'] == 'needs_repair'
+
+
+async def test_list_group_rule_candidates_keeps_group_name_fallback_as_new_when_no_rule_conflict(
+    service_fixture,
+):
+    service, _ = service_fixture
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    await service.create_group_names(
+        _scope(),
+        {
+            'names': ['Fallback Co'],
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nFallback Co\n'.encode('utf-8'),
+        },
+    )
+
+    result = await service.list_group_rule_candidates(
+        created['id'],
+        _scope(),
+        {'status': 'all'},
+    )
+
+    assert result['stats'] == {
+        'new_count': 1,
+        'configured_count': 0,
+        'needs_repair_count': 0,
+        'conflict_count': 0,
+        'invalid_count': 0,
+    }
+    assert result['items'][0]['customer_name'] == 'Fallback Co'
+    assert result['items'][0]['status'] == 'new'
+    assert result['items'][0]['current_matched_rule'] is None
+    assert result['items'][0]['current_match_type'] == 'group_name_fallback'
+    assert result['items'][0]['current_target_conversation_name'] == 'Fallback Co'
+
+
+async def test_list_group_rule_candidates_uses_runtime_legacy_fallback_without_persisting_batch(
+    service_fixture,
+):
+    service, _ = service_fixture
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nAcme\n'.encode('utf-8'),
+        },
+    )
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        await service.ap.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastImportBatch)
+            .where(persistence_broadcast.BroadcastImportBatch.id == created['id'])
+            .values({'group_field_used': None, 'group_field_source': None}),
+            conn=conn,
+        )
+
+    result = await service.list_group_rule_candidates(
+        created['id'],
+        _scope(),
+        {'status': 'all'},
+    )
+    batch = await service.repository.get_import_batch(created['id'], **_scope())
+
+    assert result['group_field_used'] == '客户名称'
+    assert result['group_field_source'] == 'legacy_fallback'
+    assert batch.group_field_used is None
+    assert batch.group_field_source is None
+
+
+async def test_list_group_rule_candidates_rejects_legacy_batch_when_group_field_is_unresolvable(
+    service_fixture,
+):
+    service, _ = service_fixture
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '客户名称\nAcme\n'.encode('utf-8'),
+        },
+    )
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        await service.ap.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastImportBatch)
+            .where(persistence_broadcast.BroadcastImportBatch.id == created['id'])
+            .values({'group_field_used': None, 'group_field_source': None}),
+            conn=conn,
+        )
+        await service.ap.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastVariableProfile)
+            .where(
+                persistence_broadcast.BroadcastVariableProfile.bot_uuid == 'bot-1',
+                persistence_broadcast.BroadcastVariableProfile.connector_id == 'wxwork-local',
+            )
+            .values({'group_field': None}),
+            conn=conn,
+        )
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.list_group_rule_candidates(
+            created['id'],
+            _scope(),
+            {'status': 'all'},
+        )
+
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_FIELD_UNRESOLVABLE
+
+
+async def test_bulk_assign_import_group_rules_rejects_empty_items(service_fixture):
+    service, _ = service_fixture
+    setup = await _prepare_bulk_assign_batch(service)
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.bulk_assign_import_group_rules(
+            setup['import_id'],
+            _scope(),
+            {'items': []},
+        )
+
+    assert exc_info.value.code == BATCH_VALIDATION_FAILED
+
+
+async def test_bulk_assign_import_group_rules_rejects_duplicate_group_keys(service_fixture):
+    service, _ = service_fixture
+    setup = await _prepare_bulk_assign_batch(service)
+    group_key = setup['group_key_by_value']['Acme']
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.bulk_assign_import_group_rules(
+            setup['import_id'],
+            _scope(),
+            {
+                'items': [
+                    {'group_key': group_key, 'target_conversation_id': 'group-acme'},
+                    {'group_key': group_key, 'target_conversation_id': 'group-globex'},
+                ]
+            },
+        )
+
+    assert exc_info.value.code == BATCH_VALIDATION_FAILED
+
+
+async def test_bulk_assign_import_group_rules_returns_item_error_when_group_missing(service_fixture):
+    service, _ = service_fixture
+    setup = await _prepare_bulk_assign_batch(service)
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.bulk_assign_import_group_rules(
+            setup['import_id'],
+            _scope(),
+            {
+                'items': [
+                    {
+                        'group_key': 'missing-group-key',
+                        'target_conversation_id': 'group-acme',
+                    }
+                ]
+            },
+        )
+
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED
+    assert exc_info.value.details['items'][0]['code'] == BROADCAST_IMPORT_GROUP_NOT_FOUND
+
+
+async def test_bulk_assign_import_group_rules_returns_item_error_when_target_missing(service_fixture):
+    service, _ = service_fixture
+    setup = await _prepare_bulk_assign_batch(service)
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.bulk_assign_import_group_rules(
+            setup['import_id'],
+            _scope(),
+            {
+                'items': [
+                    {
+                        'group_key': setup['group_key_by_value']['Acme'],
+                        'target_conversation_id': 'missing-group',
+                    }
+                ]
+            },
+        )
+
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED
+    assert exc_info.value.details['items'][0]['code'] == BROADCAST_GROUP_NAME_NOT_FOUND
+
+
+async def test_bulk_assign_import_group_rules_rejects_non_new_candidates(service_fixture):
+    service, _ = service_fixture
+    setup = await _prepare_group_rule_candidate_status_batch(service)
+    candidates = await service.list_group_rule_candidates(
+        setup['import_id'],
+        _scope(),
+        {'status': 'all'},
+    )
+    configured = next(item for item in candidates['items'] if item['customer_name'] == 'Configured Co')
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.bulk_assign_import_group_rules(
+            setup['import_id'],
+            _scope(),
+            {
+                'items': [
+                    {
+                        'group_key': configured['group_key'],
+                        'target_conversation_id': 'configured-group',
+                    }
+                ]
+            },
+        )
+
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED
+    assert exc_info.value.details['items'][0]['group_key'] == configured['group_key']
+    assert exc_info.value.details['items'][0]['customer_name'] == 'Configured Co'
+
+
+async def test_bulk_assign_import_group_rules_blocks_ready_drafts(service_fixture):
+    service, _ = service_fixture
+    setup = await _prepare_bulk_assign_batch(service)
+    await _create_ready_import_draft(
+        service,
+        import_id=setup['import_id'],
+        group_value='Acme',
+    )
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.bulk_assign_import_group_rules(
+            setup['import_id'],
+            _scope(),
+            {
+                'items': [
+                    {
+                        'group_key': setup['group_key_by_value']['Acme'],
+                        'target_conversation_id': 'group-acme',
+                    }
+                ]
+            },
+        )
+
+    assert exc_info.value.code == BROADCAST_IMPORT_READY_DRAFT_EXISTS
+
+
+async def test_bulk_assign_import_group_rules_rolls_back_when_formal_match_is_intercepted(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    setup = await _prepare_bulk_assign_batch(service, rows=['Acme'])
+    original_create_group_rule = service.repository.create_group_rule
+
+    async def create_group_rule_with_interceptor(conn, payload):
+        rule_id = await original_create_group_rule(conn, payload)
+        if payload['source_value'] == 'Acme':
+            await original_create_group_rule(
+                conn,
+                {
+                    **_scope(),
+                    'source_value': 'Ac',
+                    'match_type': 'contains',
+                    'match_expression': 'Acme',
+                    'target_conversation_id': 'steal-group',
+                    'target_conversation_name': 'Steal Group',
+                    'priority': 99,
+                    'enabled': True,
+                },
+            )
+        return rule_id
+
+    monkeypatch.setattr(service.repository, 'create_group_rule', create_group_rule_with_interceptor)
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.bulk_assign_import_group_rules(
+            setup['import_id'],
+            _scope(),
+            {
+                'items': [
+                    {
+                        'group_key': setup['group_key_by_value']['Acme'],
+                        'target_conversation_id': 'group-acme',
+                    }
+                ]
+            },
+        )
+
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED
+    assert exc_info.value.details['items'][0]['customer_name'] == 'Acme'
+    rules = await service.list_group_rules(_scope())
+    assert rules == []
+
+
+async def test_bulk_assign_import_group_rules_uses_persisted_batch_field_and_rematches(
+    service_fixture,
+):
+    service, _ = service_fixture
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '昵称',
+            'mapping_rules': [
+                {
+                    'source_field': '昵称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    created = await service.upload_import(
+        _scope(),
+        {
+            'filename': 'customers.csv',
+            'body': '昵称,客户名\nlegacy-acme,visible-acme\n'.encode('utf-8'),
+        },
+    )
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        await service.ap.persistence_mgr.execute_async(
+            sqlalchemy.insert(persistence_broadcast.BroadcastGroupName).values(
+                {
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'name': 'Acme Stable Group',
+                    'external_conversation_id': 'group-acme-stable',
+                }
+            ),
+            conn=conn,
+        )
+    await service.save_variable_profile(
+        _scope(),
+        {
+            'group_field': '客户名',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+    groups = await service.list_import_groups(created['id'], _scope(), {})
+    group_key = groups['groups'][0]['group_key']
+
+    result = await service.bulk_assign_import_group_rules(
+        created['id'],
+        _scope(),
+        {
+            'items': [
+                {
+                    'group_key': group_key,
+                    'target_conversation_id': 'group-acme-stable',
+                }
+            ]
+        },
+    )
+
+    rules = await service.list_group_rules(_scope())
+    assert result['group_field_used'] == '昵称'
+    assert rules[0]['source_value'] == 'legacy-acme'
+    assert rules[0]['match_expression'] == 'legacy-acme'
+    detail = await service.get_import_detail(created['id'], _scope(), {})
+    assert detail['rows'][0]['group_value'] == 'legacy-acme'
+    assert detail['rows'][0]['matched_conversation_id'] == 'group-acme-stable'
+    assert detail['rows'][0]['matched_rule_id'] == rules[0]['id']
+
+
+async def test_bulk_assign_import_group_rules_uses_legacy_fallback_without_persisting_batch(
+    service_fixture,
+):
+    service, _ = service_fixture
+    setup = await _prepare_bulk_assign_batch(service, rows=['Acme'])
+    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
+        await service.ap.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastImportBatch)
+            .where(persistence_broadcast.BroadcastImportBatch.id == setup['import_id'])
+            .values({'group_field_used': None, 'group_field_source': None}),
+            conn=conn,
+        )
+
+    result = await service.bulk_assign_import_group_rules(
+        setup['import_id'],
+        _scope(),
+        {
+            'items': [
+                {
+                    'group_key': setup['group_key_by_value']['Acme'],
+                    'target_conversation_id': 'group-acme',
+                }
+            ]
+        },
+    )
+    batch = await service.repository.get_import_batch(setup['import_id'], **_scope())
+
+    assert result['group_field_source'] == 'legacy_fallback'
+    assert batch.group_field_used is None
+    assert batch.group_field_source is None
 
 
 async def test_save_variable_profile_returns_actionable_chinese_error_details(service_fixture):
@@ -768,11 +1813,17 @@ async def test_match_group_rule_ignores_invalid_placeholder_history_rule(service
     unmatched = await service.match_group_rule(_scope(), {'source_value': '??'})
     assert unmatched == {
         'matched': False,
+        'matched_rule_id': None,
         'rule_id': None,
+        'source_value': '??',
         'target_conversation_name': None,
 
         'target_conversation_id': None,
         'match_type': None,
+        'candidate_count': 0,
+        'candidate_rules': [],
+        'conflict': False,
+        'reason': 'no_matching_rule',
     }
 
     imported = await service.upload_import(
@@ -788,6 +1839,221 @@ async def test_match_group_rule_ignores_invalid_placeholder_history_rule(service
     assert rows['??']['matched_conversation_name'] is None
     assert rows['小满']['match_status'] == 'matched'
     assert rows['小满']['matched_conversation_name'] == '小满'
+
+
+async def test_create_group_rule_rejects_duplicate_exact_rule_after_normalization(service_fixture):
+    service, _ = service_fixture
+
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': '  Acme  ',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_id': 'group-1',
+            'target_conversation_name': 'Acme Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.create_group_rule(
+            _scope(),
+            {
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': '  Acme  ',
+                'target_conversation_id': 'group-2',
+                'target_conversation_name': 'Another Group',
+                'priority': 1,
+                'enabled': True,
+            },
+        )
+
+    assert exc_info.value.code == BROADCAST_GROUP_RULE_DUPLICATE
+
+
+async def test_update_group_rule_rejects_duplicate_exact_rule_but_allows_self_exclusion(service_fixture):
+    service, _ = service_fixture
+
+    first_rule = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_id': 'group-1',
+            'target_conversation_name': 'Acme Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    second_rule = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Globex',
+            'match_type': 'exact',
+            'match_expression': 'Globex',
+            'target_conversation_id': 'group-2',
+            'target_conversation_name': 'Globex Group',
+            'priority': 9,
+            'enabled': True,
+        },
+    )
+
+    updated = await service.update_group_rule(
+        first_rule['id'],
+        _scope(),
+        {
+            'source_value': '  Acme  ',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_id': 'group-1-updated',
+            'target_conversation_name': 'Acme Group Updated',
+            'priority': 8,
+            'enabled': True,
+        },
+    )
+    assert updated['id'] == first_rule['id']
+    assert updated['target_conversation_id'] == 'group-1-updated'
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.update_group_rule(
+            second_rule['id'],
+            _scope(),
+            {
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': '  Acme  ',
+                'target_conversation_id': 'group-2',
+                'target_conversation_name': 'Globex Group',
+                'priority': 9,
+                'enabled': True,
+            },
+        )
+
+    assert exc_info.value.code == BROADCAST_GROUP_RULE_DUPLICATE
+
+
+async def test_match_group_rule_returns_candidate_diagnostics_in_formal_match_order(service_fixture):
+    service, persistence_mgr = service_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        await conn.execute(
+            sqlalchemy.insert(persistence_broadcast.BroadcastGroupRule).values(
+                {
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'source_value': '??',
+                    'match_type': 'exact',
+                    'match_expression': '??',
+                    'target_conversation_name': '??',
+                    'target_conversation_id': '??',
+                    'priority': 999,
+                    'enabled': True,
+                }
+            )
+        )
+
+    exact_rule = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'exact',
+            'match_expression': 'Acme',
+            'target_conversation_id': 'exact-group',
+            'target_conversation_name': 'Exact Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    contains_rule = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Ac',
+            'match_type': 'contains',
+            'match_expression': 'Ac',
+            'target_conversation_id': 'contains-group',
+            'target_conversation_name': 'Contains Group',
+            'priority': 10,
+            'enabled': True,
+        },
+    )
+    regex_rule = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Acme',
+            'match_type': 'regex',
+            'match_expression': '^Acme$',
+            'target_conversation_id': 'regex-group',
+            'target_conversation_name': 'Regex Group',
+            'priority': 20,
+            'enabled': True,
+        },
+    )
+
+    matched = await service.match_group_rule(_scope(), {'source_value': '  Acme  '})
+
+    assert matched['matched'] is True
+    assert matched['matched_rule_id'] == regex_rule['id']
+    assert matched['rule_id'] == regex_rule['id']
+    assert matched['source_value'] == 'Acme'
+    assert matched['match_type'] == 'regex'
+    assert matched['target_conversation_id'] == 'regex-group'
+    assert matched['target_conversation_name'] == 'Regex Group'
+    assert matched['candidate_count'] == 3
+    assert [item['id'] for item in matched['candidate_rules']] == [
+        regex_rule['id'],
+        exact_rule['id'],
+        contains_rule['id'],
+    ]
+    assert [item['match_type'] for item in matched['candidate_rules']] == [
+        'regex',
+        'exact',
+        'contains',
+    ]
+    assert matched['conflict'] is True
+    assert matched['reason'] == 'multiple_matching_rules'
+
+    unmatched = await service.match_group_rule(_scope(), {'source_value': 'Northwind'})
+
+    assert unmatched['matched'] is False
+    assert unmatched['matched_rule_id'] is None
+    assert unmatched['candidate_count'] == 0
+    assert unmatched['candidate_rules'] == []
+    assert unmatched['conflict'] is False
+    assert unmatched['reason'] == 'no_matching_rule'
+
+
+async def test_match_group_rule_does_not_trim_historical_exact_match_expression(service_fixture):
+    service, persistence_mgr = service_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        await conn.execute(
+            sqlalchemy.insert(persistence_broadcast.BroadcastGroupRule).values(
+                {
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'source_value': 'Acme',
+                    'match_type': 'exact',
+                    'match_expression': '  Acme  ',
+                    'target_conversation_name': 'Historical Exact Group',
+                    'target_conversation_id': 'historical-exact-group',
+                    'priority': 10,
+                    'enabled': True,
+                }
+            )
+        )
+
+    preview = await service.match_group_rule(_scope(), {'source_value': 'Acme'})
+
+    assert preview['matched'] is False
+    assert preview['matched_rule_id'] is None
+    assert preview['candidate_count'] == 0
+    assert preview['candidate_rules'] == []
+    assert preview['conflict'] is False
+    assert preview['reason'] == 'no_matching_rule'
 
 
 async def test_create_group_rule_rejects_placeholder_and_requires_target_conversation_id(service_fixture):
@@ -982,647 +2248,18 @@ async def test_upload_import_keeps_existing_batches_when_new_upload_validation_f
     assert detail['rows'][0]['raw_data']['运单号'] == 'TEST-20260704-001'
 
 
-async def test_generate_import_drafts_renders_chinese_variable_values(service_fixture):
+
+async def test_upload_import_requires_group_field_confirmation_for_ambiguous_alias_headers(service_fixture):
     service, _ = service_fixture
 
     await service.save_variable_profile(
         _scope(),
         {
-            'group_field': '客户',
+            'group_field': '\u5386\u53f2\u5ba2\u6237\u540d\u79f0',
             'mapping_rules': [
                 {
-                    'source_field': '客户',
-                    'variable_key': '客户',
-                    'merge_mode': 'first',
-                    'order': 1,
-                },
-                {
-                    'source_field': '运单号',
-                    'variable_key': '运单号',
-                    'merge_mode': 'first',
-                    'order': 2,
-                },
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': '小满',
-            'match_type': 'exact',
-            'match_expression': '小满',
-            'target_conversation_name': '小满',
-
-            'target_conversation_id': '小满',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '\ufeff 客户 , 运单号 \n 小满 , TEST-20260704-001 \n'.encode('utf-8'),
-        },
-    )
-    template = await service.create_template(
-        _scope(),
-        {
-            'name': '查验通知',
-            'content': '查验通知：\n\n涉及单号如下：\n{{运单号}}',
-            'enabled': True,
-        },
-    )
-
-    result = await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'template_id': template['id'],
-            'group_keys': await _all_import_group_keys(service, created['id']),
-        },
-    )
-
-    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
-    assert result['total_group_count'] == 1
-    assert drafts[0]['draft_text'] == '查验通知：\n\n涉及单号如下：\nTEST-20260704-001'
-    assert drafts[0]['render_variables']['运单号'] == 'TEST-20260704-001'
-
-
-async def test_group_rule_crud_match_and_scope_isolation(service_fixture):
-    service, _ = service_fixture
-
-    low_priority = await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'contains',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Backup',
-
-            'target_conversation_id': 'Acme Backup',
-            'priority': 1,
-            'enabled': True,
-        },
-    )
-    high_priority = await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Primary',
-
-            'target_conversation_id': 'Acme Primary',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    await service.create_group_rule(
-        _scope(bot_uuid='bot-2', connector_id='wxwork-other'),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Other Scope',
-
-            'target_conversation_id': 'Other Scope',
-            'priority': 99,
-            'enabled': True,
-        },
-    )
-
-    rules = await service.list_group_rules(_scope())
-    assert [rule['id'] for rule in rules] == [high_priority['id'], low_priority['id']]
-
-    matched = await service.match_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-        },
-    )
-    assert matched == {
-        'matched': True,
-        'rule_id': high_priority['id'],
-        'target_conversation_name': 'Acme Primary',
-
-        'target_conversation_id': 'Acme Primary',
-        'match_type': 'exact',
-    }
-
-    updated = await service.update_group_rule(
-        high_priority['id'],
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'regex',
-            'match_expression': '^Acme$',
-            'target_conversation_name': 'Acme Regex',
-
-            'target_conversation_id': 'Acme Regex',
-            'priority': 15,
-            'enabled': False,
-        },
-    )
-    assert updated['match_type'] == 'regex'
-    assert updated['enabled'] is False
-
-    matched_after_disable = await service.match_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-        },
-    )
-    assert matched_after_disable == {
-        'matched': True,
-        'rule_id': low_priority['id'],
-        'target_conversation_name': 'Acme Backup',
-
-        'target_conversation_id': 'Acme Backup',
-        'match_type': 'contains',
-    }
-
-    await service.delete_group_rule(low_priority['id'], _scope())
-
-    with pytest.raises(Exception, match='BROADCAST_GROUP_RULE_NOT_FOUND'):
-        await service.delete_group_rule(low_priority['id'], _scope())
-
-
-async def test_group_names_reject_existing_duplicate_and_delete_by_scope(service_fixture):
-    service, _ = service_fixture
-
-    await service.create_group_names(
-        _scope(),
-        {
-            'names': ['Acme Ops Group'],
-        },
-    )
-
-    with pytest.raises(Exception, match='BROADCAST_GROUP_NAME_DUPLICATE'):
-        await service.create_group_names(
-            _scope(),
-            {
-                'name': 'Acme Ops Group',
-            },
-        )
-
-    group_names = await service.list_group_names(_scope())
-    await service.delete_group_name(group_names[0]['id'], _scope())
-    assert await service.list_group_names(_scope()) == []
-
-
-async def test_upload_import_creates_first_match_results_immediately(service_fixture):
-    service, persistence_mgr = service_fixture
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                },
-                {
-                    'source_field': '订单号',
+                    'source_field': '\u8ba2\u5355\u53f7',
                     'variable_key': 'order_no',
-                    'merge_mode': 'lines',
-                    'order': 2,
-                },
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Group',
-
-            'target_conversation_id': 'Acme Group',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'North',
-            'match_type': 'contains',
-            'match_expression': 'North',
-            'target_conversation_name': 'Disabled Group',
-
-            'target_conversation_id': 'Disabled Group',
-            'priority': 999,
-            'enabled': False,
-        },
-    )
-    await service.create_group_names(
-        _scope(),
-        {
-            'names': ['Northwind Team'],
-        },
-    )
-
-    result = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': (
-                '客户名称,订单号\n'
-                'Acme,SO-001\n'
-                'Northwind Team,SO-002\n'
-                '   ,SO-003\n'
-            ).encode('utf-8'),
-        },
-    )
-
-    assert result['total_rows'] == 3
-    assert result['matched_rows'] == 2
-    assert result['unmatched_rows'] == 0
-    assert result['invalid_rows'] == 1
-    assert result['matched_rows'] + result['unmatched_rows'] + result['invalid_rows'] == result['total_rows']
-    assert 'rows' not in result
-
-    detail = await service.get_import_detail(result['id'], _scope(), {})
-    assert [row['match_status'] for row in detail['rows']] == ['matched', 'matched', 'invalid']
-    assert detail['rows'][0]['matched_conversation_name'] == 'Acme Group'
-    assert detail['rows'][1]['matched_conversation_name'] == 'Northwind Team'
-    assert detail['rows'][1]['matched_rule_id'] is None
-    assert detail['rows'][2]['group_value'] is None
-    assert detail['page'] == 1
-    assert detail['page_size'] == 50
-    assert detail['total'] == 3
-    assert detail['total_pages'] == 1
-
-
-async def test_get_import_detail_applies_default_pagination_and_second_page(service_fixture):
-    service, _ = service_fixture
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': (
-                '客户名称\n'
-                'Acme\n'
-                'Northwind\n'
-                'Globex\n'
-            ).encode('utf-8'),
-        },
-    )
-
-    first_page = await service.get_import_detail(created['id'], _scope(), {})
-    assert first_page['page'] == 1
-    assert first_page['page_size'] == 50
-    assert first_page['total'] == 3
-    assert first_page['total_pages'] == 1
-    assert [row['source_row_number'] for row in first_page['rows']] == [2, 3, 4]
-
-    second_page = await service.get_import_detail(
-        created['id'],
-        _scope(),
-        {'page': 2, 'page_size': 2},
-    )
-    assert second_page['page'] == 2
-    assert second_page['page_size'] == 2
-    assert second_page['total'] == 3
-    assert second_page['total_pages'] == 2
-    assert [row['source_row_number'] for row in second_page['rows']] == [4]
-
-
-async def test_get_import_detail_rejects_page_size_larger_than_200(service_fixture):
-    service, _ = service_fixture
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '客户名称\nAcme\n'.encode('utf-8'),
-        },
-    )
-
-    with pytest.raises(BroadcastError):
-        await service.get_import_detail(
-            created['id'],
-            _scope(),
-            {'page': 1, 'page_size': 201},
-        )
-
-
-async def test_list_import_groups_aggregates_rows_and_distinct_order_numbers(service_fixture):
-    service, _ = service_fixture
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                },
-                {
-                    'source_field': '运单号',
-                    'variable_key': '运单号',
-                    'merge_mode': 'lines',
-                    'order': 2,
-                },
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': '1932亚鹏',
-            'match_type': 'exact',
-            'match_expression': '1932亚鹏',
-            'target_conversation_name': '小满',
-
-            'target_conversation_id': '小满',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': (
-                '客户名称,运单号\n'
-                '1932亚鹏,XM2605136115\n'
-                ' 1932亚鹏 ,XM2605221244\n'
-                '1932亚鹏,XM2605221244\n'
-                '1932亚鹏,XM2605228085\n'
-            ).encode('utf-8'),
-        },
-    )
-
-    groups = await service.list_import_groups(created['id'], _scope(), {})
-
-    assert groups['raw_row_total'] == 4
-    assert groups['total'] == 1
-    assert groups['total_pages'] == 1
-    assert groups['order_number_field_configured'] is True
-    assert groups['matched_group_total'] == 1
-    assert groups['unmatched_group_total'] == 0
-    assert groups['invalid_group_total'] == 0
-    assert groups['conflict_group_total'] == 0
-    assert len(groups['groups']) == 1
-    assert groups['groups'][0]['group_value'] == '1932亚鹏'
-    assert groups['groups'][0]['raw_row_count'] == 4
-    assert groups['groups'][0]['distinct_order_number_count'] == 3
-    assert groups['groups'][0]['matched_conversation_name'] == '小满'
-    assert groups['groups'][0]['match_status'] == 'matched'
-    assert groups['groups'][0]['attachment_count'] == 0
-
-    rows = await service.list_import_group_rows(
-        created['id'],
-        groups['groups'][0]['group_key'],
-        _scope(),
-        {},
-    )
-    assert rows['total'] == 4
-    assert [row['source_row_number'] for row in rows['rows']] == [2, 3, 4, 5]
-    assert rows['rows'][1]['raw_data']['客户名称'].strip() == '1932亚鹏'
-    assert rows['rows'][2]['raw_data']['运单号'] == 'XM2605221244'
-
-
-async def test_list_import_groups_marks_conflicts_and_missing_order_field(service_fixture):
-    service, _ = service_fixture
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Group',
-
-            'target_conversation_id': 'Acme Group',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': (
-                '客户名称\n'
-                'Acme\n'
-                'Acme\n'
-                'Northwind\n'
-            ).encode('utf-8'),
-        },
-    )
-    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
-        rows = await service.repository.list_import_rows(
-            import_batch_id=created['id'],
-            bot_uuid='bot-1',
-            connector_id='wxwork-local',
-            conn=conn,
-        )
-        await service.repository.update_import_row_match_result(
-            int(rows[1].id),
-            bot_uuid='bot-1',
-            connector_id='wxwork-local',
-            updates={
-                'matched_conversation_id': 'other-group-id',
-                'matched_conversation_name': 'Other Group',
-                'matched_rule_id': None,
-                'match_status': 'matched',
-                'error_message': None,
-            },
-            conn=conn,
-        )
-
-    groups = await service.list_import_groups(created['id'], _scope(), {})
-
-    assert groups['order_number_field_configured'] is False
-    assert groups['conflict_group_total'] == 1
-    acme = next(item for item in groups['groups'] if item['group_value'] == 'Acme')
-    assert acme['match_status'] == 'conflict'
-    assert acme['reason']
-    assert acme['distinct_order_number_count'] == 0
-
-
-async def test_group_and_draft_attachments_use_snapshots_and_ready_draft_returns_to_pending_review(service_fixture):
-    service, _ = service_fixture
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户',
-            'mapping_rules': [
-                {
-                    'source_field': '客户',
-                    'variable_key': '客户',
-                    'merge_mode': 'first',
-                    'order': 1,
-                },
-                {
-                    'source_field': '运单号',
-                    'variable_key': '运单号',
-                    'merge_mode': 'lines',
-                    'order': 2,
-                },
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': '小满',
-            'match_type': 'exact',
-            'match_expression': '小满',
-            'target_conversation_name': '小满',
-
-            'target_conversation_id': '小满',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '客户,运单号\n小满,TEST-1\n'.encode('utf-8'),
-        },
-    )
-
-    groups = await service.list_import_groups(created['id'], _scope(), {})
-    group = groups['groups'][0]
-    uploaded = await service.add_import_group_attachments(
-        created['id'],
-        group['group_key'],
-        _scope(),
-        [
-            {
-                'filename': '说明.txt',
-                'body': 'group attachment'.encode('utf-8'),
-                'content_type': 'text/plain',
-            }
-        ],
-    )
-    assert len(uploaded) == 1
-    assert uploaded[0]['original_name'] == '说明.txt'
-
-    template = await service.create_template(
-        _scope(),
-        {
-            'name': '查验通知',
-            'content': '查验通知：{{运单号}}',
-            'enabled': True,
-        },
-    )
-    await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'template_id': template['id'],
-            'group_keys': await _all_import_group_keys(service, created['id']),
-        },
-    )
-
-    draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
-    assert len(draft['attachments']) == 1
-    assert draft['attachments'][0]['original_name'] == '说明.txt'
-
-    await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
-    updated = await service.add_draft_attachments(
-        draft['id'],
-        _scope(),
-        [
-            {
-                'filename': '补充.pdf',
-                'body': b'%PDF-1.4\n1 0 obj\n<<>>\nendobj\n',
-                'content_type': 'application/pdf',
-            }
-        ],
-    )
-    assert len(updated['attachments']) == 2
-    assert updated['status'] == 'pending_review'
-    assert updated['message'] == '附件已变更，请重新审核'
-
-    ready = await service.update_draft_statuses(
-        _scope(),
-        {'draft_ids': [draft['id']], 'status': 'ready'},
-    )
-    assert ready['updated_count'] == 1
-
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    assert len(batch['tasks']) == 1
-    task = await service.get_execution_task_detail(batch['tasks'][0]['id'], _scope())
-    assert len(task['attachments']) == 2
-    assert [item['original_name_snapshot'] for item in task['attachments']] == ['说明.txt', '补充.pdf']
-
-
-async def test_upload_import_uses_parser_outside_transaction_and_persists_after_refresh(service_fixture):
-    service, _ = service_fixture
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
                     'merge_mode': 'first',
                     'order': 1,
                 }
@@ -1630,3583 +2267,91 @@ async def test_upload_import_uses_parser_outside_transaction_and_persists_after_
         },
     )
 
-    parsed_before_transaction = []
-    import langbot.pkg.broadcast.service as service_module
-
-    original_parse = service_module.parse_import_file
-
-    async def wrapped_parse(file_name: str, payload: bytes):
-        parsed_before_transaction.append(service.ap.persistence_mgr.engine.pool is not None)
-        return await original_parse(file_name, payload)
-    try:
-        service_module.parse_import_file = wrapped_parse
-        created = await service.upload_import(
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.upload_import(
             _scope(),
             {
                 'filename': 'customers.csv',
-                'body': '客户名称\nAcme\n'.encode('utf-8'),
+                'body': '\u5ba2\u6237,\u59d3\u540d,\u8ba2\u5355\u53f7\nAcme,\u5f20\u4e09,SO-001\n'.encode('utf-8'),
             },
         )
-    finally:
-        service_module.parse_import_file = original_parse
 
-    assert parsed_before_transaction == [True]
-    listed = await service.list_import_batches(_scope())
-    detail = await service.get_import_detail(created['id'], _scope(), {})
-    assert [item['id'] for item in listed] == [created['id']]
-    assert [row['group_value'] for row in detail['rows']] == ['Acme']
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED
+    details = exc_info.value.details
+    assert isinstance(details, dict)
+    assert details['headers'] == ['\u5ba2\u6237', '\u59d3\u540d', '\u8ba2\u5355\u53f7']
+    assert details['candidates'] == ['\u5ba2\u6237', '\u59d3\u540d']
+    assert details['configured_group_field'] == '\u5386\u53f2\u5ba2\u6237\u540d\u79f0'
+    assert details['original_file_name'] == 'customers.csv'
 
 
-async def test_rematch_uses_latest_profile_and_marks_drafts_stale_only_when_old_drafts_exist(service_fixture):
+async def test_upload_import_requires_group_field_confirmation_when_no_candidate_header_matches(service_fixture):
     service, _ = service_fixture
 
     await service.save_variable_profile(
         _scope(),
         {
-            'group_field': '历史客户名称',
+            'group_field': '\u5386\u53f2\u5ba2\u6237\u540d\u79f0',
             'mapping_rules': [
                 {
-                    'source_field': '历史客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '历史客户名称,最新客户名称\nLegacy Acme,Acme\n'.encode('utf-8'),
-        },
-    )
-    await service.create_template(
-        _scope(),
-        {
-            'name': 'Arrival Reminder',
-            'content': 'Hello {{customer_name}}',
-            'enabled': True,
-        },
-    )
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '最新客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '最新客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Group',
-
-            'target_conversation_id': 'Acme Group',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-
-    rematched = await service.rematch_import(created['id'], _scope())
-    assert rematched['drafts_stale'] is False
-
-    template = (await service.list_templates(_scope()))[0]
-    await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'template_id': template['id'],
-            'group_keys': await _all_import_group_keys(service, created['id']),
-        },
-    )
-
-    second_rematch = await service.rematch_import(created['id'], _scope())
-    assert second_rematch['drafts_stale'] is True
-    detail = await service.get_import_detail(created['id'], _scope(), {})
-    assert detail['rows'][0]['group_value'] == 'Acme'
-    assert detail['rows'][0]['match_status'] == 'matched'
-
-
-async def test_rematch_rejects_batch_when_latest_required_fields_are_missing(service_fixture):
-    service, _ = service_fixture
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '客户名称\nAcme\n'.encode('utf-8'),
-        },
-    )
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '最新客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '最新客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                },
-                {
-                    'source_field': '订单号',
+                    'source_field': '\u8ba2\u5355\u53f7',
                     'variable_key': 'order_no',
-                    'merge_mode': 'lines',
-                    'order': 2,
-                },
-            ],
-        },
-    )
-
-    from langbot.pkg.broadcast.errors import BroadcastError
-
-    with pytest.raises(BroadcastError) as exc_info:
-        await service.rematch_import(created['id'], _scope())
-    assert exc_info.value.code in {'BROADCAST_IMPORT_REMATCH_FIELDS_MISSING', 'BROADCAST_IMPORT_FILE_INVALID'}
-
-
-async def test_list_and_get_drafts_are_scoped_and_filterable(service_fixture):
-    service, _ = service_fixture
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
                     'merge_mode': 'first',
                     'order': 1,
                 }
             ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Group',
-
-            'target_conversation_id': 'Acme Group',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '客户名称\nAcme\nNorthwind\n'.encode('utf-8'),
-        },
-    )
-    template = await service.create_template(
-        _scope(),
-        {
-            'name': 'Arrival Reminder',
-            'content': 'Hello {{customer_name}}',
-            'enabled': True,
-        },
-    )
-    groups = await service.list_import_groups(created['id'], _scope(), {})
-    matched_group = next(
-        item for item in groups['groups'] if item['group_value'] == 'Acme'
-    )
-    await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'group_keys': [matched_group['group_key']],
-            'template_id': template['id'],
-        },
-    )
-    await _create_invalid_import_draft(
-        service,
-        import_id=created['id'],
-        template=template,
-        group_value='Northwind',
-    )
-
-    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id'], 'status': 'invalid'})
-    assert drafts == []
-
-    invalid_row = (
-        await service.repository.list_drafts(
-            bot_uuid='bot-1',
-            connector_id='wxwork-local',
-            import_batch_id=created['id'],
-            status='invalid',
-        )
-    )[0]
-    detail = await service.get_draft_detail(int(invalid_row.id), _scope())
-    assert detail['group_value'] == 'Northwind'
-    assert detail['status'] == 'invalid'
-
-
-async def test_edit_ready_draft_rolls_back_to_pending_review_with_message(service_fixture):
-    service, _ = service_fixture
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Group',
-
-            'target_conversation_id': 'Acme Group',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '客户名称\nAcme\n'.encode('utf-8'),
-        },
-    )
-    template = await service.create_template(
-        _scope(),
-        {
-            'name': 'Arrival Reminder',
-            'content': 'Hello {{customer_name}}',
-            'enabled': True,
-        },
-    )
-    await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'template_id': template['id'],
-            'group_keys': await _all_import_group_keys(service, created['id']),
-        },
-    )
-    draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
-    await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
-
-    updated = await service.update_draft_text(draft['id'], _scope(), {'draft_text': 'Updated draft'})
-    assert updated['status'] == 'pending_review'
-    assert updated['draft_text'] == 'Updated draft'
-    assert updated['message'] == '草稿内容已修改，请重新确认'
-
-
-async def test_edit_invalid_draft_keeps_invalid_and_cannot_be_confirmed(service_fixture):
-    service, _ = service_fixture
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '客户名称\nNorthwind\n'.encode('utf-8'),
-        },
-    )
-    template = await service.create_template(
-        _scope(),
-        {
-            'name': 'Arrival Reminder',
-            'content': 'Hello {{customer_name}}',
-            'enabled': True,
-        },
-    )
-    draft_id = await _create_invalid_import_draft(
-        service,
-        import_id=created['id'],
-        template=template,
-        group_value='Northwind',
-    )
-    draft = await service.get_draft_detail(draft_id, _scope())
-
-    updated = await service.update_draft_text(draft['id'], _scope(), {'draft_text': 'Manual preview'})
-    assert updated['status'] == 'invalid'
-
-    with pytest.raises(BroadcastError, match='BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN') as exc_info:
-        await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
-    assert exc_info.value.code == 'BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN'
-
-
-async def test_list_drafts_excludes_invalid_from_audit_send_filters(service_fixture):
-    service, persistence_mgr = service_fixture
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Group',
-
-            'target_conversation_id': 'Acme Group',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '客户名称\nAcme\nNorthwind\n'.encode('utf-8'),
-        },
-    )
-    template = await service.create_template(
-        _scope(),
-        {
-            'name': 'Arrival Reminder',
-            'content': 'Hello {{customer_name}}',
-            'enabled': True,
-        },
-    )
-    groups = await service.list_import_groups(created['id'], _scope(), {})
-    matched_group = next(
-        item for item in groups['groups'] if item['group_value'] == 'Acme'
-    )
-    await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'group_keys': [matched_group['group_key']],
-            'template_id': template['id'],
-        },
-    )
-    await _create_invalid_import_draft(
-        service,
-        import_id=created['id'],
-        template=template,
-        group_value='Northwind',
-    )
-    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
-    valid_draft = next(item for item in drafts if item['group_value'] == 'Acme')
-
-    pending_only = await service.list_drafts(
-        _scope(),
-        {'import_batch_id': created['id'], 'status': 'pending'},
-    )
-    pending_review_legacy = await service.list_drafts(
-        _scope(),
-        {'import_batch_id': created['id'], 'status': 'pending_review'},
-    )
-    ready_legacy = await service.list_drafts(
-        _scope(),
-        {'import_batch_id': created['id'], 'status': 'ready'},
-    )
-    invalid_legacy = await service.list_drafts(
-        _scope(),
-        {'import_batch_id': created['id'], 'status': 'invalid'},
-    )
-
-    assert [item['group_value'] for item in pending_only] == ['Acme']
-    assert [item['group_value'] for item in pending_review_legacy] == ['Acme']
-    assert [item['group_value'] for item in ready_legacy] == ['Acme']
-    assert invalid_legacy == []
-
-    async with persistence_mgr.engine.begin() as conn:
-        await conn.execute(
-            sqlalchemy.update(persistence_broadcast.BroadcastDraft)
-            .where(persistence_broadcast.BroadcastDraft.id == valid_draft['id'])
-            .values({'send_status': None})
-        )
-
-    pending_with_null_send_status = await service.list_drafts(
-        _scope(),
-        {'import_batch_id': created['id'], 'status': 'pending'},
-    )
-    assert [item['group_value'] for item in pending_with_null_send_status] == ['Acme']
-
-    await service.update_draft_statuses(
-        _scope(),
-        {'draft_ids': [valid_draft['id']], 'status': 'sent'},
-    )
-
-    all_visible = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
-    pending_after_mark_sent = await service.list_drafts(
-        _scope(),
-        {'import_batch_id': created['id'], 'status': 'pending'},
-    )
-    sent_only = await service.list_drafts(
-        _scope(),
-        {'import_batch_id': created['id'], 'status': 'sent'},
-    )
-
-    assert [item['group_value'] for item in all_visible] == ['Acme']
-    assert [item['send_status'] for item in all_visible] == ['sent']
-    assert pending_after_mark_sent == []
-    assert [item['group_value'] for item in sent_only] == ['Acme']
-
-
-async def test_update_draft_statuses_marks_sent_and_restores_pending_atomically(service_fixture):
-    service, _ = service_fixture
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-
-    marked = await service.update_draft_statuses(
-        _scope(),
-        {'draft_ids': [draft['id']], 'status': 'sent'},
-    )
-    assert marked['updated_count'] == 1
-
-    sent_detail = await service.get_draft_detail(draft['id'], _scope())
-    assert sent_detail['send_status'] == 'sent'
-    assert sent_detail['sent_at'] is not None
-
-    restored = await service.update_draft_statuses(
-        _scope(),
-        {'draft_ids': [draft['id']], 'status': 'pending'},
-    )
-    assert restored['updated_count'] == 1
-
-    pending_detail = await service.get_draft_detail(draft['id'], _scope())
-    assert pending_detail['send_status'] == 'pending'
-    assert pending_detail['sent_at'] is None
-
-    with pytest.raises(BroadcastError, match='INVALID_SEND_STATUS') as exc_info:
-        await service.update_draft_statuses(
-            _scope(),
-            {'draft_ids': [draft['id']], 'status': 'pending'},
-        )
-    assert exc_info.value.code == 'INVALID_SEND_STATUS'
-
-
-async def test_update_draft_statuses_rejects_mixed_send_status_selection(service_fixture):
-    service, _ = service_fixture
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    first_draft = prepared['draft']
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Northwind',
-            'match_type': 'exact',
-            'match_expression': 'Northwind',
-            'target_conversation_name': 'Northwind Group',
-
-            'target_conversation_id': 'Northwind Group',
-            'priority': 20,
-            'enabled': True,
-        },
-    )
-    second_import = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers-2.csv',
-            'body': '客户名称\nNorthwind\n'.encode('utf-8'),
-        },
-    )
-    template = await service.create_template(
-        _scope(),
-        {
-            'name': 'Arrival Reminder 2',
-            'content': 'Hello {{customer_name}}',
-            'enabled': True,
-        },
-    )
-    await service.generate_import_drafts(
-        second_import['id'],
-        _scope(),
-        {
-            'template_id': template['id'],
-            'group_keys': await _all_import_group_keys(service, second_import['id']),
-        },
-    )
-    second_draft = (await service.list_drafts(_scope(), {'import_batch_id': second_import['id']}))[0]
-
-    await service.update_draft_statuses(
-        _scope(),
-        {'draft_ids': [first_draft['id']], 'status': 'sent'},
-    )
-
-    with pytest.raises(BroadcastError, match='MIXED_SEND_STATUS') as exc_info:
-        await service.update_draft_statuses(
-            _scope(),
-            {
-                'draft_ids': [first_draft['id'], second_draft['id']],
-                'status': 'sent',
-            },
-    )
-    assert exc_info.value.code == 'MIXED_SEND_STATUS'
-
-
-async def test_update_draft_statuses_rejects_concurrent_send_status_change_atomically(
-    service_fixture,
-    monkeypatch,
-):
-    service, persistence_mgr = service_fixture
-
-    prepared = await _prepare_ready_drafts_for_execution(
-        service,
-        [('Acme', 'Acme Group'), ('Northwind', 'Northwind Group')],
-    )
-    first_draft, second_draft = prepared['drafts']
-    original_update = service.repository.update_draft_send_statuses
-
-    async def concurrent_update(**kwargs):
-        async with persistence_mgr.engine.begin() as conn:
-            await original_update(
-                draft_ids=[second_draft['id']],
-                bot_uuid=_scope()['bot_uuid'],
-                connector_id=_scope()['connector_id'],
-                current_send_status='pending',
-                target_send_status='sent',
-                sent_at=datetime.datetime.utcnow(),
-                conn=conn,
-            )
-        return await original_update(**kwargs)
-
-    monkeypatch.setattr(service.repository, 'update_draft_send_statuses', concurrent_update)
-
-    with pytest.raises(BroadcastError, match='BATCH_VALIDATION_FAILED') as exc_info:
-        await service.update_draft_statuses(
-            _scope(),
-            {
-                'draft_ids': [first_draft['id'], second_draft['id']],
-                'status': 'sent',
-            },
-        )
-    assert exc_info.value.code == 'BATCH_VALIDATION_FAILED'
-
-    refreshed_first = await service.get_draft_detail(first_draft['id'], _scope())
-    refreshed_second = await service.get_draft_detail(second_draft['id'], _scope())
-    assert refreshed_first['send_status'] == 'pending'
-    assert refreshed_first['sent_at'] is None
-    assert refreshed_second['send_status'] == 'sent'
-    assert refreshed_second['sent_at'] is not None
-
-
-async def test_stale_draft_cannot_be_confirmed_and_cross_scope_ids_reject_whole_batch(service_fixture):
-    service, _ = service_fixture
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Group',
-
-            'target_conversation_id': 'Acme Group',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '客户名称,新客户名称\nAcme,Acme\n'.encode('utf-8'),
-        },
-    )
-    template = await service.create_template(
-        _scope(),
-        {
-            'name': 'Arrival Reminder',
-            'content': 'Hello {{customer_name}}',
-            'enabled': True,
-        },
-    )
-    await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'template_id': template['id'],
-            'group_keys': await _all_import_group_keys(service, created['id']),
-        },
-    )
-    draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '新客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '新客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    await service.rematch_import(created['id'], _scope())
-
-    with pytest.raises(BroadcastError, match='BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN') as exc_info:
-        await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
-    assert exc_info.value.code == 'BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN'
-
-
-async def test_create_execution_batch_phase4_persists_single_ready_task_with_digest(service_fixture):
-    service, _ = service_fixture
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-
-    expected_digest = hashlib.sha256(
-        ('paste_draft' + '\0' + 'wxwork_database' + '\0' + 'Acme Group' + '\0' + 'Hello Acme').encode('utf-8')
-    ).hexdigest()
-
-    assert batch['mode'] == 'paste_only'
-    assert batch['status'] == 'created'
-    assert batch['total_tasks'] == 1
-    assert batch['pending_tasks'] == 1
-    assert len(batch['tasks']) == 1
-    assert batch['tasks'][0]['draft_id'] == draft['id']
-    assert batch['tasks'][0]['target_conversation_snapshot'] == 'Acme Group'
-    assert batch['tasks'][0]['action'] == 'paste_draft'
-    assert batch['tasks'][0]['status'] == 'pending'
-    assert batch['tasks'][0]['request_digest'] == expected_digest
-    assert batch['tasks'][0]['idempotency_key'] == f"broadcast:{batch['tasks'][0]['id']}:1"
-
-
-async def test_create_execution_batch_allows_pending_send_status_and_rejects_cross_scope_drafts(service_fixture):
-    service, _ = service_fixture
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    ready_draft = prepared['draft']
-
-    await service.update_draft_text(ready_draft['id'], _scope(), {'draft_text': 'Edited after ready'})
-    pending_review_draft = await service.get_draft_detail(ready_draft['id'], _scope())
-
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [pending_review_draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    assert batch['total_tasks'] == 1
-
-    with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_SCOPE_MISMATCH'):
-        await service.create_execution_batch(
-            _scope(bot_uuid='bot-2', connector_id='wxwork-other'),
-            {
-                'draft_ids': [pending_review_draft['id']],
-                'mode': 'paste_only',
-                'operator': 'tester@example.com',
-            },
-        )
-
-
-async def test_create_execution_batch_rejects_sent_in_batch_but_allows_single_sent_rewrite(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-
-    await service.update_draft_statuses(
-        _scope(),
-        {'draft_ids': [draft['id']], 'status': 'sent'},
-    )
-
-    with pytest.raises(BroadcastError, match='INVALID_SEND_STATUS') as exc_info:
-        await service.create_execution_batch(
-            _scope(),
-            {
-                'draft_ids': [draft['id']],
-                'mode': 'paste_only',
-                'operator': 'tester@example.com',
-            },
-        )
-    assert exc_info.value.code == 'INVALID_SEND_STATUS'
-
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-            'allow_sent_rewrite': True,
-        },
-    )
-    assert batch['total_tasks'] == 1
-    started = await service.start_execution_task(
-        batch['tasks'][0]['id'],
-        _scope(),
-        {'operator': 'tester@example.com'},
-    )
-    assert started['status'] == 'succeeded'
-    rewritten_detail = await service.get_draft_detail(draft['id'], _scope())
-    assert rewritten_detail['send_status'] == 'sent'
-
-
-async def test_create_execution_batch_rejects_multi_sent_and_mixed_send_status_atomically(service_fixture):
-    service, _ = service_fixture
-
-    prepared = await _prepare_ready_drafts_for_execution(
-        service,
-        [('Acme', 'Acme Group'), ('Northwind', 'Northwind Group')],
-    )
-    first_draft, second_draft = prepared['drafts']
-
-    await service.update_draft_statuses(
-        _scope(),
-        {'draft_ids': [first_draft['id'], second_draft['id']], 'status': 'sent'},
-    )
-
-    with pytest.raises(BroadcastError, match='INVALID_SEND_STATUS') as exc_info:
-        await service.create_execution_batch(
-            _scope(),
-            {
-                'draft_ids': [first_draft['id'], second_draft['id']],
-                'mode': 'paste_only',
-                'operator': 'tester@example.com',
-                'allow_sent_rewrite': True,
-            },
-        )
-    assert exc_info.value.code == 'INVALID_SEND_STATUS'
-    assert await service.list_execution_batches(_scope()) == []
-
-    await service.update_draft_statuses(
-        _scope(),
-        {'draft_ids': [second_draft['id']], 'status': 'pending'},
-    )
-
-    with pytest.raises(BroadcastError, match='MIXED_SEND_STATUS') as mixed_exc_info:
-        await service.create_execution_batch(
-            _scope(),
-            {
-                'draft_ids': [first_draft['id'], second_draft['id']],
-                'mode': 'paste_only',
-                'operator': 'tester@example.com',
-            },
-        )
-    assert mixed_exc_info.value.code == 'MIXED_SEND_STATUS'
-    assert await service.list_execution_batches(_scope()) == []
-
-
-async def test_create_execution_batch_rejects_duplicate_target_conversations_atomically(service_fixture):
-    service, persistence_mgr = service_fixture
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    first_draft = prepared['draft']
-
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Second',
-            'match_type': 'exact',
-            'match_expression': 'Second',
-            'target_conversation_name': 'Second Group',
-
-            'target_conversation_id': 'Second Group',
-            'priority': 20,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'second.csv',
-            'body': '客户名称\nSecond\n'.encode('utf-8'),
-        },
-    )
-    template = await service.create_template(
-        _scope(),
-        {
-            'name': 'Duplicate Target',
-            'content': 'Hello {{customer_name}}',
-            'enabled': True,
-        },
-    )
-    await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'template_id': template['id'],
-            'group_keys': await _all_import_group_keys(service, created['id']),
-        },
-    )
-    second_draft = (await service.list_drafts(_scope(), {'import_batch_id': created['id']}))[0]
-
-    async with persistence_mgr.engine.begin() as conn:
-        await conn.execute(
-            sqlalchemy.update(persistence_broadcast.BroadcastDraft)
-            .where(persistence_broadcast.BroadcastDraft.id == second_draft['id'])
-            .values(
-                {
-                    'target_conversation_id': first_draft['target_conversation_id'],
-                    'target_conversation_name': 'Acme Group',
-                }
-            )
-        )
-
-    with pytest.raises(BroadcastError, match='DUPLICATE_TARGET_CONVERSATION') as exc_info:
-        await service.create_execution_batch(
-            _scope(),
-            {
-                'draft_ids': [first_draft['id'], second_draft['id']],
-                'mode': 'paste_only',
-                'operator': 'tester@example.com',
-            },
-        )
-    assert exc_info.value.code == 'DUPLICATE_TARGET_CONVERSATION'
-
-    batches = await service.list_execution_batches(_scope())
-    assert batches == []
-
-
-async def test_start_execution_task_creates_attempt_and_evidence_and_updates_batch(service_fixture, monkeypatch):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-
-    started = await service.start_execution_task(
-        task_id,
-        _scope(),
-        {
-            'operator': 'tester@example.com',
-        },
-    )
-
-    assert started['status'] == 'succeeded'
-    assert started['attempt_count'] == 1
-    assert started['runtime_task_id'] == 'runtime-1'
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    assert len(attempts) == 1
-    assert attempts[0]['attempt_no'] == 1
-    assert attempts[0]['status'] == 'succeeded'
-    assert attempts[0]['runtime_task_id'] == 'runtime-1'
-
-    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
-    assert evidence['action'] == 'paste_draft'
-    assert evidence['draft_written'] is True
-    assert evidence['technical_details']
-    assert evidence['send_triggered'] is False
-    assert evidence['clipboard_restored'] is True
-
-    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
-    assert refreshed_batch['status'] == 'completed'
-    assert refreshed_batch['pending_tasks'] == 0
-    assert refreshed_batch['succeeded_tasks'] == 1
-
-
-async def test_retry_execution_task_resets_failed_task_and_uses_new_attempt_number(service_fixture, monkeypatch):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-
-    await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-
-    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
-        await service.repository.update_execution_task(
-            task_id,
-            bot_uuid='bot-1',
-            connector_id='wxwork-local',
-            updates={
-                'status': 'failed',
-                'error_code': 'RUNTIME_TIMEOUT',
-                'error_message': 'timeout',
-            },
-            conn=conn,
-        )
-
-    retried = await service.retry_execution_task(
-        task_id,
-        _scope(),
-        {
-            'operator': 'tester@example.com',
-        },
-    )
-    assert retried['status'] == 'pending'
-    assert retried['idempotency_key'] == f'broadcast:{task_id}:2'
-
-    await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    assert [attempt['attempt_no'] for attempt in attempts] == [1, 2]
-
-
-async def test_start_execution_task_rejects_when_safety_lock_is_disabled(service_fixture, monkeypatch):
-    service, _ = service_fixture
-    monkeypatch.delenv('LANGBOT_RPA_FORCE_DISABLE_SEND', raising=False)
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-
-    with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_SAFETY_LOCK_REQUIRED'):
-        await service.start_execution_task(
-            batch['tasks'][0]['id'],
-            _scope(),
-            {'operator': 'tester@example.com'},
-        )
-
-
-async def test_cancel_execution_task_recomputes_batch_summary(service_fixture):
-    service, _ = service_fixture
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-
-    cancelled = await service.cancel_execution_task(
-        batch['tasks'][0]['id'],
-        _scope(),
-        {'operator': 'tester@example.com'},
-    )
-    assert cancelled['status'] == 'cancelled'
-
-    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
-    assert refreshed_batch['status'] == 'cancelled'
-    assert refreshed_batch['pending_tasks'] == 0
-    assert refreshed_batch['cancelled_tasks'] == 1
-
-
-async def test_start_execution_task_rejects_replay_after_success_without_new_attempt(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-    assert started['status'] == 'succeeded'
-    assert len(runtime_client.requests) == 1
-
-    with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_TASK_STATUS_INVALID'):
-        await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    assert len(attempts) == 1
-    assert len(runtime_client.requests) == 1
-
-
-async def test_start_execution_task_timeout_marks_interrupted_without_blind_retry(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def timeout_create_task(*, request):
-        runtime_client.requests.append(request)
-        raise TimeoutError('runtime timeout')
-
-    runtime_client.create_task = timeout_create_task
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-    assert started['status'] == 'interrupted'
-    assert started['attempt_count'] == 1
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    assert len(attempts) == 1
-    assert attempts[0]['attempt_no'] == 1
-    assert attempts[0]['status'] == 'interrupted'
-    assert len(runtime_client.requests) == 1
-
-    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
-    assert refreshed_batch['status'] == 'interrupted'
-    assert refreshed_batch['interrupted_tasks'] == 1
-
-
-async def test_start_execution_task_treats_send_triggered_as_security_failure(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def create_task_with_send_trigger(*, request):
-        runtime_client.requests.append(request)
-        return {
-            'id': 'runtime-danger',
-            'status': 'succeeded',
-            'stage': 'sent',
-            'result': {
-                'messageSent': True,
-                'clipboardRestoreFailed': False,
-            },
-        }
-
-    runtime_client.create_task = create_task_with_send_trigger
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-    assert started['status'] == 'failed'
-    assert started['error_code'] == 'BROADCAST_EXECUTION_SEND_TRIGGERED'
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
-    assert evidence['send_triggered'] is True
-
-
-async def test_start_execution_task_does_not_mark_succeeded_when_content_verification_fails(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def create_unverified_task(*, request):
-        runtime_client.requests.append(request)
-        return {
-            'id': 'runtime-unverified',
-            'status': 'succeeded',
-            'stage': 'pasted_to_input',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'contentVerified': False,
-                'verificationFailed': True,
-                'draftWritten': False,
-                'inputLocated': True,
-            },
-        }
-
-    runtime_client.create_task = create_unverified_task
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-
-    assert started['status'] == 'interrupted'
-    assert started['error_code'] == 'PASTE_VERIFICATION_FAILED'
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
-    assert evidence['draft_written'] is False
-    technical_details = json.loads(evidence['technical_details'])
-    assert technical_details['content_verified'] is False
-
-
-async def test_start_execution_task_persists_mismatch_diagnostics_and_error_code(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def create_mismatch_task(*, request):
-        runtime_client.requests.append(request)
-        return {
-            'id': 'runtime-mismatch',
-            'status': 'interrupted',
-            'stage': 'paste_content_mismatch',
-            'errorCode': 'PASTE_CONTENT_MISMATCH',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'contentVerified': False,
-                'verificationFailed': True,
-                'draftWritten': True,
-                'inputLocated': True,
-                'clipboardRoundtripVerified': True,
-                'verificationMethod': 'uia_value_pattern',
-                'verificationErrorCode': 'PASTE_CONTENT_MISMATCH',
-                'expectedTextLength': 12,
-                'actualTextLength': 11,
-                'expectedDigest': 'digest-expected',
-                'actualDigest': 'digest-actual',
-                'expectedLineCount': 4,
-                'actualLineCount': 3,
-            },
-        }
-
-    runtime_client.create_task = create_mismatch_task
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-
-    assert started['status'] == 'interrupted'
-    assert started['error_code'] == 'PASTE_CONTENT_MISMATCH'
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
-    assert evidence['draft_written'] is True
-    assert evidence['input_located'] is True
-    technical_details = json.loads(evidence['technical_details'])
-    assert technical_details['verification_method'] == 'uia_value_pattern'
-    assert technical_details['verification_error_code'] == 'PASTE_CONTENT_MISMATCH'
-    assert technical_details['clipboard_roundtrip_verified'] is True
-    assert technical_details['expected_text_length'] == 12
-    assert technical_details['actual_text_length'] == 11
-
-
-async def test_start_execution_task_preserves_succeeded_with_warning_status_and_manual_attachment_confirmation(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    attachment = {
-        'filename': 'quote.pdf',
-        'body': b'pdf-data',
-    }
-    await service.add_draft_attachments(draft['id'], _scope(), [attachment])
-    await service.update_draft_statuses(
-        _scope(),
-        {'draft_ids': [draft['id']], 'status': 'ready'},
-    )
-
-    refreshed_draft = await service.get_draft_detail(draft['id'], _scope())
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [refreshed_draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def create_warning_task(*, request):
-        runtime_client.requests.append(request)
-        return {
-            'id': 'runtime-warning',
-            'status': 'succeeded_with_warning',
-            'stage': 'attachments_pasted_unverified',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'warning': 'PASTE_RESULT_NOT_VERIFIED',
-                'contentVerified': False,
-                'verificationFailed': False,
-                'observationAvailable': False,
-                'draftWritten': True,
-                'inputLocated': False,
-                'searchShortcutCount': 1,
-                'conversationPasteCount': 1,
-                'conversationConfirmEnterCount': 1,
-                'draftPasteCount': 1,
-                'sendKeyCount': 0,
-                'attachmentsPrepared': True,
-                'attachmentPasteRequested': True,
-                'attachmentsVerified': False,
-                'attachmentCount': 1,
-                'attachments': [
-                    {
-                        'name': 'quote.pdf',
-                    }
-                ],
-            },
-        }
-
-    runtime_client.create_task = create_warning_task
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-
-    assert started['status'] == 'succeeded_with_warning'
-    assert started['error_code'] is None
-    assert started['error_message'] is None
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    assert len(attempts) == 1
-    assert attempts[0]['status'] == 'succeeded_with_warning'
-
-    attempt_detail = await service.get_execution_attempt_detail(attempts[0]['id'], _scope())
-    response_summary = json.loads(attempt_detail['response_summary'])
-    assert response_summary['status'] == 'succeeded_with_warning'
-    assert response_summary['stage'] == 'attachments_pasted_unverified'
-    assert response_summary['result']['messageSent'] is False
-
-    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
-    assert evidence['evidence_summary'] == '已写入，附件待人工确认'
-    technical_details = json.loads(evidence['technical_details'])
-    assert technical_details['warning'] == 'PASTE_RESULT_NOT_VERIFIED'
-    assert technical_details['content_verified'] is False
-    assert technical_details['observation_available'] is False
-    assert technical_details['search_shortcut_count'] == 1
-    assert technical_details['conversation_paste_count'] == 1
-    assert technical_details['conversation_confirm_enter_count'] == 1
-    assert technical_details['draft_paste_count'] == 1
-    assert technical_details['send_key_count'] == 0
-    assert technical_details['attachment_count'] == 1
-    assert technical_details['attachment_names'] == ['quote.pdf']
-    assert technical_details['attachments_prepared'] is True
-    assert technical_details['attachment_paste_requested'] is True
-    assert technical_details['attachments_verified'] is False
-
-    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
-    assert refreshed_batch['status'] == 'completed'
-    assert refreshed_batch['pending_tasks'] == 0
-    assert refreshed_batch['succeeded_tasks'] == 0
-
-
-async def test_start_execution_task_uses_attachment_root_and_relative_path_contract(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    await service.add_draft_attachments(
-        draft['id'],
-        _scope(),
-        [{'filename': 'quote.pdf', 'body': b'pdf-data'}],
-    )
-    await service.update_draft_statuses(
-        _scope(),
-        {'draft_ids': [draft['id']], 'status': 'ready'},
-    )
-
-    refreshed_draft = await service.get_draft_detail(draft['id'], _scope())
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [refreshed_draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-
-    assert started['status'] == 'succeeded'
-    assert len(runtime_client.requests) == 1
-    request = runtime_client.requests[0]
-    assert request['attachmentRoot'].endswith('runtime\\broadcast_attachments')
-    assert len(request['attachments']) == 1
-    assert request['attachments'][0]['relativePath'].startswith('bot-1')
-    assert request['attachments'][0]['filename'] == 'quote.pdf'
-    assert request['attachments'][0]['size'] > 0
-    assert request['attachments'][0]['sha256']
-    assert 'localPath' not in request['attachments'][0]
-    assert 'name' not in request['attachments'][0]
-    assert 'sizeBytes' not in request['attachments'][0]
-    assert 'extension' not in request['attachments'][0]
-
-
-async def test_resolve_attachment_relative_path_derives_from_stored_path_when_relative_path_missing(
-    service_fixture,
-):
-    service, _ = service_fixture
-    attachment_root = service._attachments_root()
-    attachment_dir = attachment_root / 'bot-1' / 'drafts' / 'compat'
-    attachment_dir.mkdir(parents=True, exist_ok=True)
-    attachment_file = attachment_dir / 'quote.pdf'
-    attachment_file.write_bytes(b'compat')
-
-    try:
-        relative_path = service._resolve_attachment_relative_path(
-            {
-                'relative_path': None,
-                'stored_path': str(attachment_file),
-            }
-        )
-    finally:
-        attachment_file.unlink(missing_ok=True)
-
-    assert relative_path == 'bot-1/drafts/compat/quote.pdf'
-
-
-async def test_resolve_attachment_relative_path_rejects_stored_path_outside_root_when_relative_path_missing(
-    service_fixture,
-):
-    service, _ = service_fixture
-
-    with pytest.raises(BroadcastError) as exc_info:
-        service._resolve_attachment_relative_path(
-            {
-                'relative_path': None,
-                'stored_path': 'C:/secret/outside-root/quote.pdf',
-            }
-        )
-
-    assert exc_info.value.code == 'ATTACHMENT_PATH_OUTSIDE_ROOT'
-
-
-async def test_concurrent_start_execution_task_creates_one_attempt_and_one_runtime_call(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-    first_call_started = asyncio.Event()
-
-    async def slow_create_task(*, request):
-        runtime_client.requests.append(request)
-        first_call_started.set()
-        await asyncio.sleep(0.05)
-        return {
-            'id': 'runtime-1',
-            'status': 'succeeded',
-            'stage': 'pasted_to_input',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'contentVerified': True,
-                'draftWritten': True,
-                'inputLocated': True,
-            },
-        }
-
-    runtime_client.create_task = slow_create_task
-
-    async def start_once():
-        try:
-            return await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-        except Exception as exc:  # pragma: no cover - asserted below
-            return exc
-
-    first = asyncio.create_task(start_once())
-    await first_call_started.wait()
-    second = asyncio.create_task(start_once())
-    results = await asyncio.gather(first, second)
-
-    assert sum(isinstance(item, dict) and item['status'] == 'succeeded' for item in results) == 1
-    assert sum(isinstance(item, BroadcastError) for item in results) == 1
-    assert len(runtime_client.requests) == 1
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    assert len(attempts) == 1
-
-
-async def test_reconcile_running_tasks_marks_tasks_and_batches_interrupted(service_fixture):
-    service, _ = service_fixture
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-
-    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
-        await service.repository.update_execution_task(
-            task_id,
-            bot_uuid='bot-1',
-            connector_id='wxwork-local',
-            updates={'status': 'running'},
-            conn=conn,
-        )
-        await service.repository.recompute_execution_batch_counts(
-            batch['id'],
-            bot_uuid='bot-1',
-            connector_id='wxwork-local',
-            conn=conn,
-        )
-
-    updated_count = await service.reconcile_running_executions()
-    assert updated_count == 1
-
-    refreshed_task = await service.get_execution_task_detail(task_id, _scope())
-    assert refreshed_task['status'] == 'interrupted'
-
-    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
-    assert refreshed_batch['status'] == 'interrupted'
-    assert refreshed_batch['running_tasks'] == 0
-    assert refreshed_batch['interrupted_tasks'] == 1
-
-
-async def test_start_execution_task_marks_interrupted_when_result_persistence_fails(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    original_create_execution_evidence = service.repository.create_execution_evidence
-    failure_injected = False
-
-    async def failing_create_execution_evidence(conn, payload):
-        nonlocal failure_injected
-        if not failure_injected:
-            failure_injected = True
-            raise RuntimeError('persist-evidence-failed')
-        return await original_create_execution_evidence(conn, payload)
-
-    monkeypatch.setattr(
-        service.repository,
-        'create_execution_evidence',
-        failing_create_execution_evidence,
-    )
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-
-    assert started['status'] == 'interrupted'
-    assert started['attempt_count'] == 1
-    assert started['runtime_task_id'] == 'runtime-1'
-    assert started['error_code'] == 'BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED'
-    assert len(runtime_client.requests) == 1
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    assert len(attempts) == 1
-    assert attempts[0]['status'] == 'interrupted'
-    assert attempts[0]['runtime_task_id'] == 'runtime-1'
-    assert attempts[0]['error_code'] == 'BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED'
-
-    with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_EVIDENCE_NOT_AVAILABLE'):
-        await service.get_execution_evidence(attempts[0]['id'], _scope())
-
-    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
-    assert refreshed_batch['status'] == 'interrupted'
-    assert refreshed_batch['interrupted_tasks'] == 1
-
-
-async def test_start_execution_task_redacts_sensitive_response_summary_and_evidence_details(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def create_sensitive_task(*, request):
-        runtime_client.requests.append(request)
-        return {
-            'id': 'runtime-secret',
-            'status': 'succeeded',
-            'stage': 'pasted_to_input',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'contentVerified': True,
-                'draftWritten': True,
-                'inputLocated': True,
-            },
-            'technical_details': {
-                'Authorization': 'Bearer secret-token',
-                'token': 'top-secret-token',
-                'Cookie': 'sid=session-cookie',
-                'path': 'C:\\Users\\33031\\Desktop\\bot\\secrets.txt',
-                'draftText': 'Hello Acme',
-            },
-        }
-
-    class _SensitiveExecutor:
-        def validate_capability(self, action: str):
-            return {'supports_paste': True}
-
-        async def paste_draft(
-            self,
-            *,
-            conversation_name: str,
-            draft_text: str,
-            idempotency_key: str,
-            request_digest: str,
-        ) -> dict[str, object]:
-            return await create_sensitive_task(
-                request={
-                    'conversationName': conversation_name,
-                    'draftText': draft_text,
-                    'idempotencyKey': idempotency_key,
-                    'requestDigest': request_digest,
-                }
-            )
-
-        def normalize_evidence(self, result: dict[str, object]) -> dict[str, object]:
-            return {
-                'action': 'paste_draft',
-                'input_located': True,
-                'draft_written': True,
-                'content_verified': True,
-                'verification_failed': False,
-                'send_triggered': False,
-                'clipboard_restored': True,
-                'runtime_state': 'pasted_to_input',
-                'evidence_summary': 'pasted_to_input',
-                'technical_details': dict(result.get('technical_details') or {}),
-                'window_title': 'WeCom',
-                'target_conversation': 'Acme Group',
-            }
-
-    import langbot.pkg.broadcast.service as broadcast_service_module
-
-    monkeypatch.setattr(
-        broadcast_service_module,
-        'build_executor',
-        lambda channel, gateway: _SensitiveExecutor(),
-    )
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-    assert started['status'] == 'succeeded'
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    attempt_detail = await service.get_execution_attempt_detail(attempts[0]['id'], _scope())
-    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
-
-    response_summary = attempt_detail['response_summary'] or ''
-    technical_details = evidence['technical_details'] or ''
-
-    for secret in (
-        'Bearer secret-token',
-        'top-secret-token',
-        'session-cookie',
-        'C:\\Users\\33031\\Desktop\\bot\\secrets.txt',
-        'Hello Acme',
-    ):
-        assert secret not in response_summary
-        assert secret not in technical_details
-
-    assert 'runtime-secret' in response_summary
-    assert 'pasted_to_input' in response_summary
-
-
-async def test_sanitize_technical_details_keeps_window_diagnostics_without_paths_or_body(
-    service_fixture,
-):
-    service, _ = service_fixture
-
-    sanitized = service._sanitize_technical_details(
-        {
-            'candidate_count_before_filter': 3,
-            'candidate_count_after_filter': 1,
-            'canonical_candidate_count': 2,
-            'rejected_candidate_count': 2,
-            'selected_window': {
-                'hwnd': '1769682',
-                'rootHwnd': '1769682',
-                'ownerHwnd': '0',
-                'processId': 5516,
-                'processName': 'wxwork.exe',
-                'executableName': 'wxwork.exe',
-                'title': '企业微信',
-                'className': 'Qt51514QWindowIcon',
-                'visible': True,
-                'minimized': False,
-                'source': 'node-window-manager',
-                'accepted': True,
-                'rejectionReason': None,
-            },
-            'candidates': [
-                {
-                    'hwnd': '1968272',
-                    'rootHwnd': '1769682',
-                    'ownerHwnd': '1769682',
-                    'processId': 5516,
-                    'processName': 'wxwork.exe',
-                    'executableName': 'wxwork.exe',
-                    'title': '',
-                    'className': 'Qt51514QWindowIcon',
-                    'visible': True,
-                    'minimized': False,
-                    'source': 'node-window-manager',
-                    'accepted': False,
-                    'rejectionReason': 'empty_title',
-                }
-            ],
-            'rejection_reasons': [{'reason': 'empty_title', 'count': 1}],
-            'used_cached_capability': True,
-            'capability_refresh_requested': False,
-            'capability_refresh_executed': False,
-            'capability_checked_at': '2026-07-05T11:29:59.263Z',
-            'capability_expires_at': '2026-07-05T11:30:29.263Z',
-            'capability_age_ms': 23700,
-            'capability_probe_count_before_task': 2,
-            'capability_probe_count_after_task': 2,
-            'capability_probe_spawn_count_before_task': 2,
-            'capability_probe_spawn_count_after_task': 2,
-            'last_capability_diagnostic_code': 'UIA_ROOT_UNAVAILABLE',
-            'capability_probe_diagnostic': {
-                'scriptKind': 'availability_probe',
-                'spawnSucceeded': True,
-            },
-            'task_verification_diagnostic': {
-                'script_kind': 'input_inspection',
-                'failure_step': 'INPUT_LOOKUP',
-            },
-            'path': 'C:\\Users\\33031\\Desktop\\bot\\secret.txt',
-            'draftText': 'Hello Acme',
-            'token': 'top-secret',
-        }
-    )
-
-    assert sanitized['candidate_count_before_filter'] == 3
-    assert sanitized['selected_window']['hwnd'] == '1769682'
-    assert sanitized['candidates'][0]['rejectionReason'] == 'empty_title'
-    assert sanitized['used_cached_capability'] is True
-    assert sanitized['capability_checked_at'] == '2026-07-05T11:29:59.263Z'
-    assert sanitized['last_capability_diagnostic_code'] == 'UIA_ROOT_UNAVAILABLE'
-    assert sanitized['capability_probe_diagnostic']['scriptKind'] == 'availability_probe'
-    assert sanitized['task_verification_diagnostic']['failure_step'] == 'INPUT_LOOKUP'
-    assert 'path' not in sanitized
-    assert 'draftText' not in sanitized
-    assert 'token' not in sanitized
-
-
-async def test_start_execution_task_rejects_duplicate_runtime_task_id_across_batches(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def duplicate_runtime_task(*, request):
-        runtime_client.requests.append(request)
-        return {
-            'id': 'runtime-duplicate',
-            'status': 'succeeded',
-            'stage': 'pasted_to_input',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'contentVerified': True,
-                'draftWritten': True,
-                'inputLocated': True,
-            },
-        }
-
-    runtime_client.create_task = duplicate_runtime_task
-
-    first_batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    first_task_id = first_batch['tasks'][0]['id']
-    first_started = await service.start_execution_task(first_task_id, _scope(), {'operator': 'tester@example.com'})
-    assert first_started['status'] == 'succeeded'
-
-    second_batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    second_task_id = second_batch['tasks'][0]['id']
-    second_started = await service.start_execution_task(second_task_id, _scope(), {'operator': 'tester@example.com'})
-
-    assert second_started['status'] == 'failed'
-    assert second_started['error_code'] == 'BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT'
-    assert len(runtime_client.requests) == 2
-
-    second_attempts = await service.list_execution_attempts(second_task_id, _scope())
-    assert len(second_attempts) == 1
-    assert second_attempts[0]['status'] == 'failed'
-    assert second_attempts[0]['error_code'] == 'BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT'
-
-
-
-
-async def test_start_execution_task_keeps_runtime_error_when_duplicate_runtime_task_id_is_reported(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def duplicate_runtime_task(*, request):
-        runtime_client.requests.append(request)
-        return {
-            'id': 'runtime-duplicate',
-            'status': 'interrupted',
-            'stage': 'paste_verification_unavailable',
-            'errorCode': 'PASTE_VERIFICATION_UNAVAILABLE',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'contentVerified': False,
-                'verificationFailed': True,
-                'verificationMethod': 'windows_uia',
-                'verificationErrorCode': 'UIA_PROBE_FAILED',
-                'draftWritten': False,
-                'inputLocated': False,
-            },
-        }
-
-    runtime_client.create_task = duplicate_runtime_task
-
-    first_batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    first_task_id = first_batch['tasks'][0]['id']
-    first_started = await service.start_execution_task(first_task_id, _scope(), {'operator': 'tester@example.com'})
-    assert first_started['status'] == 'interrupted'
-    assert first_started['error_code'] == 'PASTE_VERIFICATION_UNAVAILABLE'
-
-    second_batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    second_task_id = second_batch['tasks'][0]['id']
-    second_started = await service.start_execution_task(second_task_id, _scope(), {'operator': 'tester@example.com'})
-
-    assert second_started['status'] == 'failed'
-    assert second_started['error_code'] == 'PASTE_VERIFICATION_UNAVAILABLE'
-
-    second_attempts = await service.list_execution_attempts(second_task_id, _scope())
-    assert len(second_attempts) == 1
-    assert second_attempts[0]['error_code'] == 'PASTE_VERIFICATION_UNAVAILABLE'
-    response_summary = json.loads(second_attempts[0]['response_summary'])
-    assert response_summary['errorCode'] == 'PASTE_VERIFICATION_UNAVAILABLE'
-
-    evidence = await service.get_execution_evidence(second_attempts[0]['id'], _scope())
-    technical_details = json.loads(evidence['technical_details'])
-    assert technical_details['error_code'] == 'PASTE_VERIFICATION_UNAVAILABLE'
-    assert technical_details['persistence_error_code'] == 'BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT'
-
-
-async def test_start_execution_task_does_not_forge_actual_metrics_when_input_not_observed(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def unavailable_probe_task(*, request):
-        runtime_client.requests.append(request)
-        return {
-            'id': 'runtime-unavailable',
-            'status': 'interrupted',
-            'stage': 'paste_verification_unavailable',
-            'errorCode': 'PASTE_VERIFICATION_UNAVAILABLE',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'contentVerified': False,
-                'verificationFailed': True,
-                'verificationMethod': 'windows_uia',
-                'verificationErrorCode': 'UIA_PROBE_FAILED',
-                'draftWritten': False,
-                'inputLocated': False,
-                'expectedTextLength': 234,
-                'expectedCodePointCount': 234,
-                'expectedDigest': 'digest-expected',
-                'expectedLineCount': 3,
-                'actualTextLength': 234,
-                'actualCodePointCount': 234,
-                'actualDigest': 'digest-expected',
-                'actualLineCount': 3,
-            },
-        }
-
-    runtime_client.create_task = unavailable_probe_task
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-
-    assert started['status'] == 'interrupted'
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
-    technical_details = json.loads(evidence['technical_details'])
-
-    assert technical_details['expected_text_length'] == 234
-    assert technical_details['observation_available'] is False
-    assert technical_details['actual_text_length'] is None
-    assert technical_details['actual_code_point_count'] is None
-    assert technical_details['actual_digest'] is None
-    assert technical_details['actual_line_count'] is None
-
-
-async def test_start_execution_task_uses_pre_paste_unavailable_message_and_keeps_provider_instance_id(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def unavailable_before_paste_task(*, request):
-        runtime_client.requests.append(request)
-        return {
-            'id': 'runtime-unavailable-before-paste',
-            'status': 'interrupted',
-            'stage': 'paste_verification_unavailable',
-            'errorCode': 'PASTE_VERIFICATION_UNAVAILABLE',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'contentVerified': False,
-                'verificationFailed': True,
-                'verificationMethod': 'windows_uia',
-                'providerInstanceId': 'provider-123',
-                'verificationErrorCode': 'UIA_PROBE_FAILED',
-                'diagnosticCode': 'UIA_PROBE_FAILED',
-                'diagnosticStage': 'capability_probe',
-                'draftWritten': False,
-                'inputLocated': False,
-            },
-        }
-
-    runtime_client.create_task = unavailable_before_paste_task
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-
-    assert started['status'] == 'interrupted'
-    assert started['error_message'] == 'UI Automation verifier was unavailable before paste'
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    assert attempts[0]['error_message'] == 'UI Automation verifier was unavailable before paste'
-
-    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
-    technical_details = json.loads(evidence['technical_details'])
-    assert technical_details['provider_instance_id'] == 'provider-123'
-    assert technical_details['diagnostic_stage'] == 'capability_probe'
-
-
-async def test_start_execution_task_preserves_input_not_located_window_and_task_diagnostics(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def input_not_located_task(*, request):
-        runtime_client.requests.append(request)
-        return {
-            'id': 'runtime-input-not-located',
-            'status': 'interrupted',
-            'stage': 'input_not_located',
-            'errorCode': 'INPUT_NOT_LOCATED',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'contentVerified': False,
-                'verificationFailed': True,
-                'verificationMethod': 'windows_uia',
-                'verificationErrorCode': 'INPUT_NOT_LOCATED',
-                'providerInstanceId': 'provider-25016',
-                'draftWritten': False,
-                'inputLocated': False,
-                'windowTitle': '企业微信',
-                'candidateCountBeforeFilter': 3,
-                'candidateCountAfterFilter': 1,
-                'canonicalCandidateCount': 2,
-                'rejectedCandidateCount': 2,
-                'selectedWindow': {
-                    'hwnd': '1769682',
-                    'rootHwnd': '1769682',
-                    'ownerHwnd': '0',
-                    'processId': 5516,
-                    'processName': 'wxwork.exe',
-                    'executableName': 'wxwork.exe',
-                    'title': '企业微信',
-                    'className': 'Qt51514QWindowIcon',
-                    'visible': True,
-                    'minimized': False,
-                    'source': 'node-window-manager',
-                    'accepted': True,
-                    'rejectionReason': None,
-                },
-                'usedCachedCapability': True,
-                'capabilityRefreshRequested': False,
-                'capabilityRefreshExecuted': False,
-                'capabilityCheckedAt': '2026-07-05T11:29:59.263Z',
-                'capabilityExpiresAt': '2026-07-05T11:30:29.263Z',
-                'capabilityAgeMs': 23700,
-                'capabilityProbeCountBeforeTask': 2,
-                'capabilityProbeCountAfterTask': 2,
-                'capabilityProbeSpawnCountBeforeTask': 2,
-                'capabilityProbeSpawnCountAfterTask': 2,
-                'lastCapabilityDiagnosticCode': 'UIA_ROOT_UNAVAILABLE',
-                'capabilityProbeDiagnostic': {
-                    'scriptKind': 'availability_probe',
-                    'spawnSucceeded': True,
-                },
-                'taskVerificationDiagnostic': {
-                    'scriptKind': 'input_inspection',
-                    'spawnSucceeded': True,
-                    'timedOut': False,
-                    'exitCode': 0,
-                    'stdoutJsonFound': True,
-                    'stderrCategory': 'none',
-                    'tempFileCreated': True,
-                    'tempFileCleanupSucceeded': True,
-                    'failureStep': 'INPUT_LOOKUP',
-                    'windowFound': True,
-                    'conversationObserved': True,
-                    'conversationMatched': True,
-                    'inputElementFound': False,
-                    'valuePatternAvailable': False,
-                    'textPatternAvailable': False,
-                    'textObserved': False,
-                },
-            },
-        }
-
-    runtime_client.create_task = input_not_located_task
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-
-    assert started['status'] == 'interrupted'
-    assert started['error_code'] == 'INPUT_NOT_LOCATED'
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    assert attempts[0]['error_code'] == 'INPUT_NOT_LOCATED'
-
-    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
-    assert evidence['window_title'] == '企业微信'
-    technical_details = json.loads(evidence['technical_details'])
-    assert technical_details['error_code'] == 'INPUT_NOT_LOCATED'
-    assert technical_details['selected_window']['hwnd'] == '1769682'
-    assert technical_details['task_verification_diagnostic']['failureStep'] == 'INPUT_LOOKUP'
-    assert technical_details['used_cached_capability'] is True
-    assert technical_details['capability_checked_at'] == '2026-07-05T11:29:59.263Z'
-
-
-async def test_get_execution_evidence_returns_specific_not_available_error_for_attempt_without_evidence(service_fixture):
-    service, persistence_mgr = service_fixture
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-
-    async with persistence_mgr.get_db_engine().begin() as conn:
-        attempt_id = await service.repository.create_execution_attempt(
-            conn,
-            {
-                'execution_task_id': task_id,
-                'attempt_no': 1,
-                'idempotency_key': 'broadcast:test:1',
-                'request_digest': 'digest-1',
-                'runtime_task_id': None,
-                'request_summary': 'request-summary',
-                'response_summary': None,
-                'status': 'interrupted',
-                'error_code': 'PASTE_VERIFICATION_UNAVAILABLE',
-                'error_message': 'missing evidence',
-                'finished_at': None,
-            },
-        )
-
-    with pytest.raises(BroadcastError) as exc_info:
-        await service.get_execution_evidence(attempt_id, _scope())
-
-    assert exc_info.value.code == 'BROADCAST_EXECUTION_EVIDENCE_NOT_AVAILABLE'
-
-
-async def test_start_execution_task_maps_attachment_path_outside_root_to_failed_and_sanitizes_paths(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def outside_root_task(*, request):
-        runtime_client.requests.append(request)
-        return {
-            'id': 'runtime-outside-root',
-            'status': 'failed',
-            'stage': 'pasting_attachments',
-            'errorCode': 'ATTACHMENT_PATH_OUTSIDE_ROOT',
-            'errorMessage': 'Attachment path is outside the configured attachment root',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'contentVerified': False,
-                'verificationFailed': True,
-                'draftWritten': True,
-                'inputLocated': True,
-                'attachmentsPrepared': False,
-                'attachmentPasteRequested': False,
-                'attachmentRoot': 'C:/secret/runtime/broadcast_attachments',
-                'resolvedPath': 'C:/secret/runtime/broadcast_attachments/outside.txt',
-            },
-        }
-
-    runtime_client.create_task = outside_root_task
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-
-    assert started['status'] == 'failed'
-    assert started['error_code'] == 'ATTACHMENT_PATH_OUTSIDE_ROOT'
-    assert started['error_message'] == 'Attachment path is outside the configured attachment root'
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    assert attempts[0]['status'] == 'failed'
-    attempt_detail = await service.get_execution_attempt_detail(attempts[0]['id'], _scope())
-    assert 'C:/secret' not in (attempt_detail['response_summary'] or '')
-
-    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
-    technical_details = json.loads(evidence['technical_details'])
-    assert technical_details['error_code'] == 'ATTACHMENT_PATH_OUTSIDE_ROOT'
-    assert 'attachment_root' not in technical_details
-    assert 'resolved_path' not in technical_details
-
-
-async def test_start_execution_task_maps_file_clipboard_helper_failures_to_failed_without_path_leakage(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    await service.add_draft_attachments(
-        draft['id'],
-        _scope(),
-        [{'filename': 'report.xlsx', 'body': b'xlsx-data'}],
-    )
-    await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
-
-    refreshed_draft = await service.get_draft_detail(draft['id'], _scope())
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [refreshed_draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def helper_failed_task(*, request):
-        runtime_client.requests.append(request)
-        return {
-            'id': 'runtime-clipboard-helper-failed',
-            'status': 'failed',
-            'stage': 'pasting_attachments',
-            'errorCode': 'FILE_CLIPBOARD_OUTPUT_INVALID',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'contentVerified': False,
-                'verificationFailed': False,
-                'draftWritten': True,
-                'inputLocated': False,
-                'attachmentsPrepared': False,
-                'attachmentPasteRequested': False,
-                'attachmentsVerified': False,
-                'attachmentCount': 1,
-                'sanitizedMessage': 'Unable to prepare the file clipboard',
-                'attachmentRoot': 'C:/secret/runtime/broadcast_attachments',
-                'payloadPath': 'C:/temp/langbot-filedrop-123.json',
-                'resolvedPath': 'C:/secret/runtime/broadcast_attachments/report.xlsx',
-                'sendKeyCount': 0,
-            },
-        }
-
-    runtime_client.create_task = helper_failed_task
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-
-    assert started['status'] == 'failed'
-    assert started['error_code'] == 'FILE_CLIPBOARD_OUTPUT_INVALID'
-    assert started['status'] != 'interrupted'
-    assert started['status'] != 'succeeded_with_warning'
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    assert attempts[0]['status'] == 'failed'
-    assert attempts[0]['error_code'] == 'FILE_CLIPBOARD_OUTPUT_INVALID'
-    attempt_detail = await service.get_execution_attempt_detail(attempts[0]['id'], _scope())
-    assert 'C:/secret' not in (attempt_detail['response_summary'] or '')
-    assert 'langbot-filedrop-' not in (attempt_detail['response_summary'] or '')
-
-    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
-    technical_details = json.loads(evidence['technical_details'])
-    assert technical_details['error_code'] == 'FILE_CLIPBOARD_OUTPUT_INVALID'
-    assert technical_details['attachment_count'] == 1
-    assert technical_details['message_sent'] is False
-    assert technical_details['send_key_count'] == 0
-    assert 'attachment_root' not in technical_details
-    assert 'payload_path' not in technical_details
-
-
-async def test_start_execution_task_maps_target_window_lost_before_attachment_paste_to_failed(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    await service.add_draft_attachments(
-        draft['id'],
-        _scope(),
-        [{'filename': 'quote.pdf', 'body': b'pdf-data'}],
-    )
-    await service.update_draft_statuses(_scope(), {'draft_ids': [draft['id']], 'status': 'ready'})
-    refreshed_draft = await service.get_draft_detail(draft['id'], _scope())
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [refreshed_draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def lost_focus_task(*, request):
-        runtime_client.requests.append(request)
-        return {
-            'id': 'runtime-lost-focus',
-            'status': 'failed',
-            'stage': 'pasting_attachments',
-            'errorCode': 'TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'contentVerified': False,
-                'draftWritten': True,
-                'inputLocated': False,
-                'attachmentsPrepared': True,
-                'attachmentPasteRequested': False,
-                'attachmentsVerified': False,
-                'attachmentCount': 1,
-                'sendKeyCount': 0,
-            },
-        }
-
-    runtime_client.create_task = lost_focus_task
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-    assert started['status'] == 'failed'
-    assert started['error_code'] == 'TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE'
-
-    attempts = await service.list_execution_attempts(task_id, _scope())
-    assert attempts[0]['status'] == 'failed'
-    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
-    technical_details = json.loads(evidence['technical_details'])
-    assert technical_details['attachments_prepared'] is True
-    assert technical_details['attachment_paste_requested'] is False
-
-async def test_get_executor_health_uses_public_runtime_interface_when_runtime_client_is_none(service_fixture):
-    service, _ = service_fixture
-    deferred_runtime = _DeferredRuntimeDesktopAutomationService()
-    service.ap.desktop_automation_service = deferred_runtime
-
-    health = await service.get_executor_health(_scope())
-
-    assert health['status'] == 'ready'
-    assert health['protocol_version'] == '1'
-    assert health['runtime_version'] == '0.1.0'
-    assert health['runtime_status']['supportsPaste'] is True
-    assert health['runtime_status']['pasteVerification']['method'] == 'windows_uia'
-    assert health['runtime_status']['pasteVerification']['reason'] is None
-    assert deferred_runtime.ensure_client_calls >= 2
-    assert deferred_runtime.health_calls == 1
-    assert deferred_runtime.capability_calls == 1
-
-
-async def test_get_executor_health_reports_stable_error_code_when_runtime_capabilities_fail(
-    service_fixture,
-):
-    service, _ = service_fixture
-
-    class _BrokenRuntimeClient:
-        async def health(self):
-            return {'status': 'ready', 'protocolVersion': '1', 'runtimeVersion': '0.1.0'}
-
-        async def capabilities(self):
-            raise RuntimeError('系统找不到指定的文件。')
-
-    service.ap.desktop_automation_service = SimpleNamespace(
-        runtime_client=_BrokenRuntimeClient(),
-    )
-
-    health = await service.get_executor_health(_scope())
-
-    assert health['available'] is False
-    assert health['status'] == 'unavailable'
-    assert health['error_message'] == 'RuntimeError'
-
-
-async def test_start_execution_task_uses_public_runtime_interface_when_runtime_client_is_none(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-    deferred_runtime = _DeferredRuntimeDesktopAutomationService()
-    service.ap.desktop_automation_service = deferred_runtime
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    task_id = batch['tasks'][0]['id']
-
-    started = await service.start_execution_task(task_id, _scope(), {'operator': 'tester@example.com'})
-
-    assert started['status'] == 'succeeded'
-    assert len(deferred_runtime.create_task_calls) == 1
-    assert deferred_runtime.create_task_calls[0]['action'] == 'paste_draft'
-
-
-async def test_run_next_execution_task_marks_claimed_failures_terminal_and_does_not_block_following_tasks(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_draft_for_execution(service)
-    draft = prepared['draft']
-    first_batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    second_batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id']],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    await service.start_execution_batch(
-        first_batch['id'],
-        _scope(),
-        {'operator': 'tester@example.com'},
-    )
-    await service.start_execution_batch(
-        second_batch['id'],
-        _scope(),
-        {'operator': 'tester@example.com'},
-    )
-
-    import langbot.pkg.broadcast.service as broadcast_service_module
-
-    original_build_executor = broadcast_service_module.build_executor
-    first_call = True
-
-    def build_executor_once(channel, gateway):
-        nonlocal first_call
-        if first_call:
-            first_call = False
-            raise RuntimeError('executor-bootstrap-failed')
-        return original_build_executor(channel, gateway)
-
-    monkeypatch.setattr(
-        broadcast_service_module,
-        'build_executor',
-        build_executor_once,
-    )
-
-    first_processed = await service.run_next_execution_task()
-    second_processed = await service.run_next_execution_task()
-
-    assert first_processed is True
-    assert second_processed is True
-
-    first_task_id = first_batch['tasks'][0]['id']
-    second_task_id = second_batch['tasks'][0]['id']
-
-    first_task = await service.get_execution_task_detail(first_task_id, _scope())
-    second_task = await service.get_execution_task_detail(second_task_id, _scope())
-
-    assert first_task['status'] == 'interrupted'
-    assert first_task['attempt_count'] == 0
-    assert first_task['error_code'] == 'RuntimeError'
-    assert second_task['status'] == 'succeeded'
-    assert second_task['attempt_count'] == 1
-
-    assert await service.list_execution_attempts(first_task_id, _scope()) == []
-    second_attempts = await service.list_execution_attempts(second_task_id, _scope())
-    assert len(second_attempts) == 1
-
-
-async def test_run_next_execution_task_preserves_fifo_and_continues_after_mid_batch_failure(
-    service_fixture,
-    monkeypatch,
-):
-    service, _ = service_fixture
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-
-    prepared = await _prepare_ready_drafts_for_execution(
-        service,
-        [('A', 'Group A'), ('B', 'Group B'), ('C', 'Group C')],
-    )
-    drafts = prepared['drafts']
-    batch = await service.create_execution_batch(
-        _scope(),
-        {
-            'draft_ids': [draft['id'] for draft in drafts],
-            'mode': 'paste_only',
-            'operator': 'tester@example.com',
-        },
-    )
-    await service.start_execution_batch(
-        batch['id'],
-        _scope(),
-        {'operator': 'tester@example.com'},
-    )
-
-    runtime_client = service.ap.desktop_automation_service.runtime_client
-
-    async def create_task(*, request):
-        runtime_client.requests.append(request)
-        if request['conversationName'] == 'Group B':
-            return {
-                'id': 'runtime-b',
-                'status': 'failed',
-                'stage': 'paste_failed',
-                'errorCode': 'PASTE_CONTENT_MISMATCH',
-                'result': {
-                    'messageSent': False,
-                    'clipboardRestoreFailed': False,
-                    'contentVerified': True,
-                    'draftWritten': True,
-                    'inputLocated': True,
-                },
-            }
-        return {
-            'id': f"runtime-{request['conversationName']}",
-            'status': 'succeeded',
-            'stage': 'pasted_to_input',
-            'result': {
-                'messageSent': False,
-                'clipboardRestoreFailed': False,
-                'contentVerified': True,
-                'draftWritten': True,
-                'inputLocated': True,
-            },
-        }
-
-    runtime_client.create_task = create_task
-
-    processed = []
-    while await service.run_next_execution_task():
-        processed.append(True)
-
-    assert len(processed) == 3
-    assert [request['conversationName'] for request in runtime_client.requests] == [
-        'Group A',
-        'Group B',
-        'Group C',
-    ]
-
-    refreshed_batch = await service.get_execution_batch_detail(batch['id'], _scope())
-    assert [task['target_conversation_snapshot'] for task in refreshed_batch['tasks']] == [
-        'Group A',
-        'Group B',
-        'Group C',
-    ]
-    assert [task['status'] for task in refreshed_batch['tasks']] == [
-        'succeeded',
-        'failed',
-        'succeeded',
-    ]
-    assert refreshed_batch['status'] == 'partially_failed'
-    assert refreshed_batch['succeeded_tasks'] == 2
-    assert refreshed_batch['failed_tasks'] == 1
-
-    refreshed_drafts = [
-        await service.get_draft_detail(draft['id'], _scope())
-        for draft in drafts
-    ]
-    assert [draft['send_status'] for draft in refreshed_drafts] == [
-        'pending',
-        'pending',
-        'pending',
-    ]
-
-
-async def test_upsert_import_group_template_assignments_persists_and_survives_group_listing(
-    service_fixture,
-):
-    service, _ = service_fixture
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Group',
-
-            'target_conversation_id': 'Acme Group',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '客户名称\nAcme\n'.encode('utf-8'),
-        },
-    )
-    template = await service.create_template(
-        _scope(),
-        {
-            'name': 'Arrival Reminder',
-            'content': 'Hello {{customer_name}}',
-            'enabled': True,
-        },
-    )
-
-    groups_before = await service.list_import_groups(created['id'], _scope(), {})
-    group_key = groups_before['groups'][0]['group_key']
-
-    saved = await service.upsert_import_group_template_assignments(
-        created['id'],
-        _scope(),
-        {
-            'items': [
-                {
-                    'group_key': group_key,
-                    'template_id': template['id'],
-                }
-            ]
-        },
-    )
-
-    assert saved['items'] == [
-        {
-            'group_key': group_key,
-            'template_id': template['id'],
-        }
-    ]
-
-    groups_after = await service.list_import_groups(created['id'], _scope(), {})
-    assert groups_after['groups'][0]['template_id'] == template['id']
-    assert groups_after['groups'][0]['template_name'] == 'Arrival Reminder'
-    assert groups_after['groups'][0]['template_enabled'] is True
-
-
-async def test_generate_import_drafts_only_creates_selected_groups_in_requested_order(
-    service_fixture,
-):
-    service, _ = service_fixture
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Group',
-
-            'target_conversation_id': 'Acme Group',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Globex',
-            'match_type': 'exact',
-            'match_expression': 'Globex',
-            'target_conversation_name': 'Globex Group',
-
-            'target_conversation_id': 'Globex Group',
-            'priority': 9,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '客户名称\nAcme\nGlobex\n'.encode('utf-8'),
-        },
-    )
-    template_a = await service.create_template(
-        _scope(),
-        {
-            'name': 'Template A',
-            'content': 'Hello {{customer_name}} from A',
-            'enabled': True,
-        },
-    )
-    template_b = await service.create_template(
-        _scope(),
-        {
-            'name': 'Template B',
-            'content': 'Hello {{customer_name}} from B',
-            'enabled': True,
-        },
-    )
-    groups = await service.list_import_groups(created['id'], _scope(), {})
-    group_key_by_value = {item['group_value']: item['group_key'] for item in groups['groups']}
-    await service.upsert_import_group_template_assignments(
-        created['id'],
-        _scope(),
-        {
-            'items': [
-                {'group_key': group_key_by_value['Acme'], 'template_id': template_a['id']},
-                {'group_key': group_key_by_value['Globex'], 'template_id': template_b['id']},
-            ]
-        },
-    )
-
-    result = await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'group_keys': [
-                group_key_by_value['Globex'],
-                group_key_by_value['Acme'],
-            ],
-            'overwrite_existing': False,
-        },
-    )
-
-    assert result['total_group_count'] == 2
-    assert result['created_count'] == 2
-    assert result['updated_count'] == 0
-    assert [item['operation'] for item in result['draft_results']] == ['created', 'created']
-    assert result['generated_group_keys'] == [
-        group_key_by_value['Globex'],
-        group_key_by_value['Acme'],
-    ]
-
-    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
-    assert [item['group_value'] for item in drafts] == ['Globex', 'Acme']
-    assert [item['template_name_snapshot'] for item in drafts] == ['Template B', 'Template A']
-
-
-async def test_generate_import_drafts_overwrites_pending_draft_in_place_and_preserves_metadata(
-    service_fixture,
-):
-    service, _ = service_fixture
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '瀹㈡埛鍚嶇О',
-            'mapping_rules': [
-                {
-                    'source_field': '瀹㈡埛鍚嶇О',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    group_rule = await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Group',
-            'target_conversation_id': 'acme-group-1',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '瀹㈡埛鍚嶇О\nAcme\n'.encode('utf-8'),
-        },
-    )
-    template_a = await service.create_template(
-        _scope(),
-        {
-            'name': 'Template A',
-            'content': 'Hello {{customer_name}} from A',
-            'enabled': True,
-        },
-    )
-    template_b = await service.create_template(
-        _scope(),
-        {
-            'name': 'Template B',
-            'content': 'Updated hello {{customer_name}} from B',
-            'enabled': True,
-        },
-    )
-    groups = await service.list_import_groups(created['id'], _scope(), {})
-    group_key = groups['groups'][0]['group_key']
-    await service.upsert_import_group_template_assignments(
-        created['id'],
-        _scope(),
-        {
-            'items': [{'group_key': group_key, 'template_id': template_a['id']}],
-        },
-    )
-    await service.add_import_group_attachments(
-        created['id'],
-        group_key,
-        _scope(),
-        [
-            {
-                'filename': 'first.txt',
-                'body': b'first attachment',
-                'content_type': 'text/plain',
-            }
-        ],
-    )
-
-    first_result = await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'group_keys': [group_key],
-            'overwrite_existing': True,
-        },
-    )
-    assert first_result['created_count'] == 1
-    draft_id = first_result['draft_ids'][0]
-    first_detail = await service.get_draft_detail(draft_id, _scope())
-    assert first_detail['send_status'] == 'pending'
-    assert first_detail['status'] == 'pending_review'
-    assert first_detail['target_conversation_id'] == 'acme-group-1'
-    assert [item['original_name'] for item in first_detail['attachments']] == ['first.txt']
-    created_at = first_detail['created_at']
-
-    await service.update_draft_statuses(
-        _scope(),
-        {'draft_ids': [draft_id], 'status': 'ready'},
-    )
-    async with service.ap.persistence_mgr.get_db_engine().begin() as conn:
-        await service.ap.persistence_mgr.execute_async(
-            sqlalchemy.update(persistence_broadcast.BroadcastImportRow)
-            .where(
-                persistence_broadcast.BroadcastImportRow.import_batch_id == created['id'],
-                persistence_broadcast.BroadcastImportRow.group_value == 'Acme',
-            )
-            .values(
-                {
-                    'matched_conversation_name': 'Acme VIP Group',
-                    'matched_conversation_id': 'acme-group-2',
-                }
-            ),
-            conn=conn,
-        )
-    await service.upsert_import_group_template_assignments(
-        created['id'],
-        _scope(),
-        {
-            'items': [{'group_key': group_key, 'template_id': template_b['id']}],
-        },
-    )
-    await service.add_import_group_attachments(
-        created['id'],
-        group_key,
-        _scope(),
-        [
-            {
-                'filename': 'second.txt',
-                'body': b'second attachment',
-                'content_type': 'text/plain',
-            }
-        ],
-    )
-
-    stale_detail = await service.get_draft_detail(draft_id, _scope())
-    assert stale_detail['attachments_stale'] is True
-    assert stale_detail['status'] == 'ready'
-
-    overwrite_result = await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'group_keys': [group_key],
-            'overwrite_existing': True,
-        },
-    )
-
-    assert overwrite_result['created_count'] == 0
-    assert overwrite_result['updated_count'] == 1
-    assert overwrite_result['draft_ids'] == [draft_id]
-    assert overwrite_result['draft_results'] == [
-        {
-            'group_key': group_key,
-            'draft_id': draft_id,
-            'operation': 'updated',
-            'modified_fields': [
-                'template_id',
-                'template_name_snapshot',
-                'template_content_snapshot',
-                'render_variables',
-                'draft_text',
-                'target_conversation_id',
-                'target_conversation_name',
-                'attachment_snapshots',
-                'status',
-                'error_message',
-                'attachments_stale',
-                'updated_at',
-            ],
-        }
-    ]
-
-    updated_detail = await service.get_draft_detail(draft_id, _scope())
-    assert updated_detail['id'] == draft_id
-    assert updated_detail['created_at'] == created_at
-    assert updated_detail['template_id'] == template_b['id']
-    assert updated_detail['template_name_snapshot'] == 'Template B'
-    assert updated_detail['draft_text'] == 'Updated hello Acme from B'
-    assert updated_detail['target_conversation_id'] == 'acme-group-2'
-    assert updated_detail['target_conversation_name'] == 'Acme VIP Group'
-    assert updated_detail['status'] == 'pending_review'
-    assert updated_detail['send_status'] == 'pending'
-    assert updated_detail['error_message'] is None
-    assert updated_detail['attachments_stale'] is False
-    assert [item['original_name'] for item in updated_detail['attachments']] == [
-        'first.txt',
-        'second.txt',
-    ]
-    assert service.ap.desktop_automation_service.runtime_client.requests == []
-
-
-async def test_generate_import_drafts_rejects_sent_drafts_atomically(service_fixture):
-    service, _ = service_fixture
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '瀹㈡埛鍚嶇О',
-            'mapping_rules': [
-                {
-                    'source_field': '瀹㈡埛鍚嶇О',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Shared Group',
-            'target_conversation_id': 'shared-group',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Globex',
-            'match_type': 'exact',
-            'match_expression': 'Globex',
-            'target_conversation_name': 'Shared Group',
-            'target_conversation_id': 'shared-group',
-            'priority': 9,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '瀹㈡埛鍚嶇О\nAcme\nGlobex\n'.encode('utf-8'),
-        },
-    )
-    template = await service.create_template(
-        _scope(),
-        {
-            'name': 'Template A',
-            'content': 'Hello {{customer_name}}',
-            'enabled': True,
-        },
-    )
-    groups = await service.list_import_groups(created['id'], _scope(), {})
-    group_key_by_value = {item['group_value']: item['group_key'] for item in groups['groups']}
-    await service.upsert_import_group_template_assignments(
-        created['id'],
-        _scope(),
-        {
-            'items': [
-                {'group_key': item['group_key'], 'template_id': template['id']}
-                for item in groups['groups']
-            ],
-        },
-    )
-
-    first_result = await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'group_keys': [group_key_by_value['Acme']],
-            'overwrite_existing': True,
-        },
-    )
-    draft_id = first_result['draft_ids'][0]
-    await service.update_draft_statuses(
-        _scope(),
-        {'draft_ids': [draft_id], 'status': 'sent'},
-    )
-    sent_before = await service.get_draft_detail(draft_id, _scope())
-
-    with pytest.raises(BroadcastError) as exc_info:
-        await service.generate_import_drafts(
-            created['id'],
-            _scope(),
-            {
-                'group_keys': [
-                    group_key_by_value['Acme'],
-                    group_key_by_value['Globex'],
-                ],
-                'overwrite_existing': True,
-            },
-        )
-
-    assert exc_info.value.code == 'BATCH_VALIDATION_FAILED'
-    assert exc_info.value.details == ['Acme: 已发送草稿不允许覆盖，请先恢复为待发送']
-
-    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
-    assert len(drafts) == 1
-    assert drafts[0]['id'] == draft_id
-    assert drafts[0]['send_status'] == 'sent'
-    sent_after = await service.get_draft_detail(draft_id, _scope())
-    assert sent_after['draft_text'] == sent_before['draft_text']
-    assert service.ap.desktop_automation_service.runtime_client.requests == []
-
-
-async def test_generate_import_drafts_supports_mixed_create_update_and_leaves_unselected_drafts_unchanged(
-    service_fixture,
-):
-    service, _ = service_fixture
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '瀹㈡埛鍚嶇О',
-            'mapping_rules': [
-                {
-                    'source_field': '瀹㈡埛鍚嶇О',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    for priority, group_name in enumerate(['Acme', 'Globex', 'Northwind'], start=8):
-        await service.create_group_rule(
-            _scope(),
-            {
-                'source_value': group_name,
-                'match_type': 'exact',
-                'match_expression': group_name,
-                'target_conversation_name': f'{group_name} Group',
-                'target_conversation_id': f'{group_name.lower()}-group',
-                'priority': priority,
-                'enabled': True,
-            },
-        )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '瀹㈡埛鍚嶇О\nAcme\nGlobex\nNorthwind\n'.encode('utf-8'),
-        },
-    )
-    template_a = await service.create_template(
-        _scope(),
-        {
-            'name': 'Template A',
-            'content': 'Hello {{customer_name}} from A',
-            'enabled': True,
-        },
-    )
-    template_b = await service.create_template(
-        _scope(),
-        {
-            'name': 'Template B',
-            'content': 'Hello {{customer_name}} from B',
-            'enabled': True,
-        },
-    )
-    groups = await service.list_import_groups(created['id'], _scope(), {})
-    group_key_by_value = {item['group_value']: item['group_key'] for item in groups['groups']}
-    await service.upsert_import_group_template_assignments(
-        created['id'],
-        _scope(),
-        {
-            'items': [
-                {'group_key': item['group_key'], 'template_id': template_a['id']}
-                for item in groups['groups']
-            ],
-        },
-    )
-
-    first_result = await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'group_keys': [
-                group_key_by_value['Acme'],
-                group_key_by_value['Northwind'],
-            ],
-            'overwrite_existing': True,
-        },
-    )
-    original_ids = {
-        result['group_key']: result['draft_id'] for result in first_result['draft_results']
-    }
-    northwind_before = await service.get_draft_detail(
-        original_ids[group_key_by_value['Northwind']],
-        _scope(),
-    )
-
-    await service.upsert_import_group_template_assignments(
-        created['id'],
-        _scope(),
-        {
-            'items': [
-                {'group_key': group_key_by_value['Acme'], 'template_id': template_b['id']},
-                {'group_key': group_key_by_value['Globex'], 'template_id': template_b['id']},
-            ],
-        },
-    )
-
-    second_result = await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'group_keys': [
-                group_key_by_value['Acme'],
-                group_key_by_value['Globex'],
-            ],
-            'overwrite_existing': True,
-        },
-    )
-
-    assert second_result['created_count'] == 1
-    assert second_result['updated_count'] == 1
-    assert second_result['draft_results'][0]['group_key'] == group_key_by_value['Acme']
-    assert second_result['draft_results'][0]['draft_id'] == original_ids[group_key_by_value['Acme']]
-    assert second_result['draft_results'][0]['operation'] == 'updated'
-    assert second_result['draft_results'][1]['group_key'] == group_key_by_value['Globex']
-    assert second_result['draft_results'][1]['operation'] == 'created'
-
-    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
-    assert len(drafts) == 3
-    draft_by_group = {draft['group_value']: draft for draft in drafts}
-    assert draft_by_group['Acme']['id'] == original_ids[group_key_by_value['Acme']]
-    assert draft_by_group['Acme']['template_name_snapshot'] == 'Template B'
-    assert draft_by_group['Acme']['send_status'] == 'pending'
-    assert draft_by_group['Globex']['template_name_snapshot'] == 'Template B'
-    assert draft_by_group['Northwind']['id'] == original_ids[group_key_by_value['Northwind']]
-    assert draft_by_group['Northwind']['template_name_snapshot'] == northwind_before['template_name_snapshot']
-    assert draft_by_group['Northwind']['draft_text'] == northwind_before['draft_text']
-
-
-async def test_generate_import_drafts_rolls_back_all_writes_when_any_write_fails(service_fixture, monkeypatch):
-    service, _ = service_fixture
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '瀹㈡埛鍚嶇О',
-            'mapping_rules': [
-                {
-                    'source_field': '瀹㈡埛鍚嶇О',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    for priority, group_name in enumerate(['Acme', 'Globex'], start=9):
-        await service.create_group_rule(
-            _scope(),
-            {
-                'source_value': group_name,
-                'match_type': 'exact',
-                'match_expression': group_name,
-                'target_conversation_name': f'{group_name} Group',
-                'target_conversation_id': f'{group_name.lower()}-group',
-                'priority': priority,
-                'enabled': True,
-            },
-        )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '瀹㈡埛鍚嶇О\nAcme\nGlobex\n'.encode('utf-8'),
-        },
-    )
-    template_a = await service.create_template(
-        _scope(),
-        {
-            'name': 'Template A',
-            'content': 'Hello {{customer_name}} from A',
-            'enabled': True,
-        },
-    )
-    template_b = await service.create_template(
-        _scope(),
-        {
-            'name': 'Template B',
-            'content': 'Hello {{customer_name}} from B',
-            'enabled': True,
-        },
-    )
-    groups = await service.list_import_groups(created['id'], _scope(), {})
-    group_key_by_value = {item['group_value']: item['group_key'] for item in groups['groups']}
-    await service.upsert_import_group_template_assignments(
-        created['id'],
-        _scope(),
-        {
-            'items': [
-                {'group_key': item['group_key'], 'template_id': template_a['id']}
-                for item in groups['groups']
-            ],
-        },
-    )
-    first_result = await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'group_keys': [group_key_by_value['Acme']],
-            'overwrite_existing': True,
-        },
-    )
-    acme_draft_id = first_result['draft_ids'][0]
-    before_detail = await service.get_draft_detail(acme_draft_id, _scope())
-
-    await service.upsert_import_group_template_assignments(
-        created['id'],
-        _scope(),
-        {
-            'items': [
-                {'group_key': group_key_by_value['Acme'], 'template_id': template_b['id']},
-                {'group_key': group_key_by_value['Globex'], 'template_id': template_b['id']},
-            ],
-        },
-    )
-
-    original_create_draft = service.repository.create_draft
-
-    async def failing_create_draft(conn, payload):
-        if payload['group_value'] == 'Globex':
-            raise RuntimeError('simulated draft create failure')
-        return await original_create_draft(conn, payload)
-
-    monkeypatch.setattr(service.repository, 'create_draft', failing_create_draft)
-
-    with pytest.raises(RuntimeError, match='simulated draft create failure'):
-        await service.generate_import_drafts(
-            created['id'],
-            _scope(),
-            {
-                'group_keys': [
-                    group_key_by_value['Acme'],
-                    group_key_by_value['Globex'],
-                ],
-                'overwrite_existing': True,
-            },
-        )
-
-    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
-    assert len(drafts) == 1
-    assert drafts[0]['id'] == acme_draft_id
-    after_detail = await service.get_draft_detail(acme_draft_id, _scope())
-    assert after_detail['template_name_snapshot'] == before_detail['template_name_snapshot']
-    assert after_detail['draft_text'] == before_detail['draft_text']
-
-
-async def test_generate_import_drafts_rejects_missing_group_keys(service_fixture):
-    service, _ = service_fixture
-    await service.save_variable_profile(
-        _scope(),
-        {
-            'group_field': '客户名称',
-            'mapping_rules': [
-                {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
-                    'merge_mode': 'first',
-                    'order': 1,
-                }
-            ],
-        },
-    )
-    await service.create_group_rule(
-        _scope(),
-        {
-            'source_value': 'Acme',
-            'match_type': 'exact',
-            'match_expression': 'Acme',
-            'target_conversation_name': 'Acme Group',
-
-            'target_conversation_id': 'Acme Group',
-            'priority': 10,
-            'enabled': True,
-        },
-    )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '客户名称\nAcme\n'.encode('utf-8'),
-        },
-    )
-    template = await service.create_template(
-        _scope(),
-        {
-            'name': 'Arrival Reminder',
-            'content': 'Hello {{customer_name}}',
-            'enabled': True,
         },
     )
 
     with pytest.raises(BroadcastError) as exc_info:
-        await service.generate_import_drafts(
-            created['id'],
+        await service.upload_import(
             _scope(),
             {
-                'template_id': template['id'],
+                'filename': 'customers.csv',
+                'body': '\u8ba2\u5355\u53f7,\u8054\u7cfb\u4eba\u624b\u673a\u53f7\nSO-001,13800000000\n'.encode('utf-8'),
             },
         )
-    assert exc_info.value.message == '请先选择至少一个分组'
 
-    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
-    assert drafts == []
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED
+    details = exc_info.value.details
+    assert isinstance(details, dict)
+    assert details['headers'] == ['\u8ba2\u5355\u53f7', '\u8054\u7cfb\u4eba\u624b\u673a\u53f7']
+    assert details['candidates'] == []
+    assert details['configured_group_field'] == '\u5386\u53f2\u5ba2\u6237\u540d\u79f0'
+    assert details['original_file_name'] == 'customers.csv'
 
 
-async def test_generate_import_drafts_rejects_duplicate_target_conversations_without_creating_drafts(
-    service_fixture,
-):
+async def test_upload_import_rejects_invalid_group_field_override_with_structured_details(service_fixture):
     service, _ = service_fixture
+
     await service.save_variable_profile(
         _scope(),
         {
-            'group_field': '客户名称',
+            'group_field': '\u5ba2\u6237\u540d\u79f0',
             'mapping_rules': [
                 {
-                    'source_field': '客户名称',
-                    'variable_key': 'customer_name',
+                    'source_field': '\u8ba2\u5355\u53f7',
+                    'variable_key': 'order_no',
                     'merge_mode': 'first',
                     'order': 1,
                 }
             ],
         },
     )
-    for source_value in ['Acme', 'Globex']:
-        await service.create_group_rule(
-            _scope(),
-            {
-                'source_value': source_value,
-                'match_type': 'exact',
-                'match_expression': source_value,
-                'target_conversation_name': 'Shared Group',
-
-                'target_conversation_id': 'Shared Group',
-                'priority': 10,
-                'enabled': True,
-            },
-        )
-    created = await service.upload_import(
-        _scope(),
-        {
-            'filename': 'customers.csv',
-            'body': '客户名称\nAcme\nGlobex\n'.encode('utf-8'),
-        },
-    )
-    template = await service.create_template(
-        _scope(),
-        {
-            'name': 'Template A',
-            'content': 'Hello {{customer_name}}',
-            'enabled': True,
-        },
-    )
-    groups = await service.list_import_groups(created['id'], _scope(), {})
-    await service.upsert_import_group_template_assignments(
-        created['id'],
-        _scope(),
-        {
-            'items': [
-                {'group_key': item['group_key'], 'template_id': template['id']}
-                for item in groups['groups']
-            ]
-        },
-    )
-
-    result = await service.generate_import_drafts(
-        created['id'],
-        _scope(),
-        {
-            'group_keys': [item['group_key'] for item in groups['groups']],
-            'overwrite_existing': False,
-        },
-    )
-
-    drafts = await service.list_drafts(_scope(), {'import_batch_id': created['id']})
-    assert result['pending_review_count'] == 2
-    assert len(drafts) == 2
 
     with pytest.raises(BroadcastError) as exc_info:
-        await service.create_execution_batch(
+        await service.upload_import(
             _scope(),
             {
-                'draft_ids': [item['id'] for item in drafts],
-                'mode': 'paste_only',
-                'operator': 'tester@example.com',
+                'filename': 'customers.csv',
+                'body': '\u5ba2\u6237\u540d\u79f0,\u8ba2\u5355\u53f7\nAcme,SO-001\n'.encode('utf-8'),
+                'group_field_override': '\u7528\u6237\u540d',
             },
         )
 
-    assert exc_info.value.code == 'DUPLICATE_TARGET_CONVERSATION'
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID
+    details = exc_info.value.details
+    assert isinstance(details, dict)
+    assert details['group_field_override'] == '\u7528\u6237\u540d'
+    assert details['headers'] == ['\u5ba2\u6237\u540d\u79f0', '\u8ba2\u5355\u53f7']
+    assert details['original_file_name'] == 'customers.csv'

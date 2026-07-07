@@ -257,6 +257,7 @@ class TestSQLiteMigrationUpgrade:
             def inspect_schema(sync_conn):
                 inspector = sa.inspect(sync_conn)
                 table_names = set(inspector.get_table_names())
+                batch_columns = {column['name'] for column in inspector.get_columns('broadcast_import_batches')}
                 batch_indexes = {index['name'] for index in inspector.get_indexes('broadcast_import_batches')}
                 row_indexes = {index['name'] for index in inspector.get_indexes('broadcast_import_rows')}
                 draft_indexes = {index['name'] for index in inspector.get_indexes('broadcast_drafts')}
@@ -268,10 +269,11 @@ class TestSQLiteMigrationUpgrade:
                     tuple(sorted(item['column_names']))
                     for item in inspector.get_unique_constraints('broadcast_drafts')
                 }
-                return table_names, batch_indexes, row_indexes, draft_indexes, row_uniques, draft_uniques
+                return table_names, batch_columns, batch_indexes, row_indexes, draft_indexes, row_uniques, draft_uniques
 
             (
                 table_names,
+                batch_columns,
                 batch_indexes,
                 row_indexes,
                 draft_indexes,
@@ -284,6 +286,8 @@ class TestSQLiteMigrationUpgrade:
             'broadcast_import_rows',
             'broadcast_drafts',
         }.issubset(table_names)
+        assert 'group_field_used' in batch_columns
+        assert 'group_field_source' in batch_columns
         assert 'ix_broadcast_import_batches_bot_uuid' in batch_indexes
         assert 'ix_broadcast_import_batches_connector_id' in batch_indexes
         assert 'ix_broadcast_import_batches_created_at' in batch_indexes
@@ -526,6 +530,18 @@ class TestSQLiteMigrationUpgrade:
         assert module.down_revision == '0020_bc_group_tpl'
 
     @pytest.mark.asyncio
+    async def test_broadcast_import_group_field_revision_metadata_is_correct(self, sqlite_engine):
+        """Import group field migration metadata is correct and chained from 0021."""
+        script_path = _get_revision_script('0022_bc_import_group_field_used')
+        assert script_path.exists(), 'Expected 0022_bc_import_group_field_used migration script to exist'
+
+        module = importlib.import_module(
+            'langbot.pkg.persistence.alembic.versions.0022_bc_import_group_field_used'
+        )
+        assert len(module.revision) <= 32
+        assert module.down_revision == '0021_bc_target_conv_id'
+
+    @pytest.mark.asyncio
     async def test_broadcast_target_conversation_id_migration_adds_and_removes_columns(self, sqlite_engine):
         """Upgrade from 0020 adds target conversation id columns and downgrade removes them."""
         async with sqlite_engine.begin() as conn:
@@ -634,6 +650,71 @@ class TestSQLiteMigrationUpgrade:
         assert 'target_conversation_id' not in rule_columns
         assert 'matched_conversation_id' not in import_row_columns
         assert 'target_conversation_id' not in draft_columns
+
+    @pytest.mark.asyncio
+    async def test_broadcast_import_group_field_migration_adds_and_removes_columns(self, sqlite_engine):
+        """Upgrade from 0021 adds import batch group field columns and downgrade removes them."""
+        async with sqlite_engine.begin() as conn:
+            def setup_legacy_0021(sync_conn):
+                sync_conn.exec_driver_sql(
+                    """
+                    CREATE TABLE alembic_version (
+                        version_num VARCHAR(32) NOT NULL
+                    )
+                    """
+                )
+                sync_conn.exec_driver_sql(
+                    "INSERT INTO alembic_version (version_num) VALUES ('0021_bc_target_conv_id')"
+                )
+                sync_conn.exec_driver_sql(
+                    """
+                    CREATE TABLE broadcast_import_batches (
+                        id INTEGER NOT NULL PRIMARY KEY,
+                        bot_uuid VARCHAR(255) NOT NULL,
+                        connector_id VARCHAR(255) NOT NULL,
+                        original_file_name VARCHAR(255) NOT NULL,
+                        file_type VARCHAR(32) NOT NULL,
+                        worksheet_name VARCHAR(255),
+                        status VARCHAR(32) NOT NULL,
+                        drafts_stale BOOLEAN NOT NULL DEFAULT 0,
+                        total_rows INTEGER NOT NULL DEFAULT 0,
+                        valid_rows INTEGER NOT NULL DEFAULT 0,
+                        invalid_rows INTEGER NOT NULL DEFAULT 0,
+                        matched_rows INTEGER NOT NULL DEFAULT 0,
+                        unmatched_rows INTEGER NOT NULL DEFAULT 0,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL
+                    )
+                    """
+                )
+
+            await conn.run_sync(setup_legacy_0021)
+
+        await run_alembic_upgrade(sqlite_engine, '0022_bc_import_group_field_used')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_upgraded(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                return {col['name'] for col in inspector.get_columns('broadcast_import_batches')}
+
+            batch_columns = await conn.run_sync(inspect_upgraded)
+
+        assert 'group_field_used' in batch_columns
+        assert 'group_field_source' in batch_columns
+
+        await run_alembic_downgrade(sqlite_engine, '0021_bc_target_conv_id')
+
+        async with sqlite_engine.begin() as conn:
+            def inspect_downgraded(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                return {col['name'] for col in inspector.get_columns('broadcast_import_batches')}
+
+            batch_columns = await conn.run_sync(inspect_downgraded)
+
+        assert 'group_field_used' not in batch_columns
+        assert 'group_field_source' not in batch_columns
+        rev = await get_alembic_current(sqlite_engine)
+        assert rev == '0021_bc_target_conv_id'
 
     @pytest.mark.asyncio
     async def test_broadcast_attachment_relative_path_migration_repairs_already_applied_0017_db(self, sqlite_engine):

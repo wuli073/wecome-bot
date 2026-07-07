@@ -455,6 +455,11 @@ const zhHans = {
           cancelled: '已取消',
         },
         stage: {
+          batchStatus: '????',
+          taskStatus: '????',
+          attemptStatus: '????',
+          runtimeState: '?????',
+          recoveryAdvice: '????',
           validating_process: '正在验证企业微信',
           binding_window: '正在绑定企业微信窗口',
           activating_window: '正在激活企业微信窗口',
@@ -2058,11 +2063,23 @@ const zhHans = {
       detailHint: '上传成功后立即展示真实匹配结果，无需先点击重新匹配。',
       worksheetName: '工作表：{{name}}',
       rematchButton: '重新匹配',
+      rematchConfirmTitle: '????????',
+      rematchConfirmDescription:
+        '?????????????????????????? ready ?????????????????????????',
       deleteBatchButton: '删除批次',
+      deleteBatchConfirmTitle: '??????',
+      deleteBatchConfirmDescription:
+        '?? {{fileName}}??????? {{totalRows}} ??{{groupCount}} ?????? {{draftCount}} ?????????????????????',
       templatePlaceholder: '选择消息模板',
       bulkTemplatePlaceholder: '为选中分组设置模板',
       applyTemplateButton: '应用到已选',
+      applyTemplateToUnassignedButton: '仅应用到未设置',
+      clearTemplatesButton: '清除已选模板',
+      clearRowTemplateButton: '清除模板',
       generateDraftsButton: '生成选中草稿',
+      generateDraftsConfirmTitle: '??????',
+      generateDraftsConfirmDescription:
+        '?? {{selectedCount}} ???????????? {{templatedCount}} ?????????{{blockedCount}} ??????????',
       draftsStale: '草稿已过期，请重新生成',
       emptyRows: '暂无导入明细',
       selectedGroupCount: '已选择 {{count}} 个分组',
@@ -2093,10 +2110,19 @@ const zhHans = {
         noBatch: '请先选择导入批次。',
         noSelection: '请先选择至少一个可操作分组。',
         noTemplate: '请先选择要应用的消息模板。',
+        noProcessableSelection: '所选分组已使用当前模板。',
+        noUnassignedSelection: '所选分组中没有未设置模板的项。',
+      },
+      clearTemplateDisabled: {
+        noBatch: '请先选择导入批次。',
+        noSelection: '请先选择至少一个分组。',
+        noAssignedSelection: '所选分组中没有已设置模板的项。',
       },
       generateDisabled: {
         noBatch: '请先选择导入批次。',
         noSelection: '请先选择至少一个可操作分组。',
+        matchUnavailable:
+          '{{count}} 个已选分组尚未匹配到可用群聊，暂时不能生成草稿。',
         templateMissing: '{{count}} 个已选分组尚未选择消息模板。',
         templateDisabled: '{{count}} 个已选分组使用了已停用模板。',
         duplicateConversation: '{{count}} 个已选分组存在重复目标群聊。',
@@ -2123,9 +2149,29 @@ const zhHans = {
       groupAttachments: '客户分组附件',
       uploadAttachment: '上传附件',
       deleteAttachment: '删除',
+      clearTemplatesConfirmTitle: '确认清除分组模板',
+      clearTemplatesConfirmDescription:
+        '将清除 {{count}} 个已选分组的模板，未设置模板的分组会自动跳过。',
+      clearTemplatesConfirmButton: '确认清除',
       emptyAttachments: '暂无附件',
       groupRowsTitle: '原始行明细',
       groupRowsTotal: '共 {{total}} 行',
+      inlineMatch: {
+        selectConversationButton: '选择目标群聊',
+        dialogTitle: '选择目标群聊',
+        dialogDescription:
+          '为“{{groupValue}}”选择目标群聊，并保存精确匹配规则后重新匹配当前批次。',
+        dialogDescriptionFallback: '选择目标群聊并保存精确匹配规则。',
+        currentGroupLabel: '当前客户/分组',
+        searchLabel: '搜索目标群聊',
+        searchPlaceholder: '输入群聊名称',
+        missingStableId: '缺少稳定 external_conversation_id，暂不可选择',
+        emptySearch: '没有符合条件的群聊。',
+        selectionRequired: '请先选择一个可用的目标群聊。',
+        conflictRuleDetected:
+          '当前分组存在多条可能冲突的精确规则，请前往“群匹配”页处理后再保存。',
+        saveButton: '保存并重新匹配',
+      },
       pagination: {
         totalItems: '共 {{total}} 条',
         previous: '上一页',
@@ -2157,6 +2203,9 @@ const zhHans = {
       batchConfirm: '批量确认',
       createExecutionBatch: '创建执行批次',
       batchWriteSelected: '批量写入选中',
+      batchWriteConfirmTitle: '????????????',
+      batchWriteConfirmDescription:
+        '?? {{draftCount}} ????{{conversationCount}} ?????????????? {{attachmentCount}} ??????????{{duplicateTargetCount}}????????????????????????',
       mockPasteSelected: '批量写入已选草稿',
       editDraft: '编辑草稿',
       saveDraft: '保存草稿',
@@ -2255,6 +2304,35 @@ const zhHans = {
       statusPasteVerified: '已写入并验证',
       statusWarning: '已写入，请人工确认后发送',
       statusSendTriggered: '已触发发送',
+      retryFailedTasks: '?????',
+      retryFailedTasksConfirmTitle: '?????',
+      retryFailedTasksConfirmDescription:
+        '??????????? {{count}} ??????????????????????',
+      batchStatuses: {
+        created: '???',
+        queued: '????',
+        running: '???',
+        paused: '???',
+        completed: '???',
+        partially_failed: '????',
+        failed: '????',
+        cancelled: '???',
+        interrupted: '????',
+        unknown: '????',
+      },
+      taskStatuses: {
+        pending: '????',
+        queued: '???',
+        running: '????',
+        succeeded: '????',
+        succeeded_with_warning: '????????????',
+        blocked: '???',
+        failed: '????',
+        cancelled: '???',
+        timed_out: '????',
+        interrupted: '????',
+        unknown: '????',
+      },
       fields: {
         attachmentCount: '附件数量',
         attachmentNames: '附件名称',
@@ -2272,6 +2350,23 @@ const zhHans = {
         ATTACHMENT_PATH_OUTSIDE_ROOT: '附件文件不在系统允许的存储目录中',
       },
 
+      errorSuggestions: {
+        TARGET_WINDOW_NOT_FOUND: '?????????????',
+        TARGET_WINDOW_AMBIGUOUS: '???????????????',
+        WINDOW_ACTIVATION_FAILED: '???????????????????????',
+        SEARCH_ACTIVATION_FAILED: '???????????????????????',
+        TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE: '???????????????????????',
+        CONVERSATION_NAME_PASTE_FAILED: '??????????????',
+        SEARCH_RESULT_CONFIRM_FAILED: '??????????????',
+        ATTACHMENT_FILE_MISSING: '???????????',
+        ATTACHMENT_HASH_MISMATCH: '???????????',
+        ATTACHMENT_PATH_OUTSIDE_ROOT: '???????????',
+        FILE_CLIPBOARD_HELPER_FAILED: '?? Runtime ??????',
+        FILE_CLIPBOARD_HELPER_TIMEOUT: '?? Runtime ??????',
+        CLIPBOARD_RESTORE_MISMATCH: '???????????????????????',
+        PASTE_RESULT_NOT_VERIFIED: '?????????????????????????',
+        __default: '????????????????????',
+      },
       errorCodes: {
         FILE_CLIPBOARD_HELPER_SPAWN_FAILED: '????????????',
         FILE_CLIPBOARD_HELPER_TIMEOUT: '??????????',
@@ -2310,6 +2405,9 @@ const zhHans = {
       executionBatchResumed: '执行批次已继续',
       executionBatchCancelled: '已取消剩余任务',
       executionTaskRetried: '执行任务已重新排队',
+      executionFailedTasksRetried:
+        '??? {{successCount}} ???/???????{{failedCount}} ??????',
+      executionFailedTasksRetryNoop: '????????????????',
       pasteSubmitted: '写入任务已提交',
 
       sendSubmitted: '真实发送请求已提交',
@@ -2322,6 +2420,12 @@ const zhHans = {
       importRematched: '已按当前规则重新匹配',
       draftsGenerated:
         '已处理 {{count}} 个分组：新建 {{createdCount}} 份，覆盖 {{updatedCount}} 份草稿',
+      groupTemplateAssignmentsApplied:
+        '已为 {{count}} 个分组设置模板，其中替换 {{replacedCount}} 个已有模板。',
+      groupTemplateAssignmentsAppliedToUnassigned:
+        '已为 {{count}} 个未设置模板的分组补充模板。',
+      groupTemplateAssignmentsCleared: '已清除 {{count}} 个分组的模板。',
+      importInlineMatchSaved: '已保存精确匹配规则并重新匹配当前批次。',
       groupTemplateAssignmentsSaved: '已为选中分组保存消息模板',
       attachmentUploaded: '附件已上传',
       attachmentDeleted: '附件已删除',
@@ -2339,6 +2443,237 @@ const zhHans = {
   pluginPages: {
     selectFromSidebar: '从侧边栏选择一个插件页面',
     invalidPage: '无效的插件页面',
+  },
+};
+
+const zhHansTemplateLocale = zhHans.broadcast.rules.templates as Record<
+  string,
+  string
+>;
+zhHansTemplateLocale.deleteConfirmTitle = '????';
+zhHansTemplateLocale.deleteConfirmDescription =
+  '???{{name}}????????????????????????????????';
+zhHans.broadcast.import.rematchConfirmTitle = '????????';
+zhHans.broadcast.import.rematchConfirmDescription =
+  '?????????????????????????? ready ?????????????????????????';
+zhHans.broadcast.import.deleteBatchConfirmTitle = '??????';
+zhHans.broadcast.import.deleteBatchConfirmDescription =
+  '?? {{fileName}}??????? {{totalRows}} ??{{groupCount}} ?????? {{draftCount}} ?????????????????????';
+zhHans.broadcast.import.generateDraftsConfirmTitle = '??????';
+zhHans.broadcast.import.generateDraftsConfirmDescription =
+  '?? {{selectedCount}} ???????????? {{templatedCount}} ?????????{{blockedCount}} ??????????';
+zhHans.broadcast.drafts.batchWriteConfirmTitle = '????????????';
+zhHans.broadcast.drafts.batchWriteConfirmDescription =
+  '?? {{draftCount}} ????{{conversationCount}} ?????????????? {{attachmentCount}} ??????????{{duplicateTargetCount}}????????????????????????';
+zhHans.broadcast.logs.retryFailedTasks = '?????';
+zhHans.broadcast.logs.retryFailedTasksConfirmTitle = '?????';
+zhHans.broadcast.logs.retryFailedTasksConfirmDescription =
+  '??????????? {{count}} ??????????????????????';
+zhHans.broadcast.logs.batchStatuses = {
+  created: '???',
+  queued: '????',
+  running: '???',
+  paused: '???',
+  completed: '???',
+  partially_failed: '????',
+  failed: '????',
+  cancelled: '???',
+  interrupted: '????',
+  unknown: '????',
+};
+zhHans.broadcast.logs.taskStatuses = {
+  pending: '????',
+  queued: '???',
+  running: '????',
+  succeeded: '????',
+  succeeded_with_warning: '????????????',
+  blocked: '???',
+  failed: '????',
+  cancelled: '???',
+  timed_out: '????',
+  interrupted: '????',
+  unknown: '????',
+};
+const zhHansLogFieldLocaleLegacy = zhHans.broadcast.logs.fields as Record<
+  string,
+  string
+>;
+zhHansLogFieldLocaleLegacy.batchStatus = '????';
+zhHansLogFieldLocaleLegacy.taskStatus = '????';
+zhHansLogFieldLocaleLegacy.attemptStatus = '????';
+zhHansLogFieldLocaleLegacy.runtimeState = '?????';
+zhHansLogFieldLocaleLegacy.recoveryAdvice = '????';
+zhHans.broadcast.logs.errorSuggestions = {
+  TARGET_WINDOW_NOT_FOUND: '?????????????',
+  TARGET_WINDOW_AMBIGUOUS: '???????????????',
+  WINDOW_ACTIVATION_FAILED: '???????????????????????',
+  SEARCH_ACTIVATION_FAILED: '???????????????????????',
+  TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE: '???????????????????????',
+  CONVERSATION_NAME_PASTE_FAILED: '??????????????',
+  SEARCH_RESULT_CONFIRM_FAILED: '??????????????',
+  ATTACHMENT_FILE_MISSING: '???????????',
+  ATTACHMENT_HASH_MISMATCH: '???????????',
+  ATTACHMENT_PATH_OUTSIDE_ROOT: '???????????',
+  FILE_CLIPBOARD_HELPER_FAILED: '?? Runtime ??????',
+  FILE_CLIPBOARD_HELPER_TIMEOUT: '?? Runtime ??????',
+  CLIPBOARD_RESTORE_MISMATCH: '???????????????????????',
+  PASTE_RESULT_NOT_VERIFIED: '?????????????????????????',
+  __default: '????????????????????',
+};
+zhHans.broadcast.toasts.executionFailedTasksRetried =
+  '??? {{successCount}} ???/???????{{failedCount}} ??????';
+zhHans.broadcast.toasts.executionFailedTasksRetryNoop = '????????????????';
+
+const zhHansLogStatusLocale = zhHans.broadcast.logs.taskStatuses as Record<
+  string,
+  string
+>;
+zhHansLogStatusLocale.pending = '等待执行';
+zhHansLogStatusLocale.queued = '已排队';
+zhHansLogStatusLocale.running = '正在写入';
+zhHansLogStatusLocale.succeeded = '写入成功';
+zhHansLogStatusLocale.succeeded_with_warning =
+  zhHans.broadcast.logs.statusWarning;
+zhHansLogStatusLocale.blocked = '未执行';
+zhHansLogStatusLocale.failed = '写入失败';
+zhHansLogStatusLocale.cancelled = '已取消';
+zhHansLogStatusLocale.timed_out = '执行超时';
+zhHansLogStatusLocale.interrupted = '执行中断';
+zhHansLogStatusLocale.unknown = '未知状态';
+const zhHansBatchStatusLocale = zhHans.broadcast.logs.batchStatuses as Record<
+  string,
+  string
+>;
+zhHansBatchStatusLocale.created = '待启动';
+zhHansBatchStatusLocale.queued = '等待执行';
+zhHansBatchStatusLocale.running = '执行中';
+zhHansBatchStatusLocale.paused = '已暂停';
+zhHansBatchStatusLocale.completed = '已完成';
+zhHansBatchStatusLocale.partially_failed = '部分失败';
+zhHansBatchStatusLocale.failed = '执行失败';
+zhHansBatchStatusLocale.cancelled = '已取消';
+zhHansBatchStatusLocale.interrupted = '执行中断';
+zhHansBatchStatusLocale.unknown = '未知状态';
+const zhHansLogFieldLocale = zhHans.broadcast.logs.fields as Record<
+  string,
+  string
+>;
+zhHansLogFieldLocale.batchStatus = '批次状态';
+zhHansLogFieldLocale.taskStatus = '任务状态';
+zhHansLogFieldLocale.attemptStatus = '尝试状态';
+zhHansLogFieldLocale.runtimeState = '运行时状态';
+zhHansLogFieldLocale.recoveryAdvice = '处理建议';
+zhHans.broadcast.logs.retryFailedTasks = '重试失败项';
+zhHans.broadcast.logs.retryFailedTasksConfirmTitle = '重试失败项';
+zhHans.broadcast.logs.retryFailedTasksConfirmDescription =
+  '将重新提交最新批次中的 {{count}} 个失败或中断任务，已成功的任务不会重复提交。';
+zhHans.broadcast.drafts.batchWriteConfirmTitle = '批量写入选中草稿到输入框';
+zhHans.broadcast.drafts.batchWriteConfirmDescription =
+  '将为 {{draftCount}} 条草稿、{{conversationCount}} 个目标群聊提交写入任务，涉及 {{attachmentCount}} 个附件。重复目标数：{{duplicateTargetCount}}。执行期间请不要切换窗口，也不要操作鼠标和键盘。';
+zhHans.broadcast.import.rematchConfirmTitle = '重新匹配当前批次';
+zhHans.broadcast.import.rematchConfirmDescription =
+  '这会按最新规则重新计算当前批次的匹配结果。如果后端因 ready 草稿阻止重新匹配，页面仍会展示后端返回的真实原因。';
+zhHans.broadcast.import.deleteBatchConfirmTitle = '删除导入批次';
+zhHans.broadcast.import.deleteBatchConfirmDescription =
+  '删除 {{fileName}}？当前批次包含 {{totalRows}} 行、{{groupCount}} 个分组，以及 {{draftCount}} 条相关草稿。删除将按后端当前真实语义执行。';
+zhHans.broadcast.import.generateDraftsConfirmTitle = '生成选中草稿';
+zhHans.broadcast.import.generateDraftsConfirmDescription =
+  '将为 {{selectedCount}} 个已选分组生成草稿。其中 {{templatedCount}} 个分组已设置模板，{{blockedCount}} 个分组当前不可生成。';
+const zhHansTemplateLocale2 = zhHans.broadcast.rules.templates as Record<
+  string,
+  string
+>;
+zhHansTemplateLocale2.deleteConfirmTitle = '删除模板';
+zhHansTemplateLocale2.deleteConfirmDescription =
+  '删除“{{name}}”后，现有快照草稿不受影响，但后续新生成草稿将不能再使用该模板。';
+const zhHansErrorSuggestionLocale = zhHans.broadcast.logs
+  .errorSuggestions as Record<string, string>;
+zhHansErrorSuggestionLocale.TARGET_WINDOW_NOT_FOUND =
+  '打开企业微信主窗口后重试。';
+zhHansErrorSuggestionLocale.TARGET_WINDOW_AMBIGUOUS =
+  '关闭多余的企业微信窗口后重试。';
+zhHansErrorSuggestionLocale.WINDOW_ACTIVATION_FAILED =
+  '执行期间不要切换窗口或操作鼠标键盘，然后重试。';
+zhHansErrorSuggestionLocale.SEARCH_ACTIVATION_FAILED =
+  '执行期间不要切换窗口或操作鼠标键盘，然后重试。';
+zhHansErrorSuggestionLocale.TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE =
+  '执行期间不要切换窗口或操作鼠标键盘，然后重试。';
+zhHansErrorSuggestionLocale.CONVERSATION_NAME_PASTE_FAILED =
+  '检查目标群聊名称和匹配规则。';
+zhHansErrorSuggestionLocale.SEARCH_RESULT_CONFIRM_FAILED =
+  '检查目标群聊名称和匹配规则。';
+zhHansErrorSuggestionLocale.ATTACHMENT_FILE_MISSING = '返回草稿重新上传附件。';
+zhHansErrorSuggestionLocale.ATTACHMENT_HASH_MISMATCH = '返回草稿重新上传附件。';
+zhHansErrorSuggestionLocale.ATTACHMENT_PATH_OUTSIDE_ROOT =
+  '返回草稿重新上传附件。';
+zhHansErrorSuggestionLocale.FILE_CLIPBOARD_HELPER_FAILED =
+  '检查 Runtime 状态后重试。';
+zhHansErrorSuggestionLocale.FILE_CLIPBOARD_HELPER_TIMEOUT =
+  '检查 Runtime 状态后重试。';
+zhHansErrorSuggestionLocale.CLIPBOARD_RESTORE_MISMATCH =
+  '写入可能已完成，但剪贴板恢复失败，请人工检查。';
+zhHansErrorSuggestionLocale.PASTE_RESULT_NOT_VERIFIED =
+  '内容已写入，但系统无法自动核对，请人工检查输入框。';
+zhHansErrorSuggestionLocale.__default =
+  '请结合原始错误码和技术详情排查后再重试。';
+zhHans.broadcast.toasts.executionFailedTasksRetried =
+  '已提交 {{successCount}} 个失败/中断任务重试，{{failedCount}} 个提交失败。';
+zhHans.broadcast.toasts.executionFailedTasksRetryNoop =
+  '当前没有可重试的失败或中断任务。';
+
+const zhHansBroadcastImportLocale = zhHans.broadcast.import as Record<
+  string,
+  unknown
+>;
+zhHansBroadcastImportLocale.groupFieldDetected = '???????????{{field}}';
+zhHansBroadcastImportLocale.groupFieldDialog = {
+  title: '??????',
+  description: '????????????????? {{fileName}} ????????',
+  configuredField: '???????{{field}}',
+  selectLabel: '???????????',
+  headersLabel: '????',
+  confirmButton: '????',
+};
+zhHansBroadcastImportLocale.bulkAssign = {
+  openButton: '????????{{count}}?',
+  dialogTitle: '???????',
+  dialogDescription: '? {{count}} ????????????????? exact ???',
+  applyConversationLabel: '?????????',
+  searchPlaceholder: '??????????? ID',
+  emptySearch: '???????',
+  applyConversationButton: '????????{{count}}?',
+  selectionRequired: '????????????',
+  noSelection: '??????????',
+  missingAssignments: '?? {{count}} ?????????????',
+  emptyCandidates: '??????????????',
+  targetConversationPlaceholder: '??????',
+  submitButton: '??????????{{count}}?',
+  tableHeaders: {
+    selection: '??',
+    customerName: '??',
+    rawRowCount: '????',
+    targetConversation: '????',
+  },
+};
+const zhHansBroadcastToastLocale = zhHans.broadcast.toasts as Record<
+  string,
+  unknown
+>;
+zhHansBroadcastToastLocale.importBulkAssignCompleted =
+  '?? {{count}} ????? exact ????????????';
+
+const zhHansBroadcastLocale = zhHans.broadcast as Record<string, unknown>;
+zhHansBroadcastLocale.groupRule = {
+  customerName: '????',
+  preview: {
+    empty: '??????????????????',
+    matchedBadge: '???',
+    conflictBadge: '??',
+    noMatchBadge: '???',
+    currentRule: '??????',
+    noMatch: '??????????????',
+    conflict: '????????????????????????',
+    candidateRules: '????',
   },
 };
 

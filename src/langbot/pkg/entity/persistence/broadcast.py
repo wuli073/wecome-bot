@@ -133,6 +133,8 @@ class BroadcastImportBatch(Base):
     file_type = sqlalchemy.Column(sqlalchemy.String(32), nullable=False)
     worksheet_name = sqlalchemy.Column(sqlalchemy.String(255), nullable=True)
     status = sqlalchemy.Column(sqlalchemy.String(32), nullable=False)
+    group_field_used = sqlalchemy.Column(sqlalchemy.String(255), nullable=True)
+    group_field_source = sqlalchemy.Column(sqlalchemy.String(32), nullable=True)
     drafts_stale = sqlalchemy.Column(
         sqlalchemy.Boolean,
         nullable=False,

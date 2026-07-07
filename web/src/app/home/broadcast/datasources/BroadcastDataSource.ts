@@ -1,6 +1,7 @@
 import { backendClient } from '@/app/infra/http';
 import type {
   ApiBroadcastAttachment,
+  ApiBroadcastBulkAssignResult,
   ApiBroadcastDraft,
   ApiBroadcastExecutionAttempt,
   ApiBroadcastExecutionBatch,
@@ -12,6 +13,7 @@ import type {
   ApiBroadcastImportBatch,
   ApiBroadcastImportDetail,
   ApiBroadcastImportGroupRowsResponse,
+  ApiBroadcastImportGroupRuleCandidatesResponse,
   ApiBroadcastImportGroupsResponse,
   ApiBroadcastImportGroupSummary,
   ApiBroadcastImportRow,
@@ -29,6 +31,7 @@ import {
 } from '../utils';
 import type {
   BroadcastAttachment,
+  BroadcastBulkAssignResult,
   BroadcastDraft,
   BroadcastDraftDetail,
   BroadcastExecutionBatchSummary,
@@ -45,6 +48,7 @@ import type {
   BroadcastGroupNameSyncResult,
   BroadcastGroupRule,
   BroadcastGroupRuleDraft,
+  BroadcastGroupRuleCandidateList,
   BroadcastImportBatch,
   BroadcastImportDetail,
   BroadcastImportDraftGenerationResult,
@@ -169,9 +173,15 @@ function fromApiGroupMatchResult(
   return {
     matched: result.matched,
     ruleId: result.rule_id,
+    matchedRuleId: result.matched_rule_id ?? result.rule_id,
+    sourceValue: result.source_value ?? '',
     targetConversationId: result.target_conversation_id ?? null,
     targetConversationName: result.target_conversation_name,
     matchType: result.match_type,
+    candidateCount: result.candidate_count ?? 0,
+    candidateRules: (result.candidate_rules ?? []).map(fromApiGroupRule),
+    conflict: result.conflict ?? false,
+    reason: result.reason ?? null,
   };
 }
 
@@ -243,6 +253,8 @@ function fromApiImportBatch(
     invalidRows: batch.invalid_rows,
     matchedRows: batch.matched_rows,
     unmatchedRows: batch.unmatched_rows,
+    groupFieldUsed: batch.group_field_used ?? null,
+    groupFieldSource: batch.group_field_source ?? null,
     createdAt: batch.created_at,
     updatedAt: batch.updated_at,
   };
@@ -313,6 +325,61 @@ function fromApiImportGroups(
     conflictGroupTotal: detail.conflict_group_total,
     orderNumberFieldConfigured: detail.order_number_field_configured,
     groups: detail.groups.map(fromApiImportGroupSummary),
+  };
+}
+
+function fromApiImportGroupRuleCandidates(
+  detail: ApiBroadcastImportGroupRuleCandidatesResponse,
+): BroadcastGroupRuleCandidateList {
+  return {
+    importBatchId: detail.import_batch_id,
+    groupFieldUsed: detail.group_field_used,
+    groupFieldSource: detail.group_field_source,
+    rawRowTotal: detail.raw_row_total,
+    uniqueCustomerTotal: detail.unique_customer_total,
+    stats: {
+      newCount: detail.stats.new_count,
+      configuredCount: detail.stats.configured_count,
+      needsRepairCount: detail.stats.needs_repair_count,
+      conflictCount: detail.stats.conflict_count,
+      invalidCount: detail.stats.invalid_count,
+    },
+    items: detail.items.map((item) => ({
+      groupKey: item.group_key,
+      customerName: item.customer_name,
+      rawRowCount: item.raw_row_count,
+      status: item.status,
+      reason: item.reason,
+      existingRuleIds: item.existing_rule_ids,
+      existingRules: item.existing_rules.map(fromApiGroupRule),
+      currentMatchedRule: item.current_matched_rule
+        ? fromApiGroupRule(item.current_matched_rule)
+        : null,
+      currentTargetConversationId: item.current_target_conversation_id ?? null,
+      currentTargetConversationName: item.current_target_conversation_name,
+      currentMatchType: item.current_match_type,
+    })),
+    page: detail.page,
+    pageSize: detail.page_size,
+    total: detail.total,
+    totalPages: detail.total_pages,
+  };
+}
+
+function fromApiBulkAssignResult(
+  result: ApiBroadcastBulkAssignResult,
+): BroadcastBulkAssignResult {
+  return {
+    createdCount: result.created_count,
+    groupFieldUsed: result.group_field_used,
+    groupFieldSource: result.group_field_source,
+    items: result.items.map((item) => ({
+      groupKey: item.group_key,
+      customerName: item.customer_name,
+      ruleId: item.rule_id,
+      targetConversationId: item.target_conversation_id,
+      targetConversationName: item.target_conversation_name,
+    })),
   };
 }
 
@@ -632,6 +699,9 @@ export interface BroadcastDataSource {
   uploadImport: (
     scope: BroadcastScope,
     file: File,
+    options?: {
+      groupFieldOverride?: string;
+    },
   ) => Promise<BroadcastImportBatch>;
   getImportDetail: (
     scope: BroadcastScope,
@@ -643,11 +713,27 @@ export interface BroadcastDataSource {
     importId: number,
     filters?: BroadcastImportFilters,
   ) => Promise<BroadcastImportGroupList>;
+  getImportGroupRuleCandidates: (
+    scope: BroadcastScope,
+    importId: number,
+    filters?: {
+      status?:
+        | 'new'
+        | 'configured'
+        | 'needs_repair'
+        | 'conflict'
+        | 'invalid'
+        | 'all';
+      keyword?: string;
+      page?: number;
+      pageSize?: number;
+    },
+  ) => Promise<BroadcastGroupRuleCandidateList>;
   updateImportGroupTemplateAssignments: (
     scope: BroadcastScope,
     importId: number,
-    items: Array<{ groupKey: string; templateId: number }>,
-  ) => Promise<Array<{ groupKey: string; templateId: number }>>;
+    items: Array<{ groupKey: string; templateId: number | null }>,
+  ) => Promise<Array<{ groupKey: string; templateId: number | null }>>;
   getImportGroupRows: (
     scope: BroadcastScope,
     importId: number,
@@ -671,6 +757,11 @@ export interface BroadcastDataSource {
     scope: BroadcastScope,
     importId: number,
   ) => Promise<BroadcastImportDetail>;
+  bulkAssignImportGroupRules: (
+    scope: BroadcastScope,
+    importId: number,
+    items: Array<{ groupKey: string; targetConversationId: string }>,
+  ) => Promise<BroadcastBulkAssignResult>;
   generateImportDrafts: (
     scope: BroadcastScope,
     importId: number,
@@ -1000,9 +1091,11 @@ export function createBroadcastDataSource(): BroadcastDataSource {
       (await backendClient.getBroadcastImportBatches(toApiScope(scope))).map(
         fromApiImportBatch,
       ),
-    uploadImport: async (scope, file) =>
+    uploadImport: async (scope, file, options) =>
       fromApiImportBatch(
-        await backendClient.uploadBroadcastImport(toApiScope(scope), file),
+        await backendClient.uploadBroadcastImport(toApiScope(scope), file, {
+          group_field_override: options?.groupFieldOverride,
+        }),
       ),
     getImportDetail: async (scope, importId, filters) =>
       fromApiImportDetail(
@@ -1032,6 +1125,19 @@ export function createBroadcastDataSource(): BroadcastDataSource {
               filters?.matchStatus && filters.matchStatus !== 'all'
                 ? filters.matchStatus
                 : undefined,
+            keyword: filters?.keyword,
+            page: filters?.page,
+            page_size: filters?.pageSize,
+          },
+        ),
+      ),
+    getImportGroupRuleCandidates: async (scope, importId, filters) =>
+      fromApiImportGroupRuleCandidates(
+        await backendClient.getBroadcastImportGroupRuleCandidates(
+          toApiScope(scope),
+          importId,
+          {
+            status: filters?.status,
             keyword: filters?.keyword,
             page: filters?.page,
             page_size: filters?.pageSize,
@@ -1094,6 +1200,17 @@ export function createBroadcastDataSource(): BroadcastDataSource {
     rematchImport: async (scope, importId) =>
       fromApiImportDetail(
         await backendClient.rematchBroadcastImport(toApiScope(scope), importId),
+      ),
+    bulkAssignImportGroupRules: async (scope, importId, items) =>
+      fromApiBulkAssignResult(
+        await backendClient.bulkAssignBroadcastImportGroupRules(
+          toApiScope(scope),
+          importId,
+          items.map((item) => ({
+            group_key: item.groupKey,
+            target_conversation_id: item.targetConversationId,
+          })),
+        ),
       ),
     generateImportDrafts: async (scope, importId, payload) => {
       const response = await backendClient.generateBroadcastImportDrafts(

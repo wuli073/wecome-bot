@@ -1,4 +1,4 @@
-﻿import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   type ColumnDef,
@@ -7,6 +7,16 @@ import {
   useReactTable,
 } from '@tanstack/react-table';
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import {
   Card,
   CardContent,
@@ -32,6 +42,17 @@ import type {
   BroadcastExecutorCapability,
   BroadcastExecutorHealth,
 } from '../../types';
+import {
+  getExecutionAdviceKey,
+  getExecutionBatchActionVisibility,
+  getExecutionBatchStatusKey,
+  getExecutionLogAdviceCode,
+  getExecutionLogStatusKey,
+  getExecutionTaskAdviceKey,
+  getExecutionTaskStatusKey,
+  getRetryableExecutionTasks,
+  isRetryableExecutionTask,
+} from '../../statusPresentation';
 
 interface ExecutionLogPanelProps {
   logs: BroadcastExecutionLog[];
@@ -55,43 +76,11 @@ interface ExecutionLogPanelProps {
   onResumeBatch?: () => void;
   onCancelBatch?: () => void;
   onRetryTask?: (taskId: number) => void;
+  onRetryFailedTasks?: () => void;
 }
 
 function formatTimestamp(value: string) {
   return new Date(value).toLocaleString();
-}
-
-function isRetryableTask(task: BroadcastExecutionTaskSummary) {
-  return task.status === 'failed' || task.status === 'interrupted';
-}
-
-function isBatchTerminal(status: string) {
-  return [
-    'completed',
-    'partially_failed',
-    'failed',
-    'cancelled',
-    'interrupted',
-  ].includes(status);
-}
-
-function getLogStatusLabel(
-  log: BroadcastExecutionLog,
-  t: ReturnType<typeof useTranslation>['t'],
-) {
-  if (log.taskStatus === 'succeeded_with_warning') {
-    return t('broadcast.logs.statusWarning');
-  }
-  if (log.action === 'send_message' && log.sendTriggered) {
-    return t('broadcast.logs.statusSendTriggered');
-  }
-  if (log.contentVerified) {
-    return t('broadcast.logs.statusPasteVerified');
-  }
-  if (log.draftWritten && !log.sendTriggered) {
-    return t('broadcast.logs.statusDraftWritten');
-  }
-  return log.taskStatus;
 }
 
 function getLogBadgeVariant(
@@ -120,6 +109,7 @@ function renderLogEvidence(
   t: ReturnType<typeof useTranslation>['t'],
 ) {
   const items: Array<{ label: string; value: string }> = [];
+  const adviceKey = getExecutionAdviceKey(getExecutionLogAdviceCode(log));
   if (hasAttachmentSection(log)) {
     items.push({
       label: t('broadcast.logs.fields.attachmentCount'),
@@ -167,15 +157,73 @@ function renderLogEvidence(
       value: log.stage,
     });
   }
+  items.push({
+    label: t('broadcast.logs.fields.batchStatus'),
+    value: log.batchStatus,
+  });
+  items.push({
+    label: t('broadcast.logs.fields.taskStatus'),
+    value: log.taskStatus,
+  });
+  items.push({
+    label: t('broadcast.logs.fields.attemptStatus'),
+    value: log.attemptStatus,
+  });
+  if (log.runtimeState) {
+    items.push({
+      label: t('broadcast.logs.fields.runtimeState'),
+      value: log.runtimeState,
+    });
+  }
+  if (adviceKey) {
+    items.push({
+      label: t('broadcast.logs.fields.recoveryAdvice'),
+      value: t(adviceKey),
+    });
+  }
 
   return (
     <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-      {items.map((item) => (
-        <div key={`${item.label}-${item.value}`} className="break-all">
+      {items.map((item, index) => (
+        <div key={`${item.label}-${item.value}-${index}`} className="break-all">
           <span className="font-medium text-foreground">{item.label}: </span>
           <span>{item.value}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+function renderTaskTechnicalDetails(
+  task: BroadcastExecutionTaskSummary,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  const adviceKey = getExecutionTaskAdviceKey(task);
+  return (
+    <div className="space-y-1 text-xs text-muted-foreground">
+      <div>
+        <span className="font-medium text-foreground">
+          {t('broadcast.logs.fields.taskStatus')}:
+        </span>
+        {task.status}
+      </div>
+      {task.errorCode ? (
+        <div>
+          <span className="font-medium text-foreground">
+            {t('broadcast.logs.fields.errorCode')}:
+          </span>
+          {task.errorCode}
+        </div>
+      ) : null}
+      {task.errorMessage ? <div>{task.errorMessage}</div> : null}
+      {adviceKey ? (
+        <div>
+          <span className="font-medium text-foreground">
+            {t('broadcast.logs.fields.recoveryAdvice')}:
+          </span>
+          {t(adviceKey)}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -197,8 +245,10 @@ export default function ExecutionLogPanel({
   onResumeBatch,
   onCancelBatch,
   onRetryTask,
+  onRetryFailedTasks,
 }: ExecutionLogPanelProps) {
   const { t } = useTranslation();
+  const [retryFailedDialogOpen, setRetryFailedDialogOpen] = useState(false);
   const pasteVerificationMethodLabel =
     pasteVerificationMethod === 'windows_uia'
       ? t('broadcast.logs.pasteVerificationMethodWindowsUia')
@@ -244,8 +294,11 @@ export default function ExecutionLogPanel({
         accessorKey: 'taskStatus',
         header: t('broadcast.fields.status'),
         cell: ({ row }) => (
-          <Badge variant={getLogBadgeVariant(row.original)}>
-            {getLogStatusLabel(row.original, t)}
+          <Badge
+            variant={getLogBadgeVariant(row.original)}
+            data-testid={`broadcast-execution-log-status-${row.original.id}`}
+          >
+            {t(getExecutionLogStatusKey(row.original))}
           </Badge>
         ),
       },
@@ -259,27 +312,18 @@ export default function ExecutionLogPanel({
     getCoreRowModel: getCoreRowModel(),
   });
 
-  const batchStatus = latestBatch?.status || '';
   const canRunLatestPasteBatch =
     latestBatch?.mode === 'paste_only' ? pasteExecutionAvailable : true;
+  const batchActions = getExecutionBatchActionVisibility(latestBatch);
+  const retryableTasks = getRetryableExecutionTasks(latestBatch);
   const canStart =
-    Boolean(onStartBatch) &&
-    latestBatch != null &&
-    ['created', 'paused'].includes(batchStatus) &&
-    canRunLatestPasteBatch;
-  const canPause =
-    Boolean(onPauseBatch) &&
-    latestBatch != null &&
-    ['queued', 'running'].includes(batchStatus);
+    Boolean(onStartBatch) && batchActions.start && canRunLatestPasteBatch;
+  const canPause = Boolean(onPauseBatch) && batchActions.pause;
   const canResume =
-    Boolean(onResumeBatch) &&
-    latestBatch != null &&
-    ['paused', 'partially_failed', 'interrupted'].includes(batchStatus) &&
-    canRunLatestPasteBatch;
-  const canCancel =
-    Boolean(onCancelBatch) &&
-    latestBatch != null &&
-    !isBatchTerminal(batchStatus);
+    Boolean(onResumeBatch) && batchActions.resume && canRunLatestPasteBatch;
+  const canCancel = Boolean(onCancelBatch) && batchActions.cancel;
+  const canRetryFailedTasks =
+    Boolean(onRetryFailedTasks) && batchActions.retryFailed;
 
   return (
     <Card className="gap-4">
@@ -397,7 +441,7 @@ export default function ExecutionLogPanel({
 
         {latestBatch ? (
           <div
-            className="rounded-xl border bg-muted/10 p-4"
+            className="sticky top-0 z-10 rounded-xl border bg-background/95 p-4 backdrop-blur supports-[backdrop-filter]:bg-background/80"
             data-testid="broadcast-latest-execution-batch"
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -407,7 +451,7 @@ export default function ExecutionLogPanel({
                 </div>
                 <div className="text-xs text-muted-foreground">
                   {t('broadcast.logs.batchSummary', {
-                    status: latestBatch.status,
+                    status: t(getExecutionBatchStatusKey(latestBatch.status)),
                     mode: latestBatch.mode,
                     pending: latestBatch.pendingTasks,
                     running: latestBatch.runningTasks,
@@ -418,42 +462,64 @@ export default function ExecutionLogPanel({
                   })}
                 </div>
               </div>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  data-testid="broadcast-batch-start-button"
-                  onClick={onStartBatch}
-                  disabled={busy || !canStart}
-                >
-                  {t('broadcast.logs.startBatch')}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  data-testid="broadcast-batch-pause-button"
-                  onClick={onPauseBatch}
-                  disabled={busy || !canPause}
-                >
-                  {t('broadcast.logs.pauseBatch')}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  data-testid="broadcast-batch-resume-button"
-                  onClick={onResumeBatch}
-                  disabled={busy || !canResume}
-                >
-                  {t('broadcast.logs.resumeBatch')}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  data-testid="broadcast-batch-cancel-button"
-                  onClick={onCancelBatch}
-                  disabled={busy || !canCancel}
-                >
-                  {t('broadcast.logs.cancelBatch')}
-                </Button>
+              <div
+                className="flex flex-wrap gap-2"
+                data-testid="broadcast-log-sticky-actions"
+              >
+                {batchActions.start ? (
+                  <Button
+                    size="sm"
+                    data-testid="broadcast-batch-start-button"
+                    onClick={onStartBatch}
+                    disabled={busy || !canStart}
+                  >
+                    {t('broadcast.logs.startBatch')}
+                  </Button>
+                ) : null}
+                {batchActions.pause ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    data-testid="broadcast-batch-pause-button"
+                    onClick={onPauseBatch}
+                    disabled={busy || !canPause}
+                  >
+                    {t('broadcast.logs.pauseBatch')}
+                  </Button>
+                ) : null}
+                {batchActions.resume ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    data-testid="broadcast-batch-resume-button"
+                    onClick={onResumeBatch}
+                    disabled={busy || !canResume}
+                  >
+                    {t('broadcast.logs.resumeBatch')}
+                  </Button>
+                ) : null}
+                {batchActions.cancel ? (
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    data-testid="broadcast-batch-cancel-button"
+                    onClick={onCancelBatch}
+                    disabled={busy || !canCancel}
+                  >
+                    {t('broadcast.logs.cancelBatch')}
+                  </Button>
+                ) : null}
+                {batchActions.retryFailed ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    data-testid="broadcast-batch-retry-failed-button"
+                    onClick={() => setRetryFailedDialogOpen(true)}
+                    disabled={busy || !canRetryFailedTasks}
+                  >
+                    {t('broadcast.logs.retryFailedTasks')}
+                  </Button>
+                ) : null}
               </div>
             </div>
 
@@ -498,11 +564,19 @@ export default function ExecutionLogPanel({
                       <TableCell>{task.action}</TableCell>
                       <TableCell>{task.targetConversationSnapshot}</TableCell>
                       <TableCell>
-                        <Badge variant="outline">{task.status}</Badge>
+                        <div className="space-y-2">
+                          <Badge
+                            variant="outline"
+                            data-testid={`broadcast-execution-task-status-${task.id}`}
+                          >
+                            {t(getExecutionTaskStatusKey(task.status))}
+                          </Badge>
+                          {renderTaskTechnicalDetails(task, t)}
+                        </div>
                       </TableCell>
                       <TableCell>{task.attemptCount}</TableCell>
                       <TableCell className="text-right">
-                        {isRetryableTask(task) ? (
+                        {isRetryableExecutionTask(task) ? (
                           <Button
                             size="sm"
                             variant="outline"
@@ -514,7 +588,7 @@ export default function ExecutionLogPanel({
                           </Button>
                         ) : (
                           <span className="text-xs text-muted-foreground">
-                            —
+                            ?
                           </span>
                         )}
                       </TableCell>
@@ -586,6 +660,36 @@ export default function ExecutionLogPanel({
           </Table>
         </div>
       </CardContent>
+      <AlertDialog
+        open={retryFailedDialogOpen}
+        onOpenChange={setRetryFailedDialogOpen}
+      >
+        <AlertDialogContent data-testid="broadcast-batch-retry-failed-confirm-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('broadcast.logs.retryFailedTasksConfirmTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('broadcast.logs.retryFailedTasksConfirmDescription', {
+                count: retryableTasks.length,
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="broadcast-batch-retry-failed-confirm-button"
+              onClick={(event) => {
+                event.preventDefault();
+                onRetryFailedTasks?.();
+                setRetryFailedDialogOpen(false);
+              }}
+            >
+              {t('broadcast.logs.retryFailedTasks')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

@@ -10,6 +10,7 @@ import secrets
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import sqlalchemy
@@ -63,7 +64,11 @@ from .errors import (
     BROADCAST_IMPORT_FIELDS_MISSING,
     BROADCAST_IMPORT_FILE_INVALID,
     BROADCAST_IMPORT_GROUP_NOT_FOUND,
+    BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED,
+    BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED,
+    BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID,
     BROADCAST_IMPORT_GROUP_FIELD_REQUIRED,
+    BROADCAST_IMPORT_GROUP_FIELD_UNRESOLVABLE,
     BROADCAST_IMPORT_NOT_FOUND,
     BROADCAST_IMPORT_READY_DRAFT_EXISTS,
     BROADCAST_IMPORT_REMATCH_FIELDS_MISSING,
@@ -93,6 +98,11 @@ from .import_processor import (
     BroadcastImportProcessorError,
     calculate_batch_stats,
     classify_import_rows,
+    IMPORT_FIELDS_MISSING_MESSAGE_PREFIX,
+    IMPORT_GROUP_FIELD_REQUIRED_MESSAGE,
+    REMATCH_FIELDS_MISSING_MESSAGE_PREFIX,
+    resolve_persisted_batch_group_field,
+    resolve_upload_group_field,
     validate_import_headers,
     validate_rematch_headers,
 )
@@ -138,6 +148,10 @@ DRAFT_GENERATION_MODIFIED_FIELDS = [
     'attachments_stale',
     'updated_at',
 ]
+
+
+def normalize_group_customer_name(value: Any) -> str:
+    return '' if value is None else str(value).strip()
 
 
 class BroadcastService:
@@ -285,6 +299,11 @@ class BroadcastService:
         normalized = self._normalize_group_rule_payload(payload)
         try:
             async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+                await self.validate_exact_rule_uniqueness(
+                    scope=validated_scope,
+                    payload=normalized,
+                    conn=conn,
+                )
                 rule_id = await self.repository.create_group_rule(
                     conn,
                     {
@@ -307,13 +326,28 @@ class BroadcastService:
         normalized = self._normalize_group_rule_payload(payload)
         try:
             async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
-                updated = await self.repository.update_group_rule(
+                existing = await self.repository.get_group_rule(
                     rule_id,
                     bot_uuid=validated_scope['bot_uuid'],
                     connector_id=validated_scope['connector_id'],
-                    updates=normalized,
                     conn=conn,
                 )
+                if existing is None:
+                    updated = None
+                else:
+                    await self.validate_exact_rule_uniqueness(
+                        scope=validated_scope,
+                        payload=normalized,
+                        exclude_rule_id=rule_id,
+                        conn=conn,
+                    )
+                    updated = await self.repository.update_group_rule(
+                        rule_id,
+                        bot_uuid=validated_scope['bot_uuid'],
+                        connector_id=validated_scope['connector_id'],
+                        updates=normalized,
+                        conn=conn,
+                    )
         except IntegrityError as exc:
             raise self._map_integrity_error(exc) from exc
         if updated is None:
@@ -335,35 +369,26 @@ class BroadcastService:
 
     async def match_group_rule(self, scope: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         validated_scope = await self.validate_scope(scope)
-        source_value = str(payload.get('source_value') or '').strip()
+        source_value = normalize_group_customer_name(payload.get('source_value'))
         if not source_value:
-            return {
-                'matched': False,
-                'rule_id': None,
-                'target_conversation_id': None,
-                'target_conversation_name': None,
-                'match_type': None,
-            }
+            return self._build_group_rule_match_preview(source_value=source_value, candidate_rules=[])
 
         rows = await self.repository.list_group_rules(**validated_scope)
-        for row in self._iter_matchable_group_rules(rows):
-            if not bool(row.enabled):
-                continue
-            if self._rule_matches(row.match_type, row.match_expression, source_value):
-                return {
-                    'matched': True,
-                    'rule_id': int(row.id),
-                    'target_conversation_id': row.target_conversation_id,
-                    'target_conversation_name': row.target_conversation_name,
-                    'match_type': row.match_type,
-                }
-        return {
-            'matched': False,
-            'rule_id': None,
-            'target_conversation_id': None,
-            'target_conversation_name': None,
-            'match_type': None,
-        }
+        candidate_rows = [
+            row
+            for row in self._iter_group_rules_in_formal_match_order(rows)
+            if bool(row.enabled)
+            and self._rule_matches(
+                str(getattr(row, 'match_type', '') or ''),
+                str(getattr(row, 'match_expression', '') or ''),
+                source_value,
+            )
+        ]
+        candidate_rules = [self._serialize_group_rule(row) for row in candidate_rows]
+        return self._build_group_rule_match_preview(
+            source_value=source_value,
+            candidate_rules=candidate_rules,
+        )
 
     async def list_group_names(self, scope: dict[str, Any]) -> list[dict[str, Any]]:
         validated_scope = await self.validate_scope(scope)
@@ -492,18 +517,24 @@ class BroadcastService:
                 BROADCAST_IMPORT_VARIABLE_PROFILE_REQUIRED,
                 '璇峰厛閰嶇疆鍙橀噺瀵瑰簲鍏崇郴鍚庡啀瀵煎叆鏂囦欢',
             )
-        if not str(variable_profile.group_field or '').strip():
-            raise BroadcastError(
-                BROADCAST_IMPORT_GROUP_FIELD_REQUIRED,
-                '璇峰厛璁剧疆瀹㈡埛鍒嗙粍瀛楁鍚庡啀瀵煎叆鏂囦欢',
-            )
 
         try:
             parsed = await parse_import_file(file_payload['filename'], file_payload['body'])
-            validate_import_headers(
+            resolved_group_field = self._resolve_upload_group_field(
                 headers=list(parsed['headers']),
                 variable_profile={
                     'group_field': variable_profile.group_field,
+                    'mapping_rules': list(variable_profile.mapping_rules or []),
+                },
+                group_field_override=str(file_payload.get('group_field_override') or '').strip() or None,
+                original_file_name=str(file_payload['filename']),
+            )
+            group_field_used = str(resolved_group_field['group_field'])
+            group_field_source = str(resolved_group_field['source'])
+            validate_import_headers(
+                headers=list(parsed['headers']),
+                variable_profile={
+                    'group_field': group_field_used,
                     'mapping_rules': list(variable_profile.mapping_rules or []),
                 },
             )
@@ -526,7 +557,7 @@ class BroadcastService:
         ]
         classified_rows = classify_import_rows(
             rows=list(parsed['rows']),
-            group_field=str(variable_profile.group_field),
+            group_field=group_field_used,
             match_resolver=lambda group_value: match_group(
                 group_value=group_value,
                 rules=serialized_rules,
@@ -543,6 +574,8 @@ class BroadcastService:
                     'original_file_name': str(file_payload['filename']),
                     'file_type': parsed['file_type'],
                     'worksheet_name': parsed['worksheet_name'],
+                    'group_field_used': group_field_used,
+                    'group_field_source': group_field_source,
                     'status': 'imported',
                     'drafts_stale': False,
                     **stats,
@@ -707,6 +740,330 @@ class BroadcastService:
             'groups': page_groups,
         }
 
+    async def list_group_rule_candidates(
+        self,
+        import_id: int,
+        scope: dict[str, Any],
+        filters: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self.list_import_group_rule_candidates(import_id, scope, filters)
+
+    async def list_import_group_rule_candidates(
+        self,
+        import_id: int,
+        scope: dict[str, Any],
+        filters: dict[str, Any],
+    ) -> dict[str, Any]:
+        validated_scope = await self.validate_scope(scope)
+        batch = await self.repository.get_import_batch(import_id, **validated_scope)
+        if batch is None:
+            raise BroadcastError(BROADCAST_IMPORT_NOT_FOUND, '当前导入批次不存在或已被删除')
+
+        page = int(filters.get('page') or 1)
+        page_size = int(filters.get('page_size') or 50)
+        if page < 1:
+            raise BroadcastError(BROADCAST_IMPORT_FILE_INVALID, '分页参数 page 必须大于或等于 1')
+        if page_size < 1 or page_size > 200:
+            raise BroadcastError(BROADCAST_IMPORT_FILE_INVALID, '分页参数 page_size 必须在 1 到 200 之间')
+
+        status_filter = str(filters.get('status') or 'new').strip() or 'new'
+        allowed_statuses = {'new', 'configured', 'needs_repair', 'conflict', 'invalid', 'all'}
+        if status_filter not in allowed_statuses:
+            raise BroadcastError(BROADCAST_IMPORT_FILE_INVALID, '状态筛选参数 status 无效')
+
+        variable_profile = await self.repository.get_variable_profile(**validated_scope)
+        snapshot = await self._build_import_group_rule_candidate_snapshot(
+            import_id=import_id,
+            scope=validated_scope,
+            batch=batch,
+            variable_profile=variable_profile,
+            keyword=str(filters.get('keyword') or '').strip() or None,
+        )
+        items = list(snapshot['items'])
+        stats = dict(snapshot['stats'])
+        resolved_group_field = snapshot['resolved_group_field']
+
+        filtered_items = items
+        if status_filter != 'all':
+            filtered_items = [item for item in items if item['status'] == status_filter]
+
+        total = len(filtered_items)
+        start = (page - 1) * page_size
+        end = start + page_size
+        return {
+            'import_batch_id': import_id,
+            'group_field_used': str(resolved_group_field['group_field']),
+            'group_field_source': str(resolved_group_field['source']),
+            'raw_row_total': int(batch.total_rows or 0),
+            'unique_customer_total': len(items),
+            'stats': stats,
+            'items': filtered_items[start:end],
+            'page': page,
+            'page_size': page_size,
+            'total': total,
+            'total_pages': 0 if total == 0 else math.ceil(total / page_size),
+        }
+
+    async def bulk_assign_import_group_rules(
+        self,
+        import_id: int,
+        scope: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        validated_scope = await self.validate_scope(scope)
+        batch = await self.repository.get_import_batch(import_id, **validated_scope)
+        if batch is None:
+            raise BroadcastError(BROADCAST_IMPORT_NOT_FOUND, '当前导入批次不存在或已被删除')
+
+        raw_items = payload.get('items') or []
+        if not isinstance(raw_items, list) or not raw_items:
+            raise BroadcastError(BATCH_VALIDATION_FAILED, '请至少提交一条分组规则设置')
+
+        ready_drafts = await self.repository.list_drafts(
+            bot_uuid=validated_scope['bot_uuid'],
+            connector_id=validated_scope['connector_id'],
+            import_batch_id=import_id,
+            status='ready',
+        )
+        if ready_drafts:
+            raise BroadcastError(
+                BROADCAST_IMPORT_READY_DRAFT_EXISTS,
+                '当前批次存在已确认草稿，请先撤回确认后再重新匹配。',
+            )
+
+        variable_profile = await self.repository.get_variable_profile(**validated_scope)
+        if variable_profile is None:
+            raise BroadcastError(
+                BROADCAST_IMPORT_VARIABLE_PROFILE_REQUIRED,
+                '请先配置变量对应关系后再导入文件',
+            )
+
+        candidate_snapshot = await self._build_import_group_rule_candidate_snapshot(
+            import_id=import_id,
+            scope=validated_scope,
+            batch=batch,
+            variable_profile=variable_profile,
+        )
+        candidate_by_group_key = {
+            str(item['group_key']): item
+            for item in candidate_snapshot['items']
+        }
+        summary_by_group_key = {
+            self._build_import_group_key(import_id, item.get('group_value')): item
+            for item in candidate_snapshot['summaries']
+        }
+
+        normalized_items: list[dict[str, Any]] = []
+        error_items: list[dict[str, Any]] = []
+        seen_group_keys: set[str] = set()
+        for raw_item in raw_items:
+            item = raw_item if isinstance(raw_item, dict) else {}
+            group_key = str(item.get('group_key') or '').strip()
+            target_conversation_id = str(item.get('target_conversation_id') or '').strip()
+
+            if not group_key:
+                raise BroadcastError(BATCH_VALIDATION_FAILED, '请为每条设置提交有效的 group_key')
+            if group_key in seen_group_keys:
+                raise BroadcastError(BATCH_VALIDATION_FAILED, '同一请求中不能重复设置同一个分组')
+            seen_group_keys.add(group_key)
+
+            summary = summary_by_group_key.get(group_key)
+            candidate = candidate_by_group_key.get(group_key)
+            customer_name = normalize_group_customer_name(
+                summary.get('group_value') if summary is not None else None
+            )
+
+            if summary is None or candidate is None:
+                error_items.append(
+                    self._build_bulk_assign_error_item(
+                        code=BROADCAST_IMPORT_GROUP_NOT_FOUND,
+                        message='当前客户分组不存在或已被删除',
+                        group_key=group_key,
+                        customer_name=customer_name,
+                    )
+                )
+                continue
+            if not customer_name:
+                error_items.append(
+                    self._build_bulk_assign_error_item(
+                        code=BROADCAST_IMPORT_GROUP_FIELD_UNRESOLVABLE,
+                        message='当前客户名为空，无法创建 exact 规则',
+                        group_key=group_key,
+                        customer_name=customer_name,
+                    )
+                )
+                continue
+            if str(candidate.get('status') or '') != 'new':
+                error_items.append(
+                    self._build_bulk_assign_error_item(
+                        code=BATCH_VALIDATION_FAILED,
+                        message=str(candidate.get('reason') or '当前客户分组状态不是 new，不能批量设置 exact 规则'),
+                        group_key=group_key,
+                        customer_name=customer_name,
+                    )
+                )
+                continue
+            if not target_conversation_id:
+                error_items.append(
+                    self._build_bulk_assign_error_item(
+                        code=BROADCAST_GROUP_NAME_NOT_FOUND,
+                        message='目标群聊不存在或未同步稳定 ID',
+                        group_key=group_key,
+                        customer_name=customer_name,
+                    )
+                )
+                continue
+
+            group_name = await self.repository.get_group_name_by_external_conversation_id(
+                bot_uuid=validated_scope['bot_uuid'],
+                connector_id=validated_scope['connector_id'],
+                external_conversation_id=target_conversation_id,
+            )
+            target_conversation_name = (
+                str(group_name.name or '').strip()
+                if group_name is not None
+                else ''
+            )
+            stable_target_conversation_id = (
+                str(group_name.external_conversation_id or '').strip()
+                if group_name is not None
+                else ''
+            )
+            if not stable_target_conversation_id or not target_conversation_name:
+                error_items.append(
+                    self._build_bulk_assign_error_item(
+                        code=BROADCAST_GROUP_NAME_NOT_FOUND,
+                        message='目标群聊不存在或未同步稳定 ID',
+                        group_key=group_key,
+                        customer_name=customer_name,
+                    )
+                )
+                continue
+
+            normalized_items.append(
+                {
+                    'group_key': group_key,
+                    'customer_name': customer_name,
+                    'target_conversation_id': stable_target_conversation_id,
+                    'target_conversation_name': target_conversation_name,
+                }
+            )
+
+        if error_items:
+            self._raise_bulk_assign_failed(error_items)
+
+        duplicate_error_items: list[dict[str, str]] = []
+        for item in normalized_items:
+            rule_payload = {
+                'source_value': item['customer_name'],
+                'match_type': 'exact',
+                'match_expression': item['customer_name'],
+                'target_conversation_id': item['target_conversation_id'],
+                'target_conversation_name': item['target_conversation_name'],
+                'priority': 0,
+                'enabled': True,
+            }
+            try:
+                await self.validate_exact_rule_uniqueness(
+                    scope=validated_scope,
+                    payload=rule_payload,
+                )
+            except BroadcastError as exc:
+                duplicate_error_items.append(
+                    self._build_bulk_assign_error_item(
+                        code=exc.code,
+                        message=exc.message,
+                        group_key=item['group_key'],
+                        customer_name=item['customer_name'],
+                    )
+                )
+        if duplicate_error_items:
+            self._raise_bulk_assign_failed(duplicate_error_items)
+
+        created_rules: list[dict[str, Any]] = []
+        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            for item in normalized_items:
+                rule_payload = {
+                    'source_value': item['customer_name'],
+                    'match_type': 'exact',
+                    'match_expression': item['customer_name'],
+                    'target_conversation_id': item['target_conversation_id'],
+                    'target_conversation_name': item['target_conversation_name'],
+                    'priority': 0,
+                    'enabled': True,
+                }
+                try:
+                    rule_id = await self.repository.create_group_rule(
+                        conn,
+                        {
+                            **validated_scope,
+                            **rule_payload,
+                        },
+                    )
+                except IntegrityError as exc:
+                    mapped_error = self._map_integrity_error(exc)
+                    self._raise_bulk_assign_failed(
+                        [
+                            self._build_bulk_assign_error_item(
+                                code=mapped_error.code,
+                                message=mapped_error.message,
+                                group_key=item['group_key'],
+                                customer_name=item['customer_name'],
+                            )
+                        ]
+                    )
+                except BroadcastError as exc:
+                    self._raise_bulk_assign_failed(
+                        [
+                            self._build_bulk_assign_error_item(
+                                code=exc.code,
+                                message=exc.message,
+                                group_key=item['group_key'],
+                                customer_name=item['customer_name'],
+                            )
+                        ]
+                    )
+
+                created_rules.append(
+                    {
+                        **item,
+                        'rule_id': int(rule_id),
+                    }
+                )
+
+            await self._validate_bulk_assigned_rules_no_duplicate_exact(
+                scope=validated_scope,
+                created_rules=created_rules,
+                conn=conn,
+            )
+            await self._validate_bulk_assigned_rules_formal_match(
+                scope=validated_scope,
+                created_rules=created_rules,
+                conn=conn,
+            )
+            rematch_result = await self.rematch_import_batch_in_transaction(
+                conn,
+                batch=batch,
+                scope=validated_scope,
+                variable_profile=variable_profile,
+            )
+
+        return {
+            'created_count': len(created_rules),
+            'group_field_used': rematch_result['group_field_used'],
+            'group_field_source': rematch_result['group_field_source'],
+            'items': [
+                {
+                    'group_key': item['group_key'],
+                    'customer_name': item['customer_name'],
+                    'rule_id': item['rule_id'],
+                    'target_conversation_id': item['target_conversation_id'],
+                    'target_conversation_name': item['target_conversation_name'],
+                }
+                for item in created_rules
+            ],
+        }
+
     async def upsert_import_group_template_assignments(
         self,
         import_id: int,
@@ -745,16 +1102,30 @@ class BroadcastService:
             if group_key not in available_group_keys:
                 raise BroadcastError(BROADCAST_IMPORT_GROUP_NOT_FOUND, '当前客户分组不存在或已被删除')
 
-            template_id = int((item or {}).get('template_id') or 0)
-            template = await self.repository.get_template(
-                template_id,
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
-            )
-            if template is None:
-                raise BroadcastError(BROADCAST_TEMPLATE_NOT_FOUND, '当前模板不存在或已被删除')
-            if not bool(template.enabled):
-                raise BroadcastError(BATCH_VALIDATION_FAILED, '已停用的模板不能用于生成新草稿')
+            if 'template_id' not in (item or {}):
+                raise BroadcastError(BATCH_VALIDATION_FAILED, '请为每个分组明确提交 template_id 或 null')
+
+            raw_template_id = (item or {}).get('template_id')
+            if raw_template_id is None:
+                template_id = None
+            else:
+                try:
+                    template_id = int(raw_template_id)
+                except (TypeError, ValueError):
+                    raise BroadcastError(BATCH_VALIDATION_FAILED, '模板设置无效，请重新选择后重试') from None
+                if template_id <= 0:
+                    raise BroadcastError(BATCH_VALIDATION_FAILED, '模板设置无效，请重新选择后重试')
+
+            if template_id is not None:
+                template = await self.repository.get_template(
+                    template_id,
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                )
+                if template is None:
+                    raise BroadcastError(BROADCAST_TEMPLATE_NOT_FOUND, '当前模板不存在或已被删除')
+                if not bool(template.enabled):
+                    raise BroadcastError(BATCH_VALIDATION_FAILED, '已停用的模板不能用于生成新草稿')
             normalized_items.append(
                 {
                     'group_key': group_key,
@@ -763,11 +1134,19 @@ class BroadcastService:
             )
 
         async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
-            await self.repository.upsert_import_group_template_assignments(
-                conn,
-                import_batch_id=import_id,
-                items=normalized_items,
-            )
+            for item in normalized_items:
+                if item['template_id'] is None:
+                    await self.repository.delete_import_group_template_assignment(
+                        conn,
+                        import_batch_id=import_id,
+                        group_key=item['group_key'],
+                    )
+                    continue
+                await self.repository.upsert_import_group_template_assignments(
+                    conn,
+                    import_batch_id=import_id,
+                    items=[item],
+                )
 
         return {'items': normalized_items}
 
@@ -856,24 +1235,57 @@ class BroadcastService:
                 '璇峰厛閰嶇疆鍙橀噺瀵瑰簲鍏崇郴鍚庡啀瀵煎叆鏂囦欢',
             )
 
+        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            rematch_result = await self.rematch_import_batch_in_transaction(
+                conn,
+                batch=batch,
+                scope=validated_scope,
+                variable_profile=variable_profile,
+            )
+
+        detail = await self.get_import_detail(import_id, validated_scope, {})
+        detail['group_field_used'] = rematch_result['group_field_used']
+        detail['group_field_source'] = rematch_result['group_field_source']
+        return detail
+
+    async def rematch_import_batch_in_transaction(
+        self,
+        conn,
+        *,
+        batch,
+        scope: dict[str, str],
+        variable_profile,
+    ) -> dict[str, Any]:
+        resolved_group_field = self._resolve_persisted_batch_group_field(
+            batch=batch,
+            variable_profile=variable_profile,
+        )
+        group_field_used = str(resolved_group_field['group_field'])
+        group_field_source = str(resolved_group_field['source'])
+
         existing_rows = await self.repository.list_import_rows(
-            import_batch_id=import_id,
-            bot_uuid=validated_scope['bot_uuid'],
-            connector_id=validated_scope['connector_id'],
+            import_batch_id=int(batch.id),
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            conn=conn,
         )
         headers = list(existing_rows[0].raw_data.keys()) if existing_rows else []
         try:
             validate_rematch_headers(
                 headers=headers,
                 variable_profile={
-                    'group_field': variable_profile.group_field,
+                    'group_field': group_field_used,
                     'mapping_rules': list(variable_profile.mapping_rules or []),
                 },
             )
         except BroadcastImportProcessorError as exc:
             raise self._map_import_processor_error(exc) from exc
 
-        rules = await self.repository.list_group_rules(**validated_scope)
+        rules = await self.repository.list_group_rules(
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            conn=conn,
+        )
         serialized_rules = [
             self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, row)
             for row in self._iter_matchable_group_rules(rules)
@@ -883,7 +1295,11 @@ class BroadcastService:
                 persistence_broadcast.BroadcastGroupName,
                 item,
             )
-            for item in await self.repository.list_group_names(**validated_scope)
+            for item in await self.repository.list_group_names(
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
+                conn=conn,
+            )
         ]
         classified_rows = classify_import_rows(
             rows=[
@@ -893,7 +1309,7 @@ class BroadcastService:
                 }
                 for row in existing_rows
             ],
-            group_field=str(variable_profile.group_field),
+            group_field=group_field_used,
             match_resolver=lambda group_value: match_group(
                 group_value=group_value,
                 rules=serialized_rules,
@@ -902,23 +1318,31 @@ class BroadcastService:
         )
         stats = calculate_batch_stats(classified_rows)
         existing_non_ready_drafts = await self.repository.list_drafts(
-            bot_uuid=validated_scope['bot_uuid'],
-            connector_id=validated_scope['connector_id'],
-            import_batch_id=import_id,
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            import_batch_id=int(batch.id),
+            conn=conn,
         )
         drafts_stale = any(draft.status in {'pending_review', 'invalid'} for draft in existing_non_ready_drafts)
 
-        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
-            await self.repository.replace_import_rows(conn, import_batch_id=import_id, rows=classified_rows)
-            await self.repository.update_import_batch(
-                import_id,
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
-                updates={'status': 'matched', 'drafts_stale': drafts_stale, **stats},
-                conn=conn,
-            )
-
-        return await self.get_import_detail(import_id, validated_scope, {})
+        await self.repository.replace_import_rows(
+            conn,
+            import_batch_id=int(batch.id),
+            rows=classified_rows,
+        )
+        await self.repository.update_import_batch(
+            int(batch.id),
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            updates={'status': 'matched', 'drafts_stale': drafts_stale, **stats},
+            conn=conn,
+        )
+        return {
+            'group_field_used': group_field_used,
+            'group_field_source': group_field_source,
+            'drafts_stale': drafts_stale,
+            **stats,
+        }
 
     async def generate_import_drafts(
         self,
@@ -2749,7 +3173,9 @@ class BroadcastService:
     def _normalize_group_rule_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         match_type = str(payload.get('match_type') or '').strip()
         expression = str(payload.get('match_expression') or '').strip()
-        source_value = str(payload.get('source_value') or '').strip()
+        source_value = normalize_group_customer_name(payload.get('source_value'))
+        if match_type == 'exact':
+            expression = normalize_group_customer_name(expression)
         target_conversation_id = str(payload.get('target_conversation_id') or '').strip()
         target_conversation_name = str(payload.get('target_conversation_name') or '').strip()
         if (
@@ -2790,6 +3216,67 @@ class BroadcastService:
             'enabled': bool(payload.get('enabled', True)),
         }
 
+    async def validate_exact_rule_uniqueness(
+        self,
+        *,
+        scope: dict[str, str],
+        payload: dict[str, Any],
+        exclude_rule_id: int | None = None,
+        conn=None,
+    ) -> None:
+        if str(payload.get('match_type') or '').strip() != 'exact':
+            return
+
+        normalized_source_value = normalize_group_customer_name(payload.get('source_value'))
+        normalized_match_expression = normalize_group_customer_name(payload.get('match_expression'))
+        duplicate_rules = await self.repository.find_duplicate_exact_rules(
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            normalized_source_value=normalized_source_value,
+            normalized_match_expression=normalized_match_expression,
+            exclude_rule_id=exclude_rule_id,
+            conn=conn,
+        )
+        if duplicate_rules:
+            raise BroadcastError(BROADCAST_GROUP_RULE_DUPLICATE)
+
+    def _build_group_rule_match_preview(
+        self,
+        *,
+        source_value: str,
+        candidate_rules: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        matched_rule = candidate_rules[0] if candidate_rules else None
+        candidate_count = len(candidate_rules)
+        conflict = candidate_count > 1
+        if matched_rule is not None and conflict:
+            reason = 'multiple_matching_rules'
+        elif matched_rule is not None:
+            reason = 'matched'
+        elif source_value:
+            reason = 'no_matching_rule'
+        else:
+            reason = 'source_value_empty'
+
+        matched_rule_id = int(matched_rule['id']) if matched_rule is not None else None
+        return {
+            'matched': matched_rule is not None,
+            'matched_rule_id': matched_rule_id,
+            'rule_id': matched_rule_id,
+            'source_value': source_value,
+            'match_type': matched_rule.get('match_type') if matched_rule is not None else None,
+            'target_conversation_id': (
+                matched_rule.get('target_conversation_id') if matched_rule is not None else None
+            ),
+            'target_conversation_name': (
+                matched_rule.get('target_conversation_name') if matched_rule is not None else None
+            ),
+            'candidate_count': candidate_count,
+            'candidate_rules': candidate_rules,
+            'conflict': conflict,
+            'reason': reason,
+        }
+
     def _serialize_group_rule(self, row) -> dict[str, Any]:
         payload = self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, row)
         invalid_legacy = self._is_placeholder_group_rule(
@@ -2819,6 +3306,372 @@ class BroadcastService:
                 target_conversation_name=str(getattr(row, 'target_conversation_name', '') or ''),
             )
         ]
+
+    def _iter_group_rules_in_formal_match_order(self, rows: list[Any]) -> list[Any]:
+        return sorted(
+            self._iter_matchable_group_rules(rows),
+            key=lambda row: (-int(getattr(row, 'priority', 0) or 0), int(getattr(row, 'id', 0) or 0)),
+        )
+
+    def _build_group_rule_candidate_item(
+        self,
+        *,
+        import_id: int,
+        summary: dict[str, Any],
+        exact_rules: list[Any],
+        ordered_rules: list[Any],
+        group_names: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        customer_name = normalize_group_customer_name(summary.get('group_value'))
+        group_key = self._build_import_group_key(import_id, summary.get('group_value'))
+        current_match = self._resolve_current_group_rule_candidate_match(
+            customer_name=customer_name,
+            ordered_rules=ordered_rules,
+            group_names=group_names,
+        )
+        related_exact_rules = self._find_related_exact_rules(
+            customer_name=customer_name,
+            exact_rules=exact_rules,
+        )
+        exact_diagnostics = [
+            self._diagnose_exact_rule_for_customer(
+                customer_name=customer_name,
+                rule=row,
+            )
+            for row in related_exact_rules
+        ]
+        valid_exact_rules = [item for item in exact_diagnostics if item['valid']]
+        invalid_exact_rules = [item for item in exact_diagnostics if not item['valid']]
+
+        status = 'new'
+        reason = None
+        if not customer_name:
+            status = 'invalid'
+            reason = '客户名为空，无法形成有效客户分组'
+        else:
+            blocked_by_higher_priority = self._would_new_exact_rule_conflict(
+                customer_name=customer_name,
+                current_match=current_match,
+            )
+            current_exact_rule_id = current_match['rule_id'] if current_match['match_type'] == 'exact' else None
+            unique_valid_exact = valid_exact_rules[0] if len(valid_exact_rules) == 1 else None
+            if len(valid_exact_rules) > 1:
+                status = 'conflict'
+                reason = '存在多条有效 exact 规则，无法确定唯一正式目标'
+            elif unique_valid_exact is not None and current_exact_rule_id != int(unique_valid_exact['rule'].id):
+                status = 'conflict'
+                reason = '当前正式匹配顺序未命中唯一有效 exact 规则'
+            elif blocked_by_higher_priority:
+                status = 'conflict'
+                reason = '当前正式匹配顺序会被其他规则截获，新建或修复 exact 规则后仍无法成为正式命中'
+            elif invalid_exact_rules:
+                status = 'needs_repair'
+                reason = invalid_exact_rules[0]['reason']
+            elif unique_valid_exact is not None:
+                status = 'configured'
+            else:
+                status = 'new'
+
+        existing_rules = [self._serialize_group_rule(item['rule']) for item in exact_diagnostics]
+        current_rule_summary = (
+            self._serialize_group_rule(current_match['rule'])
+            if current_match['rule'] is not None
+            else None
+        )
+        return {
+            'group_key': group_key,
+            'customer_name': customer_name,
+            'raw_row_count': int(summary.get('raw_row_count') or 0),
+            'status': status,
+            'reason': reason,
+            'existing_rule_ids': [int(item['id']) for item in existing_rules],
+            'existing_rules': existing_rules,
+            'current_matched_rule': current_rule_summary,
+            'current_target_conversation_id': current_match['target_conversation_id'],
+            'current_target_conversation_name': current_match['target_conversation_name'],
+            'current_match_type': current_match['match_type'],
+        }
+
+    def _find_related_exact_rules(
+        self,
+        *,
+        customer_name: str,
+        exact_rules: list[Any],
+    ) -> list[Any]:
+        if not customer_name:
+            return []
+        related_rules: list[Any] = []
+        for row in exact_rules:
+            source_value = normalize_group_customer_name(getattr(row, 'source_value', None))
+            match_expression = normalize_group_customer_name(getattr(row, 'match_expression', None))
+            if source_value == customer_name or match_expression == customer_name:
+                related_rules.append(row)
+        return sorted(
+            related_rules,
+            key=lambda row: (-int(getattr(row, 'priority', 0) or 0), int(getattr(row, 'id', 0) or 0)),
+        )
+
+    def _diagnose_exact_rule_for_customer(
+        self,
+        *,
+        customer_name: str,
+        rule,
+    ) -> dict[str, Any]:
+        normalized_source = normalize_group_customer_name(getattr(rule, 'source_value', None))
+        normalized_expression = normalize_group_customer_name(getattr(rule, 'match_expression', None))
+        target_conversation_id = str(getattr(rule, 'target_conversation_id', '') or '').strip()
+        target_conversation_name = str(getattr(rule, 'target_conversation_name', '') or '').strip()
+        invalid_legacy = self._is_placeholder_group_rule(
+            source_value=normalized_source,
+            target_conversation_name=target_conversation_name,
+        )
+        enabled = bool(getattr(rule, 'enabled', False))
+        if not enabled:
+            return {'rule': rule, 'valid': False, 'reason': '存在已停用的 exact 规则，需修复或清理'}
+        if not target_conversation_id:
+            return {'rule': rule, 'valid': False, 'reason': '存在缺少稳定群聊 ID 的 exact 规则，需修复'}
+        if not target_conversation_name:
+            return {'rule': rule, 'valid': False, 'reason': '存在缺少目标群名称的 exact 规则，需修复'}
+        if invalid_legacy:
+            return {'rule': rule, 'valid': False, 'reason': '存在历史占位 exact 规则，需修复或清理'}
+        if normalized_source != customer_name or normalized_expression != customer_name:
+            return {'rule': rule, 'valid': False, 'reason': '存在表达式异常的 exact 规则，需修复'}
+        return {'rule': rule, 'valid': True, 'reason': None}
+
+    def _resolve_current_group_rule_candidate_match(
+        self,
+        *,
+        customer_name: str,
+        ordered_rules: list[Any],
+        group_names: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if customer_name:
+            for row in ordered_rules:
+                if not bool(getattr(row, 'enabled', False)):
+                    continue
+                if self._rule_matches(
+                    str(getattr(row, 'match_type', '') or ''),
+                    str(getattr(row, 'match_expression', '') or ''),
+                    customer_name,
+                ):
+                    return {
+                        'rule': row,
+                        'rule_id': int(getattr(row, 'id')),
+                        'target_conversation_id': getattr(row, 'target_conversation_id', None),
+                        'target_conversation_name': getattr(row, 'target_conversation_name', None),
+                        'match_type': str(getattr(row, 'match_type', '') or '') or None,
+                    }
+        group_name_match = next(
+            (
+                item
+                for item in group_names
+                if normalize_group_customer_name(item.get('name')) == customer_name
+            ),
+            None,
+        )
+        if group_name_match is not None:
+            return {
+                'rule': None,
+                'rule_id': None,
+                'target_conversation_id': str(group_name_match.get('external_conversation_id') or '').strip() or None,
+                'target_conversation_name': customer_name or None,
+                'match_type': 'group_name_fallback',
+            }
+        return {
+            'rule': None,
+            'rule_id': None,
+            'target_conversation_id': None,
+            'target_conversation_name': None,
+            'match_type': None,
+        }
+
+    def _would_new_exact_rule_conflict(
+        self,
+        *,
+        customer_name: str,
+        current_match: dict[str, Any],
+    ) -> bool:
+        if not customer_name:
+            return False
+        current_rule = current_match.get('rule')
+        if current_rule is None:
+            return False
+        match_type = str(current_match.get('match_type') or '')
+        priority = int(getattr(current_rule, 'priority', 0) or 0)
+        if match_type == 'exact':
+            return False
+        return priority >= 0
+
+    async def _build_import_group_rule_candidate_snapshot(
+        self,
+        *,
+        import_id: int,
+        scope: dict[str, str],
+        batch,
+        variable_profile,
+        keyword: str | None = None,
+        conn=None,
+    ) -> dict[str, Any]:
+        resolved_group_field = self._resolve_persisted_batch_group_field(
+            batch=batch,
+            variable_profile=variable_profile or SimpleNamespace(group_field=None),
+        )
+        order_number_source_field = self._resolve_order_number_source_field(variable_profile)
+        summaries = await self.repository.list_all_import_group_summaries(
+            import_batch_id=import_id,
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            order_number_source_field=order_number_source_field,
+            keyword=keyword,
+            conn=conn,
+        )
+        summaries = sorted(
+            summaries,
+            key=lambda item: (
+                int(item.get('first_source_row_number') or 0),
+                str(item.get('group_value') or '').strip(),
+            ),
+        )
+        rules = await self.repository.list_group_rules(
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            conn=conn,
+        )
+        exact_rules = [
+            row for row in rules if str(getattr(row, 'match_type', '') or '').strip() == 'exact'
+        ]
+        ordered_rules = self._iter_group_rules_in_formal_match_order(rules)
+        group_names = await self.repository.list_group_names(
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            conn=conn,
+        )
+        serialized_group_names = [
+            self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupName, item)
+            for item in group_names
+        ]
+        items = [
+            self._build_group_rule_candidate_item(
+                import_id=import_id,
+                summary=summary,
+                exact_rules=exact_rules,
+                ordered_rules=ordered_rules,
+                group_names=serialized_group_names,
+            )
+            for summary in summaries
+        ]
+        stats = {
+            'new_count': sum(1 for item in items if item['status'] == 'new'),
+            'configured_count': sum(1 for item in items if item['status'] == 'configured'),
+            'needs_repair_count': sum(1 for item in items if item['status'] == 'needs_repair'),
+            'conflict_count': sum(1 for item in items if item['status'] == 'conflict'),
+            'invalid_count': sum(1 for item in items if item['status'] == 'invalid'),
+        }
+        return {
+            'resolved_group_field': resolved_group_field,
+            'summaries': summaries,
+            'items': items,
+            'stats': stats,
+        }
+
+    async def _validate_bulk_assigned_rules_formal_match(
+        self,
+        *,
+        scope: dict[str, str],
+        created_rules: list[dict[str, Any]],
+        conn,
+    ) -> None:
+        rules = await self.repository.list_group_rules(
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            conn=conn,
+        )
+        group_names = await self.repository.list_group_names(
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            conn=conn,
+        )
+        serialized_rules = [
+            self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, row)
+            for row in self._iter_matchable_group_rules(rules)
+        ]
+        serialized_group_names = [
+            self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupName, item)
+            for item in group_names
+        ]
+        error_items: list[dict[str, Any]] = []
+        for item in created_rules:
+            matched = match_group(
+                group_value=item['customer_name'],
+                rules=serialized_rules,
+                group_names=serialized_group_names,
+            )
+            if (
+                int(matched.get('matched_rule_id') or 0) != int(item['rule_id'])
+                or str(matched.get('matched_conversation_id') or '').strip()
+                != str(item['target_conversation_id'] or '').strip()
+            ):
+                error_items.append(
+                    self._build_bulk_assign_error_item(
+                        code=BATCH_VALIDATION_FAILED,
+                        message='当前正式匹配顺序会被其他规则截获，新建 exact 规则后仍无法成为正式命中',
+                        group_key=item['group_key'],
+                        customer_name=item['customer_name'],
+                    )
+                )
+        if error_items:
+            self._raise_bulk_assign_failed(error_items)
+
+    async def _validate_bulk_assigned_rules_no_duplicate_exact(
+        self,
+        *,
+        scope: dict[str, str],
+        created_rules: list[dict[str, Any]],
+        conn,
+    ) -> None:
+        error_items: list[dict[str, str]] = []
+        for item in created_rules:
+            duplicate_rules = await self.repository.find_duplicate_exact_rules(
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
+                normalized_source_value=item['customer_name'],
+                normalized_match_expression=item['customer_name'],
+                exclude_rule_id=int(item['rule_id']),
+                conn=conn,
+            )
+            if duplicate_rules:
+                error_items.append(
+                    self._build_bulk_assign_error_item(
+                        code=BROADCAST_GROUP_RULE_DUPLICATE,
+                        message='存在重复的 exact 规则，请刷新后重试',
+                        group_key=item['group_key'],
+                        customer_name=item['customer_name'],
+                    )
+                )
+        if error_items:
+            self._raise_bulk_assign_failed(error_items)
+
+    def _build_bulk_assign_error_item(
+        self,
+        *,
+        code: str,
+        message: str,
+        group_key: str,
+        customer_name: str,
+    ) -> dict[str, str]:
+        return {
+            'code': code,
+            'message': message,
+            'group_key': group_key,
+            'customer_name': customer_name,
+        }
+
+    def _raise_bulk_assign_failed(self, items: list[dict[str, str]]) -> None:
+        raise BroadcastError(
+            BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED,
+            '部分分组规则分配失败，请按明细修正后重试',
+            {'items': items},
+        )
 
     def _serialize_template(self, row) -> dict[str, Any]:
         return self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastTemplate, row)
@@ -3500,14 +4353,70 @@ class BroadcastService:
             return BroadcastError(BROADCAST_GROUP_NAME_DUPLICATE)
         return BroadcastError(BROADCAST_VARIABLE_PROFILE_INVALID)
 
-    def _map_import_processor_error(self, exc: BroadcastImportProcessorError) -> BroadcastError:
-        if exc.message.startswith('导入文件缺少以下字段：'):
+    def _resolve_upload_group_field(
+        self,
+        *,
+        headers: list[str],
+        variable_profile: dict[str, Any] | Any,
+        group_field_override: str | None = None,
+        original_file_name: str | None = None,
+    ) -> dict[str, str]:
+        try:
+            return resolve_upload_group_field(
+                headers=headers,
+                variable_profile=variable_profile,
+                group_field_override=group_field_override,
+            )
+        except BroadcastImportProcessorError as exc:
+            raise self._map_import_processor_error(
+                exc,
+                original_file_name=original_file_name,
+            ) from exc
+
+    def _resolve_persisted_batch_group_field(
+        self,
+        *,
+        batch: dict[str, Any] | Any,
+        variable_profile: dict[str, Any] | Any,
+    ) -> dict[str, str]:
+        try:
+            return resolve_persisted_batch_group_field(
+                batch=batch,
+                variable_profile=variable_profile,
+            )
+        except BroadcastImportProcessorError as exc:
+            raise self._map_import_processor_error(exc) from exc
+
+    def _map_import_processor_error(
+        self,
+        exc: BroadcastImportProcessorError,
+        *,
+        original_file_name: str | None = None,
+    ) -> BroadcastError:
+        if exc.code in {
+            BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED,
+            BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID,
+        }:
+            details = dict(exc.details) if isinstance(exc.details, dict) else {}
+            details['original_file_name'] = original_file_name
+            return BroadcastError(exc.code, exc.message, details)
+        if exc.code == BROADCAST_IMPORT_GROUP_FIELD_UNRESOLVABLE:
+            return BroadcastError(
+                exc.code,
+                exc.message,
+                [] if exc.details is None else exc.details,
+            )
+        if exc.message.startswith(IMPORT_FIELDS_MISSING_MESSAGE_PREFIX):
             return BroadcastError(BROADCAST_IMPORT_FIELDS_MISSING, exc.message)
-        if exc.message.startswith('褰撳墠瀵煎叆鏁版嵁缂哄皯浠ヤ笅瀛楁锛屾棤娉曢噸鏂板尮閰嶏細'):
+        if exc.message.startswith(REMATCH_FIELDS_MISSING_MESSAGE_PREFIX):
             return BroadcastError(BROADCAST_IMPORT_REMATCH_FIELDS_MISSING, exc.message)
-        if exc.message == '璇峰厛璁剧疆瀹㈡埛鍒嗙粍瀛楁鍚庡啀瀵煎叆鏂囦欢':
+        if exc.message == IMPORT_GROUP_FIELD_REQUIRED_MESSAGE:
             return BroadcastError(BROADCAST_IMPORT_GROUP_FIELD_REQUIRED, exc.message)
-        return BroadcastError(BROADCAST_IMPORT_FILE_INVALID, exc.message)
+        return BroadcastError(
+            BROADCAST_IMPORT_FILE_INVALID,
+            exc.message,
+            [] if exc.details is None else exc.details,
+        )
 
     async def _get_bound_connector_id(self, bot_uuid: str) -> str | None:
         result = await self.ap.persistence_mgr.execute_async(

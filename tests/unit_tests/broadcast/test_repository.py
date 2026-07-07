@@ -263,6 +263,96 @@ async def test_group_rules_are_ordered_by_priority_desc_then_id_desc(repository_
     assert [rule.source_value for rule in rules] == ['Globex', 'Acme', 'Northwind']
 
 
+async def test_find_duplicate_exact_rules_filters_scope_validity_and_exclusion(repository_fixture):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        duplicate_rule_id = await repository.create_group_rule(
+            conn,
+            {
+                **_scope(),
+                'source_value': '  Acme  ',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Acme Group',
+                'target_conversation_id': 'acme-group',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        await repository.create_group_rule(
+            conn,
+            {
+                **_scope(),
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Disabled Group',
+                'target_conversation_id': 'disabled-group',
+                'priority': 9,
+                'enabled': False,
+            },
+        )
+        await repository.create_group_rule(
+            conn,
+            {
+                **_scope(),
+                'source_value': 'Acme',
+                'match_type': 'contains',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Contains Group',
+                'target_conversation_id': 'contains-group',
+                'priority': 8,
+                'enabled': True,
+            },
+        )
+        await repository.create_group_rule(
+            conn,
+            {
+                **_scope(),
+                'source_value': '??',
+                'match_type': 'exact',
+                'match_expression': '??',
+                'target_conversation_name': '??',
+                'target_conversation_id': 'placeholder-group',
+                'priority': 99,
+                'enabled': True,
+            },
+        )
+        await repository.create_group_rule(
+            conn,
+            {
+                **_scope(bot_uuid='bot-2'),
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Other Scope Group',
+                'target_conversation_id': 'other-scope-group',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+
+    duplicates = await repository.find_duplicate_exact_rules(
+        bot_uuid='bot-1',
+        connector_id='wxwork-local',
+        normalized_source_value='Acme',
+        normalized_match_expression='Acme',
+    )
+
+    assert [rule.id for rule in duplicates] == [duplicate_rule_id]
+
+    excluded = await repository.find_duplicate_exact_rules(
+        bot_uuid='bot-1',
+        connector_id='wxwork-local',
+        normalized_source_value='Acme',
+        normalized_match_expression='Acme',
+        exclude_rule_id=duplicate_rule_id,
+    )
+
+    assert excluded == []
+
+
 async def test_group_name_delete_is_scoped_by_id_and_scope(repository_fixture):
     repository, persistence_mgr = repository_fixture
 
@@ -421,6 +511,23 @@ async def test_import_group_template_assignments_can_be_upserted_listed_and_clea
     )
     assert [(item.group_key, item.template_id) for item in refreshed] == [
         ('group-a', template_id_2),
+        ('group-b', template_id_2),
+    ]
+
+    async with persistence_mgr.engine.begin() as conn:
+        deleted = await repository.delete_import_group_template_assignment(
+            conn,
+            import_batch_id=import_batch_id,
+            group_key='group-a',
+        )
+    assert deleted is True
+
+    cleared = await repository.list_import_group_template_assignments(
+        import_batch_id=import_batch_id,
+        bot_uuid='bot-1',
+        connector_id='wxwork-local',
+    )
+    assert [(item.group_key, item.template_id) for item in cleared] == [
         ('group-b', template_id_2),
     ]
 

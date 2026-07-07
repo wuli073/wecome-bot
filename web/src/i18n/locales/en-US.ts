@@ -2136,6 +2136,9 @@ const enUS = {
         title: 'Message Templates',
         description:
           'Review saved templates, variable tokens, and preview structure in a split workspace.',
+        deleteConfirmTitle: 'Delete template',
+        deleteConfirmDescription:
+          'Delete "{{name}}" from future draft generation. Existing snapshot drafts are not changed, but new drafts can no longer use this template.',
       },
       groupMatching: {
         title: 'Group Matching',
@@ -2155,11 +2158,23 @@ const enUS = {
         'Show real matching results immediately after upload without requiring a rematch first.',
       worksheetName: 'Worksheet: {{name}}',
       rematchButton: 'Rematch',
+      rematchConfirmTitle: 'Rematch current batch',
+      rematchConfirmDescription:
+        'This will recalculate matching results for the current batch using the latest rules. If ready drafts block rematch on the backend, the original backend error will still be shown.',
       deleteBatchButton: 'Delete Batch',
+      deleteBatchConfirmTitle: 'Delete import batch',
+      deleteBatchConfirmDescription:
+        'Delete {{fileName}}? This batch currently contains {{totalRows}} row(s), {{groupCount}} group(s), and {{draftCount}} related draft(s). The current backend deletion semantics will be used as-is.',
       templatePlaceholder: 'Select a message template',
       bulkTemplatePlaceholder: 'Set template for selected groups',
       applyTemplateButton: 'Apply to selected',
+      applyTemplateToUnassignedButton: 'Apply to unassigned only',
+      clearTemplatesButton: 'Clear selected templates',
+      clearRowTemplateButton: 'Clear template',
       generateDraftsButton: 'Generate selected drafts',
+      generateDraftsConfirmTitle: 'Generate selected drafts',
+      generateDraftsConfirmDescription:
+        'Generate drafts for {{selectedCount}} selected group(s). {{templatedCount}} group(s) already have templates configured, and {{blockedCount}} group(s) are currently not generatable.',
       draftsStale: 'Drafts are stale. Please regenerate them.',
       emptyRows: 'No import rows yet',
       selectedGroupCount: '{{count}} group(s) selected',
@@ -2190,10 +2205,22 @@ const enUS = {
         noBatch: 'Select an import batch first.',
         noSelection: 'Select at least one eligible group first.',
         noTemplate: 'Select a message template to apply.',
+        noProcessableSelection:
+          'The selected groups already use the current template.',
+        noUnassignedSelection:
+          'The selected groups do not contain any unassigned template slots.',
+      },
+      clearTemplateDisabled: {
+        noBatch: 'Select an import batch first.',
+        noSelection: 'Select at least one group first.',
+        noAssignedSelection:
+          'The selected groups do not contain any assigned templates.',
       },
       generateDisabled: {
         noBatch: 'Select an import batch first.',
         noSelection: 'Select at least one eligible group first.',
+        matchUnavailable:
+          '{{count}} selected group(s) are not matched to a usable conversation yet.',
         templateMissing:
           '{{count}} selected group(s) do not have a message template.',
         templateDisabled:
@@ -2219,9 +2246,31 @@ const enUS = {
       groupAttachments: 'Group Attachments',
       uploadAttachment: 'Upload Attachment',
       deleteAttachment: 'Delete',
+      clearTemplatesConfirmTitle: 'Clear group templates',
+      clearTemplatesConfirmDescription:
+        'This will clear templates from {{count}} selected group(s). Groups without templates will be skipped.',
+      clearTemplatesConfirmButton: 'Clear templates',
       emptyAttachments: 'No attachments yet',
       groupRowsTitle: 'Raw Rows',
       groupRowsTotal: '{{total}} row(s)',
+      inlineMatch: {
+        selectConversationButton: 'Select target conversation',
+        dialogTitle: 'Select target conversation',
+        dialogDescription:
+          'Choose a target conversation for “{{groupValue}}”, then save an exact-match rule and rematch the current batch.',
+        dialogDescriptionFallback:
+          'Choose a target conversation and save an exact-match rule.',
+        currentGroupLabel: 'Current customer / group',
+        searchLabel: 'Search target conversations',
+        searchPlaceholder: 'Enter a conversation name',
+        missingStableId:
+          'Missing a stable external_conversation_id and cannot be selected yet.',
+        emptySearch: 'No conversations match this search.',
+        selectionRequired: 'Select an available target conversation first.',
+        conflictRuleDetected:
+          'Multiple conflicting exact rules already exist for this group. Resolve them in the Group Matching tab first.',
+        saveButton: 'Save and rematch',
+      },
       pagination: {
         totalItems: '{{total}} items total',
         previous: 'Previous',
@@ -2253,6 +2302,9 @@ const enUS = {
       batchConfirm: 'Confirm selected',
       createExecutionBatch: 'Create execution batch',
       batchWriteSelected: 'Write selected',
+      batchWriteConfirmTitle: 'Write selected drafts to the input box',
+      batchWriteConfirmDescription:
+        'This will submit {{draftCount}} draft(s) for {{conversationCount}} target conversation(s), including {{attachmentCount}} attachment(s). Duplicate targets: {{duplicateTargetCount}}. During execution, do not switch windows or use the mouse and keyboard.',
       mockPasteSelected: 'Mock paste selected',
       editDraft: 'Edit draft',
       saveDraft: 'Save draft',
@@ -2358,6 +2410,35 @@ const enUS = {
       statusPasteVerified: 'Written and verified',
       statusWarning: 'Written, confirm manually before sending',
       statusSendTriggered: 'Send triggered',
+      retryFailedTasks: 'Retry failed items',
+      retryFailedTasksConfirmTitle: 'Retry failed items',
+      retryFailedTasksConfirmDescription:
+        'Retry {{count}} failed or interrupted task(s) in the latest batch. Already successful tasks will not be resubmitted.',
+      batchStatuses: {
+        created: 'Waiting to start',
+        queued: 'Queued',
+        running: 'Running',
+        paused: 'Paused',
+        completed: 'Completed',
+        partially_failed: 'Partially failed',
+        failed: 'Failed',
+        cancelled: 'Cancelled',
+        interrupted: 'Interrupted',
+        unknown: 'Unknown',
+      },
+      taskStatuses: {
+        pending: 'Waiting to run',
+        queued: 'Queued',
+        running: 'Writing',
+        succeeded: 'Written successfully',
+        succeeded_with_warning: 'Written, confirm manually before sending',
+        blocked: 'Not executed',
+        failed: 'Write failed',
+        cancelled: 'Cancelled',
+        timed_out: 'Timed out',
+        interrupted: 'Interrupted',
+        unknown: 'Unknown',
+      },
       fields: {
         attachmentCount: 'attachmentCount',
         attachmentNames: 'attachmentNames',
@@ -2368,6 +2449,11 @@ const enUS = {
         warning: 'warning',
         errorCode: 'errorCode',
         stage: 'stage',
+        batchStatus: 'batchStatus',
+        taskStatus: 'taskStatus',
+        attemptStatus: 'attemptStatus',
+        runtimeState: 'runtimeState',
+        recoveryAdvice: 'recoveryAdvice',
       },
       warningCodes: {
         ATTACHMENTS_REQUIRE_MANUAL_CONFIRMATION:
@@ -2377,6 +2463,34 @@ const enUS = {
           'Attachment file is outside the configured attachment root',
       },
 
+      errorSuggestions: {
+        TARGET_WINDOW_NOT_FOUND: 'Open the WeCom main window and retry.',
+        TARGET_WINDOW_AMBIGUOUS: 'Close extra WeCom windows and retry.',
+        WINDOW_ACTIVATION_FAILED:
+          'Do not switch windows or use the mouse and keyboard during execution, then retry.',
+        SEARCH_ACTIVATION_FAILED:
+          'Do not switch windows or use the mouse and keyboard during execution, then retry.',
+        TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE:
+          'Do not switch windows or use the mouse and keyboard during execution, then retry.',
+        CONVERSATION_NAME_PASTE_FAILED:
+          'Check the target conversation name and matching rules.',
+        SEARCH_RESULT_CONFIRM_FAILED:
+          'Check the target conversation name and matching rules.',
+        ATTACHMENT_FILE_MISSING:
+          'Go back to draft review and upload the attachment again.',
+        ATTACHMENT_HASH_MISMATCH:
+          'Go back to draft review and upload the attachment again.',
+        ATTACHMENT_PATH_OUTSIDE_ROOT:
+          'Go back to draft review and upload the attachment again.',
+        FILE_CLIPBOARD_HELPER_FAILED: 'Check the Runtime status and retry.',
+        FILE_CLIPBOARD_HELPER_TIMEOUT: 'Check the Runtime status and retry.',
+        CLIPBOARD_RESTORE_MISMATCH:
+          'The write may already be finished, but clipboard restore failed. Check manually.',
+        PASTE_RESULT_NOT_VERIFIED:
+          'The content was written, but the system could not verify it automatically. Please check the input box manually.',
+        __default:
+          'Check the raw error code and technical details, then retry if appropriate.',
+      },
       errorCodes: {
         FILE_CLIPBOARD_HELPER_SPAWN_FAILED:
           'Unable to start the attachment clipboard helper.',
@@ -2424,6 +2538,10 @@ const enUS = {
       executionBatchResumed: 'Execution batch resumed',
       executionBatchCancelled: 'Remaining tasks cancelled',
       executionTaskRetried: 'Execution task re-queued',
+      executionFailedTasksRetried:
+        'Submitted retry for {{successCount}} failed/interrupted task(s); {{failedCount}} submission(s) failed.',
+      executionFailedTasksRetryNoop:
+        'There are no failed or interrupted tasks available to retry.',
       pasteSubmitted: 'Write-to-input task submitted',
       sendSubmitted: 'Real send request submitted',
       draftsConfirmed: 'Draft confirmed',
@@ -2435,6 +2553,14 @@ const enUS = {
       importRematched: 'Import batch rematched',
       draftsGenerated:
         'Processed {{count}} group(s): {{createdCount}} created, {{updatedCount}} updated',
+      groupTemplateAssignmentsApplied:
+        'Updated templates for {{count}} group(s), including {{replacedCount}} replacement(s).',
+      groupTemplateAssignmentsAppliedToUnassigned:
+        'Applied templates to {{count}} unassigned group(s).',
+      groupTemplateAssignmentsCleared:
+        'Cleared templates from {{count}} group(s).',
+      importInlineMatchSaved:
+        'Saved the exact-match rule and rematched the current batch.',
       groupTemplateAssignmentsSaved:
         'Message templates updated for selected groups',
       attachmentUploaded: 'Attachment uploaded',
@@ -2453,6 +2579,67 @@ const enUS = {
   pluginPages: {
     selectFromSidebar: 'Select a plugin page from the sidebar',
     invalidPage: 'Invalid plugin page',
+  },
+};
+
+const enUsBroadcastImportLocale = enUS.broadcast.import as Record<
+  string,
+  unknown
+>;
+enUsBroadcastImportLocale.groupFieldDetected =
+  'Detected customer field for this batch: {{field}}';
+enUsBroadcastImportLocale.groupFieldDialog = {
+  title: 'Confirm customer field',
+  description:
+    'The customer grouping field could not be determined uniquely. Select one for {{fileName}} to continue importing.',
+  configuredField: 'Configured field: {{field}}',
+  selectLabel: 'Customer field used for this import',
+  headersLabel: 'File headers',
+  confirmButton: 'Continue import',
+};
+enUsBroadcastImportLocale.bulkAssign = {
+  openButton: 'Bulk assign new customers ({{count}})',
+  dialogTitle: 'Bulk assign new customers',
+  dialogDescription:
+    'Choose target conversations for {{count}} new customers and create exact rules in one step.',
+  applyConversationLabel: 'Choose a conversation to apply in bulk',
+  searchPlaceholder: 'Search conversation name or stable conversation ID',
+  emptySearch: 'No matching conversations',
+  applyConversationButton: 'Apply to selected customers ({{count}})',
+  selectionRequired: 'Select an available conversation first.',
+  noSelection: 'Select at least one customer.',
+  missingAssignments:
+    '{{count}} selected customer(s) still need a target conversation.',
+  emptyCandidates: 'There are no new customers available for bulk assignment.',
+  targetConversationPlaceholder: 'Select target conversation',
+  submitButton: 'Create rules and rematch ({{count}})',
+  tableHeaders: {
+    selection: 'Select',
+    customerName: 'Customer',
+    rawRowCount: 'Raw rows',
+    targetConversation: 'Target conversation',
+  },
+};
+const enUsBroadcastToastLocale = enUS.broadcast.toasts as Record<
+  string,
+  unknown
+>;
+enUsBroadcastToastLocale.importBulkAssignCompleted =
+  'Created exact rules for {{count}} customer(s) and rematched the current batch.';
+
+const enUsBroadcastLocale = enUS.broadcast as Record<string, unknown>;
+enUsBroadcastLocale.groupRule = {
+  customerName: 'Customer name',
+  preview: {
+    empty: 'Run the preview to inspect the backend-selected rule.',
+    matchedBadge: 'Matched',
+    conflictBadge: 'Conflict',
+    noMatchBadge: 'No match',
+    currentRule: 'Current matched rule',
+    noMatch: 'No rule matches the current customer value.',
+    conflict:
+      'Multiple rules match. The backend will use the first rule in formal order.',
+    candidateRules: 'Candidate rules',
   },
 };
 

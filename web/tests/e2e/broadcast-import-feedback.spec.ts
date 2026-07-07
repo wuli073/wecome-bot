@@ -78,6 +78,68 @@ function makeGroupPage<T extends Record<string, unknown>>(
 }
 
 test.describe('broadcast import feedback', () => {
+  test('reuses the uploaded file when customer field confirmation is required', async ({
+    page,
+  }) => {
+    await installLangBotApiMocks(page, {
+      authenticated: true,
+      storage: {
+        langbot_language: 'en-US',
+      },
+      bots: [
+        {
+          uuid: 'bot-1',
+          name: 'Broadcast Bot A',
+          enable: true,
+          adapter: 'wxwork_database',
+          adapter_config: {
+            connector_id: 'wxwork-local',
+          },
+        },
+      ],
+    });
+
+    const uploadBodies: string[] = [];
+    await page.route('**/api/v1/broadcast/imports*', async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (
+        request.method() === 'POST' &&
+        url.pathname === '/api/v1/broadcast/imports'
+      ) {
+        uploadBodies.push(request.postDataBuffer()?.toString('utf-8') || '');
+      }
+      await route.fallback();
+    });
+
+    await page.goto('/home/broadcast');
+    await expect(page).toHaveURL(/\/home\/broadcast$/);
+    await page.locator('[role="tab"]').nth(1).click();
+
+    await page.getByTestId('broadcast-import-upload-input').setInputFiles({
+      name: 'field-confirmation.xlsx',
+      mimeType:
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      buffer: Buffer.from('field-confirmation', 'utf-8'),
+    });
+
+    const dialog = page.getByTestId('broadcast-import-group-field-dialog');
+    await expect(dialog).toBeVisible();
+    await dialog.locator('select').selectOption('客户名称');
+    await dialog.getByRole('button', { name: 'Continue import' }).click();
+
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator('body')).toContainText('field-confirmation.xlsx');
+    await expect(page.locator('body')).toContainText(
+      /Detected customer field for this batch:\s*客户名称/,
+    );
+
+    expect(uploadBodies).toHaveLength(2);
+    expect(uploadBodies[0]).not.toContain('group_field_override');
+    expect(uploadBodies[1]).toContain('group_field_override');
+    expect(uploadBodies[1]).toContain('客户名称');
+  });
+
   test('shows worksheet name for uploaded xlsx batch', async ({ page }) => {
     await installLangBotApiMocks(page, {
       authenticated: true,
@@ -900,6 +962,12 @@ test.describe('broadcast import feedback', () => {
     });
 
     await page.getByTestId('broadcast-import-delete-batch-button').click();
+    await expect(
+      page.getByTestId('broadcast-import-delete-batch-confirm-dialog'),
+    ).toBeVisible();
+    await page
+      .getByTestId('broadcast-import-delete-batch-confirm-button')
+      .click();
 
     await deleteResponsePromise;
     await deleteRefreshRequestPromise;

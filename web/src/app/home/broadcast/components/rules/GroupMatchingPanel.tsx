@@ -22,6 +22,8 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 
+import GroupConversationSelector from '../shared/GroupConversationSelector';
+import GroupMatchPreview from '../shared/GroupMatchPreview';
 import type {
   BroadcastGroupMatchResult,
   BroadcastGroupMatchType,
@@ -122,9 +124,6 @@ export default function GroupMatchingPanel({
   const selectableGroupNames = groupNames.filter((item) =>
     Boolean(item.externalConversationId?.trim()),
   );
-  const filteredGroupNames = selectableGroupNames.filter((item) =>
-    item.name.toLowerCase().includes(targetConversationKeyword.toLowerCase()),
-  );
   const requiresTargetConversationReselect =
     Boolean(activeRule) &&
     !draft.targetConversationId.trim() &&
@@ -220,21 +219,40 @@ export default function GroupMatchingPanel({
           ) : null}
 
           <div className="grid gap-3 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="broadcast-group-rule-source-value">
-                {t('broadcast.fields.sourceValue')}
-              </Label>
-              <Input
-                id="broadcast-group-rule-source-value"
-                value={draft.sourceValue}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    sourceValue: event.target.value,
-                  }))
-                }
-              />
-            </div>
+            {draft.matchType === 'exact' ? (
+              <div className="space-y-2">
+                <Label htmlFor="broadcast-group-rule-source-value">
+                  {t('broadcast.groupRule.customerName')}
+                </Label>
+                <Input
+                  id="broadcast-group-rule-source-value"
+                  value={draft.sourceValue}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      sourceValue: event.target.value,
+                      matchExpression: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label htmlFor="broadcast-group-rule-source-value">
+                  {t('broadcast.fields.sourceValue')}
+                </Label>
+                <Input
+                  id="broadcast-group-rule-source-value"
+                  value={draft.sourceValue}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      sourceValue: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+            )}
             <div className="space-y-2">
               <Label htmlFor="broadcast-group-rule-match-type">
                 {t('broadcast.fields.matchType')}
@@ -258,33 +276,32 @@ export default function GroupMatchingPanel({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="broadcast-group-rule-match-expression">
-                {t('broadcast.fields.matchExpression')}
-              </Label>
-              <Input
-                id="broadcast-group-rule-match-expression"
-                value={draft.matchExpression}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    matchExpression: event.target.value,
-                  }))
-                }
-              />
-            </div>
+            {draft.matchType === 'exact' ? null : (
+              <div className="space-y-2">
+                <Label htmlFor="broadcast-group-rule-match-expression">
+                  {t('broadcast.fields.matchExpression')}
+                </Label>
+                <Input
+                  id="broadcast-group-rule-match-expression"
+                  value={draft.matchExpression}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      matchExpression: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+            )}
             <div className="space-y-2">
               <Label htmlFor="broadcast-group-rule-target-conversation-name">
                 {t('broadcast.fields.targetConversationName')}
               </Label>
-              <Input
-                id="broadcast-group-rule-target-conversation-search"
-                value={targetConversationKeyword}
-                placeholder={t(
-                  'broadcast.groupRule.targetConversationSearchPlaceholder',
-                )}
-                onChange={(event) => {
-                  const nextValue = event.target.value;
+              <GroupConversationSelector
+                groupNames={selectableGroupNames}
+                value={draft.targetConversationId}
+                keyword={targetConversationKeyword}
+                onKeywordChange={(nextValue) => {
                   setTargetConversationKeyword(nextValue);
                   setSelectionError(null);
                   setDraft((current) => ({
@@ -296,39 +313,27 @@ export default function GroupMatchingPanel({
                     targetConversationName: nextValue,
                   }));
                 }}
-              />
-              <select
-                id="broadcast-group-rule-target-conversation-name"
-                className="border-input bg-background h-9 w-full rounded-md border px-3 py-2 text-sm"
-                data-testid="broadcast-group-rule-target-conversation-select"
-                value={draft.targetConversationId}
-                onChange={(event) => {
-                  const selectedId = event.target.value;
-                  const selectedGroup = selectableGroupNames.find(
-                    (item) => item.externalConversationId === selectedId,
-                  );
+                onChange={(conversation) => {
                   setSelectionError(null);
                   setDraft((current) => ({
                     ...current,
                     targetConversationId:
-                      selectedGroup?.externalConversationId ?? '',
-                    targetConversationName: selectedGroup?.name ?? '',
+                      conversation?.externalConversationId ?? '',
+                    targetConversationName: conversation?.name ?? '',
                   }));
-                  setTargetConversationKeyword(selectedGroup?.name ?? '');
+                  setTargetConversationKeyword(conversation?.name ?? '');
                 }}
-              >
-                <option value="">
-                  {t('broadcast.groupRule.targetConversationSelectPlaceholder')}
-                </option>
-                {filteredGroupNames.map((groupName) => (
-                  <option
-                    key={groupName.id}
-                    value={groupName.externalConversationId ?? ''}
-                  >
-                    {groupName.name}
-                  </option>
-                ))}
-              </select>
+                disabled={saving}
+                searchLabel={t('broadcast.fields.targetConversationName')}
+                searchPlaceholder={t(
+                  'broadcast.groupRule.targetConversationSearchPlaceholder',
+                )}
+                emptyLabel={t(
+                  'broadcast.groupRule.targetConversationSelectPlaceholder',
+                )}
+                searchInputTestId="broadcast-group-rule-target-conversation-search"
+                listTestId="broadcast-group-rule-target-conversation-select"
+              />
               {requiresTargetConversationReselect ? (
                 <div className="text-xs text-amber-700">
                   {t('broadcast.groupRule.targetConversationLegacyReselect')}
@@ -414,13 +419,10 @@ export default function GroupMatchingPanel({
                 {t('broadcast.actions.runMatchPreview')}
               </Button>
             </div>
-            {matchResult ? (
-              <div className="text-sm text-muted-foreground">
-                {matchResult.matched
-                  ? `${matchResult.matchType ? BROADCAST_GROUP_MATCH_TYPE_LABELS[matchResult.matchType] : ''} → ${matchResult.targetConversationName}`
-                  : t('broadcast.labels.noMatch')}
-              </div>
-            ) : null}
+            <GroupMatchPreview
+              result={matchResult}
+              emptyLabel={t('broadcast.groupRule.preview.empty')}
+            />
           </div>
         </CardContent>
       </Card>

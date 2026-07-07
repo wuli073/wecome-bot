@@ -190,3 +190,117 @@ def test_classify_import_rows_produces_unmatched_rows_without_double_counting():
     }
     assert stats['valid_rows'] + stats['invalid_rows'] == stats['total_rows']
     assert stats['matched_rows'] + stats['unmatched_rows'] + stats['invalid_rows'] == stats['total_rows']
+
+
+def test_resolve_upload_group_field_uses_override_when_header_exists():
+    from langbot.pkg.broadcast.import_processor import resolve_upload_group_field
+
+    result = resolve_upload_group_field(
+        headers=['客户名称', '订单号'],
+        variable_profile=_profile(group_field='客户'),
+        group_field_override='客户名称',
+    )
+
+    assert result['group_field'] == '客户名称'
+    assert result['source'] == 'user_confirmed'
+
+
+def test_resolve_upload_group_field_prefers_username_header():
+    from langbot.pkg.broadcast.import_processor import resolve_upload_group_field
+
+    result = resolve_upload_group_field(
+        headers=['用户名', '客户名称', '订单号'],
+        variable_profile=_profile(group_field='客户名称'),
+    )
+
+    assert result['group_field'] == '用户名'
+    assert result['source'] == 'auto_detected'
+
+
+def test_resolve_upload_group_field_uses_configured_field_when_present():
+    from langbot.pkg.broadcast.import_processor import resolve_upload_group_field
+
+    result = resolve_upload_group_field(
+        headers=['最新客户名称', '订单号'],
+        variable_profile=_profile(group_field='最新客户名称'),
+    )
+
+    assert result['group_field'] == '最新客户名称'
+    assert result['source'] == 'configured'
+
+
+def test_resolve_upload_group_field_uses_single_alias_hit():
+    from langbot.pkg.broadcast.import_processor import resolve_upload_group_field
+
+    result = resolve_upload_group_field(
+        headers=['昵称', '订单号'],
+        variable_profile=_profile(group_field='不存在的字段'),
+    )
+
+    assert result['group_field'] == '昵称'
+    assert result['source'] == 'auto_detected'
+
+
+def test_resolve_upload_group_field_requires_confirmation_for_ambiguous_aliases():
+    from langbot.pkg.broadcast.import_processor import (
+        BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED,
+        BroadcastImportProcessorError,
+        resolve_upload_group_field,
+    )
+
+    with pytest.raises(BroadcastImportProcessorError) as exc_info:
+        resolve_upload_group_field(
+            headers=['\u5ba2\u6237', '\u59d3\u540d', '\u8ba2\u5355\u53f7'],
+            variable_profile=_profile(group_field='\u4e0d\u5b58\u5728\u7684\u5b57\u6bb5'),
+        )
+
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED
+    details = exc_info.value.details
+    assert isinstance(details, dict)
+    assert details['headers'] == ['\u5ba2\u6237', '\u59d3\u540d', '\u8ba2\u5355\u53f7']
+    assert details['candidates'] == ['\u5ba2\u6237', '\u59d3\u540d']
+    assert details['configured_group_field'] == '\u4e0d\u5b58\u5728\u7684\u5b57\u6bb5'
+    assert details['original_file_name'] is None
+
+def test_resolve_upload_group_field_requires_confirmation_when_no_alias_candidates_found():
+    from langbot.pkg.broadcast.import_processor import (
+        BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED,
+        BroadcastImportProcessorError,
+        resolve_upload_group_field,
+    )
+
+    with pytest.raises(BroadcastImportProcessorError) as exc_info:
+        resolve_upload_group_field(
+            headers=['\u8ba2\u5355\u53f7', '\u8054\u7cfb\u4eba\u624b\u673a\u53f7'],
+            variable_profile=_profile(group_field='\u4e0d\u5b58\u5728\u7684\u5b57\u6bb5'),
+        )
+
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED
+    details = exc_info.value.details
+    assert isinstance(details, dict)
+    assert details['headers'] == ['\u8ba2\u5355\u53f7', '\u8054\u7cfb\u4eba\u624b\u673a\u53f7']
+    assert details['candidates'] == []
+    assert details['configured_group_field'] == '\u4e0d\u5b58\u5728\u7684\u5b57\u6bb5'
+    assert details['original_file_name'] is None
+    assert exc_info.value.message == '\u672a\u8bc6\u522b\u5230\u53ef\u552f\u4e00\u786e\u5b9a\u7684\u5ba2\u6237\u5206\u7ec4\u5b57\u6bb5\uff0c\u8bf7\u7528\u6237\u786e\u8ba4\u540e\u7ee7\u7eed'
+
+def test_resolve_upload_group_field_rejects_invalid_override():
+    from langbot.pkg.broadcast.import_processor import (
+        BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID,
+        BroadcastImportProcessorError,
+        resolve_upload_group_field,
+    )
+
+    with pytest.raises(BroadcastImportProcessorError) as exc_info:
+        resolve_upload_group_field(
+            headers=['\u5ba2\u6237\u540d\u79f0', '\u8ba2\u5355\u53f7'],
+            variable_profile=_profile(group_field='\u5ba2\u6237\u540d\u79f0'),
+            group_field_override='\u7528\u6237\u540d',
+        )
+
+    assert exc_info.value.code == BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID
+    details = exc_info.value.details
+    assert isinstance(details, dict)
+    assert details['group_field_override'] == '\u7528\u6237\u540d'
+    assert details['headers'] == ['\u5ba2\u6237\u540d\u79f0', '\u8ba2\u5355\u53f7']
+    assert details['original_file_name'] is None

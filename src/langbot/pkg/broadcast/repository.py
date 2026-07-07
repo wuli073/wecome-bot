@@ -234,12 +234,13 @@ class BroadcastRepository:
         )
         return bool(result.rowcount)
 
-    async def get_variable_profile(self, *, bot_uuid: str, connector_id: str):
+    async def get_variable_profile(self, *, bot_uuid: str, connector_id: str, conn=None):
         result = await self.persistence_mgr.execute_async(
             sqlalchemy.select(persistence_broadcast.BroadcastVariableProfile).where(
                 persistence_broadcast.BroadcastVariableProfile.bot_uuid == bot_uuid,
                 persistence_broadcast.BroadcastVariableProfile.connector_id == connector_id,
-            )
+            ),
+            conn=conn,
         )
         return self._first_model(result)
 
@@ -272,7 +273,7 @@ class BroadcastRepository:
         )
         return int(result.inserted_primary_key[0])
 
-    async def list_group_rules(self, *, bot_uuid: str, connector_id: str):
+    async def list_group_rules(self, *, bot_uuid: str, connector_id: str, conn=None):
         result = await self.persistence_mgr.execute_async(
             sqlalchemy.select(persistence_broadcast.BroadcastGroupRule)
             .where(
@@ -282,7 +283,8 @@ class BroadcastRepository:
             .order_by(
                 persistence_broadcast.BroadcastGroupRule.priority.desc(),
                 persistence_broadcast.BroadcastGroupRule.id.desc(),
-            )
+            ),
+            conn=conn,
         )
         return self._all_models(result)
 
@@ -296,6 +298,51 @@ class BroadcastRepository:
             conn=conn,
         )
         return self._first_model(result)
+
+    async def find_duplicate_exact_rules(
+        self,
+        *,
+        bot_uuid: str,
+        connector_id: str,
+        normalized_source_value: str,
+        normalized_match_expression: str,
+        exclude_rule_id: int | None = None,
+        conn=None,
+    ):
+        normalized_source_expr = sqlalchemy.func.trim(
+            sqlalchemy.func.coalesce(persistence_broadcast.BroadcastGroupRule.source_value, '')
+        )
+        normalized_expression_expr = sqlalchemy.func.trim(
+            sqlalchemy.func.coalesce(persistence_broadcast.BroadcastGroupRule.match_expression, '')
+        )
+        normalized_target_expr = sqlalchemy.func.trim(
+            sqlalchemy.func.coalesce(persistence_broadcast.BroadcastGroupRule.target_conversation_name, '')
+        )
+        conditions = [
+            persistence_broadcast.BroadcastGroupRule.bot_uuid == bot_uuid,
+            persistence_broadcast.BroadcastGroupRule.connector_id == connector_id,
+            persistence_broadcast.BroadcastGroupRule.match_type == 'exact',
+            persistence_broadcast.BroadcastGroupRule.enabled.is_(True),
+            normalized_source_expr == normalized_source_value,
+            normalized_expression_expr == normalized_match_expression,
+            normalized_source_expr != '',
+            normalized_source_expr != '??',
+            normalized_target_expr != '',
+            normalized_target_expr != '??',
+        ]
+        if exclude_rule_id is not None:
+            conditions.append(persistence_broadcast.BroadcastGroupRule.id != exclude_rule_id)
+
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_broadcast.BroadcastGroupRule)
+            .where(*conditions)
+            .order_by(
+                persistence_broadcast.BroadcastGroupRule.priority.desc(),
+                persistence_broadcast.BroadcastGroupRule.id.asc(),
+            ),
+            conn=conn,
+        )
+        return self._all_models(result)
 
     async def create_group_rule(self, conn, payload: dict[str, Any]) -> int:
         result = await self.persistence_mgr.execute_async(
@@ -352,7 +399,7 @@ class BroadcastRepository:
         )
         return bool(result.rowcount)
 
-    async def list_group_names(self, *, bot_uuid: str, connector_id: str):
+    async def list_group_names(self, *, bot_uuid: str, connector_id: str, conn=None):
         result = await self.persistence_mgr.execute_async(
             sqlalchemy.select(persistence_broadcast.BroadcastGroupName)
             .where(
@@ -360,6 +407,8 @@ class BroadcastRepository:
                 persistence_broadcast.BroadcastGroupName.connector_id == connector_id,
             )
             .order_by(persistence_broadcast.BroadcastGroupName.name.asc(), persistence_broadcast.BroadcastGroupName.id.asc())
+            ,
+            conn=conn,
         )
         return self._all_models(result)
 
@@ -615,6 +664,22 @@ class BroadcastRepository:
             conn=conn,
         )
         return self._all_models(result)
+
+    async def delete_import_group_template_assignment(
+        self,
+        conn,
+        *,
+        import_batch_id: int,
+        group_key: str,
+    ) -> bool:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.delete(persistence_broadcast.BroadcastImportGroupTemplateAssignment).where(
+                persistence_broadcast.BroadcastImportGroupTemplateAssignment.import_batch_id == import_batch_id,
+                persistence_broadcast.BroadcastImportGroupTemplateAssignment.group_key == group_key,
+            ),
+            conn=conn,
+        )
+        return bool(result.rowcount)
 
     async def upsert_import_group_template_assignments(
         self,

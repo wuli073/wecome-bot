@@ -30,12 +30,14 @@ import {
 import { buildVariableMappings } from '../utils';
 import type {
   BroadcastDraft,
+  BroadcastGroupRuleCandidateList,
   BroadcastExecutionBatchSummary,
   BroadcastExecutionLog,
   BroadcastExecutorCapability,
   BroadcastExecutorHealth,
   BroadcastImportBatch,
   BroadcastImportDetail,
+  BroadcastImportGroupFieldConfirmationDetails,
   BroadcastImportGroupList,
   BroadcastImportGroupRowsPage,
   BroadcastRulesTab,
@@ -46,6 +48,7 @@ import type {
   BroadcastVariableProfile,
   BroadcastMessageTemplate,
 } from '../types';
+import { getRetryableExecutionTasks } from '../statusPresentation';
 
 const draftStatusOrder = ['pending', 'sent'] as const;
 const OPERATOR_EMAIL = 'tester@example.com';
@@ -57,17 +60,66 @@ const EXECUTION_TERMINAL_STATUSES = new Set([
   'interrupted',
 ]);
 
-function getErrorMessage(error: unknown, fallback: string): string {
+type BackendErrorPayload = {
+  msg?: unknown;
+  data?: {
+    message?: unknown;
+    details?: unknown;
+  };
+};
+
+type PendingImportConfirmation = {
+  file: File;
+  details: BroadcastImportGroupFieldConfirmationDetails;
+};
+
+function getBackendErrorPayload(error: unknown): BackendErrorPayload | null {
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+  return error as BackendErrorPayload;
+}
+
+function isBackendErrorCode(error: unknown, code: string): boolean {
+  const payload = getBackendErrorPayload(error);
+  return typeof payload?.msg === 'string' && payload.msg === code;
+}
+
+function readImportGroupFieldConfirmationDetails(
+  error: unknown,
+): BroadcastImportGroupFieldConfirmationDetails | null {
+  const payload = getBackendErrorPayload(error);
+  const details = payload?.data?.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) {
+    return null;
+  }
+  const record = details as Record<string, unknown>;
   if (
-    error &&
-    typeof error === 'object' &&
-    'data' in error &&
-    (error as { data?: unknown }).data &&
-    typeof (error as { data?: unknown }).data === 'object'
+    !Array.isArray(record.headers) ||
+    !Array.isArray(record.candidates) ||
+    typeof record.original_file_name !== 'string'
   ) {
-    const details = (
-      error as { data: { details?: unknown; message?: unknown } }
-    ).data;
+    return null;
+  }
+  return {
+    headers: record.headers
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim()),
+    candidates: record.candidates
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim()),
+    configuredGroupField:
+      typeof record.configured_group_field === 'string'
+        ? record.configured_group_field
+        : null,
+    originalFileName: record.original_file_name,
+  };
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  const payload = getBackendErrorPayload(error);
+  if (payload?.data && typeof payload.data === 'object') {
+    const details = payload.data;
     if (typeof details.message === 'string' && details.message.trim()) {
       return details.message;
     }
@@ -75,8 +127,8 @@ function getErrorMessage(error: unknown, fallback: string): string {
       return String(details.details[0]);
     }
   }
-  if (error && typeof error === 'object' && 'msg' in error) {
-    return String((error as { msg: unknown }).msg);
+  if (typeof payload?.msg === 'string') {
+    return payload.msg;
   }
   if (error instanceof Error && error.message) {
     return error.message;
@@ -219,11 +271,19 @@ export default function BroadcastWorkspace() {
     useState<BroadcastImportDetail | null>(null);
   const [selectedImportGroupsDetail, setSelectedImportGroupsDetail] =
     useState<BroadcastImportGroupList | null>(null);
+  const [groupRuleCandidates, setGroupRuleCandidates] =
+    useState<BroadcastGroupRuleCandidateList | null>(null);
   const [groupRowsByKey, setGroupRowsByKey] = useState<
     Record<string, BroadcastImportGroupRowsPage | undefined>
   >({});
   const [importError, setImportError] = useState<string | null>(null);
   const [importBusyCount, setImportBusyCount] = useState(0);
+  const [groupRuleCandidatesLoading, setGroupRuleCandidatesLoading] =
+    useState(false);
+  const [pendingImportConfirmation, setPendingImportConfirmation] =
+    useState<PendingImportConfirmation | null>(null);
+  const [pendingImportConfirmationBusy, setPendingImportConfirmationBusy] =
+    useState(false);
   const [draftBusy, setDraftBusy] = useState(false);
   const [scopeOptions, setScopeOptions] = useState<
     Array<{ botUuid: string; botName: string; connectorId: string }>
@@ -615,6 +675,48 @@ export default function BroadcastWorkspace() {
     return detail;
   };
 
+  const clearPendingImportConfirmation = useCallback(() => {
+    setPendingImportConfirmation(null);
+    setPendingImportConfirmationBusy(false);
+  }, []);
+
+  const loadImportGroupRuleCandidates = useCallback(
+    async (
+      nextScope: BroadcastScope,
+      importId: number,
+      options?: {
+        requestGeneration?: number;
+      },
+    ) => {
+      setGroupRuleCandidatesLoading(true);
+      try {
+        const candidateList = await dataSource.getImportGroupRuleCandidates(
+          nextScope,
+          importId,
+          {
+            status: 'all',
+            page: 1,
+            pageSize: 200,
+          },
+        );
+        if (
+          !isMountedRef.current ||
+          (options?.requestGeneration != null &&
+            options.requestGeneration !== importRequestGenerationRef.current)
+        ) {
+          return null;
+        }
+        setGroupRuleCandidates(candidateList);
+        return candidateList;
+      } finally {
+        if (isMountedRef.current) {
+          setGroupRuleCandidatesLoading(false);
+        }
+      }
+    },
+    [dataSource],
+  );
+
   const isImportRequestGenerationCurrent = (generation: number) =>
     isMountedRef.current && generation === importRequestGenerationRef.current;
 
@@ -691,6 +793,15 @@ export default function BroadcastWorkspace() {
         await loadImportGroupsPage(nextScope, nextImportId, 1, {
           requestGeneration,
         });
+        try {
+          await loadImportGroupRuleCandidates(nextScope, nextImportId, {
+            requestGeneration,
+          });
+        } catch {
+          if (isImportRequestGenerationCurrent(requestGeneration)) {
+            setGroupRuleCandidates(null);
+          }
+        }
       } else {
         clearImportState(
           options?.variableProfile ?? latestRulesRef.current.variableProfile,
@@ -776,10 +887,17 @@ export default function BroadcastWorkspace() {
       setSelectedImportIdState(null);
       applyImportDetail(null, variableProfile, templates);
       applyImportGroupsDetail(null);
+      setGroupRuleCandidates(null);
       setGroupRowsByKey({});
       setImportError(null);
+      clearPendingImportConfirmation();
     },
-    [applyImportDetail, applyImportGroupsDetail, setSelectedImportIdState],
+    [
+      applyImportDetail,
+      applyImportGroupsDetail,
+      clearPendingImportConfirmation,
+      setSelectedImportIdState,
+    ],
   );
 
   const updateGroupAttachments = useCallback(
@@ -1275,6 +1393,47 @@ export default function BroadcastWorkspace() {
     }
   };
 
+  const handleRetryFailedExecutionTasks = async () => {
+    if (!latestExecutionBatch) {
+      return;
+    }
+    const retryableTaskIds = Array.from(
+      new Set(
+        getRetryableExecutionTasks(latestExecutionBatch).map((task) => task.id),
+      ),
+    );
+    if (retryableTaskIds.length === 0) {
+      toast.error(t('broadcast.toasts.executionFailedTasksRetryNoop'));
+      return;
+    }
+    let successCount = 0;
+    let failedCount = 0;
+    setDraftBusy(true);
+    try {
+      for (const taskId of retryableTaskIds) {
+        try {
+          await dataSource.retryExecutionTask(scope, taskId, OPERATOR_EMAIL);
+          successCount += 1;
+        } catch {
+          failedCount += 1;
+        }
+      }
+      await refreshExecutionState(scope);
+      if (successCount > 0) {
+        toast.success(
+          t('broadcast.toasts.executionFailedTasksRetried', {
+            successCount,
+            failedCount,
+          }),
+        );
+      } else {
+        toast.error(t('broadcast.toasts.executionFailedTasksRetryNoop'));
+      }
+    } finally {
+      setDraftBusy(false);
+    }
+  };
+
   const handlePasteDraft = async (draft: BroadcastDraft) => {
     if (pasteRequestInFlight) {
       return;
@@ -1511,7 +1670,10 @@ export default function BroadcastWorkspace() {
         onValueChange={(value) => setTopTab(value as BroadcastTopTab)}
         className="flex min-h-0 flex-col gap-4"
       >
-        <BroadcastTabs options={topTabOptions} />
+        <BroadcastTabs
+          options={topTabOptions}
+          testId="broadcast-primary-tabs"
+        />
 
         <TabsContent value="rules" className="mt-0 min-h-0">
           <Tabs
@@ -1519,7 +1681,11 @@ export default function BroadcastWorkspace() {
             onValueChange={(value) => setRulesTab(value as BroadcastRulesTab)}
             className="flex min-h-0 flex-col gap-4"
           >
-            <BroadcastTabs options={rulesTabOptions} size="compact" />
+            <BroadcastTabs
+              options={rulesTabOptions}
+              size="compact"
+              testId="broadcast-secondary-tabs"
+            />
             <TabsContent value="variables" className="mt-0 min-h-0">
               <VariableMappingPanel
                 variableProfile={snapshot.variableProfile}
@@ -1641,13 +1807,29 @@ export default function BroadcastWorkspace() {
             groupsDetail={selectedImportGroupsDetail}
             groupRowsByKey={groupRowsByKey}
             templates={snapshot.templates}
+            groupRules={snapshot.groupRules}
+            groupNames={snapshot.groupNames}
+            groupRuleCandidates={groupRuleCandidates}
+            selectedBatchDraftCount={
+              selectedImportId != null
+                ? snapshot.drafts.filter(
+                    (draft) => draft.importBatchId === selectedImportId,
+                  ).length
+                : 0
+            }
             loading={rulesLoading}
             busy={importBusy}
+            groupRuleCandidatesLoading={groupRuleCandidatesLoading}
+            confirmationBusy={pendingImportConfirmationBusy}
             error={importError}
+            pendingImportConfirmation={
+              pendingImportConfirmation?.details ?? null
+            }
             onUpload={async (file) => {
               const requestGeneration = ++importRequestGenerationRef.current;
               const detailGeneration = ++importDetailGenerationRef.current;
               const releaseImportBusy = beginImportBusy();
+              clearPendingImportConfirmation();
               setImportError(null);
               try {
                 const batch = await dataSource.uploadImport(scope, file);
@@ -1680,6 +1862,15 @@ export default function BroadcastWorkspace() {
                 await loadImportGroupsPage(scope, batch.id, 1, {
                   requestGeneration,
                 });
+                try {
+                  await loadImportGroupRuleCandidates(scope, batch.id, {
+                    requestGeneration,
+                  });
+                } catch {
+                  if (isImportRequestGenerationCurrent(requestGeneration)) {
+                    setGroupRuleCandidates(null);
+                  }
+                }
                 if (
                   !isMountedRef.current ||
                   requestGeneration !== importRequestGenerationRef.current
@@ -1692,6 +1883,22 @@ export default function BroadcastWorkspace() {
                   }),
                 );
               } catch (error) {
+                if (
+                  isBackendErrorCode(
+                    error,
+                    'BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED',
+                  )
+                ) {
+                  const details =
+                    readImportGroupFieldConfirmationDetails(error);
+                  if (details) {
+                    setPendingImportConfirmation({
+                      file,
+                      details,
+                    });
+                    return;
+                  }
+                }
                 const message = getErrorMessage(error, t('common.error'));
                 setImportError(message);
                 toast.error(message);
@@ -1699,11 +1906,98 @@ export default function BroadcastWorkspace() {
                 releaseImportBusy();
               }
             }}
+            onConfirmImportGroupField={async (groupField) => {
+              if (!pendingImportConfirmation) {
+                return;
+              }
+              const requestGeneration = ++importRequestGenerationRef.current;
+              const detailGeneration = ++importDetailGenerationRef.current;
+              const releaseImportBusy = beginImportBusy();
+              setPendingImportConfirmationBusy(true);
+              setImportError(null);
+              try {
+                const batch = await dataSource.uploadImport(
+                  scope,
+                  pendingImportConfirmation.file,
+                  {
+                    groupFieldOverride: groupField,
+                  },
+                );
+                clearPendingImportConfirmation();
+                if (
+                  !isMountedRef.current ||
+                  requestGeneration !== importRequestGenerationRef.current
+                ) {
+                  return;
+                }
+                setImportBatches((current) => [
+                  batch,
+                  ...current.filter((item) => item.id !== batch.id),
+                ]);
+                setSelectedImportIdState(batch.id);
+                applyImportDetail(
+                  createPlaceholderImportDetail(batch, importPageSize),
+                  latestRulesRef.current.variableProfile,
+                  latestRulesRef.current.templates,
+                );
+                applyImportGroupsDetail(null);
+                setGroupRuleCandidates(null);
+                setGroupRowsByKey({});
+                await loadImportDetailPage(scope, batch.id, 1, {
+                  requestGeneration,
+                  detailGeneration,
+                  variableProfile: latestRulesRef.current.variableProfile,
+                  templates: latestRulesRef.current.templates,
+                });
+                await loadImportGroupsPage(scope, batch.id, 1, {
+                  requestGeneration,
+                });
+                try {
+                  await loadImportGroupRuleCandidates(scope, batch.id, {
+                    requestGeneration,
+                  });
+                } catch {
+                  if (isImportRequestGenerationCurrent(requestGeneration)) {
+                    setGroupRuleCandidates(null);
+                  }
+                }
+                toast.success(
+                  t('broadcast.toasts.importUploaded', {
+                    fileName: batch.originalFileName,
+                  }),
+                );
+              } catch (error) {
+                if (
+                  isBackendErrorCode(
+                    error,
+                    'BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED',
+                  )
+                ) {
+                  const details =
+                    readImportGroupFieldConfirmationDetails(error);
+                  if (details) {
+                    setPendingImportConfirmation({
+                      file: pendingImportConfirmation.file,
+                      details,
+                    });
+                    return;
+                  }
+                }
+                const message = getErrorMessage(error, t('common.error'));
+                setImportError(message);
+                toast.error(message);
+              } finally {
+                setPendingImportConfirmationBusy(false);
+                releaseImportBusy();
+              }
+            }}
+            onCancelImportGroupField={clearPendingImportConfirmation}
             onSelectBatch={async (batchId) => {
               const requestGeneration = ++importRequestGenerationRef.current;
               const detailGeneration = ++importDetailGenerationRef.current;
               const releaseImportBusy = beginImportBusy();
               setSelectedImportIdState(batchId);
+              clearPendingImportConfirmation();
               setImportError(null);
               try {
                 setGroupRowsByKey({});
@@ -1714,6 +2008,15 @@ export default function BroadcastWorkspace() {
                 await loadImportGroupsPage(scope, batchId, 1, {
                   requestGeneration,
                 });
+                try {
+                  await loadImportGroupRuleCandidates(scope, batchId, {
+                    requestGeneration,
+                  });
+                } catch {
+                  if (isImportRequestGenerationCurrent(requestGeneration)) {
+                    setGroupRuleCandidates(null);
+                  }
+                }
                 await refreshDrafts(scope, batchId);
               } catch (error) {
                 const message = getErrorMessage(error, t('common.error'));
@@ -1809,6 +2112,7 @@ export default function BroadcastWorkspace() {
             onRematch={async (batchId) => {
               const requestGeneration = ++importRequestGenerationRef.current;
               const releaseImportBusy = beginImportBusy();
+              clearPendingImportConfirmation();
               setImportError(null);
               try {
                 const detail = await dataSource.rematchImport(scope, batchId);
@@ -1827,6 +2131,15 @@ export default function BroadcastWorkspace() {
                 await loadImportGroupsPage(scope, batchId, 1, {
                   requestGeneration,
                 });
+                try {
+                  await loadImportGroupRuleCandidates(scope, batchId, {
+                    requestGeneration,
+                  });
+                } catch {
+                  if (isImportRequestGenerationCurrent(requestGeneration)) {
+                    setGroupRuleCandidates(null);
+                  }
+                }
                 setGroupRowsByKey({});
                 toast.success(t('broadcast.toasts.importRematched'));
               } catch (error) {
@@ -1837,7 +2150,76 @@ export default function BroadcastWorkspace() {
                 releaseImportBusy();
               }
             }}
+            onOpenBulkAssignDialog={async () => {
+              if (!selectedImportIdRef.current) {
+                setGroupRuleCandidates(null);
+                return;
+              }
+              try {
+                await loadImportGroupRuleCandidates(
+                  scope,
+                  selectedImportIdRef.current,
+                  {
+                    requestGeneration: importRequestGenerationRef.current,
+                  },
+                );
+              } catch (error) {
+                const message = getErrorMessage(error, t('common.error'));
+                setImportError(message);
+                toast.error(message);
+              }
+            }}
+            onBulkAssignGroupRules={async (batchId, items) => {
+              const requestGeneration = ++importRequestGenerationRef.current;
+              const currentGroupPage =
+                selectedImportGroupsDetailRef.current?.page ?? 1;
+              const releaseImportBusy = beginImportBusy();
+              setImportError(null);
+              try {
+                const result = await dataSource.bulkAssignImportGroupRules(
+                  scope,
+                  batchId,
+                  items,
+                );
+                await refreshRules(scope);
+                await refreshImports(scope, {
+                  preferredImportId: batchId,
+                  requestGeneration,
+                  variableProfile: latestRulesRef.current.variableProfile,
+                  templates: latestRulesRef.current.templates,
+                });
+                await refreshDrafts(scope, batchId);
+                await loadImportGroupsPage(scope, batchId, currentGroupPage, {
+                  requestGeneration,
+                });
+                try {
+                  await loadImportGroupRuleCandidates(scope, batchId, {
+                    requestGeneration,
+                  });
+                } catch {
+                  if (isImportRequestGenerationCurrent(requestGeneration)) {
+                    setGroupRuleCandidates(null);
+                  }
+                }
+                setGroupRowsByKey({});
+                toast.success(
+                  t('broadcast.toasts.importBulkAssignCompleted', {
+                    count: result.items.length,
+                  }),
+                );
+              } catch (error) {
+                const message = getErrorMessage(error, t('common.error'));
+                setImportError(message);
+                toast.error(message);
+              } finally {
+                releaseImportBusy();
+              }
+            }}
             onUpdateGroupTemplateAssignments={async (batchId, items) => {
+              const requestGeneration = ++importRequestGenerationRef.current;
+              const currentGroupPage =
+                selectedImportGroupsDetailRef.current?.page ?? 1;
+              const releaseImportBusy = beginImportBusy();
               setImportError(null);
               try {
                 await dataSource.updateImportGroupTemplateAssignments(
@@ -1845,42 +2227,82 @@ export default function BroadcastWorkspace() {
                   batchId,
                   items,
                 );
-                const templateById = new Map(
-                  snapshot.templates.map((template) => [template.id, template]),
-                );
-                applyImportGroupsDetail(
-                  selectedImportGroupsDetailRef.current
-                    ? {
-                        ...selectedImportGroupsDetailRef.current,
-                        groups:
-                          selectedImportGroupsDetailRef.current.groups.map(
-                            (group) => {
-                              const assignment = items.find(
-                                (item) => item.groupKey === group.groupKey,
-                              );
-                              if (!assignment) {
-                                return group;
-                              }
-                              const template =
-                                templateById.get(assignment.templateId) ?? null;
-                              return {
-                                ...group,
-                                templateId: assignment.templateId,
-                                templateName: template?.name ?? null,
-                                templateEnabled: template?.enabled ?? null,
-                              };
-                            },
-                          ),
-                      }
-                    : null,
-                );
-                toast.success(
-                  t('broadcast.toasts.groupTemplateAssignmentsSaved'),
-                );
+                await refreshImports(scope, {
+                  preferredImportId: batchId,
+                  requestGeneration,
+                  variableProfile: latestRulesRef.current.variableProfile,
+                  templates: latestRulesRef.current.templates,
+                });
+                await loadImportGroupsPage(scope, batchId, currentGroupPage, {
+                  requestGeneration,
+                });
               } catch (error) {
                 const message = getErrorMessage(error, t('common.error'));
                 setImportError(message);
                 toast.error(message);
+              } finally {
+                releaseImportBusy();
+              }
+            }}
+            onSaveExactMatchRule={async (payload) => {
+              const requestGeneration = ++importRequestGenerationRef.current;
+              const currentGroupPage =
+                selectedImportGroupsDetailRef.current?.page ?? 1;
+              const releaseImportBusy = beginImportBusy();
+              setImportError(null);
+              try {
+                const ruleDraft = {
+                  sourceValue: payload.groupValue,
+                  matchType: 'exact' as const,
+                  matchExpression: payload.groupValue,
+                  targetConversationId: payload.targetConversationId,
+                  targetConversationName: payload.targetConversationName,
+                  priority: payload.existingRulePriority ?? 0,
+                  enabled: true,
+                };
+                if (payload.existingRuleId != null) {
+                  await dataSource.updateGroupRule(
+                    scope,
+                    payload.existingRuleId,
+                    ruleDraft,
+                  );
+                } else {
+                  await dataSource.createGroupRule(scope, ruleDraft);
+                }
+                await refreshRules(scope);
+                const detail = await dataSource.rematchImport(
+                  scope,
+                  payload.batchId,
+                );
+                await refreshImports(scope, {
+                  preferredImportId: payload.batchId,
+                  requestGeneration,
+                  variableProfile: latestRulesRef.current.variableProfile,
+                  templates: latestRulesRef.current.templates,
+                });
+                await refreshDrafts(scope, payload.batchId);
+                applyImportDetail(
+                  detail,
+                  latestRulesRef.current.variableProfile,
+                  latestRulesRef.current.templates,
+                );
+                await loadImportGroupsPage(
+                  scope,
+                  payload.batchId,
+                  currentGroupPage,
+                  {
+                    requestGeneration,
+                  },
+                );
+                setGroupRowsByKey({});
+                toast.success(t('broadcast.toasts.importInlineMatchSaved'));
+              } catch (error) {
+                const message = getErrorMessage(error, t('common.error'));
+                setImportError(message);
+                toast.error(message);
+                throw error;
+              } finally {
+                releaseImportBusy();
               }
             }}
             onGenerateDrafts={async (batchId, groupKeys) => {
@@ -2102,6 +2524,7 @@ export default function BroadcastWorkspace() {
             onResumeBatch={() => void handleBatchAction('resume')}
             onCancelBatch={() => void handleBatchAction('cancel')}
             onRetryTask={(taskId) => void handleRetryExecutionTask(taskId)}
+            onRetryFailedTasks={() => void handleRetryFailedExecutionTasks()}
           />
         </TabsContent>
       </Tabs>

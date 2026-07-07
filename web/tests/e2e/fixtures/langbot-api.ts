@@ -1,6 +1,11 @@
 import { Page, Route } from '@playwright/test';
 
 type JsonRecord = Record<string, unknown>;
+type BroadcastImportGroupFieldSource =
+  | 'configured'
+  | 'auto_detected'
+  | 'user_confirmed'
+  | 'legacy_fallback';
 
 interface SkillMock {
   name: string;
@@ -109,6 +114,7 @@ interface BroadcastGroupRuleMock {
   source_value: string;
   match_type: 'exact' | 'contains' | 'regex';
   match_expression: string;
+  target_conversation_id?: string | null;
   target_conversation_name: string;
   priority: number;
   enabled: boolean;
@@ -140,6 +146,8 @@ interface BroadcastImportBatchMock {
   invalid_rows: number;
   matched_rows: number;
   unmatched_rows: number;
+  group_field_used?: string | null;
+  group_field_source?: BroadcastImportGroupFieldSource | null;
   created_at: string;
   updated_at: string;
 }
@@ -335,7 +343,7 @@ async function fulfillError(
   status: number,
   msg: string,
   message: string,
-  details: string[] = [],
+  details: unknown = [],
 ) {
   await route.fulfill({
     status,
@@ -360,6 +368,16 @@ function routePath(route: Route) {
 
 function parseJsonBody(route: Route): JsonRecord {
   return JSON.parse(route.request().postData() || '{}') as JsonRecord;
+}
+
+function parseMultipartTextField(body: string, fieldName: string) {
+  const normalizedFieldName = fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(
+    `name=\"${normalizedFieldName}\"\\r\\n\\r\\n([\\s\\S]*?)\\r\\n--`,
+    'i',
+  );
+  const match = body.match(pattern);
+  return match?.[1]?.trim() || null;
 }
 
 function now() {
@@ -471,6 +489,8 @@ function buildImportGroupsResponse(
     pageSize: number;
   },
 ) {
+  const batch =
+    state.broadcastImportBatches.find((item) => item.id === importId) || null;
   const rows = state.broadcastImportRows
     .filter((item) => item.import_batch_id === importId)
     .sort((left, right) => left.source_row_number - right.source_row_number);
@@ -498,6 +518,22 @@ function buildImportGroupsResponse(
       const attachments = (
         state.broadcastGroupAttachments[attachmentKey] ?? []
       ).map(cloneAttachment);
+      const matchedRule =
+        matchStatus === 'conflict'
+          ? null
+          : (state.broadcastGroupRules.find(
+              (item) => item.id === (groupRows[0]?.matched_rule_id ?? null),
+            ) ?? null);
+      const matchedConversationId =
+        matchedRule?.target_conversation_id ??
+        (matchStatus === 'conflict' || !batch
+          ? null
+          : (state.broadcastGroupNames.find(
+              (item) =>
+                item.bot_uuid === batch.bot_uuid &&
+                item.connector_id === batch.connector_id &&
+                item.name === (groupRows[0]?.matched_conversation_name ?? ''),
+            )?.external_conversation_id ?? null));
       const templateId =
         state.broadcastGroupTemplateAssignments[
           groupTemplateAssignmentMapKey(importId, groupKey)
@@ -516,6 +552,8 @@ function buildImportGroupsResponse(
           matchStatus === 'conflict'
             ? null
             : (groupRows[0]?.matched_conversation_name ?? null),
+        matched_conversation_id:
+          matchStatus === 'conflict' ? null : matchedConversationId,
         match_status: matchStatus,
         reason: inferGroupReason(groupRows, matchStatus),
         attachment_count: attachments.length,
@@ -579,6 +617,151 @@ function buildImportGroupsResponse(
     ).length,
     order_number_field_configured: Boolean(orderField),
     groups: filteredGroups.slice(offset, offset + filters.pageSize),
+  };
+}
+
+function buildImportGroupRuleCandidatesResponse(
+  state: LangBotApiMockState,
+  importId: number,
+  filters: {
+    status?: string | null;
+    keyword?: string;
+    page: number;
+    pageSize: number;
+  },
+) {
+  const batch =
+    state.broadcastImportBatches.find((item) => item.id === importId) || null;
+  if (!batch) {
+    return null;
+  }
+
+  const groupsResponse = buildImportGroupsResponse(state, importId, {
+    matchStatus: null,
+    keyword: '',
+    page: 1,
+    pageSize: Number.MAX_SAFE_INTEGER,
+  });
+  const rows = state.broadcastImportRows.filter(
+    (item) => item.import_batch_id === importId,
+  );
+  const groupRowsByKey = new Map<string, BroadcastImportRowMock[]>();
+  for (const row of rows) {
+    const groupKey = makeGroupKey(
+      importId,
+      row.group_value ?? `__invalid__:${row.id}`,
+    );
+    const current = groupRowsByKey.get(groupKey) ?? [];
+    current.push(row);
+    groupRowsByKey.set(groupKey, current);
+  }
+
+  const allItems = groupsResponse.groups.map((group) => {
+    const customerName = String(group.group_value ?? '').trim();
+    const currentRows = groupRowsByKey.get(group.group_key) ?? [];
+    const existingRules = state.broadcastGroupRules
+      .filter(
+        (rule) =>
+          rule.bot_uuid === batch.bot_uuid &&
+          rule.connector_id === batch.connector_id &&
+          customerName.length > 0 &&
+          matchBroadcastRule(rule, customerName),
+      )
+      .sort((left, right) =>
+        right.priority === left.priority
+          ? left.id - right.id
+          : right.priority - left.priority,
+      );
+    const currentMatchedRule =
+      state.broadcastGroupRules.find(
+        (rule) => rule.id === (currentRows[0]?.matched_rule_id ?? null),
+      ) ?? null;
+
+    let status: 'new' | 'configured' | 'needs_repair' | 'conflict' | 'invalid' =
+      'new';
+    if (!customerName || group.match_status === 'invalid') {
+      status = 'invalid';
+    } else if (group.match_status === 'conflict' || existingRules.length > 1) {
+      status = 'conflict';
+    } else if (currentMatchedRule) {
+      status = 'configured';
+    } else if (existingRules.length === 1) {
+      status = 'needs_repair';
+    }
+
+    return {
+      group_key: group.group_key,
+      customer_name: customerName,
+      raw_row_count: group.raw_row_count,
+      status,
+      reason: group.reason,
+      existing_rule_ids: existingRules.map((rule) => rule.id),
+      existing_rules: existingRules,
+      current_matched_rule: currentMatchedRule,
+      current_target_conversation_id:
+        group.matched_conversation_id ??
+        currentMatchedRule?.target_conversation_id ??
+        null,
+      current_target_conversation_name: group.matched_conversation_name,
+      current_match_type: currentMatchedRule?.match_type ?? null,
+      first_source_row_number: group.first_source_row_number,
+    };
+  });
+
+  const keyword = (filters.keyword || '').trim().toLowerCase();
+  const filteredItems = allItems.filter((item) => {
+    if (
+      filters.status &&
+      filters.status !== 'all' &&
+      item.status !== filters.status
+    ) {
+      return false;
+    }
+    if (!keyword) {
+      return true;
+    }
+    return [
+      item.customer_name,
+      item.current_target_conversation_name || '',
+      item.reason || '',
+    ]
+      .join(' ')
+      .toLowerCase()
+      .includes(keyword);
+  });
+
+  const offset = (filters.page - 1) * filters.pageSize;
+  return {
+    import_batch_id: importId,
+    group_field_used:
+      batch.group_field_used ??
+      state.broadcastVariableProfile.group_field ??
+      'Customer Name',
+    group_field_source:
+      batch.group_field_source ??
+      ('legacy_fallback' as BroadcastImportGroupFieldSource),
+    raw_row_total: rows.length,
+    unique_customer_total: allItems.length,
+    stats: {
+      new_count: allItems.filter((item) => item.status === 'new').length,
+      configured_count: allItems.filter((item) => item.status === 'configured')
+        .length,
+      needs_repair_count: allItems.filter(
+        (item) => item.status === 'needs_repair',
+      ).length,
+      conflict_count: allItems.filter((item) => item.status === 'conflict')
+        .length,
+      invalid_count: allItems.filter((item) => item.status === 'invalid')
+        .length,
+    },
+    items: filteredItems.slice(offset, offset + filters.pageSize),
+    page: filters.page,
+    page_size: filters.pageSize,
+    total: filteredItems.length,
+    total_pages:
+      filteredItems.length === 0
+        ? 0
+        : Math.ceil(filteredItems.length / filters.pageSize),
   };
 }
 
@@ -905,6 +1088,38 @@ function syncDraftStaleFlags(
   );
 }
 
+function syncImportBatchCounts(
+  state: LangBotApiMockState,
+  importBatchId: number,
+) {
+  const batch = state.broadcastImportBatches.find(
+    (item) => item.id === importBatchId,
+  );
+  if (!batch) {
+    return null;
+  }
+  const rows = state.broadcastImportRows.filter(
+    (item) => item.import_batch_id === importBatchId,
+  );
+  batch.valid_rows = rows.filter(
+    (item) => item.match_status !== 'invalid',
+  ).length;
+  batch.invalid_rows = rows.filter(
+    (item) => item.match_status === 'invalid',
+  ).length;
+  batch.matched_rows = rows.filter(
+    (item) => item.match_status === 'matched',
+  ).length;
+  batch.unmatched_rows = rows.filter(
+    (item) => item.match_status === 'unmatched',
+  ).length;
+  batch.updated_at = now();
+  return {
+    batch,
+    rows,
+  };
+}
+
 function hashToken(token: string) {
   return `hash:${token}`;
 }
@@ -1146,6 +1361,7 @@ function seedBroadcastState(): Pick<
         source_value: 'Acme Freight',
         match_type: 'exact',
         match_expression: 'Acme Freight',
+        target_conversation_id: 'acme-freight-ops',
         target_conversation_name: 'Acme Freight Ops',
         priority: 30,
         enabled: true,
@@ -1159,6 +1375,7 @@ function seedBroadcastState(): Pick<
         bot_uuid: 'bot-1',
         connector_id: 'wxwork-local',
         name: 'Acme Freight Ops',
+        external_conversation_id: 'acme-freight-ops',
         created_at: timestamp,
         updated_at: timestamp,
       },
@@ -1167,10 +1384,82 @@ function seedBroadcastState(): Pick<
         bot_uuid: 'bot-1',
         connector_id: 'wxwork-local',
         name: 'Northwind Service Group',
+        external_conversation_id: 'northwind-service-group',
         created_at: timestamp,
         updated_at: timestamp,
       },
     ],
+  };
+}
+
+function getMockImportScenario(
+  state: LangBotApiMockState,
+  fileName: string,
+): {
+  headers: string[];
+  rows: Array<Record<string, string>>;
+  groupFieldUsed?: string | null;
+  groupFieldSource?: BroadcastImportGroupFieldSource;
+  confirmationCandidates?: string[];
+} {
+  if (/field-confirmation/i.test(fileName)) {
+    return {
+      headers: ['客户名称', '客户', '运单号'],
+      rows: [
+        {
+          客户名称: 'Acme Freight',
+          客户: 'Acme Alias',
+          运单号: 'SO-100',
+        },
+        {
+          客户名称: 'Northwind Service Group',
+          客户: 'Northwind Alias',
+          运单号: 'SO-101',
+        },
+      ],
+      confirmationCandidates: ['客户名称', '客户'],
+    };
+  }
+
+  if (/username-import/i.test(fileName)) {
+    return {
+      headers: ['用户名', '客户名称', '运单号'],
+      rows: [
+        {
+          用户名: 'Acme Freight',
+          客户名称: 'Acme Freight',
+          运单号: 'SO-100',
+        },
+        {
+          用户名: 'northwind_user',
+          客户名称: 'Northwind Service Group',
+          运单号: 'SO-101',
+        },
+      ],
+      groupFieldUsed: '用户名',
+      groupFieldSource: 'auto_detected',
+    };
+  }
+
+  const groupField =
+    state.broadcastVariableProfile.group_field || 'Customer Name';
+  return {
+    headers: [groupField, 'Shipment No', 'ETA Date'],
+    rows: [
+      {
+        [groupField]: 'Acme Freight',
+        'Shipment No': 'SO-100',
+        'ETA Date': '2026-07-05',
+      },
+      {
+        [groupField]: 'Northwind Service Group',
+        'Shipment No': 'SO-101',
+        'ETA Date': '2026-07-06',
+      },
+      { [groupField]: '', 'Shipment No': 'SO-102', 'ETA Date': '2026-07-07' },
+    ],
+    groupFieldUsed: groupField,
+    groupFieldSource: 'configured',
   };
 }
 
@@ -1456,6 +1745,10 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         match_type:
           (body.match_type as BroadcastGroupRuleMock['match_type']) || 'exact',
         match_expression: String(body.match_expression || ''),
+        target_conversation_id:
+          typeof body.target_conversation_id === 'string'
+            ? body.target_conversation_id
+            : null,
         target_conversation_name: String(body.target_conversation_name || ''),
         priority: Number(body.priority || 0),
         enabled: body.enabled !== false,
@@ -1495,6 +1788,10 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         match_expression: String(
           body.match_expression || existing?.match_expression || '',
         ),
+        target_conversation_id:
+          typeof body.target_conversation_id === 'string'
+            ? body.target_conversation_id
+            : (existing?.target_conversation_id ?? null),
         target_conversation_name: String(
           body.target_conversation_name ||
             existing?.target_conversation_name ||
@@ -1620,56 +1917,99 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       const form = request.postDataBuffer()?.toString('utf-8') || '';
       const fileNameMatch = form.match(/filename=\"([^\"]+)\"/);
       const fileName = fileNameMatch?.[1] || 'customers.csv';
-      const groupField =
-        state.broadcastVariableProfile.group_field || 'Customer Name';
-      const rows = [
-        {
-          [groupField]: 'Acme Freight',
-          'Shipment No': 'SO-100',
-          'ETA Date': '2026-07-05',
-        },
-        {
-          [groupField]: 'Northwind Service Group',
-          'Shipment No': 'SO-101',
-          'ETA Date': '2026-07-06',
-        },
-        { [groupField]: '', 'Shipment No': 'SO-102', 'ETA Date': '2026-07-07' },
-      ];
-      const parsedRows: BroadcastImportRowMock[] = rows.map((rawRow, index) => {
-        const groupValue = String(rawRow[groupField] || '').trim();
-        if (!groupValue) {
+      const uploadBotUuid =
+        parseMultipartTextField(form, 'bot_uuid') || botUuid || 'bot-1';
+      const uploadConnectorId =
+        parseMultipartTextField(form, 'connector_id') ||
+        connectorId ||
+        'wxwork-local';
+      const groupFieldOverride = parseMultipartTextField(
+        form,
+        'group_field_override',
+      );
+      const scenario = getMockImportScenario(state, fileName);
+
+      if (scenario.confirmationCandidates && !groupFieldOverride) {
+        return fulfillError(
+          route,
+          409,
+          'BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED',
+          'The customer grouping field could not be determined uniquely. Confirm the field and upload again.',
+          {
+            headers: scenario.headers,
+            candidates: scenario.confirmationCandidates,
+            configured_group_field: state.broadcastVariableProfile.group_field,
+            original_file_name: fileName,
+          },
+        );
+      }
+
+      if (
+        groupFieldOverride &&
+        !scenario.headers.includes(groupFieldOverride)
+      ) {
+        return fulfillError(
+          route,
+          400,
+          'BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID',
+          'The selected customer field does not exist in the uploaded file headers.',
+          {
+            group_field_override: groupFieldOverride,
+            headers: scenario.headers,
+            original_file_name: fileName,
+          },
+        );
+      }
+
+      const groupFieldUsed =
+        groupFieldOverride ||
+        scenario.groupFieldUsed ||
+        state.broadcastVariableProfile.group_field ||
+        scenario.headers[0] ||
+        'Customer Name';
+      const groupFieldSource = groupFieldOverride
+        ? ('user_confirmed' as BroadcastImportGroupFieldSource)
+        : (scenario.groupFieldSource ?? 'configured');
+
+      const parsedRows: BroadcastImportRowMock[] = scenario.rows.map(
+        (rawRow, index) => {
+          const groupValue = String(rawRow[groupFieldUsed] || '').trim();
+          if (!groupValue) {
+            return {
+              id: Number(
+                nextId(state, 'broadcast-import-row').split('-').pop(),
+              ),
+              import_batch_id: 0,
+              source_row_number: index + 2,
+              raw_data: rawRow,
+              group_value: null,
+              matched_conversation_name: null,
+              matched_rule_id: null,
+              match_status: 'invalid',
+              error_message: '客户分组字段为空',
+              created_at: now(),
+            };
+          }
+          const resolved = resolveImportMatch(
+            state,
+            uploadBotUuid,
+            uploadConnectorId,
+            groupValue,
+          );
           return {
             id: Number(nextId(state, 'broadcast-import-row').split('-').pop()),
             import_batch_id: 0,
             source_row_number: index + 2,
             raw_data: rawRow,
-            group_value: null,
-            matched_conversation_name: null,
-            matched_rule_id: null,
-            match_status: 'invalid',
-            error_message: '客户分组字段为空',
+            group_value: groupValue,
+            matched_conversation_name: resolved.matched_conversation_name,
+            matched_rule_id: resolved.matched_rule_id,
+            match_status: resolved.match_status,
+            error_message: resolved.error_message,
             created_at: now(),
           };
-        }
-        const resolved = resolveImportMatch(
-          state,
-          'bot-1',
-          'wxwork-local',
-          groupValue,
-        );
-        return {
-          id: Number(nextId(state, 'broadcast-import-row').split('-').pop()),
-          import_batch_id: 0,
-          source_row_number: index + 2,
-          raw_data: rawRow,
-          group_value: groupValue,
-          matched_conversation_name: resolved.matched_conversation_name,
-          matched_rule_id: resolved.matched_rule_id,
-          match_status: resolved.match_status,
-          error_message: resolved.error_message,
-          created_at: now(),
-        };
-      });
+        },
+      );
 
       const batchId = Number(
         nextId(state, 'broadcast-import-batch').split('-').pop(),
@@ -1680,8 +2020,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       }));
       const batch: BroadcastImportBatchMock = {
         id: batchId,
-        bot_uuid: 'bot-1',
-        connector_id: 'wxwork-local',
+        bot_uuid: uploadBotUuid,
+        connector_id: uploadConnectorId,
         original_file_name: fileName,
         file_type: fileName.endsWith('.xlsx') ? 'xlsx' : 'csv',
         worksheet_name: fileName.endsWith('.xlsx') ? 'Sheet1' : null,
@@ -1697,6 +2037,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         unmatched_rows: boundRows.filter(
           (row) => row.match_status === 'unmatched',
         ).length,
+        group_field_used: groupFieldUsed,
+        group_field_source: groupFieldSource,
         created_at: now(),
         updated_at: now(),
       };
@@ -1791,6 +2133,33 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         pageSize,
       }),
     );
+  }
+
+  const importGroupRuleCandidatesMatch = path.match(
+    /^\/api\/v1\/broadcast\/imports\/(\d+)\/group-rule-candidates$/,
+  );
+  if (importGroupRuleCandidatesMatch && method === 'GET') {
+    const importId = Number(importGroupRuleCandidatesMatch[1]);
+    const page = Math.max(1, Number(url.searchParams.get('page') || '1'));
+    const pageSize = Math.min(
+      200,
+      Math.max(1, Number(url.searchParams.get('page_size') || '50')),
+    );
+    const response = buildImportGroupRuleCandidatesResponse(state, importId, {
+      status: url.searchParams.get('status'),
+      keyword: url.searchParams.get('keyword') || '',
+      page,
+      pageSize,
+    });
+    if (!response) {
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_IMPORT_NOT_FOUND',
+        'Current import batch was not found.',
+      );
+    }
+    return fulfillJson(route, response);
   }
 
   const importGroupRowsMatch = path.match(
@@ -1924,13 +2293,29 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         '当前导入批次不存在或已被删除',
       );
     }
+    state.broadcastImportRows = state.broadcastImportRows.map((row) => {
+      if (row.import_batch_id !== importId || !row.group_value?.trim()) {
+        return row;
+      }
+      const nextMatch = resolveImportMatch(
+        state,
+        batch.bot_uuid,
+        batch.connector_id,
+        row.group_value,
+      );
+      return {
+        ...row,
+        matched_conversation_name: nextMatch.matched_conversation_name,
+        matched_rule_id: nextMatch.matched_rule_id,
+        match_status: nextMatch.match_status,
+        error_message: nextMatch.error_message,
+      };
+    });
+    const syncResult = syncImportBatchCounts(state, importId);
+    const rows = syncResult?.rows ?? [];
     batch.status = 'matched';
     batch.drafts_stale = true;
-    batch.updated_at = now();
     syncDraftStaleFlags(state, importId);
-    const rows = state.broadcastImportRows.filter(
-      (item) => item.import_batch_id === importId,
-    );
     return fulfillJson(route, {
       ...batch,
       rows,
@@ -1938,6 +2323,159 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       page_size: rows.length || 50,
       total: rows.length,
       total_pages: rows.length === 0 ? 0 : 1,
+    });
+  }
+
+  const bulkAssignMatch = path.match(
+    /^\/api\/v1\/broadcast\/imports\/(\d+)\/group-rules\/bulk-assign$/,
+  );
+  if (bulkAssignMatch && method === 'POST') {
+    const importId = Number(bulkAssignMatch[1]);
+    const batch = state.broadcastImportBatches.find(
+      (item) => item.id === importId,
+    );
+    if (!batch) {
+      return fulfillError(
+        route,
+        404,
+        'BROADCAST_IMPORT_NOT_FOUND',
+        'Current import batch was not found.',
+      );
+    }
+
+    const body = parseJsonBody(route);
+    const items = Array.isArray(body.items)
+      ? (body.items as Array<JsonRecord>)
+      : [];
+    const groupsResponse = buildImportGroupsResponse(state, importId, {
+      matchStatus: null,
+      keyword: '',
+      page: 1,
+      pageSize: Number.MAX_SAFE_INTEGER,
+    });
+    const groupByKey = new Map(
+      groupsResponse.groups.map((group) => [group.group_key, group] as const),
+    );
+    const groupNamesByStableId = new Map(
+      state.broadcastGroupNames
+        .filter(
+          (groupName) =>
+            groupName.bot_uuid === batch.bot_uuid &&
+            groupName.connector_id === batch.connector_id &&
+            Boolean(groupName.external_conversation_id?.trim()),
+        )
+        .map(
+          (groupName) =>
+            [groupName.external_conversation_id ?? '', groupName] as const,
+        ),
+    );
+
+    const createdItems: Array<{
+      group_key: string;
+      customer_name: string;
+      rule_id: number;
+      target_conversation_id: string;
+      target_conversation_name: string;
+    }> = [];
+
+    for (const item of items) {
+      const groupKey = String(item.group_key || '').trim();
+      const targetConversationId = String(
+        item.target_conversation_id || '',
+      ).trim();
+      const group = groupByKey.get(groupKey);
+      const targetConversation = groupNamesByStableId.get(targetConversationId);
+      if (!group || !targetConversation || !group.group_value?.trim()) {
+        return fulfillError(
+          route,
+          400,
+          'BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED',
+          'One or more bulk assignment items are invalid.',
+          {
+            items: items.map((entry) => ({
+              group_key: String((entry as JsonRecord).group_key || ''),
+              target_conversation_id: String(
+                (entry as JsonRecord).target_conversation_id || '',
+              ),
+              code: 'BROADCAST_GROUP_RULE_DUPLICATE',
+              message: 'Invalid group or conversation selection.',
+            })),
+          },
+        );
+      }
+
+      const existingRule =
+        state.broadcastGroupRules.find(
+          (rule) =>
+            rule.bot_uuid === batch.bot_uuid &&
+            rule.connector_id === batch.connector_id &&
+            rule.match_type === 'exact' &&
+            rule.match_expression === group.group_value,
+        ) ?? null;
+      const ruleId =
+        existingRule?.id ??
+        Number(nextId(state, 'broadcast-group-rule').split('-').pop());
+      const rule: BroadcastGroupRuleMock = {
+        id: ruleId,
+        bot_uuid: batch.bot_uuid,
+        connector_id: batch.connector_id,
+        source_value: group.group_value,
+        match_type: 'exact',
+        match_expression: group.group_value,
+        target_conversation_id: targetConversation.external_conversation_id,
+        target_conversation_name: targetConversation.name,
+        priority: existingRule?.priority ?? 100,
+        enabled: true,
+        created_at: existingRule?.created_at ?? now(),
+        updated_at: now(),
+      };
+      state.broadcastGroupRules = [
+        ...state.broadcastGroupRules.filter((entry) => entry.id !== ruleId),
+        rule,
+      ];
+      createdItems.push({
+        group_key: groupKey,
+        customer_name: group.group_value,
+        rule_id: rule.id,
+        target_conversation_id:
+          targetConversation.external_conversation_id ?? '',
+        target_conversation_name: targetConversation.name,
+      });
+    }
+
+    state.broadcastImportRows = state.broadcastImportRows.map((row) => {
+      if (row.import_batch_id !== importId || !row.group_value?.trim()) {
+        return row;
+      }
+      const nextMatch = resolveImportMatch(
+        state,
+        batch.bot_uuid,
+        batch.connector_id,
+        row.group_value,
+      );
+      return {
+        ...row,
+        matched_conversation_name: nextMatch.matched_conversation_name,
+        matched_rule_id: nextMatch.matched_rule_id,
+        match_status: nextMatch.match_status,
+        error_message: nextMatch.error_message,
+      };
+    });
+    syncImportBatchCounts(state, importId);
+    batch.status = 'matched';
+    batch.drafts_stale = true;
+    syncDraftStaleFlags(state, importId);
+
+    return fulfillJson(route, {
+      created_count: createdItems.length,
+      group_field_used:
+        batch.group_field_used ??
+        state.broadcastVariableProfile.group_field ??
+        'Customer Name',
+      group_field_source:
+        batch.group_field_source ??
+        ('legacy_fallback' as BroadcastImportGroupFieldSource),
+      items: createdItems,
     });
   }
 
@@ -1979,16 +2517,15 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     const seenGroupKeys = new Set<string>();
     const normalizedItems: Array<{
       group_key: string;
-      template_id: number;
+      template_id: number | null;
     }> = [];
     for (const item of items) {
       const groupKey = String((item as JsonRecord)?.group_key || '').trim();
-      const templateId = Number((item as JsonRecord)?.template_id || 0);
       if (!groupKey || !groupByKey.has(groupKey)) {
         return fulfillError(
           route,
           404,
-          'GROUP_NOT_FOUND',
+          'BROADCAST_IMPORT_GROUP_NOT_FOUND',
           'Selected group was not found',
         );
       }
@@ -1996,11 +2533,30 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         return fulfillError(
           route,
           400,
-          'DRAFT_GENERATION_VALIDATION_FAILED',
+          'BATCH_VALIDATION_FAILED',
           'Duplicate group assignment in the same request is not allowed',
         );
       }
       seenGroupKeys.add(groupKey);
+
+      const rawTemplateId = (item as JsonRecord)?.template_id;
+      if (rawTemplateId == null) {
+        normalizedItems.push({
+          group_key: groupKey,
+          template_id: null,
+        });
+        continue;
+      }
+
+      const templateId = Number(rawTemplateId);
+      if (!Number.isFinite(templateId) || templateId <= 0) {
+        return fulfillError(
+          route,
+          400,
+          'BATCH_VALIDATION_FAILED',
+          'Template assignment is invalid',
+        );
+      }
       const template = state.broadcastTemplates.find(
         (candidate) => candidate.id === templateId,
       );
@@ -2008,7 +2564,7 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         return fulfillError(
           route,
           404,
-          'TEMPLATE_NOT_FOUND',
+          'BROADCAST_TEMPLATE_NOT_FOUND',
           'Selected template was not found',
         );
       }
@@ -2016,7 +2572,7 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         return fulfillError(
           route,
           400,
-          'TEMPLATE_DISABLED',
+          'BATCH_VALIDATION_FAILED',
           'Disabled templates cannot be assigned to new drafts',
         );
       }
@@ -2027,9 +2583,15 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     }
 
     for (const item of normalizedItems) {
-      state.broadcastGroupTemplateAssignments[
-        groupTemplateAssignmentMapKey(importId, item.group_key)
-      ] = item.template_id;
+      const assignmentKey = groupTemplateAssignmentMapKey(
+        importId,
+        item.group_key,
+      );
+      if (item.template_id == null) {
+        delete state.broadcastGroupTemplateAssignments[assignmentKey];
+        continue;
+      }
+      state.broadcastGroupTemplateAssignments[assignmentKey] = item.template_id;
     }
     return fulfillJson(route, { items: normalizedItems });
   }

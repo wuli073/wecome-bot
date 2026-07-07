@@ -1,6 +1,17 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -13,6 +24,14 @@ import {
 } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
   Table,
   TableBody,
   TableCell,
@@ -21,14 +40,20 @@ import {
   TableRow,
 } from '@/components/ui/table';
 
+import BulkGroupAssignmentDialog from './BulkGroupAssignmentDialog';
+import GroupConversationSelector from '../shared/GroupConversationSelector';
 import type {
   BroadcastAttachment,
+  BroadcastGroupName,
+  BroadcastGroupRule,
   BroadcastImportBatch,
   BroadcastImportDetail,
+  BroadcastImportGroupFieldConfirmationDetails,
   BroadcastImportGroupList,
   BroadcastImportGroupMatchStatus,
   BroadcastImportGroupRowsPage,
   BroadcastImportGroupSummary,
+  BroadcastGroupRuleCandidateList,
   BroadcastImportPreviewRow,
   BroadcastMessageTemplate,
 } from '../../types';
@@ -41,19 +66,41 @@ interface ImportMatchingPanelProps {
   groupsDetail: BroadcastImportGroupList | null;
   groupRowsByKey: Record<string, BroadcastImportGroupRowsPage | undefined>;
   templates: BroadcastMessageTemplate[];
+  groupRules: BroadcastGroupRule[];
+  groupNames: BroadcastGroupName[];
+  groupRuleCandidates: BroadcastGroupRuleCandidateList | null;
+  selectedBatchDraftCount?: number;
   loading?: boolean;
   busy?: boolean;
+  groupRuleCandidatesLoading?: boolean;
+  confirmationBusy?: boolean;
   error?: string | null;
   onUpload: (file: File) => Promise<void>;
+  pendingImportConfirmation: BroadcastImportGroupFieldConfirmationDetails | null;
+  onConfirmImportGroupField: (groupField: string) => Promise<void>;
+  onCancelImportGroupField: () => void;
   onSelectBatch: (batchId: number) => Promise<void>;
   onPageChange: (page: number) => Promise<void>;
   onDeleteBatch: (batchId: number) => Promise<void>;
   onRematch: (batchId: number) => Promise<void>;
+  onOpenBulkAssignDialog: () => Promise<void>;
+  onBulkAssignGroupRules: (
+    batchId: number,
+    items: Array<{ groupKey: string; targetConversationId: string }>,
+  ) => Promise<void>;
   onGenerateDrafts: (batchId: number, groupKeys: string[]) => Promise<void>;
   onUpdateGroupTemplateAssignments: (
     batchId: number,
-    items: Array<{ groupKey: string; templateId: number }>,
+    items: Array<{ groupKey: string; templateId: number | null }>,
   ) => Promise<void>;
+  onSaveExactMatchRule: (payload: {
+    batchId: number;
+    groupValue: string;
+    targetConversationId: string;
+    targetConversationName: string;
+    existingRuleId?: number;
+    existingRulePriority?: number;
+  }) => Promise<void>;
   onLoadGroupRows: (groupKey: string, page?: number) => Promise<void>;
   onUploadGroupAttachments: (groupKey: string, files: File[]) => Promise<void>;
   onDeleteGroupAttachment: (
@@ -64,6 +111,7 @@ interface ImportMatchingPanelProps {
 
 const EMPTY_ATTACHMENTS: BroadcastAttachment[] = [];
 const EMPTY_GROUPS: BroadcastImportGroupSummary[] = [];
+const UNASSIGNED_TEMPLATE_OPTION = '__unassigned__';
 
 function renderMatchStatusLabel(
   status: BroadcastImportGroupMatchStatus,
@@ -95,16 +143,28 @@ export default function ImportMatchingPanel({
   groupsDetail,
   groupRowsByKey,
   templates,
+  groupRules,
+  groupNames,
+  groupRuleCandidates,
+  selectedBatchDraftCount = 0,
   loading = false,
   busy = false,
+  groupRuleCandidatesLoading = false,
+  confirmationBusy = false,
   error = null,
   onUpload,
+  pendingImportConfirmation,
+  onConfirmImportGroupField,
+  onCancelImportGroupField,
   onSelectBatch,
   onPageChange,
   onDeleteBatch,
   onRematch,
+  onOpenBulkAssignDialog,
+  onBulkAssignGroupRules,
   onGenerateDrafts,
   onUpdateGroupTemplateAssignments,
+  onSaveExactMatchRule,
   onLoadGroupRows,
   onUploadGroupAttachments,
   onDeleteGroupAttachment,
@@ -119,6 +179,20 @@ export default function ImportMatchingPanel({
   const [bulkTemplateId, setBulkTemplateId] = useState<string>('');
   const [expandedGroupKeys, setExpandedGroupKeys] = useState<string[]>([]);
   const [assignmentBusy, setAssignmentBusy] = useState(false);
+  const [clearSelectedDialogOpen, setClearSelectedDialogOpen] = useState(false);
+  const [deleteBatchDialogOpen, setDeleteBatchDialogOpen] = useState(false);
+  const [rematchDialogOpen, setRematchDialogOpen] = useState(false);
+  const [generateDraftsDialogOpen, setGenerateDraftsDialogOpen] =
+    useState(false);
+  const [bulkAssignDialogOpen, setBulkAssignDialogOpen] = useState(false);
+  const [matchDialogGroup, setMatchDialogGroup] =
+    useState<BroadcastImportGroupSummary | null>(null);
+  const [matchDialogKeyword, setMatchDialogKeyword] = useState('');
+  const [matchDialogSelectionId, setMatchDialogSelectionId] = useState('');
+  const [matchDialogSelectionError, setMatchDialogSelectionError] = useState<
+    string | null
+  >(null);
+  const [selectedGroupField, setSelectedGroupField] = useState('');
 
   const stats = useMemo(
     () => ({
@@ -158,6 +232,31 @@ export default function ImportMatchingPanel({
     );
   }, [pageGroups]);
 
+  useEffect(() => {
+    if (matchDialogGroup) {
+      return;
+    }
+    setMatchDialogKeyword('');
+    setMatchDialogSelectionId('');
+    setMatchDialogSelectionError(null);
+  }, [matchDialogGroup]);
+
+  useEffect(() => {
+    if (!pendingImportConfirmation) {
+      setSelectedGroupField('');
+      return;
+    }
+    const availableFields =
+      pendingImportConfirmation.candidates.length > 0
+        ? pendingImportConfirmation.candidates
+        : pendingImportConfirmation.headers;
+    setSelectedGroupField(
+      availableFields.includes(selectedGroupField)
+        ? selectedGroupField
+        : (availableFields[0] ?? ''),
+    );
+  }, [pendingImportConfirmation, selectedGroupField]);
+
   const getConversationIdentity = (group: BroadcastImportGroupSummary) => {
     const conversationId = group.matchedConversationId?.trim();
     if (conversationId) {
@@ -170,17 +269,11 @@ export default function ImportMatchingPanel({
   const getGroupSelectionDisabledReason = (
     group: BroadcastImportGroupSummary,
   ) => {
-    if (group.matchStatus === 'unmatched') {
-      return group.reason || t('broadcast.import.selectionDisabled.unmatched');
-    }
     if (group.matchStatus === 'invalid') {
       return group.reason || t('broadcast.import.selectionDisabled.invalid');
     }
     if (group.matchStatus === 'conflict') {
       return group.reason || t('broadcast.import.selectionDisabled.conflict');
-    }
-    if (!group.matchedConversationName?.trim()) {
-      return t('broadcast.import.selectionDisabled.missingConversation');
     }
     return null;
   };
@@ -201,6 +294,8 @@ export default function ImportMatchingPanel({
   );
 
   const selectedCount = selectedGroupsInPageOrder.length;
+  const selectedBatch =
+    batches.find((batch) => batch.id === selectedBatchId) ?? null;
   const duplicateConversationWarning = useMemo(() => {
     const mapping = new Map<string, string[]>();
     for (const group of selectedGroupsInPageOrder) {
@@ -256,12 +351,43 @@ export default function ImportMatchingPanel({
     return String(group.templateId);
   };
 
+  const selectedConversation = useMemo(
+    () =>
+      groupNames.find(
+        (groupName) =>
+          groupName.externalConversationId === matchDialogSelectionId,
+      ) ?? null,
+    [groupNames, matchDialogSelectionId],
+  );
+
+  const bulkTemplateNumericId = bulkTemplateId ? Number(bulkTemplateId) : null;
+  const selectedGroupsWithTemplate = selectedGroupsInPageOrder.filter(
+    (group) => group.templateId != null,
+  );
+  const selectedGroupsWithoutTemplate = selectedGroupsInPageOrder.filter(
+    (group) => group.templateId == null,
+  );
+  const selectedGroupsEligibleForApply = selectedGroupsInPageOrder.filter(
+    (group) =>
+      bulkTemplateNumericId != null &&
+      group.templateId !== bulkTemplateNumericId,
+  );
+  const selectedGroupsBlockedForGeneration = selectedGroupsInPageOrder.filter(
+    (group) =>
+      group.matchStatus !== 'matched' || !group.matchedConversationName?.trim(),
+  );
+
   const getGenerateDisabledReason = () => {
     if (!selectedBatchId) {
       return t('broadcast.import.generateDisabled.noBatch');
     }
     if (selectedCount === 0) {
       return t('broadcast.import.generateDisabled.noSelection');
+    }
+    if (selectedGroupsBlockedForGeneration.length > 0) {
+      return t('broadcast.import.generateDisabled.matchUnavailable', {
+        count: selectedGroupsBlockedForGeneration.length,
+      });
     }
     const groupsWithoutTemplate = selectedGroupsInPageOrder.filter(
       (group) => !group.templateId,
@@ -292,11 +418,45 @@ export default function ImportMatchingPanel({
     if (!bulkTemplateId) {
       return t('broadcast.import.applyTemplateDisabled.noTemplate');
     }
+    if (selectedGroupsEligibleForApply.length === 0) {
+      return t('broadcast.import.applyTemplateDisabled.noProcessableSelection');
+    }
+    return null;
+  };
+
+  const getApplyUnassignedDisabledReason = () => {
+    if (!selectedBatchId) {
+      return t('broadcast.import.applyTemplateDisabled.noBatch');
+    }
+    if (selectedCount === 0) {
+      return t('broadcast.import.applyTemplateDisabled.noSelection');
+    }
+    if (!bulkTemplateId) {
+      return t('broadcast.import.applyTemplateDisabled.noTemplate');
+    }
+    if (selectedGroupsWithoutTemplate.length === 0) {
+      return t('broadcast.import.applyTemplateDisabled.noUnassignedSelection');
+    }
+    return null;
+  };
+
+  const getClearTemplateDisabledReason = () => {
+    if (!selectedBatchId) {
+      return t('broadcast.import.clearTemplateDisabled.noBatch');
+    }
+    if (selectedCount === 0) {
+      return t('broadcast.import.clearTemplateDisabled.noSelection');
+    }
+    if (selectedGroupsWithTemplate.length === 0) {
+      return t('broadcast.import.clearTemplateDisabled.noAssignedSelection');
+    }
     return null;
   };
 
   const generateDisabledReason = getGenerateDisabledReason();
   const applyTemplateDisabledReason = getApplyTemplateDisabledReason();
+  const applyUnassignedDisabledReason = getApplyUnassignedDisabledReason();
+  const clearTemplateDisabledReason = getClearTemplateDisabledReason();
   const mutateBusy = busy || assignmentBusy;
 
   const toggleGroup = async (groupKey: string) => {
@@ -339,17 +499,145 @@ export default function ImportMatchingPanel({
   };
 
   const handleUpdateAssignments = async (
-    items: Array<{ groupKey: string; templateId: number }>,
+    items: Array<{ groupKey: string; templateId: number | null }>,
   ) => {
     if (!selectedBatchId || items.length === 0) {
-      return;
+      return false;
     }
     setAssignmentBusy(true);
     try {
       await onUpdateGroupTemplateAssignments(selectedBatchId, items);
+      return true;
     } finally {
       setAssignmentBusy(false);
     }
+  };
+
+  const handleApplySelectedTemplates = async () => {
+    if (bulkTemplateNumericId == null) {
+      return;
+    }
+    const targetGroups = selectedGroupsInPageOrder.filter(
+      (group) => group.templateId !== bulkTemplateNumericId,
+    );
+    const saved = await handleUpdateAssignments(
+      targetGroups.map((group) => ({
+        groupKey: group.groupKey,
+        templateId: bulkTemplateNumericId,
+      })),
+    );
+    if (!saved) {
+      return;
+    }
+    const replacedCount = targetGroups.filter(
+      (group) =>
+        group.templateId != null && group.templateId !== bulkTemplateNumericId,
+    ).length;
+    toast.success(
+      t('broadcast.toasts.groupTemplateAssignmentsApplied', {
+        count: targetGroups.length,
+        replacedCount,
+      }),
+    );
+  };
+
+  const handleApplyTemplatesToUnassigned = async () => {
+    if (bulkTemplateNumericId == null) {
+      return;
+    }
+    const saved = await handleUpdateAssignments(
+      selectedGroupsWithoutTemplate.map((group) => ({
+        groupKey: group.groupKey,
+        templateId: bulkTemplateNumericId,
+      })),
+    );
+    if (!saved) {
+      return;
+    }
+    toast.success(
+      t('broadcast.toasts.groupTemplateAssignmentsAppliedToUnassigned', {
+        count: selectedGroupsWithoutTemplate.length,
+      }),
+    );
+  };
+
+  const handleClearRowTemplate = async (group: BroadcastImportGroupSummary) => {
+    if (group.templateId == null) {
+      return;
+    }
+    const saved = await handleUpdateAssignments([
+      {
+        groupKey: group.groupKey,
+        templateId: null,
+      },
+    ]);
+    if (!saved) {
+      return;
+    }
+    toast.success(
+      t('broadcast.toasts.groupTemplateAssignmentsCleared', {
+        count: 1,
+      }),
+    );
+  };
+
+  const handleConfirmClearSelectedTemplates = async () => {
+    const clearItems = selectedGroupsWithTemplate.map((group) => ({
+      groupKey: group.groupKey,
+      templateId: null,
+    }));
+    const saved = await handleUpdateAssignments(clearItems);
+    if (!saved) {
+      return;
+    }
+    setClearSelectedDialogOpen(false);
+    toast.success(
+      t('broadcast.toasts.groupTemplateAssignmentsCleared', {
+        count: clearItems.length,
+      }),
+    );
+  };
+
+  const openMatchDialog = (group: BroadcastImportGroupSummary) => {
+    setMatchDialogGroup(group);
+    setMatchDialogKeyword(group.groupValue);
+    setMatchDialogSelectionId('');
+    setMatchDialogSelectionError(null);
+  };
+
+  const handleSaveExactMatchRule = async () => {
+    if (!selectedBatchId || !matchDialogGroup) {
+      return;
+    }
+    if (!selectedConversation?.externalConversationId?.trim()) {
+      setMatchDialogSelectionError(
+        t('broadcast.import.inlineMatch.selectionRequired'),
+      );
+      return;
+    }
+    const exactRules = groupRules.filter(
+      (rule) =>
+        !rule.invalidLegacy &&
+        rule.matchType === 'exact' &&
+        rule.sourceValue.trim() === matchDialogGroup.groupValue.trim() &&
+        rule.matchExpression.trim() === matchDialogGroup.groupValue.trim(),
+    );
+    if (exactRules.length > 1) {
+      setMatchDialogSelectionError(
+        t('broadcast.import.inlineMatch.conflictRuleDetected'),
+      );
+      return;
+    }
+    setMatchDialogSelectionError(null);
+    await onSaveExactMatchRule({
+      batchId: selectedBatchId,
+      groupValue: matchDialogGroup.groupValue,
+      targetConversationId: selectedConversation.externalConversationId,
+      targetConversationName: selectedConversation.name,
+      existingRuleId: exactRules[0]?.id,
+      existingRulePriority: exactRules[0]?.priority,
+    });
+    setMatchDialogGroup(null);
   };
 
   return (
@@ -438,6 +726,13 @@ export default function ImportMatchingPanel({
           </CardTitle>
           <CardDescription>
             <div>{t('broadcast.import.detailHint')}</div>
+            {detail?.groupFieldUsed ? (
+              <div className="mt-1 text-emerald-700">
+                {t('broadcast.import.groupFieldDetected', {
+                  field: detail.groupFieldUsed,
+                })}
+              </div>
+            ) : null}
             {detail?.worksheetName ? (
               <div
                 className="mt-1"
@@ -494,12 +789,15 @@ export default function ImportMatchingPanel({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-start gap-2">
+          <div
+            className="sticky top-0 z-10 flex flex-wrap items-start gap-2 rounded-xl border bg-background/95 p-3 backdrop-blur supports-[backdrop-filter]:bg-background/80"
+            data-testid="broadcast-import-sticky-actions"
+          >
             <Button
               data-testid="broadcast-import-rematch-button"
               variant="outline"
               disabled={!selectedBatchId || busy}
-              onClick={() => selectedBatchId && void onRematch(selectedBatchId)}
+              onClick={() => setRematchDialogOpen(true)}
             >
               {t('broadcast.import.rematchButton')}
             </Button>
@@ -507,11 +805,22 @@ export default function ImportMatchingPanel({
               data-testid="broadcast-import-delete-batch-button"
               variant="outline"
               disabled={!selectedBatchId || busy}
-              onClick={() =>
-                selectedBatchId && void onDeleteBatch(selectedBatchId)
-              }
+              onClick={() => setDeleteBatchDialogOpen(true)}
             >
               {t('broadcast.import.deleteBatchButton')}
+            </Button>
+            <Button
+              data-testid="broadcast-import-bulk-assign-open-button"
+              variant="outline"
+              disabled={!selectedBatchId || busy}
+              onClick={() => {
+                setBulkAssignDialogOpen(true);
+                void onOpenBulkAssignDialog();
+              }}
+            >
+              {t('broadcast.import.bulkAssign.openButton', {
+                count: groupRuleCandidates?.stats.newCount ?? 0,
+              })}
             </Button>
             <select
               data-testid="broadcast-import-template-select"
@@ -533,28 +842,33 @@ export default function ImportMatchingPanel({
               variant="outline"
               disabled={mutateBusy || Boolean(applyTemplateDisabledReason)}
               title={applyTemplateDisabledReason ?? undefined}
-              onClick={() =>
-                void handleUpdateAssignments(
-                  selectedGroupsInPageOrder.map((group) => ({
-                    groupKey: group.groupKey,
-                    templateId: Number(bulkTemplateId),
-                  })),
-                )
-              }
+              onClick={() => void handleApplySelectedTemplates()}
             >
               {t('broadcast.import.applyTemplateButton')}
+            </Button>
+            <Button
+              data-testid="broadcast-import-apply-template-unassigned-button"
+              variant="outline"
+              disabled={mutateBusy || Boolean(applyUnassignedDisabledReason)}
+              title={applyUnassignedDisabledReason ?? undefined}
+              onClick={() => void handleApplyTemplatesToUnassigned()}
+            >
+              {t('broadcast.import.applyTemplateToUnassignedButton')}
+            </Button>
+            <Button
+              data-testid="broadcast-import-clear-templates-button"
+              variant="outline"
+              disabled={mutateBusy || Boolean(clearTemplateDisabledReason)}
+              title={clearTemplateDisabledReason ?? undefined}
+              onClick={() => setClearSelectedDialogOpen(true)}
+            >
+              {t('broadcast.import.clearTemplatesButton')}
             </Button>
             <Button
               data-testid="broadcast-import-generate-drafts-button"
               disabled={busy || Boolean(generateDisabledReason)}
               title={generateDisabledReason ?? undefined}
-              onClick={() =>
-                selectedBatchId &&
-                void onGenerateDrafts(
-                  selectedBatchId,
-                  selectedGroupsInPageOrder.map((group) => group.groupKey),
-                )
-              }
+              onClick={() => setGenerateDraftsDialogOpen(true)}
             >
               {t('broadcast.import.generateDraftsButton')}
             </Button>
@@ -687,19 +1001,45 @@ export default function ImportMatchingPanel({
                               value={
                                 group.templateId != null
                                   ? String(group.templateId)
-                                  : ''
+                                  : UNASSIGNED_TEMPLATE_OPTION
                               }
                               disabled={rowTemplateDisabled}
-                              onChange={(event) =>
+                              onChange={(event) => {
+                                const nextTemplateId = Number(
+                                  event.target.value,
+                                );
+                                if (!Number.isFinite(nextTemplateId)) {
+                                  return;
+                                }
                                 void handleUpdateAssignments([
                                   {
                                     groupKey: group.groupKey,
-                                    templateId: Number(event.target.value),
+                                    templateId: nextTemplateId,
                                   },
-                                ])
-                              }
+                                ]).then((saved) => {
+                                  if (!saved) {
+                                    return;
+                                  }
+                                  toast.success(
+                                    t(
+                                      'broadcast.toasts.groupTemplateAssignmentsApplied',
+                                      {
+                                        count: 1,
+                                        replacedCount:
+                                          group.templateId != null &&
+                                          group.templateId !== nextTemplateId
+                                            ? 1
+                                            : 0,
+                                      },
+                                    ),
+                                  );
+                                });
+                              }}
                             >
-                              <option value="">
+                              <option
+                                value={UNASSIGNED_TEMPLATE_OPTION}
+                                disabled
+                              >
                                 {t('broadcast.import.templatePlaceholder')}
                               </option>
                               {rowTemplateOptions.map((template) => (
@@ -719,6 +1059,15 @@ export default function ImportMatchingPanel({
                                 {rowTemplateLabel}
                               </div>
                             ) : null}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              data-testid={`broadcast-import-group-clear-template-button-${group.groupKey}`}
+                              disabled={mutateBusy || group.templateId == null}
+                              onClick={() => void handleClearRowTemplate(group)}
+                            >
+                              {t('broadcast.import.clearRowTemplateButton')}
+                            </Button>
                           </div>
                         </TableCell>
                         <TableCell className="align-top">
@@ -738,16 +1087,31 @@ export default function ImportMatchingPanel({
                           {selectionDisabledReason || group.reason || '-'}
                         </TableCell>
                         <TableCell className="text-right align-top">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={busy}
-                            onClick={() => void toggleGroup(group.groupKey)}
-                          >
-                            {expanded
-                              ? t('broadcast.import.collapseGroup')
-                              : t('broadcast.import.expandGroup')}
-                          </Button>
+                          <div className="flex flex-col items-end gap-2">
+                            {group.matchStatus === 'unmatched' ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                data-testid={`broadcast-import-group-select-conversation-button-${group.groupKey}`}
+                                disabled={mutateBusy}
+                                onClick={() => openMatchDialog(group)}
+                              >
+                                {t(
+                                  'broadcast.import.inlineMatch.selectConversationButton',
+                                )}
+                              </Button>
+                            ) : null}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={busy}
+                              onClick={() => void toggleGroup(group.groupKey)}
+                            >
+                              {expanded
+                                ? t('broadcast.import.collapseGroup')
+                                : t('broadcast.import.expandGroup')}
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                       {expanded ? (
@@ -1040,6 +1404,309 @@ export default function ImportMatchingPanel({
           </div>
         </CardContent>
       </Card>
+      <AlertDialog
+        open={deleteBatchDialogOpen}
+        onOpenChange={setDeleteBatchDialogOpen}
+      >
+        <AlertDialogContent data-testid="broadcast-import-delete-batch-confirm-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('broadcast.import.deleteBatchConfirmTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('broadcast.import.deleteBatchConfirmDescription', {
+                fileName: selectedBatch?.originalFileName ?? '',
+                totalRows: selectedBatch?.totalRows ?? 0,
+                groupCount: groupsDetail?.groupTotal ?? 0,
+                draftCount: selectedBatchDraftCount,
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="broadcast-import-delete-batch-confirm-button"
+              onClick={(event) => {
+                event.preventDefault();
+                if (!selectedBatchId) {
+                  return;
+                }
+                void onDeleteBatch(selectedBatchId);
+                setDeleteBatchDialogOpen(false);
+              }}
+            >
+              {t('broadcast.import.deleteBatchButton')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={rematchDialogOpen} onOpenChange={setRematchDialogOpen}>
+        <AlertDialogContent data-testid="broadcast-import-rematch-confirm-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('broadcast.import.rematchConfirmTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('broadcast.import.rematchConfirmDescription')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="broadcast-import-rematch-cancel-button">
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="broadcast-import-rematch-confirm-button"
+              onClick={(event) => {
+                event.preventDefault();
+                if (!selectedBatchId) {
+                  return;
+                }
+                void onRematch(selectedBatchId);
+                setRematchDialogOpen(false);
+              }}
+            >
+              {t('broadcast.import.rematchButton')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={generateDraftsDialogOpen}
+        onOpenChange={setGenerateDraftsDialogOpen}
+      >
+        <AlertDialogContent data-testid="broadcast-import-generate-drafts-confirm-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('broadcast.import.generateDraftsConfirmTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('broadcast.import.generateDraftsConfirmDescription', {
+                selectedCount,
+                templatedCount: selectedGroupsInPageOrder.filter(
+                  (group) => group.templateId != null,
+                ).length,
+                blockedCount: selectedGroupsBlockedForGeneration.length,
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="broadcast-import-generate-drafts-confirm-button"
+              onClick={(event) => {
+                event.preventDefault();
+                if (!selectedBatchId) {
+                  return;
+                }
+                void onGenerateDrafts(
+                  selectedBatchId,
+                  selectedGroupsInPageOrder.map((group) => group.groupKey),
+                );
+                setGenerateDraftsDialogOpen(false);
+              }}
+            >
+              {t('broadcast.import.generateDraftsButton')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={clearSelectedDialogOpen}
+        onOpenChange={setClearSelectedDialogOpen}
+      >
+        <AlertDialogContent data-testid="broadcast-import-clear-templates-confirm-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('broadcast.import.clearTemplatesConfirmTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('broadcast.import.clearTemplatesConfirmDescription', {
+                count: selectedGroupsWithTemplate.length,
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="broadcast-import-clear-templates-cancel-button">
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="broadcast-import-clear-templates-confirm-button"
+              onClick={(event) => {
+                event.preventDefault();
+                void handleConfirmClearSelectedTemplates();
+              }}
+            >
+              {t('broadcast.import.clearTemplatesConfirmButton')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <Dialog
+        open={matchDialogGroup != null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setMatchDialogGroup(null);
+          }
+        }}
+      >
+        <DialogContent data-testid="broadcast-import-inline-match-dialog">
+          <DialogHeader>
+            <DialogTitle>
+              {t('broadcast.import.inlineMatch.dialogTitle')}
+            </DialogTitle>
+            <DialogDescription>
+              {matchDialogGroup
+                ? t('broadcast.import.inlineMatch.dialogDescription', {
+                    groupValue: matchDialogGroup.groupValue,
+                  })
+                : t('broadcast.import.inlineMatch.dialogDescriptionFallback')}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <div className="text-sm font-medium">
+                {t('broadcast.import.inlineMatch.currentGroupLabel')}
+              </div>
+              <div className="rounded-lg border bg-muted/20 px-3 py-2 text-sm">
+                {matchDialogGroup?.groupValue ?? '-'}
+              </div>
+            </div>
+            <GroupConversationSelector
+              groupNames={groupNames}
+              value={matchDialogSelectionId}
+              keyword={matchDialogKeyword}
+              onKeywordChange={setMatchDialogKeyword}
+              onChange={(conversation) => {
+                setMatchDialogSelectionId(
+                  conversation?.externalConversationId ?? '',
+                );
+                setMatchDialogSelectionError(null);
+              }}
+              disabled={mutateBusy}
+              searchLabel={t('broadcast.import.inlineMatch.searchLabel')}
+              searchPlaceholder={t(
+                'broadcast.import.inlineMatch.searchPlaceholder',
+              )}
+              emptyLabel={t('broadcast.import.inlineMatch.emptySearch')}
+              missingStableIdLabel={t(
+                'broadcast.import.inlineMatch.missingStableId',
+              )}
+              searchInputTestId="broadcast-import-inline-match-search-input"
+              listTestId="broadcast-import-inline-match-search-results"
+            />
+            {matchDialogSelectionError ? (
+              <Alert variant="destructive">
+                <AlertDescription>{matchDialogSelectionError}</AlertDescription>
+              </Alert>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMatchDialogGroup(null)}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              data-testid="broadcast-import-inline-match-save-button"
+              disabled={mutateBusy}
+              onClick={() => void handleSaveExactMatchRule()}
+            >
+              {t('broadcast.import.inlineMatch.saveButton')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={pendingImportConfirmation != null}
+        onOpenChange={(open) => {
+          if (!open) {
+            onCancelImportGroupField();
+          }
+        }}
+      >
+        <DialogContent data-testid="broadcast-import-group-field-dialog">
+          <DialogHeader>
+            <DialogTitle>
+              {t('broadcast.import.groupFieldDialog.title')}
+            </DialogTitle>
+            <DialogDescription>
+              {t('broadcast.import.groupFieldDialog.description', {
+                fileName: pendingImportConfirmation?.originalFileName ?? '',
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {pendingImportConfirmation?.configuredGroupField ? (
+              <div className="text-sm text-muted-foreground">
+                {t('broadcast.import.groupFieldDialog.configuredField', {
+                  field: pendingImportConfirmation.configuredGroupField,
+                })}
+              </div>
+            ) : null}
+            <div className="space-y-2">
+              <div className="text-sm font-medium">
+                {t('broadcast.import.groupFieldDialog.selectLabel')}
+              </div>
+              <select
+                className="border-input bg-background h-9 w-full rounded-md border px-3 py-2 text-sm"
+                value={selectedGroupField}
+                disabled={confirmationBusy}
+                onChange={(event) => setSelectedGroupField(event.target.value)}
+              >
+                {(pendingImportConfirmation?.candidates.length
+                  ? pendingImportConfirmation.candidates
+                  : (pendingImportConfirmation?.headers ?? [])
+                ).map((header) => (
+                  <option key={header} value={header}>
+                    {header}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <div className="text-sm font-medium">
+                {t('broadcast.import.groupFieldDialog.headersLabel')}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {(pendingImportConfirmation?.headers ?? []).map((header) => (
+                  <Badge key={header} variant="outline">
+                    {header}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onCancelImportGroupField}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              type="button"
+              disabled={confirmationBusy || !selectedGroupField}
+              onClick={() => void onConfirmImportGroupField(selectedGroupField)}
+            >
+              {t('broadcast.import.groupFieldDialog.confirmButton')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <BulkGroupAssignmentDialog
+        open={bulkAssignDialogOpen}
+        loading={groupRuleCandidatesLoading}
+        submitting={busy}
+        candidates={groupRuleCandidates}
+        groupNames={groupNames}
+        onOpenChange={setBulkAssignDialogOpen}
+        onSubmit={async (items) => {
+          if (!selectedBatchId) {
+            return;
+          }
+          await onBulkAssignGroupRules(selectedBatchId, items);
+          setBulkAssignDialogOpen(false);
+        }}
+      />
     </div>
   );
 }

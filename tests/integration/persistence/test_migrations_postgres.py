@@ -13,6 +13,7 @@ CI runs automatically with PostgreSQL service container.
 
 from __future__ import annotations
 
+import importlib
 import os
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -260,12 +261,25 @@ class TestPostgreSQLMigrationUpgrade:
                 )
             )
             table_names = [row[0] for row in result.fetchall()]
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'broadcast_import_batches'
+                    """
+                )
+            )
+            batch_columns = {row[0] for row in result.fetchall()}
 
         assert table_names == [
             'broadcast_drafts',
             'broadcast_import_batches',
             'broadcast_import_rows',
         ]
+        assert 'group_field_used' in batch_columns
+        assert 'group_field_source' in batch_columns
 
     def test_postgres_broadcast_phase3_revision_file_exists_and_is_chained(self):
         script_path = _get_revision_script('0014_broadcast_phase3')
@@ -274,6 +288,15 @@ class TestPostgreSQLMigrationUpgrade:
     def test_postgres_broadcast_execution_revision_file_exists_and_is_chained(self):
         script_path = _get_revision_script('0015_broadcast_execution')
         assert script_path.exists(), 'Expected 0015_broadcast_execution migration script to exist'
+
+    def test_postgres_broadcast_import_group_field_revision_file_exists_and_is_chained(self):
+        script_path = _get_revision_script('0022_bc_import_group_field_used')
+        assert script_path.exists(), 'Expected 0022_bc_import_group_field_used migration script to exist'
+        module = importlib.import_module(
+            'langbot.pkg.persistence.alembic.versions.0022_bc_import_group_field_used'
+        )
+        assert len(module.revision) <= 32
+        assert module.down_revision == '0021_bc_target_conv_id'
 
     @pytest.mark.asyncio
     async def test_postgres_broadcast_execution_tables_exist_after_upgrade(

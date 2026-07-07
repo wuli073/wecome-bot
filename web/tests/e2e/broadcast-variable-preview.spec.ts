@@ -51,6 +51,9 @@ function makeGroupPage<T extends Record<string, unknown>>(
     reason: row.error_message,
     attachment_count: 0,
     attachments: [],
+    template_id: null as number | null,
+    template_name: null as string | null,
+    template_enabled: null as boolean | null,
     expandable: true,
     first_source_row_number: row.source_row_number,
   }));

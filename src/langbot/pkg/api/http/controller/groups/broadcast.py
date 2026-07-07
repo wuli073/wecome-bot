@@ -39,6 +39,7 @@ from .....broadcast.errors import (
     BROADCAST_IMPORT_FIELDS_MISSING,
     BROADCAST_IMPORT_FILE_INVALID,
     BROADCAST_IMPORT_GROUP_NOT_FOUND,
+    BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED,
     BROADCAST_IMPORT_GROUP_FIELD_REQUIRED,
     BROADCAST_IMPORT_NOT_FOUND,
     BROADCAST_IMPORT_READY_DRAFT_EXISTS,
@@ -202,6 +203,9 @@ class BroadcastRouterGroup(group.RouterGroup):
                 )
                 file = files.get('file')
                 payload = self._build_upload_file_payload(file)
+                group_field_override = str(form.get('group_field_override') or '').strip()
+                if group_field_override:
+                    payload['group_field_override'] = group_field_override
                 data = await self.ap.broadcast_service.upload_import(scope, payload)
                 return self.success(data=data)
             except BadRequest:
@@ -270,12 +274,46 @@ class BroadcastRouterGroup(group.RouterGroup):
             except BroadcastError as exc:
                 return self._broadcast_error_response(exc)
 
+        @self.route('/imports/<int:import_id>/group-rule-candidates', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
+        async def import_group_rule_candidates(import_id: int) -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                try:
+                    page = int(quart.request.args.get('page')) if quart.request.args.get('page') else None
+                    page_size = int(quart.request.args.get('page_size')) if quart.request.args.get('page_size') else None
+                except ValueError:
+                    raise BroadcastError(BROADCAST_IMPORT_FILE_INVALID, '分页参数 page 和 page_size 必须为整数') from None
+                filters = {
+                    'status': str(quart.request.args.get('status') or '').strip() or 'new',
+                    'keyword': str(quart.request.args.get('keyword') or '').strip() or None,
+                    'page': page,
+                    'page_size': page_size,
+                }
+                data = await self.ap.broadcast_service.list_group_rule_candidates(import_id, scope, filters)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
         @self.route('/imports/<int:import_id>/group-template-assignments', methods=['PUT'], auth_type=group.AuthType.USER_TOKEN)
         async def import_group_template_assignments(import_id: int) -> str:
             payload = await quart.request.get_json(silent=True) or {}
             try:
                 scope = await self.validate_scope(from_query=False, payload=payload)
                 data = await self.ap.broadcast_service.upsert_import_group_template_assignments(
+                    import_id,
+                    scope,
+                    payload,
+                )
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
+
+        @self.route('/imports/<int:import_id>/group-rules/bulk-assign', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
+        async def import_group_rule_bulk_assign(import_id: int) -> str:
+            payload = await quart.request.get_json(silent=True) or {}
+            try:
+                scope = await self.validate_scope(from_query=False, payload=payload)
+                data = await self.ap.broadcast_service.bulk_assign_import_group_rules(
                     import_id,
                     scope,
                     payload,
@@ -655,6 +693,7 @@ class BroadcastRouterGroup(group.RouterGroup):
             INVALID_SEND_STATUS,
             MIXED_SEND_STATUS,
             BATCH_VALIDATION_FAILED,
+            BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED,
             TEMPLATE_RENDER_INPUT_INVALID,
             ATTACHMENT_UNSUPPORTED_TYPE,
             ATTACHMENT_FILE_TOO_LARGE,

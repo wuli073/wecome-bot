@@ -2,6 +2,16 @@ import { type MouseEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -84,7 +94,7 @@ export default function TemplatePanel({
     null,
   );
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingCursorRef = useRef<number | null>(null);
   const selectionRef = useRef<{ start: number; end: number } | null>(null);
@@ -172,7 +182,7 @@ export default function TemplatePanel({
     setDraft(toDraft(activeTemplate));
     setPreview(null);
     setPreviewError(null);
-    setDeleteConfirm(false);
+    setDeleteDialogOpen(false);
   }, [activeTemplate, activeTemplateId]);
 
   useEffect(() => {
@@ -425,21 +435,13 @@ export default function TemplatePanel({
             </Button>
             {activeTemplate ? (
               <Button
+                data-testid="broadcast-template-delete-button"
                 type="button"
-                variant={deleteConfirm ? 'destructive' : 'outline'}
+                variant="outline"
                 disabled={saving}
-                onClick={() => {
-                  if (!deleteConfirm) {
-                    setDeleteConfirm(true);
-                    return;
-                  }
-                  void onDelete(activeTemplate.id);
-                  setDeleteConfirm(false);
-                }}
+                onClick={() => setDeleteDialogOpen(true)}
               >
-                {deleteConfirm
-                  ? t('broadcast.actions.confirmDeleteTemplate')
-                  : t('broadcast.actions.deleteTemplate')}
+                {t('broadcast.actions.deleteTemplate')}
               </Button>
             ) : null}
           </div>
@@ -462,6 +464,39 @@ export default function TemplatePanel({
           </div>
         </CardContent>
       </Card>
+
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent data-testid="broadcast-template-delete-confirm-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('broadcast.rules.templates.deleteConfirmTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('broadcast.rules.templates.deleteConfirmDescription', {
+                name: activeTemplate?.name ?? '',
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="broadcast-template-delete-cancel-button">
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="broadcast-template-delete-confirm-button"
+              onClick={(event) => {
+                event.preventDefault();
+                if (!activeTemplate) {
+                  return;
+                }
+                void onDelete(activeTemplate.id);
+                setDeleteDialogOpen(false);
+              }}
+            >
+              {t('broadcast.actions.deleteTemplate')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Card className="gap-4">
         <CardHeader>

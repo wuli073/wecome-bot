@@ -1,6 +1,16 @@
-﻿import { useMemo } from 'react';
+﻿import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import {
   Card,
   CardContent,
@@ -81,15 +91,36 @@ export default function DraftQueue({
   onBatchRestorePending,
 }: DraftQueueProps) {
   const { t } = useTranslation();
+  const [batchWriteDialogOpen, setBatchWriteDialogOpen] = useState(false);
 
   const selectableDraftIds = useMemo(
     () => drafts.flatMap((group) => group.drafts).map((draft) => draft.id),
     [drafts],
   );
+  const selectedDrafts = useMemo(
+    () =>
+      drafts
+        .flatMap((group) => group.drafts)
+        .filter((draft) => selectedDraftIds.includes(draft.id)),
+    [drafts, selectedDraftIds],
+  );
 
   const selectedCount = selectedDraftIds.filter((draftId) =>
     selectableDraftIds.includes(draftId),
   ).length;
+  const selectedConversationCount = new Set(
+    selectedDrafts
+      .map((draft) => draft.conversationName.trim())
+      .filter((name) => name.length > 0),
+  ).size;
+  const selectedAttachmentCount = selectedDrafts.reduce(
+    (total, draft) => total + (draft.attachments?.length ?? 0),
+    0,
+  );
+  const selectedDuplicateConversationCount = Math.max(
+    0,
+    selectedDrafts.length - selectedConversationCount,
+  );
 
   const allSelectableChecked =
     selectableDraftIds.length > 0 &&
@@ -155,7 +186,10 @@ export default function DraftQueue({
           </Select>
         </div>
 
-        <div className="rounded-xl border bg-muted/20 p-4">
+        <div
+          className="sticky top-0 z-10 rounded-xl border bg-background/95 p-4 backdrop-blur supports-[backdrop-filter]:bg-background/80"
+          data-testid="broadcast-draft-sticky-actions"
+        >
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="space-y-2">
               <div className="flex items-center gap-2">
@@ -186,7 +220,7 @@ export default function DraftQueue({
               <div className="space-y-1">
                 <Button
                   data-testid="broadcast-draft-batch-write-button"
-                  onClick={onBatchWrite}
+                  onClick={() => setBatchWriteDialogOpen(true)}
                   disabled={selectedCount === 0 || busy || !canBatchWrite}
                   title={
                     !canBatchWrite && batchWriteDisabledReason
@@ -290,6 +324,41 @@ export default function DraftQueue({
           })}
         </div>
       </CardContent>
+      <AlertDialog
+        open={batchWriteDialogOpen}
+        onOpenChange={setBatchWriteDialogOpen}
+      >
+        <AlertDialogContent data-testid="broadcast-draft-batch-write-confirm-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('broadcast.drafts.batchWriteConfirmTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('broadcast.drafts.batchWriteConfirmDescription', {
+                draftCount: selectedDrafts.length,
+                conversationCount: selectedConversationCount,
+                attachmentCount: selectedAttachmentCount,
+                duplicateTargetCount: selectedDuplicateConversationCount,
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="broadcast-draft-batch-write-cancel-button">
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="broadcast-draft-batch-write-confirm-button"
+              onClick={(event) => {
+                event.preventDefault();
+                onBatchWrite();
+                setBatchWriteDialogOpen(false);
+              }}
+            >
+              {t('broadcast.drafts.batchWriteSelected')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

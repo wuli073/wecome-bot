@@ -12,6 +12,12 @@ export type BroadcastImportGroupMatchStatus =
   | BroadcastImportMatchStatus
   | 'conflict';
 
+export type BroadcastImportGroupFieldSource =
+  | 'configured'
+  | 'auto_detected'
+  | 'user_confirmed'
+  | 'legacy_fallback';
+
 export type BroadcastDraftStatus = 'pending' | 'sent' | 'invalid';
 
 export type BroadcastStatus =
@@ -109,10 +115,18 @@ export interface BroadcastGroupRuleDraft {
 export interface BroadcastGroupMatchResult {
   matched: boolean;
   ruleId: number | null;
+  matchedRuleId: number | null;
+  sourceValue: string;
   targetConversationId?: string | null;
   targetConversationName: string | null;
   matchType: BroadcastGroupMatchType | null;
+  candidateCount: number;
+  candidateRules: BroadcastGroupRuleSummary[];
+  conflict: boolean;
+  reason: string | null;
 }
+
+export type BroadcastGroupRuleSummary = BroadcastGroupRule;
 
 export interface BroadcastGroupName {
   id: number;
@@ -160,6 +174,8 @@ export interface BroadcastImportBatch {
   invalidRows: number;
   matchedRows: number;
   unmatchedRows: number;
+  groupFieldUsed?: string | null;
+  groupFieldSource?: BroadcastImportGroupFieldSource | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -224,6 +240,69 @@ export interface BroadcastImportGroupList {
   conflictGroupTotal: number;
   orderNumberFieldConfigured: boolean;
   groups: BroadcastImportGroupSummary[];
+}
+
+export interface BroadcastImportGroupFieldConfirmationDetails {
+  headers: string[];
+  candidates: string[];
+  configuredGroupField: string | null;
+  originalFileName: string;
+}
+
+export type BroadcastGroupRuleCandidateStatus =
+  | 'new'
+  | 'configured'
+  | 'needs_repair'
+  | 'conflict'
+  | 'invalid';
+
+export interface BroadcastGroupRuleCandidateItem {
+  groupKey: string;
+  customerName: string;
+  rawRowCount: number;
+  status: BroadcastGroupRuleCandidateStatus;
+  reason: string | null;
+  existingRuleIds: number[];
+  existingRules: BroadcastGroupRuleSummary[];
+  currentMatchedRule: BroadcastGroupRuleSummary | null;
+  currentTargetConversationId?: string | null;
+  currentTargetConversationName: string | null;
+  currentMatchType: BroadcastGroupMatchType | null;
+}
+
+export interface BroadcastGroupRuleCandidateList {
+  importBatchId: number;
+  groupFieldUsed: string;
+  groupFieldSource: BroadcastImportGroupFieldSource;
+  rawRowTotal: number;
+  uniqueCustomerTotal: number;
+  stats: {
+    newCount: number;
+    configuredCount: number;
+    needsRepairCount: number;
+    conflictCount: number;
+    invalidCount: number;
+  };
+  items: BroadcastGroupRuleCandidateItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
+export interface BroadcastBulkAssignResultItem {
+  groupKey: string;
+  customerName: string;
+  ruleId: number;
+  targetConversationId: string;
+  targetConversationName: string;
+}
+
+export interface BroadcastBulkAssignResult {
+  createdCount: number;
+  groupFieldUsed: string;
+  groupFieldSource: BroadcastImportGroupFieldSource;
+  items: BroadcastBulkAssignResultItem[];
 }
 
 export interface BroadcastImportFilters {

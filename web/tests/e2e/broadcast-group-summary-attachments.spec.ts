@@ -414,7 +414,7 @@ test.describe('broadcast group summary and attachments', () => {
     await page
       .locator('[data-testid="broadcast-import-table"] tbody tr')
       .first()
-      .getByRole('button')
+      .getByRole('button', { name: '展开' })
       .click();
     await expect(page.locator('body')).toContainText('WB-001');
 
