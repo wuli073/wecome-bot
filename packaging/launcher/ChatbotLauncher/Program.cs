@@ -18,6 +18,12 @@ internal static class Program
             var installRoot = Path.GetFullPath(AppContext.BaseDirectory);
             var config = LauncherConfig.LoadFromFile(Path.Combine(installRoot, "launcher.json"));
             var layout = LauncherInstallationLayout.CreateDefault(installRoot);
+            var vcRuntime = VcRuntimeLaunchPolicy.CreateDefault(new DefaultLauncherFileSystem(), new DefaultLauncherClock())
+                .EnsureAvailable(layout);
+            if (vcRuntime.Status != VcRuntimeCheckStatus.Ready)
+            {
+                throw new LauncherUserFacingException(vcRuntime.Message);
+            }
             var manager = LauncherProcessManager.CreateDefault(config, layout);
             manager.StartAsync().GetAwaiter().GetResult();
             var trayController = new TrayController(manager);
@@ -361,4 +367,42 @@ public static class LauncherText
 
     public static string DiagnosticsExported(string path) =>
         IsChinese ? $"诊断包已导出：{path}" : $"Diagnostics exported: {path}";
+
+    public static string VcRuntimeMissingForInstalledFlow() =>
+        IsChinese
+            ? "检测到缺少 VC++ 2015-2022 x64 运行库。常规安装场景应由安装程序负责安装该前置条件，请重新运行 Setup。"
+            : "VC++ 2015-2022 x64 runtime is missing. For normal installed deployments, rerun Setup so it can install the prerequisite.";
+
+    public static string VcRuntimeInstallerMissing() =>
+        IsChinese
+            ? "便携版缺少 prerequisites\\vc_redist.x64.exe，无法执行一次性前置安装。"
+            : "Portable fallback cannot continue because prerequisites\\vc_redist.x64.exe is missing.";
+
+    public static string VcRuntimePortablePrompt() =>
+        IsChinese
+            ? "检测到缺少 VC++ 运行库。是否立即以管理员权限安装 prerequisites\\vc_redist.x64.exe？此入口仅用于便携版的一次性恢复。"
+            : "The VC++ runtime is missing. Install prerequisites\\vc_redist.x64.exe now with elevation? This launcher entrypoint is only a one-time Portable fallback.";
+
+    public static string VcRuntimePortableDeclined() =>
+        IsChinese
+            ? "你已取消本次便携版 VC++ 前置安装请求。启动器不会在每次启动时重复请求提升权限。"
+            : "You declined the Portable VC++ prerequisite flow. The launcher will not request elevation again on every startup.";
+
+    public static string VcRuntimeInstalled() =>
+        IsChinese ? "VC++ 运行库安装成功。" : "VC++ runtime installed successfully.";
+
+    public static string VcRuntimeUacCancelled() =>
+        IsChinese
+            ? "已取消 VC++ 运行库安装的 UAC 提升请求。"
+            : "VC++ runtime installation was cancelled at the UAC prompt.";
+
+    public static string VcRuntimeInstallFailed(int exitCode) =>
+        IsChinese
+            ? $"VC++ 运行库安装失败，退出码 {exitCode}。"
+            : $"VC++ runtime installation failed with exit code {exitCode}.";
+
+    public static string VcRuntimeRetryBlocked(VcRuntimeCheckStatus previousStatus) =>
+        IsChinese
+            ? $"之前的便携版 VC++ 前置安装尝试状态为 {previousStatus}。启动器不会在每次启动时重复请求提升权限，请手动修复后重试。"
+            : $"A previous Portable VC++ prerequisite attempt ended with {previousStatus}. The launcher will not request elevation again on every startup.";
 }
