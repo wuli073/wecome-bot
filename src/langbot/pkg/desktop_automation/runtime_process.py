@@ -33,6 +33,9 @@ SpawnRuntimeCallable = Callable[..., Awaitable[Any]]
 _OFFICIAL_RUNTIME_EXE_NAME = 'LangBot Desktop RPA Runtime.exe'
 _OFFICIAL_RUNTIME_BUILD_DIR_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$')
 _PACKAGED_RUNTIME_RELATIVE_PATH = Path('runtime') / 'desktop-rpa' / _OFFICIAL_RUNTIME_EXE_NAME
+_DETERMINISTIC_SOURCE_RUNTIME_RELATIVE_PATH = (
+    Path('apps') / 'desktop-rpa-runtime' / 'dist-phase2-official' / 'win-dir' / 'win-unpacked' / _OFFICIAL_RUNTIME_EXE_NAME
+)
 
 
 @dataclass(frozen=True)
@@ -69,8 +72,21 @@ def _official_runtime_root(root: Path) -> Path:
     return root / 'apps' / 'desktop-rpa-runtime' / 'dist-phase2-official'
 
 
+def _deterministic_source_runtime_executable(root: Path) -> Path:
+    return root / _DETERMINISTIC_SOURCE_RUNTIME_RELATIVE_PATH
+
+
 def _packaged_runtime_executable(root: Path) -> Path:
     return root / _PACKAGED_RUNTIME_RELATIVE_PATH
+
+
+def _is_under_runtime_output_root(candidate: Path, root: Path) -> bool:
+    official_root = _official_runtime_root(root).resolve(strict=False)
+    try:
+        candidate.resolve(strict=False).relative_to(official_root)
+    except ValueError:
+        return False
+    return True
 
 
 def _normalize_runtime_executable_candidate(pathlike: str | Path | None) -> Path | None:
@@ -104,6 +120,8 @@ def _is_valid_runtime_executable_path(candidate: Path, root: Path) -> bool:
     normalized = _normalize_path(candidate)
     if normalized is None:
         return False
+    if normalized == _deterministic_source_runtime_executable(root).resolve(strict=False):
+        return True
     if normalized.name != _OFFICIAL_RUNTIME_EXE_NAME:
         return False
     if normalized.parent.name != 'win-unpacked':
@@ -137,6 +155,14 @@ def list_runtime_candidates(*, repo_root=None) -> list[RuntimeCandidate]:
         return [
             RuntimeCandidate(
                 executable_path=packaged_executable,
+                parsed_timestamp=datetime.datetime.fromtimestamp(0, tz=datetime.timezone.utc),
+            )
+        ]
+    deterministic_runtime = _deterministic_source_runtime_executable(root).resolve(strict=False)
+    if deterministic_runtime.exists():
+        return [
+            RuntimeCandidate(
+                executable_path=deterministic_runtime,
                 parsed_timestamp=datetime.datetime.fromtimestamp(0, tz=datetime.timezone.utc),
             )
         ]
@@ -180,7 +206,11 @@ def resolve_runtime_executable_path(*, configured: str = '', repo_root=None):
             if _is_valid_packaged_runtime_executable_path(configured_candidate, root):
                 return configured_candidate
         elif configured_candidate.exists():
-            return configured_candidate
+            deterministic_candidate = _deterministic_source_runtime_executable(root).resolve(strict=False)
+            if configured_candidate == deterministic_candidate:
+                return configured_candidate
+            if not _is_under_runtime_output_root(configured_candidate, root):
+                return configured_candidate
 
     if runtime_paths.is_packaged_mode():
         packaged_candidate = _normalize_runtime_executable_candidate(
@@ -558,6 +588,8 @@ class DesktopRuntimeProcessManager:
 
         if runtime_paths.is_packaged_mode():
             return _is_valid_packaged_runtime_executable_path(executable_path, self.runtime_root)
+        if executable_path == _deterministic_source_runtime_executable(self.runtime_root).resolve(strict=False):
+            return True
 
         if executable_path.name != _OFFICIAL_RUNTIME_EXE_NAME:
             return False

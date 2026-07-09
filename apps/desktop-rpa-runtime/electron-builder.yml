@@ -3,7 +3,7 @@ productName: LangBot Desktop RPA Runtime
 files:
   - out/**
 directories:
-  output: dist
+  output: dist-phase2-official/release
 asar: true
 asarUnpack:
   - node_modules/@hurdlegroup/robotjs/**

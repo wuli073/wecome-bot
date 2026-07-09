@@ -183,6 +183,21 @@ def _write_official_runtime(root: Path, build_dir: str) -> Path:
     return executable
 
 
+def _write_deterministic_runtime(root: Path) -> Path:
+    executable = (
+        root
+        / 'apps'
+        / 'desktop-rpa-runtime'
+        / 'dist-phase2-official'
+        / 'win-dir'
+        / 'win-unpacked'
+        / 'LangBot Desktop RPA Runtime.exe'
+    )
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_text('win-dir', encoding='utf-8')
+    return executable
+
+
 def test_defaults_keep_runtime_configuration_in_phase2():
     config = apply_local_desktop_automation_defaults(
         {
@@ -228,6 +243,30 @@ def test_runtime_executable_resolution_prefers_latest_official_packaged_runtime(
         assert resolved == newer_executable
         assert resolved != middle_executable
         assert resolved != oldest_executable
+
+
+def test_runtime_executable_resolution_prefers_deterministic_source_runtime_over_timestamped_builds():
+    with TemporaryDirectory(dir=r'C:\Users\33031\Desktop\bot\.tmp-pytest') as temp_dir:
+        tmp_path = Path(temp_dir)
+        deterministic = _write_deterministic_runtime(tmp_path)
+        _write_official_runtime(tmp_path, '2026-06-30T04-24-26-368Z')
+
+        resolved = resolve_runtime_executable_path(configured='', repo_root=tmp_path)
+
+        assert resolved == deterministic
+
+
+def test_runtime_executable_resolution_accepts_configured_custom_runtime_outside_official_output_root():
+    with TemporaryDirectory(dir=r'C:\Users\33031\Desktop\bot\.tmp-pytest') as temp_dir:
+        tmp_path = Path(temp_dir)
+        custom_runtime = tmp_path / 'custom-runtime' / 'LangBot Desktop RPA Runtime.exe'
+        custom_runtime.parent.mkdir(parents=True, exist_ok=True)
+        custom_runtime.write_text('custom', encoding='utf-8')
+        _write_official_runtime(tmp_path, '2026-06-30T04-24-26-368Z')
+
+        resolved = resolve_runtime_executable_path(configured=str(custom_runtime), repo_root=tmp_path)
+
+        assert resolved == custom_runtime
 
 
 def test_list_runtime_candidates_sorts_by_parsed_utc_timestamp_descending():
@@ -345,6 +384,23 @@ def test_runtime_executable_resolution_skips_legacy_official_root_win_unpacked_p
 
         assert resolved == expected
         assert resolved != legacy
+
+
+def test_packaged_runtime_resolution_uses_only_fixed_packaged_path(monkeypatch):
+    with TemporaryDirectory(dir=r'C:\Users\33031\Desktop\bot\.tmp-pytest') as temp_dir:
+        tmp_path = Path(temp_dir)
+        packaged_runtime = tmp_path / 'runtime' / 'desktop-rpa' / 'LangBot Desktop RPA Runtime.exe'
+        packaged_runtime.parent.mkdir(parents=True, exist_ok=True)
+        packaged_runtime.write_text('packaged', encoding='utf-8')
+        _write_official_runtime(tmp_path, '2026-06-30T04-24-26-368Z')
+        monkeypatch.setenv('CHATBOT_PACKAGED', '1')
+        monkeypatch.setenv('CHATBOT_INSTALL_ROOT', str(tmp_path))
+
+        resolved = resolve_runtime_executable_path(configured='', repo_root=tmp_path)
+        candidates = list_runtime_candidates(repo_root=tmp_path)
+
+        assert resolved == packaged_runtime
+        assert [candidate.executable_path for candidate in candidates] == [packaged_runtime]
 
 
 async def test_runtime_process_manager_starts_and_returns_runtime_info(monkeypatch):

@@ -14,7 +14,8 @@
     "test": "tsx --test tests/**/*.test.ts",
     "build": "npm run typecheck && electron-vite build",
     "rebuild:native": "electron-builder install-app-deps",
-    "package:win": "node ./scripts/package-win.mjs"
+    "package:win": "node ./scripts/package-win.mjs",
+    "package:win:dir": "node ./scripts/package-win.mjs --dir-only"
   },
   "dependencies": {
     "@hurdlegroup/robotjs": "0.12.3",

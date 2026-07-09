@@ -3,18 +3,45 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
+export const PACKAGED_EXE_NAME = 'LangBot Desktop RPA Runtime.exe'
+export const NATIVE_REBUILD_PREREQUISITES = [
+  '@hurdlegroup/robotjs',
+  'active-win',
+  'node-window-manager',
+]
+
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(scriptDir, '..')
-const outputRootDir = resolve(projectRoot, 'dist-phase2-official')
-const buildStamp = new Date().toISOString().replace(/[:.]/g, '-')
-const outputDir = resolve(outputRootDir, buildStamp)
-const packagedExePath = join(outputRootDir, 'win-unpacked', 'LangBot Desktop RPA Runtime.exe')
+const officialOutputRoot = resolve(projectRoot, 'dist-phase2-official')
 const npmCommand = process.platform === 'win32' ? resolveExecutable('npm.cmd') : 'npm'
 const electronBuilderCommand = process.platform === 'win32'
   ? resolve(projectRoot, 'node_modules', '.bin', 'electron-builder.cmd')
   : resolve(projectRoot, 'node_modules', '.bin', 'electron-builder')
 
-function resolveExecutable(command) {
+export function getDeterministicDirOutputDir(root = projectRoot) {
+  return resolve(root, 'dist-phase2-official', 'win-dir')
+}
+
+export function getDeterministicWinUnpackedDir(root = projectRoot) {
+  return join(getDeterministicDirOutputDir(root), 'win-unpacked')
+}
+
+export function getDeterministicPackagedExePath(root = projectRoot) {
+  return join(getDeterministicWinUnpackedDir(root), PACKAGED_EXE_NAME)
+}
+
+export function getReleaseOutputDir(root = projectRoot) {
+  return resolve(root, 'dist-phase2-official', 'release')
+}
+
+export function getElectronBuilderArgs(mode = 'release', root = projectRoot) {
+  if (mode === 'dir') {
+    return ['--win', 'dir', `--config.directories.output=${getDeterministicDirOutputDir(root)}`]
+  }
+  return ['--win', 'portable', 'nsis', `--config.directories.output=${getReleaseOutputDir(root)}`]
+}
+
+export function resolveExecutable(command) {
   const result = execFileSync('where.exe', [command], {
     cwd: projectRoot,
     encoding: 'utf8',
@@ -56,7 +83,7 @@ function powershellJson(script) {
   return Array.isArray(parsed) ? parsed : [parsed]
 }
 
-function listLockingProcesses() {
+function listLockingProcesses(packagedExePath) {
   const escapedTarget = packagedExePath.replace(/'/g, "''")
   return powershellJson([
     `$target = '${escapedTarget}'`,
@@ -98,19 +125,6 @@ function closeRuntimeProcesses(processes) {
   )
 }
 
-function ensureOutputDirReady() {
-  mkdirSync(outputRootDir, { recursive: true })
-  const lockingProcesses = listLockingProcesses()
-  if (lockingProcesses.length) closeRuntimeProcesses(lockingProcesses)
-
-  const remainingLocks = listLockingProcesses()
-  if (remainingLocks.length) {
-    throw new Error(`OUTPUT_DIRECTORY_IN_USE ${JSON.stringify(remainingLocks)}`)
-  }
-
-  removeWithRetries(outputDir)
-}
-
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
@@ -132,15 +146,54 @@ function removeWithRetries(targetPath, retries = 10, waitMs = 1500) {
   }
 }
 
-run(npmCommand, ['run', 'build'])
-ensureOutputDirReady()
-run(
-  electronBuilderCommand,
-  ['--win', 'portable', 'nsis', `--config.directories.output=${outputDir}`],
-  {
-    env: {
-      ...process.env,
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false',
+function ensureOutputDirReady(outputDir, packagedExePath = null) {
+  mkdirSync(officialOutputRoot, { recursive: true })
+  if (packagedExePath) {
+    const lockingProcesses = listLockingProcesses(packagedExePath)
+    if (lockingProcesses.length) closeRuntimeProcesses(lockingProcesses)
+
+    const remainingLocks = listLockingProcesses(packagedExePath)
+    if (remainingLocks.length) {
+      throw new Error(`OUTPUT_DIRECTORY_IN_USE ${JSON.stringify(remainingLocks)}`)
+    }
+  }
+
+  removeWithRetries(outputDir)
+}
+
+function logNativeRebuildExpectations() {
+  console.log(
+    `[package-win] expected native rebuild prerequisites: ${NATIVE_REBUILD_PREREQUISITES.join(', ')}. `
+    + 'Run `npm run rebuild:native` before packaging after dependency or Electron ABI changes.',
+  )
+}
+
+export function packageWindowsRuntime(mode = 'release') {
+  const builderArgs = getElectronBuilderArgs(mode, projectRoot)
+  const outputDir = mode === 'dir' ? getDeterministicDirOutputDir(projectRoot) : getReleaseOutputDir(projectRoot)
+  const packagedExePath = mode === 'dir' ? getDeterministicPackagedExePath(projectRoot) : null
+
+  logNativeRebuildExpectations()
+  run(npmCommand, ['run', 'build'])
+  ensureOutputDirReady(outputDir, packagedExePath)
+  run(
+    electronBuilderCommand,
+    builderArgs,
+    {
+      env: {
+        ...process.env,
+        CSC_IDENTITY_AUTO_DISCOVERY: 'false',
+      },
     },
-  },
-)
+  )
+}
+
+function parseMode(argv) {
+  return argv.includes('--dir-only') ? 'dir' : 'release'
+}
+
+const entrypointPath = fileURLToPath(import.meta.url)
+const invokedPath = process.argv[1] ? resolve(process.argv[1]) : ''
+if (invokedPath === entrypointPath) {
+  packageWindowsRuntime(parseMode(process.argv.slice(2)))
+}
