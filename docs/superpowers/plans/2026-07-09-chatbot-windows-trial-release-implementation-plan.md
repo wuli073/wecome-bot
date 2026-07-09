@@ -95,17 +95,17 @@
 
 1. Task 1 records the baseline and freezes investigation outputs that later tasks cite.
 2. Tasks 2-3 establish packaged path roots and packaged no-install behavior; every later runtime/launcher/build task depends on these two behavioral switches.
-3. Tasks 4-6 define the releasable connector content, lock files, and pinned Python runtime sources; without them there is nothing deterministic to assemble.
+3. Task 4 defines the releasable connector content; Task 5 creates all release lock files; Task 6 pins Python runtime sources.
 4. Tasks 7-10 package the backend, connector, frontend, and RPA runtime layers into stable layouts that the launcher can target.
 5. Tasks 11-13 add the launcher and prerequisite handling on top of already-stable packaged layers.
-6. Tasks 14-18 assemble, scan, install, verify, and document the final release.
+6. Task 14 performs baseline build + Portable directory assembly only; Task 15 adds scan/manifest/SHA/build-report; Task 16 adds Inno Setup; Task 17 performs complete end-to-end validation; Task 18 documents the finished release.
 
 ## External inputs and where they first become mandatory
 
 | External input | First required task | Why it is external |
 | --- | --- | --- |
 | Pinned Windows x64 portable CPython artifact URL + SHA-256 | Task 6 | Must be selected from an upstream provider and recorded in `runtime-manifest.json` |
-| `vc_redist.x64.exe` path + SHA-256 | Task 13 | The repo must not vendor the binary in Git |
+| `vc_redist.x64.exe` path + SHA-256 | Task 13 | Setup is the primary prerequisite executor; Launcher only uses it for Portable fallback. The repo must not vendor the binary in Git |
 | .NET 8 SDK | Task 11 | Required to restore/build/publish the launcher |
 | Inno Setup 6 | Task 16 | Required to build the installer |
 | Windows Sandbox / fresh VM | Task 17 | Required for clean-machine validation that cannot be proven from the dev machine alone |
@@ -114,9 +114,9 @@
 
 - **Layer 1: unit behavior** — packaged paths, dependency gating, connector runtime isolation, launcher config parsing, diagnostics redaction.
 - **Layer 2: component build** — frontend build, RPA package dir build, launcher build/test/publish.
-- **Layer 3: portable assembly** — `scripts/verify-trial-release.ps1`.
-- **Layer 4: installer assembly** — `scripts/test-trial-install.ps1`.
-- **Layer 5: clean-machine / Windows Sandbox** — `packaging/sandbox/ChatbotTrial.wsb` plus the manual checklist.
+- **Layer 3: baseline Portable directory assembly** — Task 14 `scripts/build-trial-release.ps1 -PortableOnly`.
+- **Layer 4: scanned Portable artifact + installer assembly** — Task 15 scan/manifest/SHA/build-report, then Task 16 Inno Setup.
+- **Layer 5: complete end-to-end validation** — Task 17 `scripts/verify-trial-release.ps1`, `scripts/test-trial-install.ps1`, and `packaging/sandbox/ChatbotTrial.wsb`.
 
 ---
 
@@ -164,6 +164,16 @@ This task must come first because later tasks need explicit evidence for current
   - frontend path resolution behavior
   - runtime dependency installation behavior
   - desktop automation runtime status API path
+- [ ] Add an interface investigation table named `Packaged startup interface contract` with these rows and fill every column from current code, not from assumptions:
+
+  | Interface | Current code location | Current route / mechanism | Auth requirement | Packaged decision input | Later tasks that must cite this row |
+  | --- | --- | --- | --- | --- | --- |
+  | backend health | exact file + line range found in Task 1 | exact path such as `/healthz` after verification | auth or none | launcher health probe path | Tasks 7, 11, 12, 14, 17 |
+  | Desktop RPA runtime status | exact file + line range found in Task 1 | exact path such as `/api/v1/desktop-automation/runtime/status` after verification | user token / packaged bypass / other verified mode | launcher observes backend-owned RPA only | Tasks 7, 10, 12, 17 |
+  | graceful shutdown | exact file + line range found in Task 1 | control file / HTTP endpoint / signal path after verification | local-only / owner-only rule | launcher stop/restart flow | Tasks 7, 12, 17 |
+  | packaged host/port source | exact file + line range found in Task 1 | config/env/CLI precedence after verification | maintainer `launcher.json` | Tasks 7, 11, 12, 14, 17 |
+
+- [ ] Mark every later task that touches health, runtime status, graceful shutdown, or host/port as blocked until it cites the matching Task 1 table row.
 - [ ] Record connector findings:
   - current `%LOCALAPPDATA%\WecomeBot\connectors` assumption
   - `sys.executable` usage
@@ -356,7 +366,6 @@ This task must happen before lock export, connector packaging, and build scripti
 - Modify: `C:\Users\33031\Desktop\bot\vendor\wechat_decrypt\connector_cli.py`
 - Modify: `C:\Users\33031\Desktop\bot\vendor\wechat_decrypt\connector_runtime.py`
 - Create: `C:\Users\33031\Desktop\bot\vendor\wechat_decrypt\requirements.txt`
-- Create: `C:\Users\33031\Desktop\bot\vendor\wechat_decrypt\requirements.lock.txt`
 - Create: `C:\Users\33031\Desktop\bot\vendor\wechat_decrypt\source-manifest.json`
 - Create: `C:\Users\33031\Desktop\bot\vendor\wechat_decrypt\README.release.md`
 - Create: `C:\Users\33031\Desktop\bot\tests\vendor_wechat_decrypt\test_runtime_layout.py`
@@ -365,22 +374,24 @@ This task must happen before lock export, connector packaging, and build scripti
 
 ### Implementation steps
 
-- [ ] Perform a recursive dependency audit from:
-  - `connector_cli.py`
-  - `mcp_http_server.py`
-  - `mcp_wxwork_http_server.py`
+- [ ] Read the Task 1 `Packaged startup interface contract` before naming Connector MCP entrypoints.
+- [ ] Perform a recursive dependency audit from the actual product entrypoints confirmed by Task 1. The expected current stdio MCP entrypoint candidates are:
+  - `mcp_server.py`
+  - `mcp_wxwork_server.py`
   - `wxwork_message_monitor.py`
+  - `connector_cli.py`
   - `find_all_keys_windows.py`
   - `find_wxwork_keys.py`
   - `decrypt_db.py`
   - `decrypt_wxwork_db.py`
+- [ ] If Task 1 confirms different product entrypoints, update `source-manifest.json` to cite the exact finding and use those files; do not assume HTTP-suffixed alternative server filenames are product entrypoints without evidence.
 - [ ] Record dynamic imports, subprocess calls, config files, DLL/runtime assumptions, and required ancillary modules in `source-manifest.json`.
 - [ ] Add `README.release.md` that documents:
   - what is included
   - what is excluded
   - that desktop backup is audit-only
   - how `source-manifest.json` should be maintained
-- [ ] Add `requirements.txt` listing direct runtime dependencies only.
+- [ ] Add `requirements.txt` listing direct runtime dependencies only. Do not create or modify `vendor\wechat_decrypt\requirements.lock.txt` in Task 4; all lock files are created by Task 5.
 - [ ] Add tests that assert connector runtime layout stays self-contained and does not expose secret values or relative runtime-dir acceptance regressions.
 - [ ] Update `.gitignore` only if new runtime-output patterns are discovered during the audit.
 
@@ -388,6 +399,7 @@ This task must happen before lock export, connector packaging, and build scripti
 
 - Do not sync files directly from a desktop backup into final packaging outputs.
 - Do not add optional toolbox files unless dependency analysis proves they are required.
+- Do not create `requirements.lock.txt`; Task 5 owns every release lock file.
 - Do not generate release ZIPs yet.
 
 ### Tests and verification
@@ -401,7 +413,7 @@ This task must happen before lock export, connector packaging, and build scripti
 
 ### Acceptance criteria
 
-- `source-manifest.json` lists required runtime files and excluded files.
+- `source-manifest.json` lists required runtime files and excluded files, and cites the Task 1-confirmed MCP entrypoints.
 - Desktop backup paths are not part of the releasable tree.
 - Connector tests still pass with the narrowed source model.
 
@@ -430,6 +442,7 @@ This task must precede Python runtime assembly because backend and connector run
 - Create: `C:\Users\33031\Desktop\bot\packaging\server\requirements.lock.txt`
 - Modify: `C:\Users\33031\Desktop\bot\vendor\wechat_decrypt\requirements.lock.txt`
 - Create: `C:\Users\33031\Desktop\bot\docs\release\dependency-lock-notes.md`
+- Create: `C:\Users\33031\Desktop\bot\packaging\build\verify-dependency-locks.py`
 
 ### Implementation steps
 
@@ -438,6 +451,7 @@ This task must precede Python runtime assembly because backend and connector run
 - [ ] Generate or refresh `vendor\wechat_decrypt\requirements.lock.txt` from the connector direct requirements.
 - [ ] Ensure lock generation includes exact versions and hashes where the export/install flow supports them.
 - [ ] Document the export command and validation rules in `dependency-lock-notes.md`.
+- [ ] Create `packaging\build\verify-dependency-locks.py` as the dedicated Windows PowerShell-compatible Python verifier for the two lock files.
 - [ ] Add a verification step that packaged runtimes must not contain:
   - `pytest`
   - `ruff`
@@ -453,7 +467,29 @@ This task must precede Python runtime assembly because backend and connector run
 ### Tests and verification
 
 - `uv sync --frozen --dev`
-- `uv run python - <<'PY'\nfrom pathlib import Path\nfor path in [Path(r'C:\\Users\\33031\\Desktop\\bot\\packaging\\server\\requirements.lock.txt'), Path(r'C:\\Users\\33031\\Desktop\\bot\\vendor\\wechat_decrypt\\requirements.lock.txt')]:\n    assert path.exists(), path\n    text = path.read_text(encoding='utf-8')\n    for forbidden in ['pytest', 'ruff', 'mypy', 'pre-commit', 'uv']:\n        assert forbidden not in text.lower(), (path, forbidden)\nprint('ok')\nPY`
+- `uv run python packaging\build\verify-dependency-locks.py`
+
+`packaging\build\verify-dependency-locks.py` must be executable from Windows PowerShell and must validate exactly:
+
+```python
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+LOCKS = [
+    ROOT / 'packaging' / 'server' / 'requirements.lock.txt',
+    ROOT / 'vendor' / 'wechat_decrypt' / 'requirements.lock.txt',
+]
+FORBIDDEN = {'pytest', 'ruff', 'mypy', 'pre-commit', 'uv'}
+
+for lock_path in LOCKS:
+    if not lock_path.exists():
+        raise SystemExit(f'missing lock file: {lock_path}')
+    text = lock_path.read_text(encoding='utf-8').lower()
+    for package_name in FORBIDDEN:
+        if package_name in text:
+            raise SystemExit(f'forbidden package {package_name} found in {lock_path}')
+print('dependency locks verified')
+```
 
 ### Expected result
 
@@ -489,6 +525,7 @@ This task must precede backend/connector runtime assembly and the unified build 
 
 - Create: `C:\Users\33031\Desktop\bot\packaging\runtime-manifest.json`
 - Create: `C:\Users\33031\Desktop\bot\packaging\runtime-cache-notes.md`
+- Create: `C:\Users\33031\Desktop\bot\packaging\build\verify-runtime-manifest.py`
 
 ### Implementation steps
 
@@ -503,6 +540,7 @@ This task must precede backend/connector runtime assembly and the unified build 
   - whether `pip` is present upstream
   - `site-packages` enablement approach
   - license file source
+- [ ] Create `packaging\build\verify-runtime-manifest.py` as the dedicated Windows PowerShell-compatible Python verifier for `runtime-manifest.json`.
 - [ ] Define cache directory behavior for online and `-Offline` builds.
 - [ ] Document manifest validation and cache population rules in `runtime-cache-notes.md`.
 - [ ] If a provider cannot be selected yet, block execution here until the exact artifact URL + SHA-256 are known; do not invent them.
@@ -514,7 +552,28 @@ This task must precede backend/connector runtime assembly and the unified build 
 
 ### Tests and verification
 
-- `uv run python - <<'PY'\nimport json\nfrom pathlib import Path\npath = Path(r'C:\\Users\\33031\\Desktop\\bot\\packaging\\runtime-manifest.json')\ndata = json.loads(path.read_text(encoding='utf-8'))\nfor role in ['server', 'connector']:\n    entry = data[role]\n    for key in ['provider', 'version', 'url', 'sha256', 'archiveType', 'artifactName']:\n        assert entry.get(key), (role, key)\n    assert entry['sha256'] != 'latest'\nprint('ok')\nPY`
+- `uv run python packaging\build\verify-runtime-manifest.py`
+
+`packaging\build\verify-runtime-manifest.py` must be executable from Windows PowerShell and must validate exactly:
+
+```python
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+MANIFEST = ROOT / 'packaging' / 'runtime-manifest.json'
+data = json.loads(MANIFEST.read_text(encoding='utf-8'))
+for role in ('server', 'connector'):
+    entry = data.get(role) or {}
+    for key in ('provider', 'version', 'url', 'sha256', 'archiveType', 'artifactName'):
+        if not entry.get(key):
+            raise SystemExit(f'{role}.{key} is required')
+    if str(entry['url']).lower().endswith('/latest') or 'latest' in str(entry['url']).lower():
+        raise SystemExit(f'{role}.url must not be floating/latest')
+    if str(entry['sha256']).lower() in {'', 'latest'} or len(str(entry['sha256'])) != 64:
+        raise SystemExit(f'{role}.sha256 must be a fixed 64-character SHA-256')
+print('runtime manifest verified')
+```
 
 ### Expected result
 
@@ -553,19 +612,20 @@ This task must happen before launcher implementation because the launcher needs 
 - Modify: `C:\Users\33031\Desktop\bot\src\langbot\pkg\desktop_automation\runtime_process.py`
 - Modify: `C:\Users\33031\Desktop\bot\src\langbot\pkg\desktop_automation\service.py`
 - Modify: `C:\Users\33031\Desktop\bot\src\langbot\pkg\api\http\controller\groups\bot_database_mode.py`
-- Create: `C:\Users\33031\Desktop\bot\tests\unit_tests\core\test_packaged_boot.py`
+- Modify: `C:\Users\33031\Desktop\bot\tests\unit_tests\core\test_packaged_boot.py`
 - Modify: `C:\Users\33031\Desktop\bot\tests\unit_tests\desktop_automation\test_service.py`
 - Modify: `C:\Users\33031\Desktop\bot\tests\unit_tests\desktop_automation\test_api.py`
 
 ### Implementation steps
 
+- [ ] Cite the Task 1 `Packaged startup interface contract` rows for backend health, runtime status, graceful shutdown, and packaged host/port source before changing startup code.
 - [ ] Create a packaged backend entrypoint that:
   - sets `CHATBOT_PACKAGED=1`
   - wires shared resource root environment variables
   - sets data/log/runtime roots under `%LOCALAPPDATA%\Chatbot`
   - starts the existing LangBot app via explicit host/port arguments or environment variables
-- [ ] Ensure packaged host/port comes only from launcher configuration input and always binds `127.0.0.1`.
-- [ ] Keep `/healthz` and `/api/v1/desktop-automation/runtime/status` as the launcher observation surfaces.
+- [ ] Ensure packaged host/port comes only from the Task 1-confirmed launcher configuration input and always binds `127.0.0.1`.
+- [ ] Keep the Task 1-confirmed health and runtime-status routes as the launcher observation surfaces; do not hard-code paths in this task without citing the investigation table.
 - [ ] Make Desktop RPA runtime path injectable via `CHATBOT_RPA_RUNTIME_PATH` while keeping backend as the only lifecycle owner.
 - [ ] Add graceful shutdown handling so launcher stop requests can wait for backend-owned runtime teardown.
 - [ ] Add focused tests for packaged backend env construction and runtime-status reachability assumptions.
@@ -682,13 +742,15 @@ This task must precede build scripting and launcher browser-opening logic becaus
 
 ### Files
 
-- Modify: `C:\Users\33031\Desktop\bot\web\package.json`
+- Modify only if investigation proves the existing release build command is missing: `C:\Users\33031\Desktop\bot\web\package.json`
 - Create: `C:\Users\33031\Desktop\bot\packaging\web\copy-web-dist.ps1`
 - Create: `C:\Users\33031\Desktop\bot\tests\unit_tests\utils\test_packaged_web_root.py`
 
 ### Implementation steps
 
+- [ ] Read `C:\Users\33031\Desktop\bot\web\package.json` first and record whether an existing production build command already exists.
 - [ ] Preserve existing frontend dev scripts.
+- [ ] Modify `web\package.json` only when the investigation proves no usable release/production build command exists. If the existing `build` script is sufficient, leave `web\package.json` unchanged and make build orchestration call that existing script.
 - [ ] Add release-oriented copy/verification logic that stages `web\dist` into `resources\web\dist`.
 - [ ] Define how the build script will run locked install + production build.
 - [ ] Ensure packaged backend resource lookup supports SPA fallback for direct route refreshes.
@@ -700,6 +762,7 @@ This task must precede build scripting and launcher browser-opening logic becaus
 ### Forbidden changes
 
 - Do not change the dev server model in `scripts/start-local.ps1`.
+- Do not modify `web\package.json` solely to rename or duplicate an existing production build command.
 - Do not introduce runtime use of port `3000` in packaged mode.
 
 ### Tests and verification
@@ -940,7 +1003,7 @@ The launcher can supervise the packaged backend, observe backend-managed RPA rea
 
 ### Goal
 
-Handle missing VC++ 2015-2022 x64 runtime as an installer prerequisite flow that may elevate only when necessary, while keeping normal Chatbot installation and launcher startup user-level.
+Handle missing VC++ 2015-2022 x64 runtime with clear responsibility boundaries: Setup is the primary prerequisite executor for normal installed deployments, while Launcher only provides Portable fallback detection and a one-time install entrypoint.
 
 ### Prerequisites
 
@@ -960,14 +1023,15 @@ This task must be isolated from launcher lifecycle and installer assembly becaus
 
 ### Implementation steps
 
-- [ ] Define how the build pipeline stages `vc_redist.x64.exe` under `prerequisites\`.
-- [ ] Implement VC++ runtime detection logic.
-- [ ] Implement one-time prerequisite invocation flow with clear handling for:
+- [ ] Define how the build pipeline stages `vc_redist.x64.exe` under `prerequisites\` for Setup and Portable bundles without committing the binary to Git.
+- [ ] Implement VC++ runtime detection logic that both Setup checks and Launcher Portable fallback can reuse.
+- [ ] Document that Setup is the normal installed-flow prerequisite executor; Launcher must not supersede Setup for ordinary installs.
+- [ ] Implement Launcher Portable fallback as a one-time user-triggered prerequisite invocation flow with clear handling for:
   - missing prerequisite binary
   - UAC cancelled
   - install failed
-- [ ] Ensure launcher does not request UAC on every startup as a retry strategy.
-- [ ] Add tests for probe logic and cancellation/error reporting.
+- [ ] Ensure Launcher records a failed/cancelled Portable fallback attempt and does not request UAC on every startup as a retry strategy.
+- [ ] Add tests for probe logic, Setup-vs-Launcher responsibility, one-time Portable fallback, and cancellation/error reporting.
 
 ### Forbidden changes
 
@@ -987,7 +1051,8 @@ VC++ prerequisite handling is explicit, bounded, and separate from normal launch
 
 - Missing VC++ runtime produces a clear actionable error.
 - UAC cancellation is distinguished from installation failure.
-- Launcher does not repeatedly request elevation after a failed/cancelled prerequisite install.
+- Setup is documented as the primary prerequisite executor for normal installs.
+- Launcher exposes only Portable fallback detection/one-time install and does not repeatedly request elevation after a failed/cancelled prerequisite install.
 
 ### Suggested commit
 
@@ -995,11 +1060,11 @@ VC++ prerequisite handling is explicit, bounded, and separate from normal launch
 
 ---
 
-## Task 14: Implement the unified build script for portable and installer assembly
+## Task 14: Implement baseline build script and Portable directory assembly
 
 ### Goal
 
-Create the single release build entrypoint that orchestrates environment checks, staged builds, runtime assembly, scanning, manifests, ZIP packaging, and installer creation without touching unrelated working-tree content.
+Create the baseline release build entrypoint that performs environment checks, component builds, runtime assembly, and Portable directory assembly only. Sensitive scanning, manifest/SHA/build-report generation, ZIP finalization, Inno Setup, and complete end-to-end validation are intentionally deferred to Tasks 15-17.
 
 ### Prerequisites
 
@@ -1007,83 +1072,88 @@ Create the single release build entrypoint that orchestrates environment checks,
 
 ### Order rationale
 
-This task must come after all lower-level runtime and launcher packaging surfaces exist; otherwise the build script would either invent steps or mix discovery/build logic with core implementation work.
+This task must come after all lower-level runtime and launcher packaging surfaces exist, but before scan/installer/verification integration. Keeping Task 14 Portable-only lets it be independently accepted with `-PortableOnly` before Task 15 and Task 16 add gates that depend on its assembled directory.
 
 ### Files
 
 - Create: `C:\Users\33031\Desktop\bot\scripts\build-trial-release.ps1`
 - Create: `C:\Users\33031\Desktop\bot\packaging\build\BuildContext.psm1`
-- Create: `C:\Users\33031\Desktop\bot\packaging\build\manifest-template.json`
+- Create: `C:\Users\33031\Desktop\bot\packaging\build\portable-layout.json`
 
 ### Implementation steps
 
-- [ ] Implement parameter parsing exactly for:
-  - `-Version`
-  - `-VcRedistPath`
-  - `-OutputRoot`
-  - `-SkipTests`
-  - `-Offline`
-  - `-KeepWorkDirectory`
-  - optional `-AuditWechatDecryptSource`
-- [ ] Split the script into explicit build stages:
+- [ ] Implement the PowerShell parameter block with these exact responsibilities:
+
+  | Parameter | Type | Mandatory in Task 14 | Default | Notes |
+  | --- | --- | --- | --- | --- |
+  | `Version` | `[string]` | yes | none | Release version used in directory names and later artifact names. |
+  | `OutputRoot` | `[string]` | no | `.\build\release` | Root for assembled Portable directory and later artifacts. |
+  | `VcRedistPath` | `[string]` | no when `-PortableOnly`; yes when installer target is enabled in Task 16 | empty string | Task 14 may stage Portable without VC++ installer execution. Task 16 requires this for Setup. |
+  | `SkipTests` | `[switch]` | no | `$false` | Skips component tests only when explicitly supplied. |
+  | `Offline` | `[switch]` | no | `$false` | Uses pre-populated runtime cache and fails if required cached artifacts are missing. |
+  | `KeepWorkDirectory` | `[switch]` | no | `$false` | Keeps temporary build work directories for diagnostics. |
+  | `PortableOnly` | `[switch]` | no | `$false` | Forces Task 14 acceptance path: assemble Portable directory only; skip scan, manifest, ZIP, Inno Setup, and installer verification. |
+  | `AuditWechatDecryptSource` | `[string]` | no | empty string | Audit-only comparison input; never changes packaged source selection. |
+
+- [ ] Split Task 14 script into these build stages only:
   1. environment check
   2. git state capture
-  3. frontend build
+  3. frontend build using the Task 9-confirmed command
   4. server runtime assembly
   5. connector runtime assembly
   6. vendor tree assembly
   7. RPA runtime copy
   8. launcher publish
   9. portable directory assembly
-  10. sensitive scan
-  11. manifest generation
-  12. verify
-  13. ZIP
-  14. Inno Setup
-  15. SHA256SUMS
-  16. build report
+  10. minimal Portable layout sanity check that does not require Task 15 manifest files
 - [ ] Ensure stage logs include durations and stop on first error.
 - [ ] Ensure the script never runs `git clean`, never deletes unrelated directories, and never writes into user `data\`, `runtime\`, or config roots.
+- [ ] Ensure Task 14 exits successfully with `-PortableOnly` only when the Portable directory exists and contains launcher, server runtime, connector runtime, RPA runtime, resources, licenses, and `launcher.json`.
 
 ### Forbidden changes
 
+- Do not add sensitive scanning in Task 14.
+- Do not generate `manifest.json`, `SHA256SUMS.txt`, `build-report.json`, or `build-sensitive-scan.json` in Task 14.
+- Do not create ZIP or Inno Setup installer outputs in Task 14.
 - Do not accept alternate connector source directories for final packaging.
 - Do not use `git add .`, `git clean -fd`, or `git reset --hard`.
 
 ### Tests and verification
 
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-trial-release.ps1 -Version "0.1.0" -VcRedistPath "<actual path>" -SkipTests`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-trial-release.ps1 -Version "0.1.0" -OutputRoot ".\build\release" -PortableOnly -SkipTests`
+- `Test-Path .\build\release\Chatbot-Trial-0.1.0-x64\ChatbotLauncher.exe`
 - `git diff --check`
 
 ### Expected result
 
-There is one canonical build script that assembles the release in deterministic, logged, stage-by-stage fashion.
+There is one baseline build script that can independently assemble the Portable release directory without scan/manifest/installer dependencies.
 
 ### Acceptance criteria
 
-- All required stage names exist in the script.
-- The script supports `-Offline` and `-AuditWechatDecryptSource`.
+- `-PortableOnly` provides a standalone Task 14 acceptance path.
+- No Task 15 scan/manifest/SHA/build-report files are required for Task 14 success.
+- No Task 16 installer files are required for Task 14 success.
 - The script never mutates unrelated workspace state.
 
 ### Suggested commit
 
-`feat(release): add unified trial release build script`
+`feat(release): add portable trial release build script`
 
 ---
 
-## Task 15: Add sensitive-data scanning and integrity manifest outputs
+## Task 15: Add sensitive scanning, manifest, SHA256, build-report, and Portable ZIP finalization
 
 ### Goal
 
-Prevent secrets, user data, desktop backup paths, and build-machine absolute paths from entering the release outputs, and emit structured integrity reports for diagnostics and verification.
+Attach release integrity gates to the Task 14 Portable directory: sensitive-data scanning, manifest generation, SHA256 outputs, build-report generation, launcher key-file validation data, and final Portable ZIP creation.
 
 ### Prerequisites
 
-- Task 14 build script can assemble a portable directory.
+- Task 14 can assemble `build\release\Chatbot-Trial-<version>-x64` with `-PortableOnly`.
 
 ### Order rationale
 
-This task must follow initial assembly and precede installer validation because scan/integrity outputs depend on the assembled release tree and must gate both ZIP and installer publication.
+This task must follow Portable directory assembly and precede installer integration. Inno Setup should consume a scanned and manifest-backed Portable directory rather than packaging unverified files.
 
 ### Files
 
@@ -1094,7 +1164,7 @@ This task must follow initial assembly and precede installer validation because 
 
 ### Implementation steps
 
-- [ ] Implement a structured allowlist-aware sensitive scan that checks for:
+- [ ] Implement a structured allowlist-aware sensitive scan that checks the Task 14 Portable directory for:
   - tokens
   - cookies
   - API keys
@@ -1112,27 +1182,35 @@ This task must follow initial assembly and precede installer validation because 
   - `manifest.json`
   - `SHA256SUMS.txt`
   - `build-report.json`
+- [ ] Generate `Chatbot-Trial-<version>-x64.zip` only after scan, manifest, SHA256, and build-report generation succeed.
 - [ ] Add key-file validation hooks so launcher startup can validate required files against the manifest.
+- [ ] Update `build-trial-release.ps1` so a normal non-`-PortableOnly` run executes Task 14 assembly followed by Task 15 gates, but still skips Inno Setup until Task 16 is implemented.
 
 ### Forbidden changes
 
 - Do not echo full secret values into reports.
 - Do not fail binaries solely on field-name keywords like `token` or `secret` inside source text.
+- Do not invoke Inno Setup in Task 15.
 
 ### Tests and verification
 
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-trial-release.ps1 -Version "0.1.0" -VcRedistPath "<actual path>" -SkipTests`
-- `powershell -NoProfile -Command "Get-Content .\\build\\release\\build-sensitive-scan.json | Select-Object -First 20"`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-trial-release.ps1 -Version "0.1.0" -OutputRoot ".\build\release" -SkipTests`
+- `Test-Path .\build\release\Chatbot-Trial-0.1.0-x64\manifest.json`
+- `Test-Path .\build\release\Chatbot-Trial-0.1.0-x64\build-sensitive-scan.json`
+- `Test-Path .\build\release\Chatbot-Trial-0.1.0-x64\build-report.json`
+- `Test-Path .\build\release\SHA256SUMS.txt`
+- `Test-Path .\build\release\Chatbot-Trial-0.1.0-x64.zip`
 
 ### Expected result
 
-Every assembled release includes integrity artifacts and a structured sensitive-data scan that can fail the build before packaging is distributed.
+Every assembled Portable release is scanned, manifest-backed, hash-listed, report-backed, and zipped before any installer task packages it.
 
 ### Acceptance criteria
 
 - Scan report is structured and redacted.
-- Manifest and SHA256 outputs exist.
+- Manifest, SHA256, and build-report outputs exist before ZIP creation.
 - Desktop backup/build-machine path leakage is checked explicitly.
+- Inno Setup remains out of scope for Task 15.
 
 ### Suggested commit
 
@@ -1140,20 +1218,21 @@ Every assembled release includes integrity artifacts and a structured sensitive-
 
 ---
 
-## Task 16: Add the Inno Setup installer project
+## Task 16: Add the Inno Setup installer project and wire installer build
 
 ### Goal
 
-Create the user-level Chinese installer that installs the packaged release, handles upgrades, adds shortcuts, preserves user data by default, and integrates VC++ prerequisite handling.
+Create the user-level Chinese Inno Setup installer that consumes the Task 15 scanned Portable directory, handles upgrades, adds shortcuts, preserves user data by default, and acts as the primary VC++ prerequisite executor for normal installed deployments.
 
 ### Prerequisites
 
-- Tasks 11-15 are complete.
+- Task 15 produces a scanned Portable directory, manifest outputs, SHA256 outputs, build report, and Portable ZIP.
 - Inno Setup is available locally.
+- `-VcRedistPath` points to the actual `vc_redist.x64.exe` when building installer artifacts.
 
 ### Order rationale
 
-This task must follow launcher/runtime/build-script stabilization because the installer should package already-verified portable outputs instead of embedding unstable assembly logic.
+This task must follow scan/manifest integration because the installer should package already-verified Portable outputs. It must precede Task 17 because end-to-end validation needs both Portable and Setup artifacts.
 
 ### Files
 
@@ -1164,8 +1243,10 @@ This task must follow launcher/runtime/build-script stabilization because the in
 ### Implementation steps
 
 - [ ] Define stable `AppId`, Chinese UI, default install directory, desktop shortcut, and start-menu shortcut behavior.
-- [ ] Package the portable assembled directory into the installer payload.
-- [ ] Wire VC++ prerequisite execution only when missing.
+- [ ] Package the scanned Portable directory from Task 15 into the installer payload.
+- [ ] Wire VC++ prerequisite execution in Setup as the primary normal installed-flow prerequisite path.
+- [ ] Make `build-trial-release.ps1` require non-empty `-VcRedistPath` when installer output is enabled and skip this requirement when `-PortableOnly` is used.
+- [ ] Preserve Task 13's Launcher Portable fallback boundary: Launcher may offer one-time Portable fallback detection/install, but Setup owns ordinary install prerequisite execution.
 - [ ] Implement upgrade/overlay install behavior and user-data preservation rules.
 - [ ] Implement uninstall defaults that preserve user data with an explicit optional deletion path.
 - [ ] Handle running launcher shutdown before overwrite.
@@ -1175,21 +1256,24 @@ This task must follow launcher/runtime/build-script stabilization because the in
 
 - Do not claim code signing or auto-update support.
 - Do not move user data into the install root.
+- Do not make Launcher repeatedly request UAC for installed deployments.
 
 ### Tests and verification
 
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-trial-release.ps1 -Version "0.1.0" -VcRedistPath "<actual path>"`
-- Verify output exists: `C:\Users\33031\Desktop\bot\build\release\Chatbot-Setup-0.1.0-x64.exe`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-trial-release.ps1 -Version "0.1.0" -OutputRoot ".\build\release" -VcRedistPath "<actual path>"`
+- `Test-Path .\build\release\Chatbot-Setup-0.1.0-x64.exe`
+- `Test-Path .\build\release\Chatbot-Trial-0.1.0-x64.zip`
 
 ### Expected result
 
-The build pipeline can produce a user-level installer that is consistent with the packaged portable layout and prerequisite policy.
+The build pipeline can produce both a scanned Portable ZIP and a user-level installer consistent with the packaged layout and prerequisite policy.
 
 ### Acceptance criteria
 
 - Installer output name matches the approved pattern.
 - Installer preserves `%LOCALAPPDATA%\Chatbot` by default on uninstall.
-- VC++ prerequisite flow is integrated but isolated.
+- Setup is the primary VC++ prerequisite executor for ordinary installs.
+- Launcher remains a Portable fallback only for VC++ prerequisite recovery.
 
 ### Suggested commit
 
@@ -1197,19 +1281,22 @@ The build pipeline can produce a user-level installer that is consistent with th
 
 ---
 
-## Task 17: Add portable/install verification scripts and Windows Sandbox assets
+## Task 17: Execute full end-to-end Portable, installer, and clean-machine verification
 
 ### Goal
 
-Separate release verification into portable validation, installer validation, and clean-machine Windows Sandbox validation, with explicit `unverified` reporting when those environments are unavailable.
+Add the release verification entrypoints and execute the complete end-to-end acceptance path for both Task 15 Portable artifacts and Task 16 installer artifacts, including Windows Sandbox proof that the packaged product does not use system Python, Node, or uv.
 
 ### Prerequisites
 
 - Tasks 14-16 are complete.
+- Task 1 has filled the `Packaged startup interface contract` rows for backend health, Desktop RPA runtime status, graceful shutdown, and packaged host/port source.
+- Task 15 produced a scanned Portable directory, Portable ZIP, `manifest.json`, `SHA256SUMS.txt`, and `build-report.json`.
+- Task 16 produced `Chatbot-Setup-<version>-x64.exe` from the scanned Portable directory.
 
 ### Order rationale
 
-This task must be separate from “build successful” because the approved spec requires clean separation between local build verification, installer verification, and clean-machine validation.
+This task must follow Task 16 because full end-to-end validation needs both deliverables: the scanned Portable release from Task 15 and the Setup installer from Task 16. It must remain separate from "build successful" because clean-machine behavior, child-process executable paths, installer prerequisite behavior, and shutdown/uninstall residue cannot be proven by artifact assembly alone.
 
 ### Files
 
@@ -1220,48 +1307,57 @@ This task must be separate from “build successful” because the approved spec
 
 ### Implementation steps
 
-- [ ] Implement `verify-trial-release.ps1` to validate:
-  - directory completeness
-  - manifest/SHA-256
-  - launcher start/stop
-  - backend health
-  - SPA 200 + route refresh
-  - packaged python executables
-  - no writes outside user-data roots
-  - no system Python/Node/uv usage
-- [ ] Implement `test-trial-install.ps1` to validate:
-  - setup install
-  - first launch
-  - restart/stop
-  - upgrade
-  - uninstall
-  - user-data retention
-- [ ] Add `ChatbotTrial.wsb` and the exact manual steps required inside Sandbox.
-- [ ] Make both scripts report `UNVERIFIED` clearly when clean-machine conditions are not actually exercised.
+- [ ] Implement `verify-trial-release.ps1` for the Task 15 Portable directory and ZIP. It must validate:
+  - directory completeness for launcher, backend runtime, connector runtime, RPA runtime, shared `resources/`, `launcher.json`, licenses, `manifest.json`, and `build-report.json`
+  - `SHA256SUMS.txt` against every listed file
+  - launcher start/stop using the Task 1-confirmed graceful shutdown mechanism
+  - backend health using the Task 1-confirmed health route
+  - Desktop RPA runtime status using the Task 1-confirmed status route
+  - SPA 200 response and route refresh behavior from the packaged static assets
+  - no writes outside `%LOCALAPPDATA%\Chatbot` and the release directory
+  - packaged child process executable paths for backend Python, connector Python, RPA runtime, and launcher-owned descendants
+- [ ] Implement `verify-trial-release.ps1 -MinimizedPath` mode. This mode must launch with a deliberately minimal `PATH` containing only Windows system directories and the packaged release directories required by the launcher. It must fail if any child process resolves `python.exe`, `node.exe`, `uv.exe`, `pnpm.exe`, or `git.exe` from outside the release directory.
+- [ ] Implement child-process executable path collection in the verifier by recording PID, parent PID, executable path, command line, and create time before stop/uninstall checks. The acceptance output must show that runtime processes come from packaged paths, not system Python/Node/uv.
+- [ ] Implement `test-trial-install.ps1` for the Task 16 Setup artifact. It must validate:
+  - setup install as a normal user
+  - Setup-driven VC++ prerequisite execution when the prerequisite is missing
+  - first launch from Start Menu/desktop shortcut
+  - restart/stop using Task 1-confirmed shutdown behavior
+  - upgrade over an existing install
+  - uninstall with default user-data retention
+  - no unmanaged process residue after uninstall
+  - no repeated Launcher UAC prompt on ordinary startup after prerequisites are satisfied
+- [ ] Add `ChatbotTrial.wsb` that maps in only the release artifacts and verification scripts, not the developer checkout, and documents the exact Sandbox steps for Portable and installer validation.
+- [ ] In Windows Sandbox, run Portable validation with minimized `PATH`, then run installer validation. Record the resulting verification logs in the matrix with PASS/FAIL/UNVERIFIED status.
+- [ ] Make both scripts report `UNVERIFIED` clearly when Windows Sandbox or equivalent clean-machine conditions are not actually exercised. Local developer-machine results must not be labeled as clean-machine results.
 
 ### Forbidden changes
 
 - Do not collapse Sandbox validation into general build success.
 - Do not silently mark unavailable clean-machine checks as passed.
+- Do not rely on `where python`, `where node`, or `where uv` alone; child-process executable paths must be inspected.
+- Do not mark "no system Python/Node/uv" as passed unless minimized `PATH` and process-path verification both pass, and Windows Sandbox or a clean VM has exercised the same flow.
 
 ### Tests and verification
 
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-trial-release.ps1 -ReleasePath ".\build\release\Chatbot-Trial-0.1.0-x64"`
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-trial-install.ps1 -SetupPath ".\build\release\Chatbot-Setup-0.1.0-x64.exe"`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-trial-release.ps1 -ReleasePath ".\build\release\Chatbot-Trial-0.1.0-x64" -ZipPath ".\build\release\Chatbot-Trial-0.1.0-x64.zip" -MinimizedPath`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-trial-install.ps1 -SetupPath ".\build\release\Chatbot-Setup-0.1.0-x64.exe" -ExpectedInstallRoot "$env:LOCALAPPDATA\Programs\Chatbot"`
+- Launch `C:\Users\33031\Desktop\bot\packaging\sandbox\ChatbotTrial.wsb` and repeat both commands inside Sandbox against the mapped release artifacts.
 
 ### Expected result
 
-The release has distinct verification entrypoints for portable, installer, and clean-machine validation.
+The release has executed, auditable verification entrypoints for Portable, installer, and clean-machine validation, with explicit evidence for packaged runtime usage and no silent clean-machine pass-through.
 
 ### Acceptance criteria
 
-- Verification scripts are separate.
-- Sandbox asset exists.
+- Verification scripts are separate and cover Portable, installer, and Sandbox flows.
+- Sandbox asset exists and maps release artifacts without depending on the developer checkout.
+- The "no system Python/Node/uv" claim is backed by minimized `PATH`, child-process executable path logs, and Windows Sandbox or clean-VM execution.
 - Any unrun clean-machine checks are explicitly marked `UNVERIFIED`.
 
 ### Suggested commit
 
-`feat(release): add trial release verification scripts`
+`test(release): add trial release end-to-end verification`
 
 ---
 
@@ -1362,36 +1458,39 @@ The release has final user-facing and maintainer-facing documentation that match
 
 ### Full build / portable verification
 
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-trial-release.ps1 -Version "0.1.0" -VcRedistPath "<actual path>"`
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-trial-release.ps1 -ReleasePath ".\build\release\Chatbot-Trial-0.1.0-x64"`
+- Task 14 baseline Portable-only acceptance: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-trial-release.ps1 -Version "0.1.0" -OutputRoot ".\build\release" -PortableOnly -SkipTests`
+- Task 15 scanned Portable artifact acceptance before installer wiring: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-trial-release.ps1 -Version "0.1.0" -OutputRoot ".\build\release" -SkipTests`
+- Task 15 verifier: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-trial-release.ps1 -ReleasePath ".\build\release\Chatbot-Trial-0.1.0-x64" -ZipPath ".\build\release\Chatbot-Trial-0.1.0-x64.zip" -MinimizedPath`
 
 ### Installer verification
 
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-trial-install.ps1 -SetupPath ".\build\release\Chatbot-Setup-0.1.0-x64.exe"`
+- Task 16 full installer build: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-trial-release.ps1 -Version "0.1.0" -OutputRoot ".\build\release" -VcRedistPath "<actual path>"`
+- Task 17 installer verifier: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-trial-install.ps1 -SetupPath ".\build\release\Chatbot-Setup-0.1.0-x64.exe" -ExpectedInstallRoot "$env:LOCALAPPDATA\Programs\Chatbot"`
 
 ### Clean-machine / Windows Sandbox verification
 
 - Launch `C:\Users\33031\Desktop\bot\packaging\sandbox\ChatbotTrial.wsb`
-- Validate:
-  - no system Python
-  - no Node
-  - no Git
-  - no uv
-  - no pnpm
+- Validate inside Sandbox or an equivalent clean VM:
+  - minimized `PATH` contains no developer Python, Node, uv, pnpm, Git, or repository paths
+  - child-process executable path logs prove backend Python, connector Python, and RPA runtime came from packaged directories
+  - `python.exe`, `node.exe`, `uv.exe`, `pnpm.exe`, and `git.exe` are not resolved from the host/system developer toolchain
+  - Portable ZIP extraction and first launch
+  - installer first install, upgrade, and uninstall
   - Chinese username / space path tolerance
   - offline launch behavior
   - port conflict errors
-  - UAC cancellation handling
+  - VC++ prerequisite handling and UAC cancellation behavior
+  - no repeated Launcher UAC prompt on ordinary startup after prerequisites are satisfied
   - default-disabled real sending
   - no unmanaged process residue after stop/uninstall
 
 ## Tasks that require external inputs
 
 - Task 6 requires the final pinned Python runtime artifact URL + SHA-256.
-- Task 13 requires the actual `vc_redist.x64.exe` path.
+- Task 13 requires the actual `vc_redist.x64.exe` path and SHA-256 for prerequisite staging/docs and Launcher Portable fallback wiring.
 - Task 11 and Task 12 require .NET 8 SDK.
-- Task 16 requires Inno Setup.
-- Task 17 requires Windows Sandbox or a clean VM.
+- Task 16 requires Inno Setup and the actual `vc_redist.x64.exe` path when building installer artifacts; `-PortableOnly` remains the path for Task 14 acceptance without installer prerequisites.
+- Task 17 requires Windows Sandbox or a clean VM capable of minimized-`PATH` execution and child-process executable path inspection.
 
 ## Tasks that must be validated on Windows Sandbox or a clean machine
 
@@ -1416,10 +1515,10 @@ These tasks should remain independently reviewable commits:
 10. Task 11 — launcher scaffold
 11. Task 12 — launcher lifecycle
 12. Task 13 — VC++ prerequisite handling
-13. Task 14 — unified build script
-14. Task 15 — sensitive scan + manifest
+13. Task 14 — baseline Portable assembly
+14. Task 15 — sensitive scan + manifest/SHA/build-report
 15. Task 16 — installer
-16. Task 17 — verification scripts
+16. Task 17 — full end-to-end verification
 17. Task 18 — release docs
 
 ## Explicit unverified reporting rule
@@ -1434,7 +1533,7 @@ If the implementation session completes any local unit/build work but does not e
 
 ## Self-review
 
-- The task order matches the approved phase ordering: baseline → path/deps → vendor/locks/runtime → backend/connector/frontend/RPA → launcher/prereq → build/scan/installer → verify/docs.
+- The task order matches the approved phase ordering: baseline → path/deps → vendor/locks/runtime → backend/connector/frontend/RPA → launcher/prereq → Portable assembly → scan/manifest/SHA/build-report → installer → full E2E verify/docs.
 - Launcher work is intentionally split from path work, connector work, and installer work.
 - Verification is explicitly separated into unit/component/portable/installer/clean-machine layers.
 - External inputs are called out instead of guessed.
