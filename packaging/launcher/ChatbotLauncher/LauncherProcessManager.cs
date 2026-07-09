@@ -137,6 +137,10 @@ public interface ILauncherFileSystem
     void WriteAllText(string path, string contents);
 
     string ReadAllText(string path);
+
+    byte[] ReadAllBytes(string path);
+
+    long GetFileSize(string path);
 }
 
 public interface ILauncherClock
@@ -249,6 +253,8 @@ public sealed class LauncherProcessManager
                     $"Packaged installation is incomplete: missing {artifact.Description} ({artifact.Path}).");
             }
         }
+
+        new ManifestValidator(_fileSystem).Validate(_layout.InstallRoot);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -720,6 +726,10 @@ internal sealed class DefaultLauncherFileSystem : ILauncherFileSystem
     public void WriteAllText(string path, string contents) => File.WriteAllText(path, contents, Encoding.UTF8);
 
     public string ReadAllText(string path) => File.ReadAllText(path, Encoding.UTF8);
+
+    public byte[] ReadAllBytes(string path) => File.ReadAllBytes(path);
+
+    public long GetFileSize(string path) => new FileInfo(path).Length;
 }
 
 internal sealed class DefaultLauncherClock : ILauncherClock

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text.Json;
 using ChatbotLauncher;
 using Xunit;
 
@@ -243,6 +245,33 @@ public sealed class LifecycleTests
 
             _files.Add(Path.Combine(layout.InstallRoot, "launcher.json"));
             _contents[Path.Combine(layout.InstallRoot, "launcher.json")] = "{}";
+
+            var manifestEntries = new List<object>();
+            foreach (var filePath in _files)
+            {
+                if (string.Equals(filePath, Path.Combine(layout.InstallRoot, "manifest.json"), StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var relativePath = Path.GetRelativePath(layout.InstallRoot, filePath).Replace('\\', '/');
+                manifestEntries.Add(new
+                {
+                    path = relativePath,
+                    size = GetFileSize(filePath),
+                    sha256 = ComputeSha256(_contents[filePath]),
+                    critical = true,
+                });
+            }
+
+            var manifestPath = Path.Combine(layout.InstallRoot, "manifest.json");
+            _files.Add(manifestPath);
+            _contents[manifestPath] = JsonSerializer.Serialize(new
+            {
+                schemaVersion = LauncherContracts.SchemaVersion,
+                nonCriticalValidation = "size",
+                entries = manifestEntries,
+            });
         }
 
         public bool FileExists(string path) => _files.Contains(path);
@@ -269,6 +298,21 @@ public sealed class LifecycleTests
         public string ReadAllText(string path)
         {
             return _contents.TryGetValue(path, out var content) ? content : string.Empty;
+        }
+
+        public byte[] ReadAllBytes(string path)
+        {
+            return System.Text.Encoding.UTF8.GetBytes(ReadAllText(path));
+        }
+
+        public long GetFileSize(string path)
+        {
+            return ReadAllBytes(path).LongLength;
+        }
+
+        private static string ComputeSha256(string value)
+        {
+            return Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
         }
     }
 

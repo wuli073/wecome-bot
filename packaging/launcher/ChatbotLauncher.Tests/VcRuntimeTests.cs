@@ -181,6 +181,16 @@ public sealed class VcRuntimeTests
         {
             return _files[path];
         }
+
+        public byte[] ReadAllBytes(string path)
+        {
+            return System.Text.Encoding.UTF8.GetBytes(_files[path]);
+        }
+
+        public long GetFileSize(string path)
+        {
+            return ReadAllBytes(path).LongLength;
+        }
     }
 
     private sealed class FakeClock : ILauncherClock

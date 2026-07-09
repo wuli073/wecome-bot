@@ -47,7 +47,6 @@ function Invoke-EnvironmentCheck {
     param([hashtable]$Context)
 
     Ensure-CommandAvailable -CommandName git | Out-Null
-    Ensure-CommandAvailable -CommandName corepack | Out-Null
     Ensure-CommandAvailable -CommandName npm | Out-Null
     Ensure-CommandAvailable -CommandName dotnet | Out-Null
     Ensure-CommandAvailable -CommandName tar | Out-Null
@@ -82,13 +81,7 @@ function Invoke-FrontendBuild {
     param([hashtable]$Context)
 
     $webRoot = Join-Path $Context.RepoRoot 'web'
-    $pnpmInstallArgs = @('pnpm', 'install', '--frozen-lockfile')
-    if ($Context.Offline) {
-        $pnpmInstallArgs += '--offline'
-    }
-
-    Invoke-ExternalCommand -Context $Context -FilePath 'corepack' -WorkingDirectory $webRoot -ArgumentList $pnpmInstallArgs
-    Invoke-ExternalCommand -Context $Context -FilePath 'corepack' -WorkingDirectory $webRoot -ArgumentList @('pnpm', 'run', 'build')
+    Invoke-ExternalCommand -Context $Context -FilePath 'npm' -WorkingDirectory $webRoot -ArgumentList @('run', 'build')
 }
 
 function New-RuntimeAssembly {
@@ -106,6 +99,8 @@ function New-RuntimeAssembly {
     Ensure-Directory -Path $runtimeDestination
     Invoke-Robocopy -Source $expandedRuntimeRoot -Destination $runtimeDestination
     Install-LockedPythonDependencies -Context $Context -Role $Role -RuntimeRoot $runtimeDestination -RequirementsPath $RequirementsPath
+    $runtimeScriptsRoot = Join-Path $runtimeDestination 'python\Scripts'
+    Reset-ManagedPath -Context $Context -Path $runtimeScriptsRoot -AllowedRoots @($roleWorkRoot)
 
     return $roleWorkRoot
 }
@@ -209,12 +204,6 @@ function Invoke-RpaRuntimeCopy {
     param([hashtable]$Context)
 
     $rpaRoot = Join-Path $Context.RepoRoot 'apps\desktop-rpa-runtime'
-    $npmCiArgs = @('ci')
-    if ($Context.Offline) {
-        $npmCiArgs += '--offline'
-    }
-
-    Invoke-ExternalCommand -Context $Context -FilePath 'npm' -WorkingDirectory $rpaRoot -ArgumentList $npmCiArgs
     Invoke-ExternalCommand -Context $Context -FilePath 'npm' -WorkingDirectory $rpaRoot -ArgumentList @('run', 'typecheck')
     Invoke-ExternalCommand -Context $Context -FilePath 'npm' -WorkingDirectory $rpaRoot -ArgumentList @('run', 'lint')
     if (-not $Context.SkipTests) {
@@ -232,6 +221,9 @@ function Invoke-RpaRuntimeCopy {
     Reset-ManagedPath -Context $Context -Path $rpaDestination -AllowedRoots @($Context.WorkDirectory)
     Ensure-Directory -Path $rpaDestination
     Invoke-Robocopy -Source $rpaSource -Destination $rpaDestination
+    Get-ChildItem -LiteralPath $rpaDestination -Recurse -Filter '*.nativecodeanalysis.xml' -File | ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Force
+    }
     $Context.RpaAssemblyRoot = $rpaDestination
 }
 
@@ -334,6 +326,97 @@ function Invoke-PortableDirectoryAssembly {
     }
 }
 
+function Invoke-SensitiveScan {
+    param([hashtable]$Context)
+
+    $scanReportPath = Join-Path $Context.PortableRoot 'build-sensitive-scan.json'
+    $allowlistPath = Join-Path $Context.RepoRoot 'packaging\build\allowlist.json'
+    Invoke-ExternalCommand -Context $Context -FilePath 'uv' -WorkingDirectory $Context.RepoRoot -ArgumentList @(
+        'run', '--no-sync', 'python',
+        'packaging/build/sensitive-scan.py',
+        '--bundle-root', $Context.PortableRoot,
+        '--allowlist', $allowlistPath,
+        '--output', $scanReportPath
+    )
+
+    $Context.SensitiveScanPath = $scanReportPath
+    $Context.SensitiveScanReport = Read-JsonFile -Path $scanReportPath
+}
+
+function Invoke-ManifestGeneration {
+    param([hashtable]$Context)
+
+    $manifestPath = Join-Path $Context.PortableRoot 'manifest.json'
+    $sha256SumsPath = Join-Path $Context.PortableRoot 'SHA256SUMS.txt'
+
+    Invoke-ExternalCommand -Context $Context -FilePath 'uv' -WorkingDirectory $Context.RepoRoot -ArgumentList @(
+        'run', '--no-sync', 'python',
+        'packaging/build/manifest.py',
+        '--bundle-root', $Context.PortableRoot,
+        '--version', $Context.Version,
+        '--manifest-path', $manifestPath,
+        '--sha256sums-path', $sha256SumsPath
+    )
+
+    $Context.ManifestPath = $manifestPath
+    $Context.Sha256SumsPath = $sha256SumsPath
+}
+
+function Invoke-BuildReportGeneration {
+    param([hashtable]$Context)
+
+    $reportPath = Join-Path $Context.PortableRoot 'build-report.json'
+    $stageItems = @()
+    foreach ($result in $Context.StageResults) {
+        $stageItems += [ordered]@{
+            name = $result.Name
+            startedAt = $result.StartedAt.ToString('o')
+            completedAt = $result.CompletedAt.ToString('o')
+            duration = $result.Duration.ToString()
+            succeeded = [bool]$result.Succeeded
+        }
+    }
+
+    $report = [ordered]@{
+        schemaVersion = 1
+        version = $Context.Version
+        generatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+        portableDirectory = Split-Path -Leaf $Context.PortableRoot
+        portableZip = (Split-Path -Leaf (Join-Path $Context.OutputRoot ((Split-Path -Leaf $Context.PortableRoot) + '.zip')))
+        git = [ordered]@{
+            branch = (git -C $Context.RepoRoot branch --show-current)
+            head = (git -C $Context.RepoRoot rev-parse HEAD)
+        }
+        sensitiveScan = [ordered]@{
+            path = 'build-sensitive-scan.json'
+            findingCount = $Context.SensitiveScanReport.summary.findingCount
+            blocked = [bool]$Context.SensitiveScanReport.summary.blocked
+        }
+        manifest = [ordered]@{
+            path = 'manifest.json'
+        }
+        sha256Sums = [ordered]@{
+            path = 'SHA256SUMS.txt'
+        }
+        stages = $stageItems
+    }
+
+    $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $reportPath -Encoding UTF8
+    $Context.BuildReportPath = $reportPath
+}
+
+function Invoke-PortableZipAssembly {
+    param([hashtable]$Context)
+
+    $zipPath = Join-Path $Context.OutputRoot ((Split-Path -Leaf $Context.PortableRoot) + '.zip')
+    Reset-ManagedPath -Context $Context -Path $zipPath -AllowedRoots @($Context.OutputRoot)
+    $portableName = Split-Path -Leaf $Context.PortableRoot
+    Invoke-ExternalCommand -Context $Context -FilePath 'tar.exe' -WorkingDirectory $Context.OutputRoot -ArgumentList @(
+        '-a', '-cf', $zipPath, '-C', $Context.OutputRoot, $portableName
+    )
+    $Context.PortableZipPath = $zipPath
+}
+
 function Invoke-PortableSanityCheck {
     param([hashtable]$Context)
 
@@ -344,20 +427,35 @@ function Invoke-PortableSanityCheck {
         }
     }
 
-    foreach ($relativePath in $Context.PortableLayout.portableForbiddenPaths) {
-        $path = Join-Path $Context.PortableRoot $relativePath
-        if (Test-Path -LiteralPath $path) {
-            throw "Task 14 must not generate: $relativePath"
+    if ($Context.PortableOnly) {
+        foreach ($relativePath in $Context.PortableLayout.portableForbiddenPaths) {
+            $path = Join-Path $Context.PortableRoot $relativePath
+            if (Test-Path -LiteralPath $path) {
+                throw "PortableOnly mode must not generate: $relativePath"
+            }
+        }
+
+        $zipPath = Join-Path $Context.OutputRoot ($Context.PortableLayout.portableDirectoryNameTemplate.Replace('{version}', $Context.Version) + '.zip')
+        if (Test-Path -LiteralPath $zipPath) {
+            throw "PortableOnly mode must not generate Portable ZIP: $zipPath"
+        }
+    }
+    else {
+        foreach ($requiredGeneratedFile in @('manifest.json', 'build-sensitive-scan.json', 'build-report.json', 'SHA256SUMS.txt')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $Context.PortableRoot $requiredGeneratedFile) -PathType Leaf)) {
+                throw "Full release build is missing generated artifact: $requiredGeneratedFile"
+            }
+        }
+
+        $zipPath = Join-Path $Context.OutputRoot ($Context.PortableLayout.portableDirectoryNameTemplate.Replace('{version}', $Context.Version) + '.zip')
+        if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
+            throw "Full release build is missing Portable ZIP: $zipPath"
         }
     }
 
-    $zipPath = Join-Path $Context.OutputRoot ($Context.PortableLayout.portableDirectoryNameTemplate.Replace('{version}', $Context.Version) + '.zip')
     $setupPath = Join-Path $Context.OutputRoot ("Chatbot-Setup-{0}-x64.exe" -f $Context.Version)
-    if (Test-Path -LiteralPath $zipPath) {
-        throw "Task 14 must not generate Portable ZIP: $zipPath"
-    }
     if (Test-Path -LiteralPath $setupPath) {
-        throw "Task 14 must not generate installer package: $setupPath"
+        throw "Current build must not generate installer package: $setupPath"
     }
 }
 
@@ -383,6 +481,12 @@ try {
     Invoke-BuildStage -Context $context -Name 'RPA runtime copy' -Action { Invoke-RpaRuntimeCopy -Context $context }
     Invoke-BuildStage -Context $context -Name 'launcher publish' -Action { Invoke-LauncherPublish -Context $context }
     Invoke-BuildStage -Context $context -Name 'portable directory assembly' -Action { Invoke-PortableDirectoryAssembly -Context $context }
+    if (-not $context.PortableOnly) {
+        Invoke-BuildStage -Context $context -Name 'sensitive scan' -Action { Invoke-SensitiveScan -Context $context }
+        Invoke-BuildStage -Context $context -Name 'manifest generation' -Action { Invoke-ManifestGeneration -Context $context }
+        Invoke-BuildStage -Context $context -Name 'build report generation' -Action { Invoke-BuildReportGeneration -Context $context }
+        Invoke-BuildStage -Context $context -Name 'portable zip assembly' -Action { Invoke-PortableZipAssembly -Context $context }
+    }
     Invoke-BuildStage -Context $context -Name 'minimal portable layout sanity check' -Action { Invoke-PortableSanityCheck -Context $context }
 
     if ($context.PortableOnly) {
