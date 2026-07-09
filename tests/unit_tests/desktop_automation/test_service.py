@@ -173,6 +173,42 @@ async def test_get_runtime_status_returns_not_available_shape():
     assert status['send_enabled'] is False
 
 
+async def test_get_runtime_status_preserves_runtime_manager_observation_surface():
+    runtime_process_manager = SimpleNamespace(
+        get_status=AsyncMock(
+            return_value={
+                'status': 'ready',
+                'host': '127.0.0.1',
+                'port': 5302,
+                'runtime_configured': True,
+                'runtime_startable': True,
+                'runtime_reachable': True,
+                'send_enabled': False,
+                'allowed_connector_count': 0,
+                'send_error_code': None,
+            }
+        )
+    )
+    service = _build_service(
+        repository=_FakeRepository(),
+        runtime_process_manager=runtime_process_manager,
+    )
+
+    status = await service.get_runtime_status()
+
+    assert status == {
+        'status': 'ready',
+        'host': '127.0.0.1',
+        'port': 5302,
+        'runtime_configured': True,
+        'runtime_startable': True,
+        'runtime_reachable': True,
+        'send_enabled': False,
+        'allowed_connector_count': 0,
+        'send_error_code': None,
+    }
+
+
 async def test_reconcile_stale_runs_preserves_shared_repository_shell():
     repository = _FakeRepository()
     service = _build_service(repository=repository, runtime_process_manager=_FakeRuntimeProcessManager())

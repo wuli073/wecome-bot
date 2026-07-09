@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable, Mapping
 import psutil
 
 from ..broadcast.send_gate import resolve_broadcast_send_gate
+from ..utils import paths as runtime_paths
 from .client import DesktopRuntimeClient
 from .errors import (
     DesktopAutomationError,
@@ -31,6 +32,7 @@ SpawnRuntimeCallable = Callable[..., Awaitable[Any]]
 
 _OFFICIAL_RUNTIME_EXE_NAME = 'LangBot Desktop RPA Runtime.exe'
 _OFFICIAL_RUNTIME_BUILD_DIR_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$')
+_PACKAGED_RUNTIME_RELATIVE_PATH = Path('runtime') / 'desktop-rpa' / _OFFICIAL_RUNTIME_EXE_NAME
 
 
 @dataclass(frozen=True)
@@ -67,7 +69,38 @@ def _official_runtime_root(root: Path) -> Path:
     return root / 'apps' / 'desktop-rpa-runtime' / 'dist-phase2-official'
 
 
+def _packaged_runtime_executable(root: Path) -> Path:
+    return root / _PACKAGED_RUNTIME_RELATIVE_PATH
+
+
+def _normalize_runtime_executable_candidate(pathlike: str | Path | None) -> Path | None:
+    normalized = _normalize_path(pathlike)
+    if normalized is None:
+        return None
+    if normalized.is_dir():
+        direct_candidate = normalized / _OFFICIAL_RUNTIME_EXE_NAME
+        if direct_candidate.exists():
+            return direct_candidate.resolve(strict=False)
+        unpacked_candidate = normalized / 'win-unpacked' / _OFFICIAL_RUNTIME_EXE_NAME
+        if unpacked_candidate.exists():
+            return unpacked_candidate.resolve(strict=False)
+        return None
+    if normalized.name != _OFFICIAL_RUNTIME_EXE_NAME:
+        return None
+    return normalized
+
+
+def _is_valid_packaged_runtime_executable_path(candidate: Path, root: Path) -> bool:
+    normalized = _normalize_path(candidate)
+    if normalized is None or normalized.name != _OFFICIAL_RUNTIME_EXE_NAME:
+        return False
+    expected = _packaged_runtime_executable(root).resolve(strict=False)
+    return normalized == expected
+
+
 def _is_valid_runtime_executable_path(candidate: Path, root: Path) -> bool:
+    if runtime_paths.is_packaged_mode():
+        return _is_valid_packaged_runtime_executable_path(candidate, root)
     normalized = _normalize_path(candidate)
     if normalized is None:
         return False
@@ -96,7 +129,17 @@ def _parse_runtime_build_timestamp(build_dir_name: str) -> datetime.datetime | N
 
 
 def list_runtime_candidates(*, repo_root=None) -> list[RuntimeCandidate]:
-    root = Path(repo_root or Path(__file__).resolve().parents[4])
+    root = Path(repo_root or _default_runtime_root())
+    if runtime_paths.is_packaged_mode():
+        packaged_executable = resolve_runtime_executable_path(repo_root=root)
+        if packaged_executable is None:
+            return []
+        return [
+            RuntimeCandidate(
+                executable_path=packaged_executable,
+                parsed_timestamp=datetime.datetime.fromtimestamp(0, tz=datetime.timezone.utc),
+            )
+        ]
     official_root = _official_runtime_root(root)
     if not official_root.exists():
         return []
@@ -130,8 +173,35 @@ def resolve_latest_runtime_executable(*, repo_root=None) -> Path | None:
 
 
 def resolve_runtime_executable_path(*, configured: str = '', repo_root=None):
-    _ = configured
-    return resolve_latest_runtime_executable(repo_root=repo_root)
+    root = Path(repo_root or _default_runtime_root())
+    configured_candidate = _normalize_runtime_executable_candidate(configured)
+    if configured_candidate is not None:
+        if runtime_paths.is_packaged_mode():
+            if _is_valid_packaged_runtime_executable_path(configured_candidate, root):
+                return configured_candidate
+        elif configured_candidate.exists():
+            return configured_candidate
+
+    if runtime_paths.is_packaged_mode():
+        packaged_candidate = _normalize_runtime_executable_candidate(
+            os.environ.get('CHATBOT_RPA_RUNTIME_PATH', '').strip()
+        )
+        if packaged_candidate is None:
+            packaged_candidate = _packaged_runtime_executable(root).resolve(strict=False)
+        if _is_valid_packaged_runtime_executable_path(packaged_candidate, root):
+            return packaged_candidate
+        return None
+
+    return resolve_latest_runtime_executable(repo_root=root)
+
+
+def _default_runtime_root() -> Path:
+    if runtime_paths.is_packaged_mode():
+        return Path(runtime_paths.get_install_root())
+    repo_root = runtime_paths.get_repo_root()
+    if repo_root:
+        return Path(repo_root)
+    return Path(__file__).resolve().parents[4]
 
 
 def apply_local_desktop_automation_defaults(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -158,7 +228,7 @@ class DesktopRuntimeProcessManager:
     ) -> None:
         self.config = apply_local_desktop_automation_defaults(config)
         self.broadcast_config = dict(broadcast_config or {})
-        self.runtime_root = Path(runtime_root or Path(__file__).resolve().parents[4])
+        self.runtime_root = Path(runtime_root or _default_runtime_root())
         self.spawn_runtime = spawn_runtime or self._spawn_runtime
         self.client_factory = client_factory or self._build_client
         self.process = None
@@ -485,6 +555,9 @@ class DesktopRuntimeProcessManager:
             executable_path.relative_to(self.runtime_root.resolve(strict=False))
         except ValueError:
             return False
+
+        if runtime_paths.is_packaged_mode():
+            return _is_valid_packaged_runtime_executable_path(executable_path, self.runtime_root)
 
         if executable_path.name != _OFFICIAL_RUNTIME_EXE_NAME:
             return False

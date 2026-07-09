@@ -3,6 +3,7 @@ from __future__ import annotations
 import quart
 
 from .. import group
+from .....utils import paths
 from .....desktop_automation.errors import (
     BOT_ADAPTER_UNSUPPORTED,
     BOT_CHANNEL_UNBOUND,
@@ -669,8 +670,13 @@ class DesktopAutomationRouterGroup(group.RouterGroup):
         async def cancel_run(run_id: int) -> str:
             return self.http_status(404, -1, 'Use bot-scoped desktop automation run endpoints')
 
-        @self.route('/runtime/status', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
+        runtime_status_auth_type = group.AuthType.NONE if paths.is_packaged_mode() else group.AuthType.USER_TOKEN
+
+        @self.route('/runtime/status', methods=['GET'], auth_type=runtime_status_auth_type)
         async def runtime_status() -> str:
+            # Task 1 packaged startup interface contract:
+            # launcher observes backend-owned Desktop RPA readiness only through
+            # GET /api/v1/desktop-automation/runtime/status.
             if not hasattr(self.ap, 'desktop_automation_service') or self.ap.desktop_automation_service is None:
                 return self.http_status(503, -1, 'Desktop automation service unavailable')
             status = await self.ap.desktop_automation_service.get_runtime_status()

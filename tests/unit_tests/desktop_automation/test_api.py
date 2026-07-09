@@ -215,6 +215,17 @@ async def test_runtime_status_route_returns_not_available_shape():
     assert payload['data']['runtime_startable'] is False
 
 
+async def test_runtime_status_route_allows_packaged_observation_without_user_token(monkeypatch):
+    monkeypatch.setenv('CHATBOT_PACKAGED', '1')
+    client, _ap = await _make_client()
+
+    response = await client.get('/api/v1/desktop-automation/runtime/status')
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload['data']['status'] == 'not_available'
+
+
 async def test_calibration_route_is_removed():
     client, _ap = await _make_client()
 

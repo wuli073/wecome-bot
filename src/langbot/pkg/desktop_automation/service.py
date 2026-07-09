@@ -223,7 +223,7 @@ class DesktopAutomationService:
 
     async def get_runtime_status(self) -> dict[str, Any]:
         if self.runtime_process_manager is not None and hasattr(self.runtime_process_manager, 'get_status'):
-            return await self.runtime_process_manager.get_status()
+            return dict(await self.runtime_process_manager.get_status())
         return {
             'status': 'not_available',
             'errorCode': RPA_RUNTIME_NOT_AVAILABLE,
