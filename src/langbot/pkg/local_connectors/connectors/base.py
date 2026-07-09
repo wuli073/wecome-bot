@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sys
 from pathlib import Path
 
 from ..models import BuiltinConnectorDefinition
-from ..bundled_runtime import resolve_wechat_decrypt_entrypoint, resolve_wechat_decrypt_root
+from ..bundled_runtime import (
+    resolve_connector_python_executable,
+    resolve_wechat_decrypt_entrypoint,
+    resolve_wechat_decrypt_root,
+)
 
 
 class BaseLocalConnector:
@@ -50,7 +53,7 @@ class BaseLocalConnector:
         return resolve_wechat_decrypt_entrypoint(name)
 
     def resolve_python_executable(self) -> str:
-        return sys.executable
+        return str(resolve_connector_python_executable())
 
     async def run_cli(self, action: str, runtime_dir: str) -> dict:
         decrypt_dir = self.resolve_decrypt_dir()

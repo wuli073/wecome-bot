@@ -7,14 +7,19 @@ from pathlib import Path
 import secrets
 import sqlite3
 
+from ..utils import paths as path_utils
+
 
 class LocalConnectorRepository:
     def __init__(self) -> None:
-        base_dir = os.environ.get("LOCALAPPDATA", "")
-        if base_dir:
-            self.base_dir = Path(base_dir) / "WecomeBot" / "connectors"
+        if path_utils.is_packaged_mode():
+            self.base_dir = Path(path_utils.get_user_data_root()) / "connectors"
         else:
-            self.base_dir = Path.cwd() / "data" / "local-connectors"
+            base_dir = os.environ.get("LOCALAPPDATA", "")
+            if base_dir:
+                self.base_dir = Path(base_dir) / "WecomeBot" / "connectors"
+            else:
+                self.base_dir = Path.cwd() / "data" / "local-connectors"
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def connector_dir(self, connector_id: str) -> Path:

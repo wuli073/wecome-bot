@@ -62,21 +62,24 @@ async def run_elevated_extract(
     finally:
         if helper_script.exists():
             helper_script.unlink()
-
-    if process is not None and process.returncode == 1223:
-        return {
-            "ok": False,
-            "connector": connector_name,
-            "action": "extract-key",
-            "error_code": "UAC_CANCELLED",
-            "error_message": "UAC was cancelled",
-        }
-    if not result_file.exists():
-        return {
-            "ok": False,
-            "connector": connector_name,
-            "action": "extract-key",
-            "error_code": "KEY_EXTRACTION_FAILED",
-            "error_message": "Elevated helper did not produce a result",
-        }
-    return _load_result_file(result_file)
+    try:
+        if process is not None and process.returncode == 1223:
+            return {
+                "ok": False,
+                "connector": connector_name,
+                "action": "extract-key",
+                "error_code": "UAC_CANCELLED",
+                "error_message": "UAC was cancelled",
+            }
+        if not result_file.exists():
+            return {
+                "ok": False,
+                "connector": connector_name,
+                "action": "extract-key",
+                "error_code": "KEY_EXTRACTION_FAILED",
+                "error_message": "Elevated helper did not produce a result",
+            }
+        return _load_result_file(result_file)
+    finally:
+        if result_file.exists():
+            result_file.unlink()

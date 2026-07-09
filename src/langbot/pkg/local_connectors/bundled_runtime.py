@@ -16,21 +16,42 @@ def _find_source_root() -> Path | None:
 
 def _packaged_runtime_candidates() -> list[Path]:
     candidates: list[Path] = []
+    explicit_root = os.environ.get('CHATBOT_CONNECTOR_ROOT', '').strip()
+    if explicit_root:
+        candidates.append(Path(explicit_root).expanduser().resolve())
 
-    resource_path = Path(path_utils.get_resource_path('vendor/wechat_decrypt')).resolve()
-    candidates.append(resource_path)
-
-    executable_dir = Path(sys.executable).resolve().parent
-    candidates.append(executable_dir / 'vendor' / 'wechat_decrypt')
-    candidates.append(executable_dir.parent / 'vendor' / 'wechat_decrypt')
+    install_root = Path(path_utils.get_install_root()).resolve()
+    candidates.append((install_root / 'connectors' / 'app' / 'wechat-decrypt').resolve())
 
     return candidates
 
 
-def resolve_wechat_decrypt_root() -> Path:
-    for candidate in _packaged_runtime_candidates():
+def resolve_connector_python_executable() -> Path:
+    explicit_python = os.environ.get('CHATBOT_CONNECTOR_PYTHON', '').strip()
+    if explicit_python:
+        candidate = Path(explicit_python).expanduser().resolve()
         if candidate.exists():
-            return candidate.resolve()
+            return candidate
+        raise FileNotFoundError(f'Packaged connector python executable not found: {candidate}')
+
+    if path_utils.is_packaged_mode():
+        candidate = (Path(path_utils.get_install_root()) / 'connectors' / 'runtime' / 'python' / 'python.exe').resolve()
+        if candidate.exists():
+            return candidate
+        raise FileNotFoundError(f'Packaged connector python executable not found: {candidate}')
+
+    return Path(sys.executable).resolve()
+
+
+def resolve_wechat_decrypt_root() -> Path:
+    if path_utils.is_packaged_mode():
+        for candidate in _packaged_runtime_candidates():
+            if candidate.exists():
+                return candidate.resolve()
+        raise FileNotFoundError(
+            'Packaged wechat-decrypt runtime not found. Expected CHATBOT_CONNECTOR_ROOT '
+            'or <install_root>/connectors/app/wechat-decrypt.'
+        )
 
     source_root = _find_source_root()
     if source_root is not None:
