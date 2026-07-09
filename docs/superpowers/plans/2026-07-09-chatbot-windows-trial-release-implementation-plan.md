@@ -440,7 +440,7 @@ This task must precede Python runtime assembly because backend and connector run
 ### Files
 
 - Create: `C:\Users\33031\Desktop\bot\packaging\server\requirements.lock.txt`
-- Modify: `C:\Users\33031\Desktop\bot\vendor\wechat_decrypt\requirements.lock.txt`
+- Create: `C:\Users\33031\Desktop\bot\vendor\wechat_decrypt\requirements.lock.txt`
 - Create: `C:\Users\33031\Desktop\bot\docs\release\dependency-lock-notes.md`
 - Create: `C:\Users\33031\Desktop\bot\packaging\build\verify-dependency-locks.py`
 
@@ -469,9 +469,10 @@ This task must precede Python runtime assembly because backend and connector run
 - `uv sync --frozen --dev`
 - `uv run python packaging\build\verify-dependency-locks.py`
 
-`packaging\build\verify-dependency-locks.py` must be executable from Windows PowerShell and must validate exactly:
+`packaging\build\verify-dependency-locks.py` must be executable from Windows PowerShell, must parse each requirement line to a normalized distribution name, must compare complete package names only, and must validate exactly:
 
 ```python
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -480,14 +481,36 @@ LOCKS = [
     ROOT / 'vendor' / 'wechat_decrypt' / 'requirements.lock.txt',
 ]
 FORBIDDEN = {'pytest', 'ruff', 'mypy', 'pre-commit', 'uv'}
+NAME_RE = re.compile(r'^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[|==|~=|!=|<=|>=|<|>|===|@|;|\s|$)')
+
+
+def canonicalize_name(name: str) -> str:
+    return re.sub(r'[-_.]+', '-', name).lower()
+
+
+def iter_requirement_names(lock_path: Path):
+    for line_number, raw_line in enumerate(lock_path.read_text(encoding='utf-8').splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.endswith('\\'):
+            line = line[:-1].rstrip()
+        if line.startswith('-'):
+            continue
+        line = line.split(' #', 1)[0].strip()
+        match = NAME_RE.match(line)
+        if not match:
+            raise SystemExit(f'cannot parse requirement name in {lock_path}:{line_number}: {raw_line}')
+        yield canonicalize_name(match.group(1))
+
 
 for lock_path in LOCKS:
     if not lock_path.exists():
         raise SystemExit(f'missing lock file: {lock_path}')
-    text = lock_path.read_text(encoding='utf-8').lower()
-    for package_name in FORBIDDEN:
-        if package_name in text:
-            raise SystemExit(f'forbidden package {package_name} found in {lock_path}')
+    names = set(iter_requirement_names(lock_path))
+    forbidden_found = names & FORBIDDEN
+    if forbidden_found:
+        raise SystemExit(f'forbidden package names {sorted(forbidden_found)} found in {lock_path}')
 print('dependency locks verified')
 ```
 
@@ -499,7 +522,7 @@ Both packaged Python runtimes have explicit Windows x64 lock files that are sepa
 
 - Lock generation method is documented.
 - Both lock files exist.
-- Forbidden dev/build tools are absent from the lock outputs.
+- Forbidden dev/build tools are absent from the lock outputs by normalized complete package-name comparison, not by substring search.
 
 ### Suggested commit
 
@@ -957,7 +980,7 @@ This task follows launcher scaffolding and packaged runtime stabilization becaus
   - `LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS=`
   - `LANGBOT_RPA_ALLOW_AUTO_SEND=0`
   - `LANGBOT_RPA_FORCE_DISABLE_SEND=1`
-- [ ] Start backend hidden, wait for `/healthz`, then poll `/api/v1/desktop-automation/runtime/status` until ready.
+- [ ] Start backend hidden, read Task 1-confirmed `healthPath` and `runtimeStatusPath` from `launcher.json`, wait for `healthPath`, then poll `runtimeStatusPath` until ready; do not hard-code route literals in Launcher lifecycle code.
 - [ ] Open the browser only after backend readiness.
 - [ ] Implement tray actions:
   - open
@@ -971,11 +994,13 @@ This task follows launcher scaffolding and packaged runtime stabilization becaus
   - ownership validation
   - default-disabled real-send state
   - runtime-status observation
+  - `launcher.json` `healthPath` / `runtimeStatusPath` override behavior
 
 ### Forbidden changes
 
 - Do not directly start or terminate RPA runtime from the launcher.
 - Do not silently pick random fallback ports.
+- Do not hard-code health or runtime-status route strings in launcher lifecycle code; they must come from Task 1-confirmed `launcher.json` fields.
 
 ### Tests and verification
 
@@ -1161,6 +1186,9 @@ This task must follow Portable directory assembly and precede installer integrat
 - Create: `C:\Users\33031\Desktop\bot\packaging\build\manifest.py`
 - Create: `C:\Users\33031\Desktop\bot\packaging\build\allowlist.json`
 - Modify: `C:\Users\33031\Desktop\bot\scripts\build-trial-release.ps1`
+- Modify: `C:\Users\33031\Desktop\bot\packaging\launcher\ChatbotLauncher\Program.cs`
+- Create: `C:\Users\33031\Desktop\bot\packaging\launcher\ChatbotLauncher\ManifestValidator.cs`
+- Modify: `C:\Users\33031\Desktop\bot\packaging\launcher\ChatbotLauncher.Tests\LifecycleTests.cs`
 
 ### Implementation steps
 
@@ -1183,7 +1211,9 @@ This task must follow Portable directory assembly and precede installer integrat
   - `SHA256SUMS.txt`
   - `build-report.json`
 - [ ] Generate `Chatbot-Trial-<version>-x64.zip` only after scan, manifest, SHA256, and build-report generation succeed.
-- [ ] Add key-file validation hooks so launcher startup can validate required files against the manifest.
+- [ ] Create `ManifestValidator.cs` to load `manifest.json`, validate required key-file presence, and compare SHA-256 values for key files before normal launcher startup continues.
+- [ ] Wire `Program.cs` so manifest validation runs once during startup after locating the release root and before starting backend processes.
+- [ ] Add launcher tests for manifest missing, key file missing, SHA-256 mismatch, and non-key file absence not blocking fast startup.
 - [ ] Update `build-trial-release.ps1` so a normal non-`-PortableOnly` run executes Task 14 assembly followed by Task 15 gates, but still skips Inno Setup until Task 16 is implemented.
 
 ### Forbidden changes
@@ -1200,6 +1230,7 @@ This task must follow Portable directory assembly and precede installer integrat
 - `Test-Path .\build\release\Chatbot-Trial-0.1.0-x64\build-report.json`
 - `Test-Path .\build\release\SHA256SUMS.txt`
 - `Test-Path .\build\release\Chatbot-Trial-0.1.0-x64.zip`
+- `dotnet test C:\Users\33031\Desktop\bot\packaging\launcher\ChatbotLauncher.sln -c Release --filter ManifestValidator`
 
 ### Expected result
 
@@ -1210,6 +1241,7 @@ Every assembled Portable release is scanned, manifest-backed, hash-listed, repor
 - Scan report is structured and redacted.
 - Manifest, SHA256, and build-report outputs exist before ZIP creation.
 - Desktop backup/build-machine path leakage is checked explicitly.
+- Launcher manifest validation blocks missing/tampered key files and does not block fast startup for non-key-file absence.
 - Inno Setup remains out of scope for Task 15.
 
 ### Suggested commit
@@ -1318,6 +1350,7 @@ This task must follow Task 16 because full end-to-end validation needs both deli
   - packaged child process executable paths for backend Python, connector Python, RPA runtime, and launcher-owned descendants
 - [ ] Implement `verify-trial-release.ps1 -MinimizedPath` mode. This mode must launch with a deliberately minimal `PATH` containing only Windows system directories and the packaged release directories required by the launcher. It must fail if any child process resolves `python.exe`, `node.exe`, `uv.exe`, `pnpm.exe`, or `git.exe` from outside the release directory.
 - [ ] Implement child-process executable path collection in the verifier by recording PID, parent PID, executable path, command line, and create time before stop/uninstall checks. The acceptance output must show that runtime processes come from packaged paths, not system Python/Node/uv.
+- [ ] Execute a no-send, no-decrypt, no-key-export Connector smoke test from `verify-trial-release.ps1`: start the packaged Connector detection/status command, record the Connector Python executable path, verify the path is under `release\connectors\runtime`, and stop the Connector cleanly.
 - [ ] Implement `test-trial-install.ps1` for the Task 16 Setup artifact. It must validate:
   - setup install as a normal user
   - Setup-driven VC++ prerequisite execution when the prerequisite is missing
@@ -1337,10 +1370,13 @@ This task must follow Task 16 because full end-to-end validation needs both deli
 - Do not silently mark unavailable clean-machine checks as passed.
 - Do not rely on `where python`, `where node`, or `where uv` alone; child-process executable paths must be inspected.
 - Do not mark "no system Python/Node/uv" as passed unless minimized `PATH` and process-path verification both pass, and Windows Sandbox or a clean VM has exercised the same flow.
+- Do not send messages during the Connector smoke test.
+- Do not decrypt real user databases during the Connector smoke test.
+- Do not extract or export real keys during the Connector smoke test.
 
 ### Tests and verification
 
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-trial-release.ps1 -ReleasePath ".\build\release\Chatbot-Trial-0.1.0-x64" -ZipPath ".\build\release\Chatbot-Trial-0.1.0-x64.zip" -MinimizedPath`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-trial-release.ps1 -ReleasePath ".\build\release\Chatbot-Trial-0.1.0-x64" -ZipPath ".\build\release\Chatbot-Trial-0.1.0-x64.zip" -MinimizedPath -ConnectorSmokeTest`
 - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-trial-install.ps1 -SetupPath ".\build\release\Chatbot-Setup-0.1.0-x64.exe" -ExpectedInstallRoot "$env:LOCALAPPDATA\Programs\Chatbot"`
 - Launch `C:\Users\33031\Desktop\bot\packaging\sandbox\ChatbotTrial.wsb` and repeat both commands inside Sandbox against the mapped release artifacts.
 
@@ -1352,7 +1388,7 @@ The release has executed, auditable verification entrypoints for Portable, insta
 
 - Verification scripts are separate and cover Portable, installer, and Sandbox flows.
 - Sandbox asset exists and maps release artifacts without depending on the developer checkout.
-- The "no system Python/Node/uv" claim is backed by minimized `PATH`, child-process executable path logs, and Windows Sandbox or clean-VM execution.
+- The "no system Python/Node/uv" claim is backed by minimized `PATH`, child-process executable path logs, Connector smoke-test process evidence, and Windows Sandbox or clean-VM execution.
 - Any unrun clean-machine checks are explicitly marked `UNVERIFIED`.
 
 ### Suggested commit
@@ -1460,7 +1496,7 @@ The release has final user-facing and maintainer-facing documentation that match
 
 - Task 14 baseline Portable-only acceptance: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-trial-release.ps1 -Version "0.1.0" -OutputRoot ".\build\release" -PortableOnly -SkipTests`
 - Task 15 scanned Portable artifact acceptance before installer wiring: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-trial-release.ps1 -Version "0.1.0" -OutputRoot ".\build\release" -SkipTests`
-- Task 15 verifier: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-trial-release.ps1 -ReleasePath ".\build\release\Chatbot-Trial-0.1.0-x64" -ZipPath ".\build\release\Chatbot-Trial-0.1.0-x64.zip" -MinimizedPath`
+- Task 17 verifier: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-trial-release.ps1 -ReleasePath ".\build\release\Chatbot-Trial-0.1.0-x64" -ZipPath ".\build\release\Chatbot-Trial-0.1.0-x64.zip" -MinimizedPath -ConnectorSmokeTest`
 
 ### Installer verification
 
@@ -1472,6 +1508,7 @@ The release has final user-facing and maintainer-facing documentation that match
 - Launch `C:\Users\33031\Desktop\bot\packaging\sandbox\ChatbotTrial.wsb`
 - Validate inside Sandbox or an equivalent clean VM:
   - minimized `PATH` contains no developer Python, Node, uv, pnpm, Git, or repository paths
+  - safe Connector smoke test runs without sending messages, decrypting real databases, or exporting keys
   - child-process executable path logs prove backend Python, connector Python, and RPA runtime came from packaged directories
   - `python.exe`, `node.exe`, `uv.exe`, `pnpm.exe`, and `git.exe` are not resolved from the host/system developer toolchain
   - Portable ZIP extraction and first launch
