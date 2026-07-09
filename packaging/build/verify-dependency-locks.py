@@ -19,7 +19,7 @@ def iter_requirement_names(lock_path: Path):
         line = raw_line.strip()
         if not line or line.startswith('#'):
             continue
-        if line.endswith('\'):
+        if line.endswith('\\'):
             line = line[:-1].rstrip()
         if line.startswith('-'):
             continue
