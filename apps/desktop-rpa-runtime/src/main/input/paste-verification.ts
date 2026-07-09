@@ -1,6 +1,6 @@
 import type { WindowDescriptor } from '../domain/window-types'
 
-export type PasteVerificationPhase = 'before_paste' | 'after_paste'
+export type PasteVerificationPhase = 'before_paste' | 'after_paste' | 'after_send'
 
 export interface PasteVerificationArgs {
   conversationName: string

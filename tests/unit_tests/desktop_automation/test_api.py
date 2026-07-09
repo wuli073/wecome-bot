@@ -173,7 +173,7 @@ async def test_paste_draft_route_rejects_request_body_extra_fields():
     response = await client.post(
         '/api/v1/bots/bot-1/messages/1/paste-draft',
         headers={'Authorization': 'Bearer valid-user-token', 'Idempotency-Key': 'idem-1'},
-        json={'draft_id': 31, 'human_confirmation_token': 'forbidden'},
+        json={'draft_id': 31, 'unexpected_field': 'forbidden'},
     )
     payload = await response.get_json()
 

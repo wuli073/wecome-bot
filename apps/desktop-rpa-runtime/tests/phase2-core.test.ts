@@ -378,9 +378,12 @@ test('paste_only searches conversation by keyboard and pastes draft without veri
     sleep: async (ms) => { sleeps.push(ms) },
   })
 
-  assert.equal(result.status, 'succeeded_with_warning')
+  assert.equal(result.status, 'succeeded')
   assert.equal(result.stage, 'text_pasted_unverified')
-  assert.equal(result.warning, 'PASTE_RESULT_NOT_VERIFIED')
+  assert.equal(result.terminal_confirmed, true)
+  assert.equal(result.enter_dispatched, false)
+  assert.equal(result.message_sent, false)
+  assert.equal(result.result_text, '已粘贴，未发送')
   assert.equal(result.contentVerified, false)
   assert.equal(result.verificationFailed, false)
   assert.equal(result.observationAvailable, false)
@@ -388,19 +391,20 @@ test('paste_only searches conversation by keyboard and pastes draft without veri
   assert.equal(result.actualCodePointCount, null)
   assert.equal(result.actualDigest, null)
   assert.equal(result.actualLineCount, null)
-  assert.equal(clipboardWrites.length, 2)
-  assert.equal(clipboardWrites[0], 'Customer A')
-  assert.equal(clipboardWrites[1], 'First line\nSecond line')
+  assert.equal(clipboardWrites.length, 1)
+  assert.equal(clipboardWrites[0], 'First line\nSecond line')
   assert.equal(sleeps.length, 4)
+  assert.deepEqual(sleeps, [300, 200, 300, 800])
   assert.deepEqual(input.events, [
     { type: 'hotkey', payload: ['Control', 'F'] },
     { type: 'hotkey', payload: ['Control', 'A'] },
-    { type: 'hotkey', payload: ['Control', 'V'] },
+    { type: 'typeText', payload: 'Customer A' },
     { type: 'hotkey', payload: ['Enter'] },
     { type: 'hotkey', payload: ['Control', 'V'] },
   ])
   assert.equal(result.searchShortcutCount, 1)
-  assert.equal(result.conversationPasteCount, 1)
+  assert.equal(result.conversationInputCount, 1)
+  assert.equal(result.conversationPasteCount, 0)
   assert.equal(result.conversationConfirmEnterCount, 1)
   assert.equal(result.draftPasteCount, 1)
   assert.equal(result.sendKeyCount, 0)
@@ -669,7 +673,7 @@ test('paste_only only returns succeeded after explicit content verification pass
     sleep: async () => undefined,
   } as never)
 
-  assert.equal(result.status, 'succeeded_with_warning')
+  assert.equal(result.status, 'succeeded')
   assert.equal(result.stage, 'text_pasted_unverified')
   assert.equal(result.inputLocated, false)
   assert.equal(result.draftWritten, true)
@@ -678,7 +682,7 @@ test('paste_only only returns succeeded after explicit content verification pass
   assert.deepEqual(input.events, [
     { type: 'hotkey', payload: ['Control', 'F'] },
     { type: 'hotkey', payload: ['Control', 'A'] },
-    { type: 'hotkey', payload: ['Control', 'V'] },
+    { type: 'typeText', payload: 'Customer A' },
     { type: 'hotkey', payload: ['Enter'] },
     { type: 'hotkey', payload: ['Control', 'V'] },
   ])
@@ -739,13 +743,13 @@ test('runtime host reuses idempotency key and does not repeat paste task', async
   const second = await host.createTask({ ...request, draftText: 'changed' })
   assert.equal(first.id, second.id)
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (host.getTask(first.id)?.status === 'succeeded_with_warning') {
+    if (host.getTask(first.id)?.status === 'succeeded') {
       break
     }
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
-  assert.equal(host.getTask(first.id)?.status, 'succeeded_with_warning')
-  assert.equal(input.events.filter((event) => event.type === 'hotkey').length, 5)
+  assert.equal(host.getTask(first.id)?.status, 'succeeded')
+  assert.equal(input.events.filter((event) => event.type === 'hotkey').length, 4)
 })
 
 test('paste-draft tasks share one execution lane and run in FIFO order', async () => {
@@ -948,7 +952,7 @@ test('paste_only appends attachments after verified text and never presses Enter
     assert.deepEqual(input.events, [
       { type: 'hotkey', payload: ['Control', 'F'] },
       { type: 'hotkey', payload: ['Control', 'A'] },
-      { type: 'hotkey', payload: ['Control', 'V'] },
+      { type: 'typeText', payload: 'Customer A' },
       { type: 'hotkey', payload: ['Enter'] },
       { type: 'hotkey', payload: ['Control', 'V'] },
       { type: 'hotkey', payload: ['Control', 'V'] },
@@ -1211,7 +1215,7 @@ test('paste_only fails before attachment Ctrl+V when target window loses foregro
     assert.deepEqual(input.events, [
       { type: 'hotkey', payload: ['Control', 'F'] },
       { type: 'hotkey', payload: ['Control', 'A'] },
-      { type: 'hotkey', payload: ['Control', 'V'] },
+      { type: 'typeText', payload: 'Customer A' },
       { type: 'hotkey', payload: ['Enter'] },
       { type: 'hotkey', payload: ['Control', 'V'] },
     ])

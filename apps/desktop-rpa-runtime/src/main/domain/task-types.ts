@@ -1,6 +1,6 @@
 export type TaskStatus = 'queued' | 'running' | 'succeeded' | 'succeeded_with_warning' | 'blocked' | 'failed' | 'cancelled' | 'timed_out' | 'interrupted'
 export type TaskAction = 'paste_draft' | 'send_draft' | 'send_message' | 'diagnose' | 'conversation_search' | 'history_search' | 'quote_reply'
-export type SendStrategy = 'enter' | 'ctrl_enter' | 'click_send_button'
+export type SendStrategy = 'enter'
 
 export interface RuntimeAttachmentPayload {
   relativePath: string
@@ -22,7 +22,6 @@ export interface RuntimeTaskRequest {
   sendAuthorized?: boolean
   sendStrategy?: SendStrategy
   allowAutoSend?: boolean
-  confirmationToken?: string
   attachments?: RuntimeAttachmentPayload[]
 }
 

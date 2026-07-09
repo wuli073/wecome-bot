@@ -1948,7 +1948,7 @@ const zhHans = {
     },
     status: {
       pending: '待审核',
-      pasted: '已写入输入框',
+      pasted: '已粘贴，未发送',
       failed: '处理失败',
       completed: '已完成',
     },
@@ -2202,7 +2202,7 @@ const zhHans = {
       selectedCount: '已选 {{count}} 条草稿',
       batchConfirm: '批量确认',
       createExecutionBatch: '创建执行批次',
-      batchWriteSelected: '批量写入选中',
+      batchWriteSelected: '仅粘贴至发送框',
       batchWriteConfirmTitle: '????????????',
       batchWriteConfirmDescription:
         '?? {{draftCount}} ????{{conversationCount}} ?????????????? {{attachmentCount}} ??????????{{duplicateTargetCount}}????????????????????????',
@@ -2214,8 +2214,8 @@ const zhHans = {
       revokeConfirm: '撤回确认',
       markSent: '标记已发送',
       restorePending: '恢复为待发送',
-      pasteToInput: '写入输入框',
-      rewriteToInput: '再次写入输入框',
+      pasteToInput: '仅粘贴至发送框',
+      rewriteToInput: '仅粘贴至发送框',
       pasteLoading: '写入中...',
       messageBody: '草稿正文',
       templateLabel: '模板名称',
@@ -2243,17 +2243,23 @@ const zhHans = {
       pasteDialogTitle: '确认写入输入框',
       pasteDialogDescription:
         '请再次确认目标群聊和草稿内容。本操作仅写入输入框，不会自动发送。',
-      realSend: '真实发送',
+      realSend: '直接发送',
       sendLoading: '发送中...',
       sendDialogTitle: '确认真实发送',
       sendDialogDescription:
-        '请再次核对目标群聊和完整正文。本操作会触发真实发送。',
-      sendWarning: '本操作将真实发送消息，发送后无法自动撤回。',
+        '请再次核对以下信息。最终确认后，系统会按 Enter 真实发送消息。',
+      sendDialogCustomer: '客户：{{customer}}',
+      sendDialogConversation: '目标群聊：{{conversation}}',
+      sendDialogAttachmentCount: '附件数：{{count}}',
+      sendWarning: '本操作会按 Enter 真实发送，发送后无法自动撤回。',
       sendCountdown: '请等待 {{count}} 秒后再进行最终确认。',
       sendAcknowledge: '我已确认目标群聊和正文无误，并理解这将真实发送消息。',
       cancelAction: '取消',
       confirmPasteAction: '确认写入',
       confirmSendAction: '确认发送',
+      restorePendingRiskTitle: '确认恢复为待发送',
+      restorePendingRiskDescription:
+        '上一次发送可能已经成功。恢复后再次真实发送可能造成重复消息。',
       editor: '草稿编辑器',
       emptyDetail: '请先从左侧队列选择一条草稿查看详情。',
     },
@@ -2300,10 +2306,10 @@ const zhHans = {
       retryTask: '重试',
       booleanYes: '是',
       booleanNo: '否',
-      statusDraftWritten: '已写入输入框',
-      statusPasteVerified: '已写入并验证',
-      statusWarning: '已写入，请人工确认后发送',
-      statusSendTriggered: '已触发发送',
+      statusDraftWritten: '已粘贴，未发送',
+      statusPasteVerified: '已粘贴，未发送',
+      statusWarning: '已粘贴，未发送',
+      statusSendTriggered: '已按一次 Enter 发送',
       retryFailedTasks: '?????',
       retryFailedTasksConfirmTitle: '?????',
       retryFailedTasksConfirmDescription:
@@ -2566,10 +2572,10 @@ zhHansLogFieldLocale.recoveryAdvice = '处理建议';
 zhHans.broadcast.logs.retryFailedTasks = '重试失败项';
 zhHans.broadcast.logs.retryFailedTasksConfirmTitle = '重试失败项';
 zhHans.broadcast.logs.retryFailedTasksConfirmDescription =
-  '将重新提交最新批次中的 {{count}} 个失败或中断任务，已成功的任务不会重复提交。';
-zhHans.broadcast.drafts.batchWriteConfirmTitle = '批量写入选中草稿到输入框';
+  '将重新提交最新批次中 {{count}} 个已确认发生在 Enter 之前的失败任务；发送结果待确认的任务不会自动重试。';
+zhHans.broadcast.drafts.batchWriteConfirmTitle = '将选中草稿写入输入框';
 zhHans.broadcast.drafts.batchWriteConfirmDescription =
-  '将为 {{draftCount}} 条草稿、{{conversationCount}} 个目标群聊提交写入任务，涉及 {{attachmentCount}} 个附件。重复目标数：{{duplicateTargetCount}}。执行期间请不要切换窗口，也不要操作鼠标和键盘。';
+  '本次将写入 {{draftCount}} 条草稿，涉及 {{conversationCount}} 个目标群聊，包含 {{attachmentCount}} 个附件；重复目标群聊 {{duplicateTargetCount}} 个。执行期间请勿切换窗口，也不要操作鼠标和键盘。';
 zhHans.broadcast.import.rematchConfirmTitle = '重新匹配当前批次';
 zhHans.broadcast.import.rematchConfirmDescription =
   '这会按最新规则重新计算当前批次的匹配结果。如果后端因 ready 草稿阻止重新匹配，页面仍会展示后端返回的真实原因。';
@@ -2616,10 +2622,20 @@ zhHansErrorSuggestionLocale.PASTE_RESULT_NOT_VERIFIED =
   '内容已写入，但系统无法自动核对，请人工检查输入框。';
 zhHansErrorSuggestionLocale.__default =
   '请结合原始错误码和技术详情排查后再重试。';
+const zhHansErrorCodeLocale = zhHans.broadcast.logs.errorCodes as Record<
+  string,
+  string
+>;
+zhHansErrorCodeLocale.BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN =
+  '发送结果无法确认，请人工检查目标会话。';
+zhHansErrorCodeLocale.BROADCAST_SEND_RESULT_UNKNOWN =
+  '发送结果无法确认，请人工检查目标会话。';
+zhHansErrorCodeLocale.BROADCAST_RETRY_SEND_RESULT_UNKNOWN =
+  '仅允许自动重试已明确确认在 Enter 之前失败的任务。';
 zhHans.broadcast.toasts.executionFailedTasksRetried =
-  '已提交 {{successCount}} 个失败/中断任务重试，{{failedCount}} 个提交失败。';
+  '已提交 {{successCount}} 个已确认的发送前失败任务重试，{{failedCount}} 个提交失败。';
 zhHans.broadcast.toasts.executionFailedTasksRetryNoop =
-  '当前没有可重试的失败或中断任务。';
+  '当前没有可自动重试的发送前失败任务。';
 
 const zhHansBroadcastImportLocale = zhHans.broadcast.import as Record<
   string,
@@ -2676,5 +2692,347 @@ zhHansBroadcastLocale.groupRule = {
     candidateRules: '????',
   },
 };
+
+function deepMergeLocale(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+) {
+  for (const [key, value] of Object.entries(source)) {
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      target[key] &&
+      typeof target[key] === 'object' &&
+      !Array.isArray(target[key])
+    ) {
+      deepMergeLocale(
+        target[key] as Record<string, unknown>,
+        value as Record<string, unknown>,
+      );
+      continue;
+    }
+    target[key] = value;
+  }
+}
+
+deepMergeLocale(zhHans.broadcast as Record<string, unknown>, {
+  contract: {
+    toggle: '\u67e5\u770b\u6280\u672f\u8be6\u60c5',
+  },
+  scope: {
+    selectBot: '\u9009\u62e9 Bot',
+    selectConnector: '\u9009\u62e9 Connector',
+  },
+  fields: {
+    targetConversationName: '\u76ee\u6807\u7fa4\u804a',
+  },
+  groupRule: {
+    customerName: '\u5ba2\u6237\u540d\u79f0',
+    invalidLegacy:
+      '\u65e0\u6548\u5386\u53f2\u89c4\u5219\uff0c\u4e0d\u53c2\u4e0e\u5339\u914d\u3002',
+    matchTypeOptions: {
+      exact: '\u5b8c\u5168\u5339\u914d',
+      contains: '\u5305\u542b\u5173\u952e\u8bcd',
+      regex: '\u6b63\u5219\u5339\u914d',
+    },
+    targetConversationSearchPlaceholder:
+      '\u641c\u7d22\u76ee\u6807\u7fa4\u804a\u540d\u79f0',
+    targetConversationSelectPlaceholder:
+      '\u8bf7\u9009\u62e9\u5e26\u7a33\u5b9a ID \u7684\u76ee\u6807\u7fa4\u804a',
+    targetConversationSelectionRequired:
+      '\u8bf7\u5148\u4ece\u5019\u9009\u5217\u8868\u4e2d\u9009\u62e9\u76ee\u6807\u7fa4\u804a',
+    targetConversationLegacyReselect:
+      '\u8be5\u5386\u53f2\u89c4\u5219\u7f3a\u5c11\u7a33\u5b9a\u76ee\u6807\u7fa4\u804a ID\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9\u3002',
+    targetConversationMissingStableId:
+      '\u8be5\u7fa4\u804a\u7f3a\u5c11\u7a33\u5b9a externalConversationId\uff0c\u6682\u65f6\u4e0d\u53ef\u9009\u62e9\u3002',
+    preview: {
+      empty:
+        '\u8f93\u5165\u5ba2\u6237\u540d\u79f0\u5e76\u6267\u884c\u5339\u914d\u9884\u89c8\u3002',
+      matchedBadge: '\u5df2\u5339\u914d',
+      conflictBadge: '\u51b2\u7a81',
+      noMatchBadge: '\u672a\u5339\u914d',
+      currentRule: '\u5f53\u524d\u547d\u4e2d\u89c4\u5219',
+      noMatch:
+        '\u5f53\u524d\u5ba2\u6237\u503c\u6ca1\u6709\u547d\u4e2d\u4efb\u4f55\u89c4\u5219\u3002',
+      conflict:
+        '\u5f53\u524d\u5ba2\u6237\u503c\u547d\u4e2d\u4e86\u591a\u6761\u89c4\u5219\uff0c\u8bf7\u68c0\u67e5\u89c4\u5219\u4f18\u5148\u7ea7\u3002',
+      candidateRules: '\u5019\u9009\u89c4\u5219',
+    },
+  },
+  groupRuleCandidates: {
+    title: '\u5f85\u914d\u7f6e\u5ba2\u6237',
+    description:
+      '\u9009\u62e9\u5bfc\u5165\u6279\u6b21\uff0c\u67e5\u770b\u65b0\u589e\u5ba2\u6237\u7edf\u8ba1\uff0c\u5e76\u5728\u7fa4\u5339\u914d\u9875\u5b8c\u6210\u7fa4\u804a\u5206\u914d\u3002',
+    selectBatch: '\u5bfc\u5165\u6279\u6b21',
+    selectBatchPlaceholder: '\u8bf7\u9009\u62e9\u5bfc\u5165\u6279\u6b21',
+    fileName: '\u5f53\u524d\u6279\u6b21\u6587\u4ef6',
+    detectedField: '\u672c\u6279\u6b21\u8bc6\u522b\u5b57\u6bb5',
+    rawRowCount: '\u539f\u59cb\u884c\u6570',
+    uniqueCustomerCount: '\u53bb\u91cd\u5ba2\u6237\u6570',
+    newCount: '\u65b0\u589e\u5ba2\u6237\u6570',
+    configuredCount: '\u5df2\u914d\u7f6e\u6570',
+    needsRepairCount: '\u9700\u4fee\u590d\u6570',
+    conflictCount: '\u51b2\u7a81\u6570',
+    noBatches: '\u6682\u65e0\u5bfc\u5165\u6279\u6b21\u3002',
+    noBatchSelected:
+      '\u8bf7\u5148\u9009\u62e9\u4e00\u4e2a\u5bfc\u5165\u6279\u6b21\u3002',
+    bulkAssignButton:
+      '\u6279\u91cf\u5206\u914d\u7fa4\u804a\uff08{{count}}\uff09',
+  },
+  bulkGroupAssignment: {
+    title: '\u6279\u91cf\u5206\u914d\u7fa4\u804a',
+    description:
+      '\u4e3a {{count}} \u4e2a\u65b0\u589e\u5ba2\u6237\u9009\u62e9\u76ee\u6807\u7fa4\u804a\uff0c\u5e76\u4e00\u6b21\u6027\u521b\u5efa exact \u89c4\u5219\u3002',
+    customerName: '\u5ba2\u6237\u540d\u79f0',
+    rawRowCount: '\u539f\u59cb\u884c\u6570',
+    status: '\u72b6\u6001',
+    targetConversation: '\u76ee\u6807\u7fa4\u804a',
+    searchConversation: '\u641c\u7d22\u76ee\u6807\u7fa4\u804a\u540d\u79f0',
+    searchPlaceholder:
+      '\u641c\u7d22\u76ee\u6807\u7fa4\u804a\u540d\u79f0\u6216\u7a33\u5b9a ID',
+    applyToSelected:
+      '\u7edf\u4e00\u5e94\u7528\u5230\u5df2\u9009\u5ba2\u6237\uff08{{count}}\uff09',
+    clearSelected: '\u6e05\u9664\u5df2\u9009\u7fa4\u804a',
+    selectedCount: '\u5df2\u9009 {{count}} \u4e2a\u5ba2\u6237',
+    submit:
+      '\u521b\u5efa\u89c4\u5219\u5e76\u91cd\u65b0\u5339\u914d\uff08{{count}}\uff09',
+    submitting: '\u6b63\u5728\u63d0\u4ea4\u2026',
+    noCandidates:
+      '\u5f53\u524d\u6ca1\u6709\u53ef\u6279\u91cf\u5206\u914d\u7684\u65b0\u589e\u5ba2\u6237\u3002',
+    missingStableId:
+      '\u7f3a\u5c11\u7a33\u5b9a ID\uff0c\u4e0d\u53ef\u9009\u62e9',
+    confirmTitle: '\u786e\u8ba4\u6279\u91cf\u521b\u5efa exact \u89c4\u5219',
+    confirmDescription:
+      '\u5c06\u4e3a {{count}} \u4e2a\u5ba2\u6237\u521b\u5efa\u89c4\u5219\uff0c\u5e76\u91cd\u65b0\u5339\u914d\u5f53\u524d\u5bfc\u5165\u6279\u6b21\u3002',
+    validationError:
+      '\u8bf7\u5148\u4e3a\u5df2\u9009\u5ba2\u6237\u5206\u914d\u76ee\u6807\u7fa4\u804a\u3002',
+    validationErrorWithCount:
+      '\u8fd8\u6709 {{count}} \u4e2a\u5df2\u9009\u5ba2\u6237\u672a\u5206\u914d\u76ee\u6807\u7fa4\u804a\u3002',
+    targetConversationSelectPlaceholder:
+      '\u8bf7\u9009\u62e9\u76ee\u6807\u7fa4\u804a',
+    statusValues: {
+      new: '\u65b0\u589e',
+      configured: '\u5df2\u914d\u7f6e',
+      needs_repair: '\u9700\u4fee\u590d',
+      conflict: '\u51b2\u7a81',
+      invalid: '\u65e0\u6548',
+    },
+  },
+  import: {
+    goToGroupMatching: '\u524d\u5f80\u7fa4\u5339\u914d',
+    generateWarnings: {
+      duplicateConversation:
+        '\u6240\u9009\u5206\u7ec4\u5b58\u5728\u91cd\u590d\u76ee\u6807\u7fa4\u804a\uff0c\u8bf7\u786e\u8ba4\u540e\u518d\u751f\u6210\u8349\u7a3f\u3002',
+    },
+    rematchConfirmTitle: '\u91cd\u65b0\u5339\u914d\u5f53\u524d\u6279\u6b21',
+    rematchConfirmDescription:
+      '\u5c06\u6309\u6700\u65b0\u7fa4\u5339\u914d\u89c4\u5219\u91cd\u65b0\u8ba1\u7b97\u5f53\u524d\u5bfc\u5165\u6279\u6b21\u7684\u5339\u914d\u7ed3\u679c\u3002',
+    deleteBatchConfirmTitle: '\u5220\u9664\u5bfc\u5165\u6279\u6b21',
+    deleteBatchConfirmDescription:
+      '\u5220\u9664 {{fileName}}\uff1f\u5f53\u524d\u6279\u6b21\u5305\u542b {{totalRows}} \u884c\u3001{{groupCount}} \u4e2a\u5206\u7ec4\uff0c\u4ee5\u53ca {{draftCount}} \u6761\u76f8\u5173\u8349\u7a3f\u3002',
+    generateDraftsConfirmTitle: '\u751f\u6210\u9009\u4e2d\u8349\u7a3f',
+    generateDraftsConfirmDescription:
+      '\u5c06\u4e3a {{selectedCount}} \u4e2a\u9009\u4e2d\u5206\u7ec4\u751f\u6210\u8349\u7a3f\uff0c\u5176\u4e2d {{templatedCount}} \u4e2a\u5df2\u914d\u7f6e\u6a21\u677f\uff0c{{blockedCount}} \u4e2a\u5f53\u524d\u4e0d\u53ef\u751f\u6210\u3002',
+  },
+  drafts: {
+    batchWriteNoSelection:
+      '\u8bf7\u5148\u9009\u62e9\u81f3\u5c11\u4e00\u6761\u8349\u7a3f\u3002',
+    noDraftSelectedReason:
+      '\u8bf7\u5148\u9009\u62e9\u4e00\u6761\u8349\u7a3f\u3002',
+    pasteMissingBody: '\u8349\u7a3f\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a\u3002',
+  },
+  rules: {
+    groupMatching: {
+      editorDescription:
+        '\u5728\u6b64\u7ef4\u62a4 exact / contains / regex \u89c4\u5219\uff0c\u5e76\u9884\u89c8\u5f53\u524d\u5339\u914d\u7ed3\u679c\u3002',
+    },
+    templates: {
+      editorDescription:
+        '\u5728\u6b64\u7f16\u8f91\u7fa4\u53d1\u6d88\u606f\u6a21\u677f\u5185\u5bb9\u4e0e\u542f\u7528\u72b6\u6001\u3002',
+    },
+    variablePoolEmpty: '\u5f53\u524d\u6ca1\u6709\u53ef\u7528\u53d8\u91cf\u3002',
+  },
+  toasts: {
+    importBulkAssignCompleted:
+      '\u5df2\u4e3a {{count}} \u4e2a\u5ba2\u6237\u521b\u5efa exact \u89c4\u5219\uff0c\u5e76\u91cd\u65b0\u5339\u914d\u5f53\u524d\u5bfc\u5165\u6279\u6b21\u3002',
+  },
+});
+
+deepMergeLocale(zhHans.broadcast as Record<string, unknown>, {
+  import: {
+    groupFieldDetected:
+      '\u672c\u6279\u6b21\u5df2\u8bc6\u522b\u5ba2\u6237\u5b57\u6bb5\uff1a{{field}}',
+    groupFieldDialog: {
+      title: '\u786e\u8ba4\u5ba2\u6237\u5b57\u6bb5',
+      description:
+        '\u65e0\u6cd5\u552f\u4e00\u786e\u5b9a {{fileName}} \u7684\u5ba2\u6237\u5206\u7ec4\u5b57\u6bb5\uff0c\u8bf7\u9009\u62e9\u540e\u7ee7\u7eed\u5bfc\u5165\u3002',
+      configuredField: '\u5f53\u524d\u914d\u7f6e\u5b57\u6bb5\uff1a{{field}}',
+      selectLabel:
+        '\u672c\u6b21\u5bfc\u5165\u4f7f\u7528\u7684\u5ba2\u6237\u5b57\u6bb5',
+      headersLabel: '\u6587\u4ef6\u8868\u5934',
+      confirmButton: '\u7ee7\u7eed\u5bfc\u5165',
+    },
+    bulkAssign: {
+      openButton: 'Bulk assign new customers ({{count}})',
+      dialogTitle: 'Bulk assign new customers',
+      dialogDescription:
+        'Choose target conversations for {{count}} new customers and create exact rules in one step.',
+      applyConversationLabel: 'Choose a conversation to apply in bulk',
+      searchPlaceholder: 'Search conversation name or stable conversation ID',
+      emptySearch: 'No matching conversations',
+      applyConversationButton: 'Apply to selected customers ({{count}})',
+      selectionRequired: 'Select an available conversation first.',
+      noSelection: 'Select at least one customer.',
+      missingAssignments:
+        '{{count}} selected customer(s) still need a target conversation.',
+      emptyCandidates:
+        'There are no new customers available for bulk assignment.',
+      targetConversationPlaceholder: 'Select target conversation',
+      submitButton: 'Create rules and rematch ({{count}})',
+      tableHeaders: {
+        selection: 'Select',
+        customerName: 'Customer',
+        rawRowCount: 'Raw rows',
+        targetConversation: 'Target conversation',
+      },
+    },
+  },
+  drafts: {
+    batchWriteConfirmTitle:
+      '\u5c06\u9009\u4e2d\u8349\u7a3f\u5199\u5165\u8f93\u5165\u6846',
+    batchWriteConfirmDescription:
+      '\u672c\u6b21\u5c06\u5199\u5165 {{draftCount}} \u6761\u8349\u7a3f\uff0c\u6d89\u53ca {{conversationCount}} \u4e2a\u76ee\u6807\u7fa4\u804a\uff0c\u5305\u542b {{attachmentCount}} \u4e2a\u9644\u4ef6\uff1b\u91cd\u590d\u76ee\u6807\u7fa4\u804a {{duplicateTargetCount}} \u4e2a\u3002\u6267\u884c\u671f\u95f4\u8bf7\u52ff\u5207\u6362\u7a97\u53e3\uff0c\u4e5f\u4e0d\u8981\u64cd\u4f5c\u9f20\u6807\u548c\u952e\u76d8\u3002',
+  },
+  logs: {
+    retryFailedTasks: '重试失败项',
+    retryFailedTasksConfirmTitle: '重试失败项',
+    retryFailedTasksConfirmDescription:
+      '将重新提交最新批次中 {{count}} 个已确认发生在 Enter 之前的失败任务；发送结果待确认的任务不会自动重试。',
+    batchStatuses: {
+      created: 'Waiting to start',
+      queued: 'Queued',
+      running: 'Running',
+      paused: 'Paused',
+      completed: 'Completed',
+      partially_failed: 'Partially failed',
+      failed: 'Failed',
+      cancelled: 'Cancelled',
+      interrupted: 'Interrupted',
+      unknown: 'Unknown',
+    },
+    taskStatuses: {
+      pending: 'Waiting to run',
+      queued: 'Queued',
+      running: 'Writing',
+      succeeded: 'Written successfully',
+      succeeded_with_warning: '已写入，请人工确认后发送',
+      blocked: 'Not executed',
+      failed: 'Write failed',
+      cancelled: 'Cancelled',
+      timed_out: 'Timed out',
+      interrupted: 'Interrupted',
+      unknown: 'Unknown',
+    },
+    fields: {
+      batchStatus: 'batchStatus',
+      taskStatus: 'taskStatus',
+      attemptStatus: 'attemptStatus',
+      runtimeState: 'runtimeState',
+      recoveryAdvice: 'recoveryAdvice',
+    },
+    errorSuggestions: {
+      TARGET_WINDOW_NOT_FOUND: 'Open the WeCom main window and retry.',
+      TARGET_WINDOW_AMBIGUOUS: 'Close extra WeCom windows and retry.',
+      WINDOW_ACTIVATION_FAILED:
+        'Do not switch windows or use the mouse and keyboard during execution, then retry.',
+      SEARCH_ACTIVATION_FAILED:
+        'Do not switch windows or use the mouse and keyboard during execution, then retry.',
+      TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE:
+        'Do not switch windows or use the mouse and keyboard during execution, then retry.',
+      CONVERSATION_NAME_PASTE_FAILED:
+        'Check the target conversation name and matching rules.',
+      SEARCH_RESULT_CONFIRM_FAILED:
+        'Check the target conversation name and matching rules.',
+      ATTACHMENT_FILE_MISSING:
+        'Go back to draft review and upload the attachment again.',
+      ATTACHMENT_HASH_MISMATCH:
+        'Go back to draft review and upload the attachment again.',
+      ATTACHMENT_PATH_OUTSIDE_ROOT:
+        'Go back to draft review and upload the attachment again.',
+      FILE_CLIPBOARD_HELPER_FAILED: 'Check the Runtime status and retry.',
+      FILE_CLIPBOARD_HELPER_TIMEOUT: 'Check the Runtime status and retry.',
+      CLIPBOARD_RESTORE_MISMATCH:
+        'The write may already be finished, but clipboard restore failed. Check manually.',
+      PASTE_RESULT_NOT_VERIFIED:
+        'The content was written, but the system could not verify it automatically. Please check the input box manually.',
+      __default:
+        'Check the raw error code and technical details, then retry if appropriate.',
+    },
+    errorCodes: {
+      FILE_CLIPBOARD_HELPER_SPAWN_FAILED:
+        'Unable to start the attachment clipboard helper.',
+      FILE_CLIPBOARD_HELPER_TIMEOUT:
+        'Timed out while preparing the attachment clipboard.',
+      FILE_CLIPBOARD_HELPER_FAILED:
+        'Unable to prepare the attachment clipboard.',
+      FILE_CLIPBOARD_OUTPUT_INVALID:
+        'The attachment clipboard helper returned an invalid result.',
+      FILE_CLIPBOARD_COUNT_MISMATCH:
+        'The attachment clipboard file count does not match the task.',
+      FILE_CLIPBOARD_PATH_MISMATCH:
+        'The attachment clipboard files do not match the task.',
+      TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE:
+        'The WeCom window lost focus before attachment paste.',
+      ATTACHMENT_PASTE_FAILED: 'Failed to paste attachments.',
+    },
+  },
+  toasts: {
+    executionFailedTasksRetried:
+      '已提交 {{successCount}} 个已确认的发送前失败任务重试，{{failedCount}} 个提交失败。',
+    executionFailedTasksRetryNoop: '当前没有可自动重试的发送前失败任务。',
+  },
+});
+
+deepMergeLocale(zhHans.broadcast as Record<string, unknown>, {
+  drafts: {
+    statusUnknown: '待人工确认',
+    batchSendSelected: '直接发送',
+    batchSendConfirmTitle: '确认批量发送',
+    batchSendConfirmDescription:
+      '本次将串行真实发送 {{draftCount}} 条草稿到 {{conversationCount}} 个目标群聊，包含 {{attachmentCount}} 个附件；重复目标群聊 {{duplicateTargetCount}} 个（仅提示，不阻止发送）。如单条发送失败或结果未知，系统仍会继续后续草稿。',
+    batchSendNoSelection: '请先选择至少一条草稿。',
+    sendUnavailable: '当前执行器暂不支持真实发送。',
+    sendRequiresReview:
+      '最近一次发送结果仍待确认，请先标记为已发送或恢复为待发送。',
+    sendAlreadySent: '该草稿已标记为已发送。',
+  },
+  toasts: {
+    batchSendPendingOnly: '真实发送仅允许选择可发送的待发送草稿。',
+    batchMarkSentResolvableOnly:
+      '标记已发送仅允许整批选择“待发送”或“待人工确认”草稿。',
+    batchRestorePendingResolvableOnly:
+      '恢复为待发送仅允许整批选择“已发送”或“待人工确认”草稿。',
+    realSendCompleted: '真实发送完成：已发送 {{sentCount}} 条。',
+    realSendCompletedWithFailures:
+      '真实发送已结束：已发送 {{sentCount}} 条，失败 {{failedCount}} 条。',
+    realSendCompletedWithUnknown:
+      '真实发送需要人工确认：已发送 {{sentCount}} 条，失败 {{failedCount}} 条，待确认 {{unknownCount}} 条。',
+  },
+});
+
+deepMergeLocale(zhHans.broadcast as Record<string, unknown>, {
+  executor: {
+    runtimeOwnershipConflict:
+      '\u68c0\u6d4b\u5230\u72ec\u7acb\u8fd0\u884c\u7684 Desktop Runtime\u3002',
+    runtimeUnavailable:
+      '\u5f53\u524d\u6267\u884c\u5668\u672a\u8fde\u63a5\u3002',
+    sendUnsupported:
+      '\u5f53\u524d\u6267\u884c\u5668\u6682\u4e0d\u652f\u6301\u771f\u5b9e\u53d1\u9001\u3002',
+    realSendReady:
+      '\u5f53\u524d\u6267\u884c\u5668\u5df2\u8fde\u63a5\uff0c\u5141\u8bb8\u771f\u5b9e\u53d1\u9001\u3002',
+    recheck: '\u91cd\u65b0\u68c0\u67e5',
+  },
+});
 
 export default zhHans;

@@ -50,6 +50,31 @@ test('runtime calibration and context-confirmation routes are removed', async ()
   }
 })
 
+test('runtime status returns broadcast send diagnostics without enabling auto-send', async () => {
+  const server = await createLocalHttpServer({
+    host: '127.0.0.1',
+    port: 0,
+    token: 'token',
+    stateStore: new RuntimeStateStore('1', '0.1.0', {
+      broadcastSendEnabled: true,
+      allowedConnectorCount: 1,
+      allowedConnectors: ['wxwork-local'],
+      broadcastSendErrorCode: null,
+    }),
+    runtimeHost: new RuntimeHost(),
+  })
+  try {
+    const response = await request(server.port, 'GET', '/v1/runtime/status')
+    assert.equal(response.statusCode, 200)
+    assert.equal(response.payload.sendEnabled, true)
+    assert.equal(response.payload.allowedConnectorCount, 1)
+    assert.deepEqual(response.payload.allowedConnectors, ['wxwork-local'])
+    assert.equal(response.payload.sendErrorCode, null)
+  } finally {
+    await server.close()
+  }
+})
+
 test('runtime paste-draft rejects forbidden calibration and confirmation fields', async () => {
   const server = await createLocalHttpServer({
     host: '127.0.0.1',
@@ -176,7 +201,6 @@ test('runtime returns idempotency conflict when the same key is reused with a di
       requestDigest: 'digest-a',
       conversationName: 'Customer A',
       messageText: 'hello',
-      confirmationToken: 'token-1',
     })
     assert.equal(conflicted.statusCode, 409)
     assert.equal(conflicted.payload.errorCode, 'IDEMPOTENCY_KEY_CONFLICT')

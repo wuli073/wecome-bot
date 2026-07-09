@@ -59,6 +59,8 @@ interface ExecutionLogPanelProps {
   latestBatch?: BroadcastExecutionBatchSummary | null;
   executorCapability?: BroadcastExecutorCapability | null;
   executorHealth?: BroadcastExecutorHealth | null;
+  executorHealthLoading?: boolean;
+  executorHealthMessage?: string | null;
   pasteExecutionAvailable?: boolean;
   pasteVerificationAvailable?: boolean;
   pasteVerificationMethod?:
@@ -71,6 +73,7 @@ interface ExecutionLogPanelProps {
   pasteActionDisabledReason?: string | null;
   pasteVerificationHint?: string | null;
   busy?: boolean;
+  onRecheckExecutorHealth?: () => void;
   onStartBatch?: () => void;
   onPauseBatch?: () => void;
   onResumeBatch?: () => void;
@@ -233,6 +236,8 @@ export default function ExecutionLogPanel({
   latestBatch,
   executorCapability,
   executorHealth,
+  executorHealthLoading = false,
+  executorHealthMessage = null,
   pasteExecutionAvailable = false,
   pasteVerificationAvailable = false,
   pasteVerificationMethod = 'unavailable',
@@ -240,6 +245,7 @@ export default function ExecutionLogPanel({
   pasteActionDisabledReason = null,
   pasteVerificationHint = null,
   busy = false,
+  onRecheckExecutorHealth,
   onStartBatch,
   onPauseBatch,
   onResumeBatch,
@@ -417,8 +423,21 @@ export default function ExecutionLogPanel({
             className="rounded-xl border bg-muted/10 p-4"
             data-testid="broadcast-executor-health-card"
           >
-            <div className="text-sm font-medium">
-              {t('broadcast.logs.executorHealthTitle')}
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-medium">
+                {t('broadcast.logs.executorHealthTitle')}
+              </div>
+              {onRecheckExecutorHealth ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  data-testid="broadcast-executor-health-recheck-button"
+                  disabled={busy || executorHealthLoading}
+                  onClick={onRecheckExecutorHealth}
+                >
+                  {t('broadcast.executor.recheck')}
+                </Button>
+              ) : null}
             </div>
             <div className="mt-3 flex items-center gap-2">
               <Badge
@@ -436,6 +455,11 @@ export default function ExecutionLogPanel({
               {t('broadcast.logs.protocolVersion')}:{' '}
               {executorHealth?.protocol_version || '-'}
             </div>
+            {executorHealthMessage ? (
+              <div className="mt-3 text-xs text-muted-foreground">
+                {executorHealthMessage}
+              </div>
+            ) : null}
           </div>
         </div>
 

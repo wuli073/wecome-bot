@@ -9,6 +9,10 @@ param(
     [int]$BackendHealthTimeoutSeconds = 120,
     [int]$WebHealthTimeoutSeconds = 60,
 
+    [switch]$EnableBroadcastSend,
+    [string[]]$BroadcastSendAllowConnectors,
+    [switch]$RecoverUnmanagedRuntime,
+
     [switch]$DryRun,
     [switch]$NoBrowser
 )
@@ -28,6 +32,102 @@ $script:DryRun = [bool]$DryRun
 $script:DefaultHealthPollIntervalMilliseconds = 500
 $script:BackendHealthTimeoutSeconds = $BackendHealthTimeoutSeconds
 $script:WebHealthTimeoutSeconds = $WebHealthTimeoutSeconds
+$script:EnableBroadcastSend = [bool]$EnableBroadcastSend
+$script:BroadcastSendAllowConnectors = if ($null -ne $BroadcastSendAllowConnectors) { [string[]]$BroadcastSendAllowConnectors } else { @() }
+$script:RecoverUnmanagedRuntime = [bool]$RecoverUnmanagedRuntime
+
+function New-BroadcastSendSummary {
+    param(
+        [bool]$Enabled = $false,
+        [int]$AllowedConnectorCount = 0
+    )
+
+    return [ordered]@{
+        enabled = $Enabled
+        allowedConnectorCount = $AllowedConnectorCount
+    }
+}
+
+function Resolve-BroadcastSendConfiguration {
+    param(
+        [bool]$Enabled = $script:EnableBroadcastSend,
+        [AllowNull()]
+        [string[]]$AllowConnectors = $script:BroadcastSendAllowConnectors
+    )
+
+    if (-not $Enabled) {
+        return [pscustomobject]@{
+            Environment = @{
+                LANGBOT_BROADCAST_SEND_ENABLED = '0'
+                LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS = ''
+            }
+            Summary = (New-BroadcastSendSummary -Enabled $false -AllowedConnectorCount 0)
+            NormalizedConnectorIds = @()
+        }
+    }
+
+    $normalized = New-Object 'System.Collections.Generic.List[string]'
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+
+    foreach ($connectorId in @($AllowConnectors)) {
+        if ($null -eq $connectorId) {
+            continue
+        }
+
+        $trimmed = $connectorId.Trim()
+        if (-not $trimmed) {
+            continue
+        }
+
+        if ($trimmed.Contains('*')) {
+            throw 'Connector ID must not contain the wildcard *.'
+        }
+
+        if ($seen.Add($trimmed)) {
+            $normalized.Add($trimmed) | Out-Null
+        }
+    }
+
+    if ($normalized.Count -eq 0) {
+        throw 'When enabling real send, specify at least one Connector ID via -BroadcastSendAllowConnectors.'
+    }
+
+    $allowConnectorValue = [string]::Join(',', $normalized.ToArray())
+
+    return [pscustomobject]@{
+        Environment = @{
+            LANGBOT_BROADCAST_SEND_ENABLED = '1'
+            LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS = $allowConnectorValue
+        }
+        Summary = (New-BroadcastSendSummary -Enabled $true -AllowedConnectorCount $normalized.Count)
+        NormalizedConnectorIds = $normalized.ToArray()
+    }
+}
+
+function Get-StateBroadcastSendSummary {
+    param($State)
+
+    $broadcastSend = $null
+
+    if ($null -ne $State) {
+        if ($State -is [System.Collections.IDictionary]) {
+            if ($State.Contains('broadcastSend')) {
+                $broadcastSend = $State['broadcastSend']
+            }
+        }
+        elseif ($State.PSObject.Properties.Match('broadcastSend').Count -gt 0) {
+            $broadcastSend = $State.broadcastSend
+        }
+    }
+
+    if ($null -eq $broadcastSend) {
+        return (New-BroadcastSendSummary -Enabled $false -AllowedConnectorCount 0)
+    }
+
+    return (New-BroadcastSendSummary `
+        -Enabled ([bool]$broadcastSend.enabled) `
+        -AllowedConnectorCount ([int]$broadcastSend.allowedConnectorCount))
+}
 
 function Get-LauncherMutexName {
     param(
@@ -623,14 +723,22 @@ function New-LauncherState {
 
         [string]$Status = 'running',
 
-        [string]$WebModeValue = $WebMode
+        [string]$WebModeValue = $WebMode,
+        $BroadcastSendSummary = $null
     )
+
+    if ($null -eq $BroadcastSendSummary) {
+        $BroadcastSendSummary = New-BroadcastSendSummary -Enabled $false -AllowedConnectorCount 0
+    }
 
     [ordered]@{
         sessionId = $SessionId
         status = $Status
         webMode = $WebModeValue
         updatedAt = [DateTime]::UtcNow.ToString('o')
+        broadcastSend = (New-BroadcastSendSummary `
+            -Enabled ([bool]$BroadcastSendSummary.enabled) `
+            -AllowedConnectorCount ([int]$BroadcastSendSummary.allowedConnectorCount))
         backend = $BackendRecord
         web = $WebRecord
         runtime = [ordered]@{
@@ -769,6 +877,7 @@ function New-BackendCommand {
 
     $pythonPath = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot '.venv\Scripts\python.exe'))
     $mainPath = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot 'main.py'))
+    $broadcastSendConfig = Resolve-BroadcastSendConfiguration
 
     [pscustomobject]@{
         FilePath = $pythonPath
@@ -777,11 +886,13 @@ function New-BackendCommand {
         Environment = @{
             LANGBOT_RPA_FORCE_DISABLE_SEND = '1'
             LANGBOT_RPA_ALLOW_AUTO_SEND = '0'
-            LANGBOT_BROADCAST_SEND_ENABLED = '0'
+            LANGBOT_BROADCAST_SEND_ENABLED = [string]$broadcastSendConfig.Environment.LANGBOT_BROADCAST_SEND_ENABLED
+            LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS = [string]$broadcastSendConfig.Environment.LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS
             PYTHONPATH = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot 'src'))
             LANGBOT_LOCAL_STACK_SESSION_ID = $SessionId
             LANGBOT_LOCAL_SHUTDOWN_REQUEST_PATH = $ShutdownRequestPath
         }
+        BroadcastSend = $broadcastSendConfig.Summary
         PythonPath = $pythonPath
         MainPath = $mainPath
     }
@@ -1070,6 +1181,112 @@ function Stop-RepoOwnedProcess {
     }
     catch {
         return $true
+    }
+}
+
+function Test-OfficialRuntimeExecutablePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExecutablePath,
+
+        [string]$RepoRoot = $script:RepoRoot
+    )
+
+    if (-not $ExecutablePath -or -not $RepoRoot) {
+        return $false
+    }
+
+    try {
+        $normalizedPath = [System.IO.Path]::GetFullPath($ExecutablePath)
+        $officialRoot = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot 'apps\desktop-rpa-runtime\dist-phase2-official')).TrimEnd('\')
+    }
+    catch {
+        return $false
+    }
+
+    $fileName = [System.IO.Path]::GetFileName($normalizedPath)
+    if ($fileName -ne 'LangBot Desktop RPA Runtime.exe') {
+        return $false
+    }
+
+    $winUnpackedDir = Split-Path -Parent $normalizedPath
+    if ([System.IO.Path]::GetFileName($winUnpackedDir) -ne 'win-unpacked') {
+        return $false
+    }
+
+    $buildDir = Split-Path -Parent $winUnpackedDir
+    $buildName = [System.IO.Path]::GetFileName($buildDir)
+    if ($buildName -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$') {
+        return $false
+    }
+
+    $buildParent = [System.IO.Path]::GetFullPath((Split-Path -Parent $buildDir)).TrimEnd('\')
+    return $buildParent.ToLowerInvariant() -eq $officialRoot.ToLowerInvariant()
+}
+
+function Get-RepoOfficialRuntimeProcesses {
+    param([string]$RepoRoot = $script:RepoRoot)
+
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name = 'LangBot Desktop RPA Runtime.exe'" -ErrorAction SilentlyContinue)
+    $results = @()
+    foreach ($process in $processes) {
+        $executablePath = [string]$process.ExecutablePath
+        if (-not (Test-OfficialRuntimeExecutablePath -ExecutablePath $executablePath -RepoRoot $RepoRoot)) {
+            continue
+        }
+
+        $normalizedPath = [System.IO.Path]::GetFullPath($executablePath)
+        $buildDir = Split-Path -Parent (Split-Path -Parent $normalizedPath)
+        $parentProcessId = 0
+        if ($null -ne $process.ParentProcessId) {
+            $parentProcessId = [int]$process.ParentProcessId
+        }
+        $results += [pscustomobject]@{
+            pid = [int]$process.ProcessId
+            parentProcessId = $parentProcessId
+            executablePath = $normalizedPath
+            buildTimestamp = [System.IO.Path]::GetFileName($buildDir)
+            commandLine = [string]$process.CommandLine
+        }
+    }
+
+    return @($results)
+}
+
+function Stop-OfficialRuntimeProcessTree {
+    param(
+        [Parameter(Mandatory = $true)]
+        $RuntimeProcess
+    )
+
+    & taskkill.exe /T /F /PID ([int]$RuntimeProcess.pid) | Out-Null
+    return (Wait-ForProcessExit -ProcessId ([int]$RuntimeProcess.pid) -TimeoutSeconds 10)
+}
+
+function Assert-NoUnmanagedOfficialRuntime {
+    param(
+        [string]$RepoRoot = $script:RepoRoot,
+        [switch]$Recover
+    )
+
+    $runtimeProcesses = @(Get-RepoOfficialRuntimeProcesses -RepoRoot $RepoRoot)
+    if ($runtimeProcesses.Count -eq 0) {
+        return
+    }
+
+    if (-not $Recover) {
+        $lines = @('RUNTIME_OWNERSHIP_CONFLICT')
+        foreach ($runtimeProcess in $runtimeProcesses) {
+            $lines += "PID: $([int]$runtimeProcess.pid)"
+            $lines += "Path: $([string]$runtimeProcess.executablePath)"
+        }
+        throw ($lines -join "`n")
+    }
+
+    foreach ($runtimeProcess in $runtimeProcesses) {
+        if (-not (Stop-OfficialRuntimeProcessTree -RuntimeProcess $runtimeProcess)) {
+            throw ("RUNTIME_RECOVERY_FAILED`nPID: {0}`nPath: {1}" -f [int]$runtimeProcess.pid, [string]$runtimeProcess.executablePath)
+        }
     }
 }
 
@@ -1467,6 +1684,7 @@ function Get-StackStatus {
         -HasPersistedState ($null -ne $state) `
         -HasOwnershipUnknown $hasOwnershipUnknown `
         -HasDetectedComponents $hasDetectedComponents
+    $broadcastSendStatus = Get-StateBroadcastSendSummary -State $state
 
     [ordered]@{
         repoRoot = $RepoRoot
@@ -1474,6 +1692,7 @@ function Get-StackStatus {
         status = $aggregateStatus
         ownership = if ($hasOwnershipUnknown -or $hasDetectedComponents) { 'unknown' } elseif ([string]$aggregateStatus -eq 'running') { 'owned' } else { 'none' }
         webMode = $effectiveWebMode
+        broadcastSend = $broadcastSendStatus
         backend = $backendStatus
         web = $webStatus
         detectedComponents = $detectedComponents
@@ -1497,7 +1716,8 @@ function New-StartDryRunSummary {
         action = 'Start'
         mode = $WebModeValue
         dryRun = $true
-        realSend = 'disabled'
+        realSend = if ($backendCommand.BroadcastSend.enabled) { 'enabled' } else { 'disabled' }
+        broadcastSend = $backendCommand.BroadcastSend
         timeout = [ordered]@{
             backendHealthTimeoutSeconds = $script:BackendHealthTimeoutSeconds
             webHealthTimeoutSeconds = $script:WebHealthTimeoutSeconds
@@ -1513,6 +1733,10 @@ function New-StartDryRunSummary {
             url = $apiConfig.BaseUrl
             healthUrl = $apiConfig.HealthUrl
             port = $apiConfig.Port
+            environment = @{
+                LANGBOT_BROADCAST_SEND_ENABLED = [string]$backendCommand.Environment.LANGBOT_BROADCAST_SEND_ENABLED
+                LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS = [string]$backendCommand.Environment.LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS
+            }
         }
         statePath = $script:StatePath
         shutdownRequestPath = $script:ShutdownRequestPath
@@ -1574,6 +1798,8 @@ function Start-BackendStack {
         return (Get-StackStatus -RequestedWebMode $WebModeValue)
     }
 
+    Assert-NoUnmanagedOfficialRuntime -RepoRoot $script:RepoRoot -Recover:$script:RecoverUnmanagedRuntime
+
     $sessionId = [guid]::NewGuid().ToString('N')
     $diagnostics = New-LauncherDiagnostics -SessionId $sessionId -WebModeValue $WebModeValue
     $backendCommand = New-BackendCommand -RepoRoot $script:RepoRoot -SessionId $sessionId -ShutdownRequestPath $script:ShutdownRequestPath
@@ -1594,7 +1820,13 @@ function Start-BackendStack {
         $diagnostics.backend.spawnedAtUtc = [DateTime]::UtcNow.ToString('o')
         $diagnostics.backend.pid = [int]$backendIdentity.pid
         $diagnostics.backend.processStartTimeUtcTicks = [int64]$backendIdentity.processStartTimeUtcTicks
-        $stateData = New-LauncherState -SessionId $sessionId -BackendRecord $backendIdentity -WebRecord $null -Status 'starting' -WebModeValue $WebModeValue
+        $stateData = New-LauncherState `
+            -SessionId $sessionId `
+            -BackendRecord $backendIdentity `
+            -WebRecord $null `
+            -Status 'starting' `
+            -WebModeValue $WebModeValue `
+            -BroadcastSendSummary $backendCommand.BroadcastSend
         Save-LauncherState -State $stateData
         Write-LauncherDiagnostics -Diagnostics $diagnostics
 
@@ -1713,6 +1945,7 @@ function Stop-BackendStack {
             sessionId = if ($null -ne $state) { $state.sessionId } else { $null }
             statePath = $script:StatePath
             shutdownRequestPath = $script:ShutdownRequestPath
+            broadcastSend = (New-BroadcastSendSummary -Enabled $false -AllowedConnectorCount 0)
             runtime = [ordered]@{ status = 'managed-by-backend' }
         }
     }

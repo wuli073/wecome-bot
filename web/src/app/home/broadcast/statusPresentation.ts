@@ -75,7 +75,10 @@ export function getExecutionTaskStatusKey(status: string) {
 }
 
 export function isRetryableExecutionTask(task: BroadcastExecutionTaskSummary) {
-  return isRetryableExecutionTaskStatus(task.status);
+  if (typeof task.retryAllowed === 'boolean') {
+    return task.retryAllowed;
+  }
+  return false;
 }
 
 export function isRetryableExecutionTaskStatus(status: string) {

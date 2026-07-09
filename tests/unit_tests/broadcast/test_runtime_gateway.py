@@ -132,18 +132,37 @@ async def test_runtime_gateway_keeps_send_contract_separate():
         message_text='Hello Acme',
         idempotency_key='broadcast:1:2',
         request_digest='digest-2',
-        confirmation_token='confirm-123',
+        attachment_root='C:/runtime/broadcast_attachments',
+        attachments=[
+            {
+                'relativePath': 'bot-1/drafts/1/quote.pdf',
+                'filename': 'quote.pdf',
+                'size': 8,
+                'sha256': 'digest-quote',
+            }
+        ],
     )
 
     assert result['id'] == 'task-1'
     assert runtime_client.requests == [
         {
-            'action': 'send_message',
+            'action': 'send_draft',
             'conversationName': 'Acme Group',
-            'messageText': 'Hello Acme',
+            'draftText': 'Hello Acme',
             'idempotencyKey': 'broadcast:1:2',
             'requestDigest': 'digest-2',
-            'confirmationToken': 'confirm-123',
+            'attachmentRoot': 'C:/runtime/broadcast_attachments',
+            'attachments': [
+                {
+                    'relativePath': 'bot-1/drafts/1/quote.pdf',
+                    'filename': 'quote.pdf',
+                    'size': 8,
+                    'sha256': 'digest-quote',
+                }
+            ],
+            'sendAuthorized': True,
+            'allowAutoSend': True,
+            'sendStrategy': 'enter',
         }
     ]
 

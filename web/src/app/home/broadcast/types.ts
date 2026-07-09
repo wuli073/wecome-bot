@@ -18,7 +18,7 @@ export type BroadcastImportGroupFieldSource =
   | 'user_confirmed'
   | 'legacy_fallback';
 
-export type BroadcastDraftStatus = 'pending' | 'sent' | 'invalid';
+export type BroadcastDraftStatus = 'pending' | 'sent' | 'unknown' | 'invalid';
 
 export type BroadcastStatus =
   | BroadcastDraftStatus
@@ -27,7 +27,7 @@ export type BroadcastStatus =
   | 'failed'
   | 'completed';
 
-export type BroadcastStatusFilter = 'all' | 'pending' | 'sent';
+export type BroadcastStatusFilter = 'all' | 'pending' | 'unknown' | 'sent';
 
 export type BroadcastMergeMode =
   | 'first'
@@ -347,7 +347,7 @@ export interface BroadcastDraft {
   status: BroadcastStatus;
   draftText: string;
   errorMessage?: string | null;
-  sendStatus?: 'pending' | 'sent';
+  sendStatus?: 'pending' | 'sent' | 'unknown';
   sentAt?: string | null;
   legacyStatus?: string | null;
   draftsStale?: boolean;
@@ -423,7 +423,26 @@ export interface BroadcastExecutionTaskSummary {
   startedAt: string | null;
   finishedAt: string | null;
   updatedAt: string;
+  retryAllowed?: boolean;
+  sendOutcome?: 'sent' | 'failed' | 'unknown' | 'skipped' | null;
+  enterDispatched?: boolean | null;
+  messageSent?: boolean | null;
+  terminalConfirmed?: boolean | null;
+  terminalSource?: string | null;
   attachments: BroadcastAttachment[];
+}
+
+export interface BroadcastSendBatchItem {
+  draftId: number | null;
+  outcome: 'sent' | 'failed' | 'unknown' | 'skipped';
+  errorCode: string | null;
+  errorMessage: string | null;
+  enterDispatched: boolean | null;
+  messageSent?: boolean | null;
+  terminalConfirmed?: boolean | null;
+  terminalSource?: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
 }
 
 export interface BroadcastExecutionBatchSummary {
@@ -443,6 +462,13 @@ export interface BroadcastExecutionBatchSummary {
   startedAt: string | null;
   finishedAt: string | null;
   tasks: BroadcastExecutionTaskSummary[];
+  totalCount?: number;
+  sentCount?: number;
+  failedCount?: number;
+  unknownCount?: number;
+  skippedCount?: number;
+  duplicateTargetCount?: number;
+  items?: BroadcastSendBatchItem[];
 }
 
 export interface BroadcastExecutorCapability {
@@ -462,19 +488,15 @@ export interface BroadcastExecutorCapability {
 }
 
 export interface BroadcastExecutorHealth {
+  available: boolean;
   channel: string;
   status: string;
   protocol_version?: string | null;
   runtime_version?: string | null;
+  error_code?: string | null;
+  error_message?: string | null;
   capability: BroadcastExecutorCapability;
   runtime_status?: Record<string, unknown> | null;
-}
-
-export interface BroadcastSendConfirmation {
-  id: number;
-  token: string;
-  expiresAt: string | null;
-  executionTaskId: number;
 }
 
 export interface BroadcastExecutionRequestStats {

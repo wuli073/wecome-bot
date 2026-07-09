@@ -24,7 +24,16 @@ class ConversationDraftExecutor:
     ) -> dict[str, Any]:
         raise NotImplementedError
 
-    async def send_message(self, **kwargs) -> dict[str, Any]:
+    async def send_message(
+        self,
+        *,
+        conversation_name: str,
+        message_text: str,
+        idempotency_key: str,
+        request_digest: str,
+        attachment_root: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     async def cancel(self, runtime_task_id: str) -> dict[str, Any]:

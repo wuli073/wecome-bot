@@ -1,6 +1,9 @@
 import { useTranslation } from 'react-i18next';
 
-import type { BroadcastGroupMatchResult } from '../../types';
+import type {
+  BroadcastGroupMatchResult,
+  BroadcastGroupMatchType,
+} from '../../types';
 import GroupRuleStatusBadge from './GroupRuleStatusBadge';
 
 interface GroupMatchPreviewProps {
@@ -21,11 +24,22 @@ function getPreviewReasonLabel(
   return null;
 }
 
+function getMatchTypeLabel(
+  matchType: BroadcastGroupMatchType | null,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  if (!matchType) {
+    return '-';
+  }
+  return t(`broadcast.groupRule.matchTypeOptions.${matchType}`);
+}
+
 export default function GroupMatchPreview({
   result,
   emptyLabel,
 }: GroupMatchPreviewProps) {
   const { t } = useTranslation();
+  const reasonLabel = getPreviewReasonLabel(result?.reason ?? null, t);
 
   if (!result) {
     return <div className="text-sm text-muted-foreground">{emptyLabel}</div>;
@@ -36,7 +50,6 @@ export default function GroupMatchPreview({
     : result.matched
       ? 'matched'
       : 'no_match';
-  const reasonLabel = getPreviewReasonLabel(result.reason, t);
 
   return (
     <div className="space-y-3 text-sm">
@@ -54,8 +67,8 @@ export default function GroupMatchPreview({
               {t('broadcast.groupRule.preview.currentRule')}
             </span>
             {': '}
-            {result.matchType}
-            {' → '}
+            {getMatchTypeLabel(result.matchType, t)}
+            {' �� '}
             {result.targetConversationName}
           </div>
           {result.targetConversationId ? (
@@ -82,8 +95,8 @@ export default function GroupMatchPreview({
                 className="rounded-lg border bg-muted/20 px-3 py-2"
               >
                 <div className="font-medium">
-                  {rule.matchType}
-                  {' · '}
+                  {getMatchTypeLabel(rule.matchType, t)}
+                  {' �� '}
                   {rule.sourceValue}
                 </div>
                 <div className="text-muted-foreground">

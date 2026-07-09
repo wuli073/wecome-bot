@@ -2035,7 +2035,7 @@ const enUS = {
     },
     status: {
       pending: 'Pending',
-      pasted: 'Pasted',
+      pasted: 'Pasted, not sent',
       failed: 'Failed',
       completed: 'Completed',
     },
@@ -2301,7 +2301,7 @@ const enUS = {
       selectedCount: '{{count}} draft(s) selected',
       batchConfirm: 'Confirm selected',
       createExecutionBatch: 'Create execution batch',
-      batchWriteSelected: 'Write selected',
+      batchWriteSelected: 'Paste to send box only',
       batchWriteConfirmTitle: 'Write selected drafts to the input box',
       batchWriteConfirmDescription:
         'This will submit {{draftCount}} draft(s) for {{conversationCount}} target conversation(s), including {{attachmentCount}} attachment(s). Duplicate targets: {{duplicateTargetCount}}. During execution, do not switch windows or use the mouse and keyboard.',
@@ -2313,8 +2313,8 @@ const enUS = {
       revokeConfirm: 'Revoke confirmation',
       markSent: 'Mark sent',
       restorePending: 'Restore pending',
-      pasteToInput: 'Write to input box',
-      rewriteToInput: 'Write again',
+      pasteToInput: 'Paste to send box only',
+      rewriteToInput: 'Paste to send box only',
       pasteLoading: 'Writing...',
       messageBody: 'Draft content',
       templateLabel: 'Template',
@@ -2345,13 +2345,16 @@ const enUS = {
       pasteDialogTitle: 'Confirm writing to input box',
       pasteDialogDescription:
         'Please confirm the target conversation and draft content again. This action only writes to the input box and will not send.',
-      realSend: 'Send for real',
+      realSend: 'Send now',
       sendLoading: 'Sending...',
       sendDialogTitle: 'Confirm real send',
       sendDialogDescription:
-        'Review the target conversation and full message body again. This action will perform a real send.',
+        'Review the details below again. After the final confirmation, the system will press Enter to send for real.',
+      sendDialogCustomer: 'Customer: {{customer}}',
+      sendDialogConversation: 'Target conversation: {{conversation}}',
+      sendDialogAttachmentCount: 'Attachments: {{count}}',
       sendWarning:
-        'This action will send a real message and cannot be automatically undone.',
+        'This action will press Enter to send for real and cannot be automatically undone.',
       sendCountdown:
         'Please wait {{count}} second(s) before the final confirmation.',
       sendAcknowledge:
@@ -2359,6 +2362,9 @@ const enUS = {
       cancelAction: 'Cancel',
       confirmPasteAction: 'Confirm write',
       confirmSendAction: 'Confirm send',
+      restorePendingRiskTitle: 'Confirm restore to pending',
+      restorePendingRiskDescription:
+        'The previous send may already have succeeded. Restoring it and sending again may create a duplicate message.',
       editor: 'Draft editor',
       emptyDetail: 'Select a draft from the queue to review the details.',
     },
@@ -2406,14 +2412,14 @@ const enUS = {
       retryTask: 'Retry',
       booleanYes: 'Yes',
       booleanNo: 'No',
-      statusDraftWritten: 'Written to input',
-      statusPasteVerified: 'Written and verified',
-      statusWarning: 'Written, confirm manually before sending',
-      statusSendTriggered: 'Send triggered',
+      statusDraftWritten: 'Pasted, not sent',
+      statusPasteVerified: 'Pasted, not sent',
+      statusWarning: 'Pasted, not sent',
+      statusSendTriggered: 'Send triggered once',
       retryFailedTasks: 'Retry failed items',
       retryFailedTasksConfirmTitle: 'Retry failed items',
       retryFailedTasksConfirmDescription:
-        'Retry {{count}} failed or interrupted task(s) in the latest batch. Already successful tasks will not be resubmitted.',
+        'Retry {{count}} confirmed pre-send failure task(s) in the latest batch. Tasks with unknown send results will not be retried.',
       batchStatuses: {
         created: 'Waiting to start',
         queued: 'Queued',
@@ -2507,6 +2513,12 @@ const enUS = {
         TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE:
           'The WeCom window lost focus before attachment paste.',
         ATTACHMENT_PASTE_FAILED: 'Failed to paste attachments.',
+        BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN:
+          'The send result could not be confirmed. Please check the target conversation manually.',
+        BROADCAST_SEND_RESULT_UNKNOWN:
+          'The send result could not be confirmed. Please check the target conversation manually.',
+        BROADCAST_RETRY_SEND_RESULT_UNKNOWN:
+          'Only failures confirmed before Enter can be retried automatically.',
       },
       missingSendTask: 'Missing execution task for send mode',
       empty: 'No execution logs yet.',
@@ -2539,9 +2551,9 @@ const enUS = {
       executionBatchCancelled: 'Remaining tasks cancelled',
       executionTaskRetried: 'Execution task re-queued',
       executionFailedTasksRetried:
-        'Submitted retry for {{successCount}} failed/interrupted task(s); {{failedCount}} submission(s) failed.',
+        'Submitted retry for {{successCount}} confirmed pre-send failure task(s); {{failedCount}} submission(s) failed.',
       executionFailedTasksRetryNoop:
-        'There are no failed or interrupted tasks available to retry.',
+        'There are no confirmed pre-send failure tasks available to retry.',
       pasteSubmitted: 'Write-to-input task submitted',
       sendSubmitted: 'Real send request submitted',
       draftsConfirmed: 'Draft confirmed',
@@ -2642,5 +2654,193 @@ enUsBroadcastLocale.groupRule = {
     candidateRules: 'Candidate rules',
   },
 };
+
+function deepMergeLocale(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+) {
+  for (const [key, value] of Object.entries(source)) {
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      target[key] &&
+      typeof target[key] === 'object' &&
+      !Array.isArray(target[key])
+    ) {
+      deepMergeLocale(
+        target[key] as Record<string, unknown>,
+        value as Record<string, unknown>,
+      );
+      continue;
+    }
+    target[key] = value;
+  }
+}
+
+deepMergeLocale(enUS.broadcast as Record<string, unknown>, {
+  contract: {
+    toggle: 'View technical details',
+  },
+  scope: {
+    selectBot: 'Select Bot',
+    selectConnector: 'Select Connector',
+  },
+  groupRule: {
+    customerName: 'Customer name',
+    invalidLegacy: 'Invalid legacy rule. It is excluded from matching.',
+    matchTypeOptions: {
+      exact: 'Exact match',
+      contains: 'Contains keyword',
+      regex: 'Regex match',
+    },
+    targetConversationSearchPlaceholder: 'Search target conversation name',
+    targetConversationSelectPlaceholder:
+      'Select a target conversation with a stable ID',
+    targetConversationSelectionRequired:
+      'Select a target conversation from the candidate list first.',
+    targetConversationLegacyReselect:
+      'This legacy rule is missing a stable target conversation ID. Please reselect it.',
+    targetConversationMissingStableId:
+      'This conversation is missing a stable externalConversationId and cannot be selected yet.',
+    preview: {
+      empty: 'Enter a customer name and run the match preview.',
+      matchedBadge: 'Matched',
+      conflictBadge: 'Conflict',
+      noMatchBadge: 'No match',
+      currentRule: 'Current matched rule',
+      noMatch: 'No rule matches the current customer value.',
+      conflict:
+        'Multiple rules match the current customer value. Review the rule order and priority.',
+      candidateRules: 'Candidate rules',
+    },
+  },
+  groupRuleCandidates: {
+    title: 'Customers pending configuration',
+    description:
+      'Select an import batch, review new-customer stats, and finish conversation assignment in the Group Matching tab.',
+    selectBatch: 'Import batch',
+    selectBatchPlaceholder: 'Select an import batch',
+    fileName: 'Current batch file',
+    detectedField: 'Detected customer field',
+    rawRowCount: 'Raw rows',
+    uniqueCustomerCount: 'Unique customers',
+    newCount: 'New customers',
+    configuredCount: 'Configured',
+    needsRepairCount: 'Needs repair',
+    conflictCount: 'Conflicts',
+    noBatches: 'There are no import batches yet.',
+    noBatchSelected: 'Select an import batch first.',
+    bulkAssignButton: 'Bulk assign conversations ({{count}})',
+  },
+  bulkGroupAssignment: {
+    title: 'Bulk assign conversations',
+    description:
+      'Choose target conversations for {{count}} new customers and create exact rules in one step.',
+    customerName: 'Customer name',
+    rawRowCount: 'Raw rows',
+    status: 'Status',
+    targetConversation: 'Target conversation',
+    searchConversation: 'Search target conversation name',
+    searchPlaceholder: 'Search target conversation name or stable ID',
+    applyToSelected: 'Apply to selected customers ({{count}})',
+    clearSelected: 'Clear selected conversations',
+    selectedCount: '{{count}} customer(s) selected',
+    submit: 'Create rules and rematch ({{count}})',
+    submitting: 'Submitting?',
+    noCandidates: 'There are no new customers available for bulk assignment.',
+    missingStableId: 'Missing stable ID, unavailable',
+    confirmTitle: 'Confirm bulk exact-rule creation',
+    confirmDescription:
+      'Create exact rules for {{count}} customer(s) and rematch the current import batch.',
+    validationError:
+      'Assign a target conversation for every selected customer first.',
+    validationErrorWithCount:
+      '{{count}} selected customer(s) are still missing a target conversation.',
+    targetConversationSelectPlaceholder: 'Select target conversation',
+    statusValues: {
+      new: 'New',
+      configured: 'Configured',
+      needs_repair: 'Needs repair',
+      conflict: 'Conflict',
+      invalid: 'Invalid',
+    },
+  },
+  import: {
+    goToGroupMatching: 'Go to group matching',
+    generateWarnings: {
+      duplicateConversation:
+        'The selected groups contain duplicate target conversations. Review them before generating drafts.',
+    },
+    rematchConfirmTitle: 'Rematch current batch',
+    rematchConfirmDescription:
+      'Recalculate the current import batch with the latest group-matching rules.',
+    deleteBatchConfirmTitle: 'Delete import batch',
+    deleteBatchConfirmDescription:
+      'Delete {{fileName}}? The current batch includes {{totalRows}} rows, {{groupCount}} groups, and {{draftCount}} related drafts.',
+    generateDraftsConfirmTitle: 'Generate selected drafts',
+    generateDraftsConfirmDescription:
+      'Generate drafts for {{selectedCount}} selected group(s). {{templatedCount}} already have templates and {{blockedCount}} are currently blocked.',
+  },
+  drafts: {
+    batchWriteConfirmTitle: 'Write selected drafts to the input box',
+    batchWriteConfirmDescription:
+      'This will submit {{draftCount}} draft(s) for {{conversationCount}} target conversation(s), including {{attachmentCount}} attachment(s). Duplicate targets: {{duplicateTargetCount}}. During execution, do not switch windows or use the mouse and keyboard.',
+    batchWriteNoSelection: 'Select at least one draft first.',
+    noDraftSelectedReason: 'Select a draft first.',
+    pasteMissingBody: 'Draft content cannot be empty.',
+  },
+  rules: {
+    groupMatching: {
+      editorDescription:
+        'Maintain exact / contains / regex rules here and preview how the current value is matched.',
+    },
+    templates: {
+      editorDescription:
+        'Edit the broadcast template content and enabled state here.',
+    },
+    variablePoolEmpty: 'There are no available variables yet.',
+  },
+  toasts: {
+    importBulkAssignCompleted:
+      'Created exact rules for {{count}} customer(s) and rematched the current batch.',
+  },
+});
+
+deepMergeLocale(enUS.broadcast as Record<string, unknown>, {
+  executor: {
+    runtimeOwnershipConflict:
+      'Detected a standalone Desktop Runtime. Close it and try again.',
+    runtimeUnavailable: 'The current executor is not connected.',
+    sendUnsupported: 'The current executor does not support real send yet.',
+    realSendReady: 'Real send is available.',
+    recheck: 'Recheck',
+  },
+  drafts: {
+    statusUnknown: 'Needs manual review',
+    batchSendSelected: 'Send now',
+    batchSendConfirmTitle: 'Confirm batch send',
+    batchSendConfirmDescription:
+      'This will serially send {{draftCount}} draft(s) to {{conversationCount}} target conversation(s), including {{attachmentCount}} attachment(s). Duplicate targets: {{duplicateTargetCount}} (warning only, not blocked). If one item fails or remains unknown, the system will still continue with the later drafts.',
+    batchSendNoSelection: 'Select at least one draft first.',
+    sendUnavailable: 'Real send is not available for the current executor.',
+    sendRequiresReview:
+      'The last send result is still unresolved. Mark it sent or restore it to pending first.',
+    sendAlreadySent: 'This draft is already marked as sent.',
+  },
+  toasts: {
+    batchSendPendingOnly:
+      'Real send only supports pending drafts that are ready to send.',
+    batchMarkSentResolvableOnly:
+      'Mark sent only supports drafts that are all pending or all awaiting manual review.',
+    batchRestorePendingResolvableOnly:
+      'Restore pending only supports drafts that are all sent or all awaiting manual review.',
+    realSendCompleted: 'Real send completed: {{sentCount}} sent.',
+    realSendCompletedWithFailures:
+      'Real send completed with failures: {{sentCount}} sent, {{failedCount}} failed.',
+    realSendCompletedWithUnknown:
+      'Real send needs manual review: {{sentCount}} sent, {{failedCount}} failed, {{unknownCount}} uncertain.',
+  },
+});
 
 export default enUS;

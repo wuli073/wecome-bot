@@ -69,6 +69,16 @@ RUNTIME_TASK_EVIDENCE_KEYS = {
     'clipboardRoundtripVerified',
     'windowTitle',
     'attachments',
+    'outcome',
+    'enterDispatched',
+    'enter_dispatched',
+    'postSendVerified',
+    'post_send_verified',
+    'verificationResult',
+    'verification_result',
+    'errorMessage',
+    'error_message',
+    'evidence',
 }
 
 

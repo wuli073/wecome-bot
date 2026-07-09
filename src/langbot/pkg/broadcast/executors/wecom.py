@@ -16,7 +16,9 @@ class WeComDraftExecutor(ConversationDraftExecutor):
         return {
             'supports_paste': True,
             'supports_paste_verification': False,
-            'supports_send': False,
+            'supports_send': True,
+            'supports_attachment_send': True,
+            'supports_post_send_verification': True,
             'supports_cancel': True,
             'supports_status_query': True,
             'supports_clipboard_restore': True,
@@ -62,14 +64,16 @@ class WeComDraftExecutor(ConversationDraftExecutor):
         message_text: str,
         idempotency_key: str,
         request_digest: str,
-        confirmation_token: str,
+        attachment_root: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         result = await self.gateway.create_send_task(
             conversation_name=conversation_name,
             message_text=message_text,
             idempotency_key=idempotency_key,
             request_digest=request_digest,
-            confirmation_token=confirmation_token,
+            attachment_root=attachment_root,
+            attachments=attachments or [],
         )
         return {
             **result,
@@ -88,7 +92,11 @@ class WeComDraftExecutor(ConversationDraftExecutor):
         status = str(decoded['status'] or '')
         stage = str(decoded['stage'] or status)
         action = str(result.get('action') or payload.get('action') or '')
-        normalized_action = 'send_message' if action == 'send_message' or stage.startswith('sent') else 'paste_draft'
+        normalized_action = (
+            'send_message'
+            if action in {'send_message', 'send_draft'} or stage.startswith('sent')
+            else 'paste_draft'
+        )
         content_verified = bool(payload.get('contentVerified', False))
         input_located = bool(payload.get('inputLocated', False))
         draft_written = bool(payload.get('draftWritten', False))
@@ -96,6 +104,29 @@ class WeComDraftExecutor(ConversationDraftExecutor):
         attachment_paste_requested = bool(payload.get('attachmentPasteRequested', False))
         attachments_verified = bool(payload.get('attachmentsVerified', False))
         attachment_count = int(payload.get('attachmentCount', 0) or 0)
+        raw_enter_dispatched = payload.get(
+            'enterDispatched',
+            payload.get('enter_dispatched'),
+        )
+        if isinstance(raw_enter_dispatched, bool):
+            enter_dispatched: bool | None = raw_enter_dispatched
+        elif raw_enter_dispatched is None:
+            enter_dispatched = None
+        else:
+            enter_dispatched = bool(raw_enter_dispatched)
+        raw_post_send_verified = payload.get(
+            'postSendVerified',
+            payload.get('post_send_verified'),
+        )
+        post_send_verified = (
+            raw_post_send_verified
+            if isinstance(raw_post_send_verified, bool)
+            else bool(raw_post_send_verified)
+        )
+        verification_result = (
+            payload.get('verificationResult')
+            or payload.get('verification_result')
+        )
         attachment_names = [
             str(item.get('filename') or item.get('name') or '').strip()
             for item in (payload.get('attachments') or [])
@@ -145,7 +176,11 @@ class WeComDraftExecutor(ConversationDraftExecutor):
             'draft_written': draft_written,
             'content_verified': content_verified,
             'verification_failed': verification_failed,
-            'send_triggered': bool(payload.get('messageSent', False)) or stage in {'sent', 'message_sent'},
+            'send_triggered': (
+                enter_dispatched is True
+                or payload.get('messageSent') is True
+                or stage in {'sent', 'message_sent'}
+            ),
             'clipboard_restored': not bool(payload.get('clipboardRestoreFailed', False)),
             'runtime_state': stage,
             'evidence_summary': evidence_summary,
@@ -154,6 +189,10 @@ class WeComDraftExecutor(ConversationDraftExecutor):
                 'status': status,
                 'warning': warning,
                 'error_code': result.get('errorCode') or result.get('error_code'),
+                'error_message': result.get('errorMessage') or result.get('error_message'),
+                'outcome': payload.get('outcome'),
+                'enter_dispatched': enter_dispatched,
+                'post_send_verified': post_send_verified,
                 'content_verified': content_verified,
                 'verification_failed': verification_failed,
                 'attachments_prepared': attachments_prepared,
@@ -174,7 +213,8 @@ class WeComDraftExecutor(ConversationDraftExecutor):
                 'selected_window': payload.get('selectedWindow'),
                 'candidates': payload.get('candidates'),
                 'rejection_reasons': payload.get('rejectionReasons'),
-                'verification_method': payload.get('verificationMethod'),
+                'verification_method': payload.get('verificationMethod') or payload.get('verification_method'),
+                'verification_result': verification_result,
                 'provider_instance_id': payload.get('providerInstanceId'),
                 'verification_error_code': payload.get('verificationErrorCode'),
                 'diagnostic_code': payload.get('diagnosticCode'),

@@ -40,8 +40,6 @@ import {
   TableRow,
 } from '@/components/ui/table';
 
-import BulkGroupAssignmentDialog from './BulkGroupAssignmentDialog';
-import GroupConversationSelector from '../shared/GroupConversationSelector';
 import type {
   BroadcastAttachment,
   BroadcastGroupName,
@@ -66,9 +64,9 @@ interface ImportMatchingPanelProps {
   groupsDetail: BroadcastImportGroupList | null;
   groupRowsByKey: Record<string, BroadcastImportGroupRowsPage | undefined>;
   templates: BroadcastMessageTemplate[];
-  groupRules: BroadcastGroupRule[];
-  groupNames: BroadcastGroupName[];
-  groupRuleCandidates: BroadcastGroupRuleCandidateList | null;
+  groupRules?: BroadcastGroupRule[];
+  groupNames?: BroadcastGroupName[];
+  groupRuleCandidates?: BroadcastGroupRuleCandidateList | null;
   selectedBatchDraftCount?: number;
   loading?: boolean;
   busy?: boolean;
@@ -83,17 +81,18 @@ interface ImportMatchingPanelProps {
   onPageChange: (page: number) => Promise<void>;
   onDeleteBatch: (batchId: number) => Promise<void>;
   onRematch: (batchId: number) => Promise<void>;
-  onOpenBulkAssignDialog: () => Promise<void>;
-  onBulkAssignGroupRules: (
+  onOpenBulkAssignDialog?: () => Promise<void>;
+  onBulkAssignGroupRules?: (
     batchId: number,
     items: Array<{ groupKey: string; targetConversationId: string }>,
   ) => Promise<void>;
   onGenerateDrafts: (batchId: number, groupKeys: string[]) => Promise<void>;
+  onNavigateToGroupMatching: () => void;
   onUpdateGroupTemplateAssignments: (
     batchId: number,
     items: Array<{ groupKey: string; templateId: number | null }>,
   ) => Promise<void>;
-  onSaveExactMatchRule: (payload: {
+  onSaveExactMatchRule?: (payload: {
     batchId: number;
     groupValue: string;
     targetConversationId: string;
@@ -143,13 +142,9 @@ export default function ImportMatchingPanel({
   groupsDetail,
   groupRowsByKey,
   templates,
-  groupRules,
-  groupNames,
-  groupRuleCandidates,
   selectedBatchDraftCount = 0,
   loading = false,
   busy = false,
-  groupRuleCandidatesLoading = false,
   confirmationBusy = false,
   error = null,
   onUpload,
@@ -160,11 +155,9 @@ export default function ImportMatchingPanel({
   onPageChange,
   onDeleteBatch,
   onRematch,
-  onOpenBulkAssignDialog,
-  onBulkAssignGroupRules,
   onGenerateDrafts,
+  onNavigateToGroupMatching,
   onUpdateGroupTemplateAssignments,
-  onSaveExactMatchRule,
   onLoadGroupRows,
   onUploadGroupAttachments,
   onDeleteGroupAttachment,
@@ -184,14 +177,6 @@ export default function ImportMatchingPanel({
   const [rematchDialogOpen, setRematchDialogOpen] = useState(false);
   const [generateDraftsDialogOpen, setGenerateDraftsDialogOpen] =
     useState(false);
-  const [bulkAssignDialogOpen, setBulkAssignDialogOpen] = useState(false);
-  const [matchDialogGroup, setMatchDialogGroup] =
-    useState<BroadcastImportGroupSummary | null>(null);
-  const [matchDialogKeyword, setMatchDialogKeyword] = useState('');
-  const [matchDialogSelectionId, setMatchDialogSelectionId] = useState('');
-  const [matchDialogSelectionError, setMatchDialogSelectionError] = useState<
-    string | null
-  >(null);
   const [selectedGroupField, setSelectedGroupField] = useState('');
 
   const stats = useMemo(
@@ -231,15 +216,6 @@ export default function ImportMatchingPanel({
       current.filter((groupKey) => availableGroupKeys.has(groupKey)),
     );
   }, [pageGroups]);
-
-  useEffect(() => {
-    if (matchDialogGroup) {
-      return;
-    }
-    setMatchDialogKeyword('');
-    setMatchDialogSelectionId('');
-    setMatchDialogSelectionError(null);
-  }, [matchDialogGroup]);
 
   useEffect(() => {
     if (!pendingImportConfirmation) {
@@ -350,15 +326,6 @@ export default function ImportMatchingPanel({
     }
     return String(group.templateId);
   };
-
-  const selectedConversation = useMemo(
-    () =>
-      groupNames.find(
-        (groupName) =>
-          groupName.externalConversationId === matchDialogSelectionId,
-      ) ?? null,
-    [groupNames, matchDialogSelectionId],
-  );
 
   const bulkTemplateNumericId = bulkTemplateId ? Number(bulkTemplateId) : null;
   const selectedGroupsWithTemplate = selectedGroupsInPageOrder.filter(
@@ -598,48 +565,6 @@ export default function ImportMatchingPanel({
     );
   };
 
-  const openMatchDialog = (group: BroadcastImportGroupSummary) => {
-    setMatchDialogGroup(group);
-    setMatchDialogKeyword(group.groupValue);
-    setMatchDialogSelectionId('');
-    setMatchDialogSelectionError(null);
-  };
-
-  const handleSaveExactMatchRule = async () => {
-    if (!selectedBatchId || !matchDialogGroup) {
-      return;
-    }
-    if (!selectedConversation?.externalConversationId?.trim()) {
-      setMatchDialogSelectionError(
-        t('broadcast.import.inlineMatch.selectionRequired'),
-      );
-      return;
-    }
-    const exactRules = groupRules.filter(
-      (rule) =>
-        !rule.invalidLegacy &&
-        rule.matchType === 'exact' &&
-        rule.sourceValue.trim() === matchDialogGroup.groupValue.trim() &&
-        rule.matchExpression.trim() === matchDialogGroup.groupValue.trim(),
-    );
-    if (exactRules.length > 1) {
-      setMatchDialogSelectionError(
-        t('broadcast.import.inlineMatch.conflictRuleDetected'),
-      );
-      return;
-    }
-    setMatchDialogSelectionError(null);
-    await onSaveExactMatchRule({
-      batchId: selectedBatchId,
-      groupValue: matchDialogGroup.groupValue,
-      targetConversationId: selectedConversation.externalConversationId,
-      targetConversationName: selectedConversation.name,
-      existingRuleId: exactRules[0]?.id,
-      existingRulePriority: exactRules[0]?.priority,
-    });
-    setMatchDialogGroup(null);
-  };
-
   return (
     <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
       <Card className="gap-4">
@@ -808,19 +733,6 @@ export default function ImportMatchingPanel({
               onClick={() => setDeleteBatchDialogOpen(true)}
             >
               {t('broadcast.import.deleteBatchButton')}
-            </Button>
-            <Button
-              data-testid="broadcast-import-bulk-assign-open-button"
-              variant="outline"
-              disabled={!selectedBatchId || busy}
-              onClick={() => {
-                setBulkAssignDialogOpen(true);
-                void onOpenBulkAssignDialog();
-              }}
-            >
-              {t('broadcast.import.bulkAssign.openButton', {
-                count: groupRuleCandidates?.stats.newCount ?? 0,
-              })}
             </Button>
             <select
               data-testid="broadcast-import-template-select"
@@ -1092,13 +1004,11 @@ export default function ImportMatchingPanel({
                               <Button
                                 size="sm"
                                 variant="outline"
-                                data-testid={`broadcast-import-group-select-conversation-button-${group.groupKey}`}
+                                data-testid={`broadcast-import-group-go-to-group-matching-button-${group.groupKey}`}
                                 disabled={mutateBusy}
-                                onClick={() => openMatchDialog(group)}
+                                onClick={onNavigateToGroupMatching}
                               >
-                                {t(
-                                  'broadcast.import.inlineMatch.selectConversationButton',
-                                )}
+                                {t('broadcast.import.goToGroupMatching')}
                               </Button>
                             ) : null}
                             <Button
@@ -1541,79 +1451,7 @@ export default function ImportMatchingPanel({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <Dialog
-        open={matchDialogGroup != null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setMatchDialogGroup(null);
-          }
-        }}
-      >
-        <DialogContent data-testid="broadcast-import-inline-match-dialog">
-          <DialogHeader>
-            <DialogTitle>
-              {t('broadcast.import.inlineMatch.dialogTitle')}
-            </DialogTitle>
-            <DialogDescription>
-              {matchDialogGroup
-                ? t('broadcast.import.inlineMatch.dialogDescription', {
-                    groupValue: matchDialogGroup.groupValue,
-                  })
-                : t('broadcast.import.inlineMatch.dialogDescriptionFallback')}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <div className="text-sm font-medium">
-                {t('broadcast.import.inlineMatch.currentGroupLabel')}
-              </div>
-              <div className="rounded-lg border bg-muted/20 px-3 py-2 text-sm">
-                {matchDialogGroup?.groupValue ?? '-'}
-              </div>
-            </div>
-            <GroupConversationSelector
-              groupNames={groupNames}
-              value={matchDialogSelectionId}
-              keyword={matchDialogKeyword}
-              onKeywordChange={setMatchDialogKeyword}
-              onChange={(conversation) => {
-                setMatchDialogSelectionId(
-                  conversation?.externalConversationId ?? '',
-                );
-                setMatchDialogSelectionError(null);
-              }}
-              disabled={mutateBusy}
-              searchLabel={t('broadcast.import.inlineMatch.searchLabel')}
-              searchPlaceholder={t(
-                'broadcast.import.inlineMatch.searchPlaceholder',
-              )}
-              emptyLabel={t('broadcast.import.inlineMatch.emptySearch')}
-              missingStableIdLabel={t(
-                'broadcast.import.inlineMatch.missingStableId',
-              )}
-              searchInputTestId="broadcast-import-inline-match-search-input"
-              listTestId="broadcast-import-inline-match-search-results"
-            />
-            {matchDialogSelectionError ? (
-              <Alert variant="destructive">
-                <AlertDescription>{matchDialogSelectionError}</AlertDescription>
-              </Alert>
-            ) : null}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setMatchDialogGroup(null)}>
-              {t('common.cancel')}
-            </Button>
-            <Button
-              data-testid="broadcast-import-inline-match-save-button"
-              disabled={mutateBusy}
-              onClick={() => void handleSaveExactMatchRule()}
-            >
-              {t('broadcast.import.inlineMatch.saveButton')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+
       <Dialog
         open={pendingImportConfirmation != null}
         onOpenChange={(open) => {
@@ -1692,21 +1530,6 @@ export default function ImportMatchingPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <BulkGroupAssignmentDialog
-        open={bulkAssignDialogOpen}
-        loading={groupRuleCandidatesLoading}
-        submitting={busy}
-        candidates={groupRuleCandidates}
-        groupNames={groupNames}
-        onOpenChange={setBulkAssignDialogOpen}
-        onSubmit={async (items) => {
-          if (!selectedBatchId) {
-            return;
-          }
-          await onBulkAssignGroupRules(selectedBatchId, items);
-          setBulkAssignDialogOpen(false);
-        }}
-      />
     </div>
   );
 }

@@ -1,5 +1,12 @@
-﻿import type { RuntimeHealthPayload, RuntimeStatusPayload } from '../domain/runtime-types'
+import type { RuntimeHealthPayload, RuntimeStatusPayload } from '../domain/runtime-types'
 import { summarizeDisplays } from '../window/display-metrics'
+
+type BroadcastSendState = {
+  broadcastSendEnabled: boolean
+  allowedConnectorCount: number
+  allowedConnectors: string[]
+  broadcastSendErrorCode: string | null
+}
 
 export class RuntimeStateStore {
   private readonly startedAt = Date.now()
@@ -9,6 +16,12 @@ export class RuntimeStateStore {
   constructor(
     private readonly protocolVersion: string,
     private readonly runtimeVersion: string,
+    private readonly broadcastSendState: BroadcastSendState = {
+      broadcastSendEnabled: false,
+      allowedConnectorCount: 0,
+      allowedConnectors: [],
+      broadcastSendErrorCode: null,
+    },
   ) {}
 
   markReady(): void {
@@ -39,6 +52,10 @@ export class RuntimeStateStore {
       captureAvailable: true,
       inputAvailable: true,
       providerHubReady: true,
+      sendEnabled: this.broadcastSendState.broadcastSendEnabled,
+      allowedConnectorCount: this.broadcastSendState.allowedConnectorCount,
+      allowedConnectors: [...this.broadcastSendState.allowedConnectors],
+      sendErrorCode: this.broadcastSendState.broadcastSendErrorCode,
       activeTaskCount: 0,
       lastErrorCode: this.lastErrorCode,
       pasteVerification: {

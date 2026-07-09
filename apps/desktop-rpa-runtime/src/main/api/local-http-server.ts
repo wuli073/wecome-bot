@@ -83,6 +83,7 @@ export async function createLocalHttpServer(options: {
           assertTaskAdmissionOpen()
           const action = toAction(path)
           if (action === 'paste_draft') assertPasteDraftBodyShape(body)
+          if (action === 'send_draft') assertSendDraftBodyShape(body)
           if (action === 'send_message') assertSendMessageBodyShape(body)
           const task = await runtimeHost.createTask({
             ...body,
@@ -158,8 +159,26 @@ function assertPasteDraftBodyShape(body: Record<string, unknown>) {
 }
 
 function assertSendMessageBodyShape(body: Record<string, unknown>) {
-  const allowedFields = new Set(['action', 'conversationName', 'messageText', 'idempotencyKey', 'requestDigest', 'confirmationToken'])
+  const allowedFields = new Set(['action', 'conversationName', 'messageText', 'idempotencyKey', 'requestDigest'])
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) throw new RuntimeHttpError(400, 'UNEXPECTED_REQUEST_FIELD', `Unexpected send-message field: ${key}`)
+  }
+}
+
+function assertSendDraftBodyShape(body: Record<string, unknown>) {
+  const allowedFields = new Set([
+    'action',
+    'conversationName',
+    'draftText',
+    'idempotencyKey',
+    'requestDigest',
+    'attachmentRoot',
+    'attachments',
+    'sendAuthorized',
+    'allowAutoSend',
+    'sendStrategy',
+  ])
+  for (const key of Object.keys(body)) {
+    if (!allowedFields.has(key)) throw new RuntimeHttpError(400, 'UNEXPECTED_REQUEST_FIELD', `Unexpected send-draft field: ${key}`)
   }
 }

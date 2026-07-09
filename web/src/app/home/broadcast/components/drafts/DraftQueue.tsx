@@ -37,7 +37,10 @@ import type {
 } from '../../types';
 
 interface DraftQueueProps {
-  drafts: Array<{ status: 'pending' | 'sent'; drafts: BroadcastDraft[] }>;
+  drafts: Array<{
+    status: 'pending' | 'unknown' | 'sent';
+    drafts: BroadcastDraft[];
+  }>;
   importBatches: BroadcastImportBatch[];
   selectedImportId: number | null;
   searchTerm: string;
@@ -47,6 +50,8 @@ interface DraftQueueProps {
   busy?: boolean;
   canBatchWrite?: boolean;
   batchWriteDisabledReason?: string | null;
+  canBatchSend?: boolean;
+  batchSendDisabledReason?: string | null;
   canBatchMarkSent?: boolean;
   canBatchRestorePending?: boolean;
   onImportBatchChange: (importBatchId: number | null) => void;
@@ -55,14 +60,18 @@ interface DraftQueueProps {
   onSelectDraft: (draftId: number) => void;
   onToggleDraftSelection: (draftId: number, checked: boolean) => void;
   onBatchWrite: () => void;
+  onBatchSend: () => void;
   onBatchMarkSent: () => void;
   onBatchRestorePending: () => void;
 }
 
 function getStatusLabel(
-  status: 'pending' | 'sent',
+  status: 'pending' | 'unknown' | 'sent',
   t: ReturnType<typeof useTranslation>['t'],
 ) {
+  if (status === 'unknown') {
+    return t('broadcast.drafts.statusUnknown');
+  }
   return status === 'sent'
     ? t('broadcast.drafts.statusSent')
     : t('broadcast.drafts.statusPending');
@@ -79,6 +88,8 @@ export default function DraftQueue({
   busy = false,
   canBatchWrite = false,
   batchWriteDisabledReason = null,
+  canBatchSend = false,
+  batchSendDisabledReason = null,
   canBatchMarkSent = false,
   canBatchRestorePending = false,
   onImportBatchChange,
@@ -87,11 +98,17 @@ export default function DraftQueue({
   onSelectDraft,
   onToggleDraftSelection,
   onBatchWrite,
+  onBatchSend,
   onBatchMarkSent,
   onBatchRestorePending,
 }: DraftQueueProps) {
   const { t } = useTranslation();
   const [batchWriteDialogOpen, setBatchWriteDialogOpen] = useState(false);
+  const [batchSendDialogOpen, setBatchSendDialogOpen] = useState(false);
+  const [
+    batchRestorePendingRiskDialogOpen,
+    setBatchRestorePendingRiskDialogOpen,
+  ] = useState(false);
 
   const selectableDraftIds = useMemo(
     () => drafts.flatMap((group) => group.drafts).map((draft) => draft.id),
@@ -121,6 +138,9 @@ export default function DraftQueue({
     0,
     selectedDrafts.length - selectedConversationCount,
   );
+  const selectedUnknownOnly =
+    selectedDrafts.length > 0 &&
+    selectedDrafts.every((draft) => draft.status === 'unknown');
 
   const allSelectableChecked =
     selectableDraftIds.length > 0 &&
@@ -179,6 +199,9 @@ export default function DraftQueue({
               <SelectItem value="pending">
                 {t('broadcast.drafts.statusPending')}
               </SelectItem>
+              <SelectItem value="unknown">
+                {t('broadcast.drafts.statusUnknown')}
+              </SelectItem>
               <SelectItem value="sent">
                 {t('broadcast.drafts.statusSent')}
               </SelectItem>
@@ -236,6 +259,26 @@ export default function DraftQueue({
                   </div>
                 ) : null}
               </div>
+              <div className="space-y-1">
+                <Button
+                  data-testid="broadcast-draft-batch-send-button"
+                  variant="destructive"
+                  onClick={() => setBatchSendDialogOpen(true)}
+                  disabled={selectedCount === 0 || busy || !canBatchSend}
+                  title={
+                    !canBatchSend && batchSendDisabledReason
+                      ? batchSendDisabledReason
+                      : undefined
+                  }
+                >
+                  {t('broadcast.drafts.batchSendSelected')}
+                </Button>
+                {!canBatchSend && batchSendDisabledReason ? (
+                  <div className="text-xs text-muted-foreground">
+                    {batchSendDisabledReason}
+                  </div>
+                ) : null}
+              </div>
               <Button
                 data-testid="broadcast-draft-batch-mark-sent-button"
                 variant="outline"
@@ -247,7 +290,13 @@ export default function DraftQueue({
               <Button
                 data-testid="broadcast-draft-batch-restore-pending-button"
                 variant="outline"
-                onClick={onBatchRestorePending}
+                onClick={() => {
+                  if (selectedUnknownOnly) {
+                    setBatchRestorePendingRiskDialogOpen(true);
+                    return;
+                  }
+                  onBatchRestorePending();
+                }}
                 disabled={
                   selectedCount === 0 || busy || !canBatchRestorePending
                 }
@@ -355,6 +404,71 @@ export default function DraftQueue({
               }}
             >
               {t('broadcast.drafts.batchWriteSelected')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={batchSendDialogOpen}
+        onOpenChange={setBatchSendDialogOpen}
+      >
+        <AlertDialogContent data-testid="broadcast-draft-batch-send-confirm-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('broadcast.drafts.batchSendConfirmTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('broadcast.drafts.batchSendConfirmDescription', {
+                draftCount: selectedDrafts.length,
+                conversationCount: selectedConversationCount,
+                attachmentCount: selectedAttachmentCount,
+                duplicateTargetCount: selectedDuplicateConversationCount,
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="broadcast-draft-batch-send-cancel-button">
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="broadcast-draft-batch-send-confirm-button"
+              onClick={(event) => {
+                event.preventDefault();
+                onBatchSend();
+                setBatchSendDialogOpen(false);
+              }}
+            >
+              {t('broadcast.drafts.batchSendSelected')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={batchRestorePendingRiskDialogOpen}
+        onOpenChange={setBatchRestorePendingRiskDialogOpen}
+      >
+        <AlertDialogContent data-testid="broadcast-draft-batch-restore-pending-risk-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('broadcast.drafts.restorePendingRiskTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('broadcast.drafts.restorePendingRiskDescription')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="broadcast-draft-batch-restore-pending-risk-cancel-button">
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="broadcast-draft-batch-restore-pending-risk-confirm-button"
+              onClick={(event) => {
+                event.preventDefault();
+                onBatchRestorePending();
+                setBatchRestorePendingRiskDialogOpen(false);
+              }}
+            >
+              {t('broadcast.drafts.restorePending')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

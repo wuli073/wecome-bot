@@ -231,6 +231,8 @@ class DesktopAutomationService:
             'runtime_startable': False,
             'runtime_reachable': False,
             'send_enabled': False,
+            'allowed_connector_count': 0,
+            'send_error_code': None,
         }
 
     async def ensure_runtime_client(self):

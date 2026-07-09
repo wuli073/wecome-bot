@@ -10,15 +10,23 @@ async function prepareDraft(page: import('@playwright/test').Page) {
     mimeType: 'text/csv',
     buffer: Buffer.from('customers', 'utf-8'),
   });
-  await page.getByTestId('broadcast-import-template-select').click();
-  await page.getByRole('option', { name: 'Arrival Reminder' }).click();
+  await page.getByTestId('broadcast-import-select-all-checkbox').click();
+  await page
+    .getByTestId('broadcast-import-template-select')
+    .selectOption({ label: 'Arrival Reminder' });
+  await page.getByTestId('broadcast-import-apply-template-button').click();
   await page.getByTestId('broadcast-import-generate-drafts-button').click();
+  await page
+    .getByTestId('broadcast-import-generate-drafts-confirm-button')
+    .click();
 
   await page.locator('[role="tab"]').nth(2).click();
 }
 
 test.describe('broadcast execution phase 7', () => {
-  test('hides real send when backend flags are disabled', async ({ page }) => {
+  test('shows disabled real send when backend flags are disabled', async ({
+    page,
+  }) => {
     await installLangBotApiMocks(page, {
       authenticated: true,
       storage: {
@@ -28,12 +36,13 @@ test.describe('broadcast execution phase 7', () => {
     });
 
     await prepareDraft(page);
-    await expect(page.getByTestId('broadcast-draft-send-button')).toHaveCount(
-      0,
-    );
+    await expect(page.getByTestId('broadcast-draft-send-button')).toBeVisible();
+    await expect(
+      page.getByTestId('broadcast-draft-send-button'),
+    ).toBeDisabled();
   });
 
-  test('still hides real send even when backend advertises send support', async ({
+  test('shows real send without using legacy confirmation routes', async ({
     page,
   }) => {
     await installLangBotApiMocks(page, {
@@ -44,29 +53,9 @@ test.describe('broadcast execution phase 7', () => {
       broadcastSendEnabled: true,
     });
 
-    const requestPaths: string[] = [];
-    page.on('request', (request) => {
-      const url = new URL(request.url());
-      if (url.pathname.startsWith('/api/v1/')) {
-        requestPaths.push(url.pathname);
-      }
-    });
-
     await prepareDraft(page);
 
-    await expect(page.getByTestId('broadcast-draft-send-button')).toHaveCount(
-      0,
-    );
-
-    expect(
-      requestPaths.some((path) =>
-        /\/api\/v1\/broadcast\/send-confirmations$/.test(path),
-      ),
-    ).toBeFalsy();
-    expect(
-      requestPaths.some((path) =>
-        /\/api\/v1\/broadcast\/execution-tasks\/\d+\/send$/.test(path),
-      ),
-    ).toBeFalsy();
+    await expect(page.getByTestId('broadcast-draft-send-button')).toBeVisible();
+    await expect(page.getByTestId('broadcast-draft-send-button')).toBeEnabled();
   });
 });

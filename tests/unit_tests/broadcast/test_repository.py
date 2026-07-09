@@ -103,6 +103,62 @@ def _scope(bot_uuid: str = 'bot-1', connector_id: str = 'wxwork-local') -> dict[
     }
 
 
+async def _create_execution_batch_with_tasks(
+    repository,
+    conn,
+    *,
+    batch_status: str,
+    task_specs: list[dict[str, object]],
+):
+    batch_id = await repository.create_execution_batch(
+        conn,
+        {
+            **_scope(),
+            'channel': 'wecom',
+            'mode': 'send',
+            'status': batch_status,
+            'total_tasks': len(task_specs),
+            'pending_tasks': 0,
+            'running_tasks': 0,
+            'succeeded_tasks': 0,
+            'failed_tasks': 0,
+            'cancelled_tasks': 0,
+            'interrupted_tasks': 0,
+            'created_by': 'tester',
+            'last_action_by': 'tester',
+            'error_message': None,
+            'version': 1,
+        },
+    )
+    task_ids: list[int] = []
+    for index, spec in enumerate(task_specs, start=1):
+        task_ids.append(
+            await repository.create_execution_task(
+                conn,
+                {
+                    'execution_batch_id': batch_id,
+                    'draft_id': None,
+                    'draft_text_snapshot': 'body',
+                    'target_conversation_snapshot': f'Group {index}',
+                    'channel': 'wecom',
+                    'action': str(spec.get('action') or 'send_message'),
+                    'status': str(spec['status']),
+                    'sequence_no': index,
+                    'attempt_count': 1,
+                    'max_attempts': 1,
+                    'idempotency_key': f'broadcast:{batch_id}:{index}',
+                    'request_digest': f'digest-{index}',
+                    'runtime_task_id': f'runtime-{index}',
+                    'error_code': spec.get('error_code'),
+                    'error_message': spec.get('error_message'),
+                    'operator_note': None,
+                    'finished_at': spec.get('finished_at'),
+                },
+            )
+        )
+    return batch_id, task_ids
+
+
 async def test_template_crud_is_scoped_by_bot_and_connector(repository_fixture):
     repository, persistence_mgr = repository_fixture
 
@@ -1437,22 +1493,11 @@ async def test_execution_batch_task_attempt_and_evidence_crud(repository_fixture
                 'technical_details': 'details',
             },
         )
-        confirmation_id = await repository.create_send_confirmation(
-            conn,
-            {
-                'execution_task_id': task_id,
-                'confirmation_token_hash': 'hash-1',
-                'issued_by': 'tester',
-                'used_by': None,
-                'status': 'issued',
-            },
-        )
 
     batch = await repository.get_execution_batch(batch_id, bot_uuid='bot-1', connector_id='wxwork-local')
     task = await repository.get_execution_task(task_id, bot_uuid='bot-1', connector_id='wxwork-local')
     attempts = await repository.list_execution_attempts(task_id, bot_uuid='bot-1', connector_id='wxwork-local')
     evidence = await repository.get_execution_evidence(attempt_id, bot_uuid='bot-1', connector_id='wxwork-local')
-    confirmation = await repository.get_send_confirmation(confirmation_id, bot_uuid='bot-1', connector_id='wxwork-local')
 
     assert batch is not None
     assert batch.channel == 'wecom'
@@ -1461,8 +1506,6 @@ async def test_execution_batch_task_attempt_and_evidence_crud(repository_fixture
     assert [attempt.id for attempt in attempts] == [attempt_id]
     assert evidence is not None
     assert evidence.id == evidence_id
-    assert confirmation is not None
-    assert confirmation.confirmation_token_hash == 'hash-1'
 
 
 async def test_claim_next_execution_task_is_scoped_serial_and_updates_running_state(repository_fixture):
@@ -1615,16 +1658,6 @@ async def test_execution_batch_delete_cascades_children(repository_fixture):
                 'runtime_state': 'running',
                 'evidence_summary': 'summary',
                 'technical_details': 'details',
-            },
-        )
-        await repository.create_send_confirmation(
-            conn,
-            {
-                'execution_task_id': task_id,
-                'confirmation_token_hash': 'hash-1',
-                'issued_by': 'tester',
-                'used_by': None,
-                'status': 'issued',
             },
         )
 
@@ -1817,6 +1850,214 @@ async def test_recompute_execution_batch_counts_treats_succeeded_with_warning_as
     assert batch.succeeded_tasks == 0
     assert batch.failed_tasks == 0
     assert batch.interrupted_tasks == 0
+
+
+async def test_recompute_execution_batch_counts_sets_finished_at_and_error_message_for_terminal_failure(
+    repository_fixture,
+):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id = await repository.create_execution_batch(
+            conn,
+            {
+                **_scope(),
+                'channel': 'wecom',
+                'mode': 'send',
+                'status': 'running',
+                'total_tasks': 1,
+                'pending_tasks': 0,
+                'running_tasks': 1,
+                'succeeded_tasks': 0,
+                'failed_tasks': 0,
+                'cancelled_tasks': 0,
+                'interrupted_tasks': 0,
+                'created_by': 'tester',
+                'last_action_by': 'tester',
+                'error_message': None,
+                'version': 1,
+            },
+        )
+        await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': batch_id,
+                'draft_id': None,
+                'draft_text_snapshot': 'body',
+                'target_conversation_snapshot': 'Acme Group',
+                'channel': 'wecom',
+                'action': 'send_message',
+                'status': 'failed',
+                'sequence_no': 1,
+                'attempt_count': 1,
+                'max_attempts': 1,
+                'idempotency_key': 'broadcast:failed:1',
+                'request_digest': 'digest-failed',
+                'runtime_task_id': 'runtime-failed',
+                'error_code': 'INPUT_NOT_LOCATED',
+                'error_message': 'Message input box could not be located',
+                'operator_note': None,
+                'finished_at': sqlalchemy.func.now(),
+            },
+        )
+
+        batch = await repository.recompute_execution_batch_counts(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+
+    assert batch is not None
+    assert batch.status == 'failed'
+    assert batch.finished_at is not None
+    assert batch.error_message == 'Message input box could not be located'
+
+
+async def test_recompute_execution_batch_counts_preserves_existing_finished_at(repository_fixture):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id, task_ids = await _create_execution_batch_with_tasks(
+            repository,
+            conn,
+            batch_status='failed',
+            task_specs=[
+                {
+                    'status': 'failed',
+                    'error_code': 'INPUT_NOT_LOCATED',
+                    'error_message': 'Message input box could not be located',
+                    'finished_at': sqlalchemy.func.now(),
+                }
+            ],
+        )
+        first = await repository.recompute_execution_batch_counts(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+        preserved_finished_at = first.finished_at
+        await repository.update_execution_task(
+            task_ids[0],
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            updates={'finished_at': sqlalchemy.func.now()},
+            conn=conn,
+        )
+        second = await repository.recompute_execution_batch_counts(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+
+    assert preserved_finished_at is not None
+    assert second.finished_at == preserved_finished_at
+
+
+async def test_recompute_execution_batch_counts_clears_finished_at_for_active_tasks(repository_fixture):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id, _ = await _create_execution_batch_with_tasks(
+            repository,
+            conn,
+            batch_status='running',
+            task_specs=[
+                {
+                    'status': 'running',
+                    'error_code': None,
+                    'error_message': None,
+                    'finished_at': None,
+                }
+            ],
+        )
+        await repository.update_execution_batch(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            updates={'finished_at': sqlalchemy.func.now(), 'error_message': 'stale'},
+            conn=conn,
+        )
+        batch = await repository.recompute_execution_batch_counts(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+
+    assert batch.finished_at is None
+    assert batch.error_message is None
+
+
+async def test_recompute_execution_batch_counts_prefers_interrupted_error_message(repository_fixture):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id, _ = await _create_execution_batch_with_tasks(
+            repository,
+            conn,
+            batch_status='interrupted',
+            task_specs=[
+                {
+                    'status': 'interrupted',
+                    'error_code': 'BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN',
+                    'error_message': 'Execution result requires manual review',
+                    'finished_at': sqlalchemy.func.now(),
+                },
+                {
+                    'status': 'failed',
+                    'error_code': 'INPUT_NOT_LOCATED',
+                    'error_message': 'Message input box could not be located',
+                    'finished_at': sqlalchemy.func.now(),
+                },
+            ],
+        )
+        batch = await repository.recompute_execution_batch_counts(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+
+    assert batch.status == 'partially_failed'
+    assert batch.error_message == 'Execution result requires manual review'
+
+
+async def test_recompute_execution_batch_counts_clears_error_message_for_all_success(repository_fixture):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id, _ = await _create_execution_batch_with_tasks(
+            repository,
+            conn,
+            batch_status='running',
+            task_specs=[
+                {
+                    'status': 'succeeded',
+                    'error_code': None,
+                    'error_message': None,
+                    'finished_at': sqlalchemy.func.now(),
+                }
+            ],
+        )
+        await repository.update_execution_batch(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            updates={'error_message': 'stale error'},
+            conn=conn,
+        )
+        batch = await repository.recompute_execution_batch_counts(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+
+    assert batch.status == 'completed'
+    assert batch.error_message is None
 
 
 async def test_execution_attempt_terminal_update_and_evidence_insert_are_visible_in_same_transaction(

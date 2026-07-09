@@ -30,13 +30,22 @@ test.describe('broadcast execution phase 5', () => {
       mimeType: 'text/csv',
       buffer: Buffer.from('customers', 'utf-8'),
     });
-    await page.getByTestId('broadcast-import-template-select').click();
-    await page.getByRole('option', { name: 'Arrival Reminder' }).click();
+    await page.getByTestId('broadcast-import-select-all-checkbox').click();
+    await page
+      .getByTestId('broadcast-import-template-select')
+      .selectOption({ label: 'Arrival Reminder' });
+    await page.getByTestId('broadcast-import-apply-template-button').click();
     await page.getByTestId('broadcast-import-generate-drafts-button').click();
+    await page
+      .getByTestId('broadcast-import-generate-drafts-confirm-button')
+      .click();
 
     await page.locator('[role="tab"]').nth(2).click();
     await page.getByTestId('broadcast-draft-select-all-checkbox').click();
     await page.getByTestId('broadcast-draft-batch-write-button').click();
+    await page
+      .getByTestId('broadcast-draft-batch-write-confirm-button')
+      .click();
 
     await expect(
       page.getByTestId('broadcast-latest-execution-batch'),
@@ -51,8 +60,5 @@ test.describe('broadcast execution phase 5', () => {
         /\/api\/v1\/broadcast\/executions\/\d+\/start$/.test(path),
       ),
     ).toBeTruthy();
-    expect(
-      requestPaths.some((path) => path.includes('/send-confirmations')),
-    ).toBeFalsy();
   });
 });

@@ -50,7 +50,7 @@ import type {
 } from '../types';
 import { getRetryableExecutionTasks } from '../statusPresentation';
 
-const draftStatusOrder = ['pending', 'sent'] as const;
+const draftStatusOrder = ['pending', 'unknown', 'sent'] as const;
 const OPERATOR_EMAIL = 'tester@example.com';
 const EXECUTION_TERMINAL_STATUSES = new Set([
   'completed',
@@ -181,11 +181,17 @@ function hasWritableTargetConversation(draft: BroadcastDraft | null): boolean {
 function canWriteDraftToInput(draft: BroadcastDraft | null): boolean {
   return Boolean(
     draft &&
-    ['pending', 'sent'].includes(draft.status) &&
+    ['pending', 'unknown', 'sent'].includes(draft.status) &&
     !draft.attachmentsStale &&
     !draft.draftsStale &&
     draft.draftText.trim() &&
     hasWritableTargetConversation(draft),
+  );
+}
+
+function canSendDraftForReal(draft: BroadcastDraft | null): boolean {
+  return Boolean(
+    draft && draft.status === 'pending' && canWriteDraftToInput(draft),
   );
 }
 
@@ -213,6 +219,26 @@ function getDraftWriteDisabledReason(
     return t('broadcast.drafts.staleWarning');
   }
   return null;
+}
+
+function getDraftSendDisabledReason(
+  draft: BroadcastDraft | null,
+  fallbackReason: string | null,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string | null {
+  if (fallbackReason) {
+    return fallbackReason;
+  }
+  if (!draft) {
+    return t('broadcast.drafts.noDraftSelectedReason');
+  }
+  if (draft.status === 'sent') {
+    return t('broadcast.drafts.sendAlreadySent');
+  }
+  if (draft.status === 'unknown') {
+    return t('broadcast.drafts.sendRequiresReview');
+  }
+  return getDraftWriteDisabledReason(draft, null, t);
 }
 
 function getPasteVerificationRuntimeState(
@@ -295,6 +321,7 @@ export default function BroadcastWorkspace() {
     useState<BroadcastExecutionBatchSummary | null>(null);
   const [executorCapability, setExecutorCapability] =
     useState<BroadcastExecutorCapability | null>(null);
+  const [executorStateLoading, setExecutorStateLoading] = useState(true);
   const [executorHealth, setExecutorHealth] =
     useState<BroadcastExecutorHealth | null>(null);
   const [pasteRequestInFlight, setPasteRequestInFlight] = useState(false);
@@ -331,12 +358,18 @@ export default function BroadcastWorkspace() {
 
   const pasteVerificationState =
     getPasteVerificationRuntimeState(executorHealth);
-  const runtimeReady = executorHealth?.status === 'ready';
+  const executorRuntimeAvailable = executorHealth?.available === true;
+  const runtimeReady =
+    executorRuntimeAvailable && executorHealth?.status === 'ready';
+  const executorOwnershipConflict =
+    executorHealth?.error_code === 'RUNTIME_OWNERSHIP_CONFLICT';
   const pasteSupported = Boolean(executorCapability?.supports_paste);
+  const sendSupported = Boolean(executorCapability?.supports_send);
   const pasteVerificationSupported = Boolean(
     executorCapability?.supports_paste_verification,
   );
   const pasteExecutionAvailable = runtimeReady && pasteSupported;
+  const sendExecutionAvailable = runtimeReady && sendSupported;
   const pasteVerificationAvailable =
     runtimeReady &&
     pasteSupported &&
@@ -350,15 +383,71 @@ export default function BroadcastWorkspace() {
     pasteVerificationState?.requiresManualConversationOpen ??
     executorCapability?.requires_manual_conversation_open,
   );
+  const executorUnavailableReason = useMemo(() => {
+    if (executorOwnershipConflict) {
+      return (
+        executorHealth?.error_message ||
+        t('broadcast.executor.runtimeOwnershipConflict')
+      );
+    }
+    if (!executorRuntimeAvailable) {
+      return (
+        executorHealth?.error_message ||
+        t('broadcast.executor.runtimeUnavailable')
+      );
+    }
+    return null;
+  }, [
+    executorHealth?.error_message,
+    executorOwnershipConflict,
+    executorRuntimeAvailable,
+    t,
+  ]);
   const pasteExecutionDisabledReason = useMemo(() => {
-    if (!runtimeReady) {
+    if (executorStateLoading) {
       return t('common.loading');
+    }
+    if (executorUnavailableReason) {
+      return executorUnavailableReason;
     }
     if (!pasteSupported) {
       return t('broadcast.drafts.pasteUnavailable');
     }
     return null;
-  }, [pasteSupported, runtimeReady, t]);
+  }, [executorStateLoading, executorUnavailableReason, pasteSupported, t]);
+  const sendExecutionDisabledReason = useMemo(() => {
+    if (executorStateLoading) {
+      return t('common.loading');
+    }
+    if (executorUnavailableReason) {
+      return executorUnavailableReason;
+    }
+    if (!sendSupported) {
+      return t('broadcast.drafts.sendUnavailable');
+    }
+    return null;
+  }, [executorStateLoading, executorUnavailableReason, sendSupported, t]);
+  const executorHealthMessage = useMemo(() => {
+    if (executorStateLoading) {
+      return t('common.loading');
+    }
+    if (executorUnavailableReason) {
+      return executorUnavailableReason;
+    }
+    if (!sendSupported) {
+      return t('broadcast.executor.sendUnsupported');
+    }
+    if (runtimeReady) {
+      return t('broadcast.executor.realSendReady');
+    }
+    return t('broadcast.executor.runtimeUnavailable');
+  }, [
+    executorStateLoading,
+    executorUnavailableReason,
+    runtimeReady,
+    sendSupported,
+    t,
+  ]);
   const pasteVerificationHint =
     pasteExecutionAvailable &&
     (!pasteVerificationSupported || !pasteVerificationAvailable)
@@ -450,6 +539,11 @@ export default function BroadcastWorkspace() {
       getDraftWriteDisabledReason(activeDraft, pasteExecutionDisabledReason, t),
     [activeDraft, pasteExecutionDisabledReason, t],
   );
+  const sendActionDisabledReason = useMemo(
+    () =>
+      getDraftSendDisabledReason(activeDraft, sendExecutionDisabledReason, t),
+    [activeDraft, sendExecutionDisabledReason, t],
+  );
 
   const batchWriteDisabledReason = useMemo(() => {
     if (pasteExecutionDisabledReason) {
@@ -469,6 +563,28 @@ export default function BroadcastWorkspace() {
     }
     return null;
   }, [pasteExecutionDisabledReason, selectedDrafts, t]);
+  const batchSendDisabledReason = useMemo(() => {
+    if (sendExecutionDisabledReason) {
+      return sendExecutionDisabledReason;
+    }
+    if (selectedDrafts.length === 0) {
+      return t('broadcast.drafts.batchSendNoSelection');
+    }
+    if (selectedDrafts.some((draft) => draft.status !== 'pending')) {
+      return t('broadcast.toasts.batchSendPendingOnly');
+    }
+    for (const draft of selectedDrafts) {
+      const reason = getDraftSendDisabledReason(draft, null, t);
+      if (reason) {
+        return reason;
+      }
+    }
+    return null;
+  }, [selectedDrafts, sendExecutionDisabledReason, t]);
+  const selectedDraftStatuses = useMemo(
+    () => Array.from(new Set(selectedDrafts.map((draft) => draft.status))),
+    [selectedDrafts],
+  );
 
   useEffect(() => {
     if (activeDraft) {
@@ -723,6 +839,7 @@ export default function BroadcastWorkspace() {
   const refreshExecutorState = useCallback(
     async (nextScope?: BroadcastScope) => {
       const resolvedScope = nextScope ?? scopeRef.current;
+      setExecutorStateLoading(true);
       try {
         const [capability, health] = await Promise.all([
           dataSource.getExecutorCapabilities(resolvedScope),
@@ -733,6 +850,10 @@ export default function BroadcastWorkspace() {
       } catch {
         setExecutorCapability(null);
         setExecutorHealth(null);
+      } finally {
+        if (isMountedRef.current) {
+          setExecutorStateLoading(false);
+        }
       }
     },
     [dataSource],
@@ -1320,6 +1441,66 @@ export default function BroadcastWorkspace() {
     }
   };
 
+  const handleCreateSendBatch = async (targetDrafts: BroadcastDraft[]) => {
+    if (!sendExecutionAvailable) {
+      toast.error(
+        sendExecutionDisabledReason ?? t('broadcast.drafts.sendUnavailable'),
+      );
+      return;
+    }
+    if (targetDrafts.length === 0) {
+      toast.error(t('broadcast.toasts.noDraftSelected'));
+      return;
+    }
+    if (targetDrafts.some((draft) => !canSendDraftForReal(draft))) {
+      toast.error(t('broadcast.toasts.batchSendPendingOnly'));
+      return;
+    }
+    setDraftBusy(true);
+    try {
+      const batch = await dataSource.createExecutionBatch(
+        scope,
+        targetDrafts.map((draft) => draft.id),
+        'send',
+        OPERATOR_EMAIL,
+      );
+      setTopTab('logs');
+      setLatestExecutionBatch(batch);
+      await refreshDrafts();
+      await refreshExecutionState(scope, { refreshAllLogs: true });
+
+      const sentCount = batch.sentCount ?? 0;
+      const failedCount = batch.failedCount ?? 0;
+      const unknownCount = batch.unknownCount ?? 0;
+      if (unknownCount > 0) {
+        toast.warning(
+          t('broadcast.toasts.realSendCompletedWithUnknown', {
+            sentCount,
+            failedCount,
+            unknownCount,
+          }),
+        );
+      } else if (failedCount > 0) {
+        toast.warning(
+          t('broadcast.toasts.realSendCompletedWithFailures', {
+            sentCount,
+            failedCount,
+          }),
+        );
+      } else {
+        toast.success(
+          t('broadcast.toasts.realSendCompleted', {
+            sentCount,
+          }),
+        );
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error, t('common.error')));
+    } finally {
+      setDraftBusy(false);
+    }
+  };
+
   const handleBatchAction = async (
     action: 'start' | 'pause' | 'resume' | 'cancel',
   ) => {
@@ -1583,8 +1764,14 @@ export default function BroadcastWorkspace() {
       toast.error(t('broadcast.toasts.noDraftSelected'));
       return;
     }
-    if (targetDrafts.some((draft) => draft.status !== 'pending')) {
-      toast.error(t('broadcast.toasts.batchMarkSentPendingOnly'));
+    const currentStatuses = Array.from(
+      new Set(targetDrafts.map((draft) => draft.status)),
+    );
+    if (
+      currentStatuses.length !== 1 ||
+      !['pending', 'unknown'].includes(currentStatuses[0] ?? '')
+    ) {
+      toast.error(t('broadcast.toasts.batchMarkSentResolvableOnly'));
       return;
     }
     await handleUpdateDraftStatuses(
@@ -1600,8 +1787,14 @@ export default function BroadcastWorkspace() {
       toast.error(t('broadcast.toasts.noDraftSelected'));
       return;
     }
-    if (targetDrafts.some((draft) => draft.status !== 'sent')) {
-      toast.error(t('broadcast.toasts.batchRestorePendingSentOnly'));
+    const currentStatuses = Array.from(
+      new Set(targetDrafts.map((draft) => draft.status)),
+    );
+    if (
+      currentStatuses.length !== 1 ||
+      !['sent', 'unknown'].includes(currentStatuses[0] ?? '')
+    ) {
+      toast.error(t('broadcast.toasts.batchRestorePendingResolvableOnly'));
       return;
     }
     await handleUpdateDraftStatuses(
@@ -1750,9 +1943,124 @@ export default function BroadcastWorkspace() {
                 scope={scope}
                 rules={snapshot.groupRules}
                 groupNames={snapshot.groupNames}
+                batches={importBatches}
+                selectedBatchId={selectedImportId}
+                selectedBatch={
+                  importBatches.find(
+                    (batch) => batch.id === selectedImportId,
+                  ) ?? null
+                }
+                groupRuleCandidates={groupRuleCandidates}
+                groupRuleCandidatesLoading={groupRuleCandidatesLoading}
                 loading={rulesLoading}
                 saving={rulesSaving}
                 error={rulesError}
+                onSelectBatch={async (batchId) => {
+                  const requestGeneration =
+                    ++importRequestGenerationRef.current;
+                  const detailGeneration = ++importDetailGenerationRef.current;
+                  const releaseImportBusy = beginImportBusy();
+                  setSelectedImportIdState(batchId);
+                  clearPendingImportConfirmation();
+                  setImportError(null);
+                  try {
+                    setGroupRowsByKey({});
+                    await loadImportDetailPage(scope, batchId, 1, {
+                      requestGeneration,
+                      detailGeneration,
+                    });
+                    await loadImportGroupsPage(scope, batchId, 1, {
+                      requestGeneration,
+                    });
+                    try {
+                      await loadImportGroupRuleCandidates(scope, batchId, {
+                        requestGeneration,
+                      });
+                    } catch {
+                      if (isImportRequestGenerationCurrent(requestGeneration)) {
+                        setGroupRuleCandidates(null);
+                      }
+                    }
+                    await refreshDrafts(scope, batchId);
+                  } catch (error) {
+                    const message = getErrorMessage(error, t('common.error'));
+                    setImportError(message);
+                    toast.error(message);
+                  } finally {
+                    releaseImportBusy();
+                  }
+                }}
+                onOpenBulkAssignDialog={async () => {
+                  if (!selectedImportIdRef.current) {
+                    setGroupRuleCandidates(null);
+                    return;
+                  }
+                  try {
+                    await loadImportGroupRuleCandidates(
+                      scope,
+                      selectedImportIdRef.current,
+                      {
+                        requestGeneration: importRequestGenerationRef.current,
+                      },
+                    );
+                  } catch (error) {
+                    const message = getErrorMessage(error, t('common.error'));
+                    setImportError(message);
+                    toast.error(message);
+                  }
+                }}
+                onBulkAssignGroupRules={async (batchId, items) => {
+                  const requestGeneration =
+                    ++importRequestGenerationRef.current;
+                  const currentGroupPage =
+                    selectedImportGroupsDetailRef.current?.page ?? 1;
+                  const releaseImportBusy = beginImportBusy();
+                  setImportError(null);
+                  try {
+                    const result = await dataSource.bulkAssignImportGroupRules(
+                      scope,
+                      batchId,
+                      items,
+                    );
+                    await refreshRules(scope);
+                    await refreshImports(scope, {
+                      preferredImportId: batchId,
+                      requestGeneration,
+                      variableProfile: latestRulesRef.current.variableProfile,
+                      templates: latestRulesRef.current.templates,
+                    });
+                    await refreshDrafts(scope, batchId);
+                    await loadImportGroupsPage(
+                      scope,
+                      batchId,
+                      currentGroupPage,
+                      {
+                        requestGeneration,
+                      },
+                    );
+                    try {
+                      await loadImportGroupRuleCandidates(scope, batchId, {
+                        requestGeneration,
+                      });
+                    } catch {
+                      if (isImportRequestGenerationCurrent(requestGeneration)) {
+                        setGroupRuleCandidates(null);
+                      }
+                    }
+                    setGroupRowsByKey({});
+                    toast.success(
+                      t('broadcast.toasts.importBulkAssignCompleted', {
+                        count: result.items.length,
+                      }),
+                    );
+                  } catch (error) {
+                    const message = getErrorMessage(error, t('common.error'));
+                    setImportError(message);
+                    toast.error(message);
+                  } finally {
+                    releaseImportBusy();
+                  }
+                }}
                 onCreateRule={(draft) =>
                   runRulesMutation(async () => {
                     await dataSource.createGroupRule(scope, draft);
@@ -2305,6 +2613,10 @@ export default function BroadcastWorkspace() {
                 releaseImportBusy();
               }
             }}
+            onNavigateToGroupMatching={() => {
+              setTopTab('rules');
+              setRulesTab('groups');
+            }}
             onGenerateDrafts={async (batchId, groupKeys) => {
               const requestGeneration = ++importRequestGenerationRef.current;
               const releaseImportBusy = beginImportBusy();
@@ -2396,13 +2708,21 @@ export default function BroadcastWorkspace() {
                 )
               }
               batchWriteDisabledReason={batchWriteDisabledReason}
+              canBatchSend={
+                sendExecutionAvailable &&
+                selectedDrafts.length > 0 &&
+                selectedDrafts.every((draft) => canSendDraftForReal(draft))
+              }
+              batchSendDisabledReason={batchSendDisabledReason}
               canBatchMarkSent={
                 selectedDrafts.length > 0 &&
-                selectedDrafts.every((draft) => draft.status === 'pending')
+                selectedDraftStatuses.length === 1 &&
+                ['pending', 'unknown'].includes(selectedDraftStatuses[0] ?? '')
               }
               canBatchRestorePending={
                 selectedDrafts.length > 0 &&
-                selectedDrafts.every((draft) => draft.status === 'sent')
+                selectedDraftStatuses.length === 1 &&
+                ['sent', 'unknown'].includes(selectedDraftStatuses[0] ?? '')
               }
               onImportBatchChange={setDraftImportBatchId}
               onSearchTermChange={setSearchTerm}
@@ -2410,6 +2730,7 @@ export default function BroadcastWorkspace() {
               onSelectDraft={handleSelectDraft}
               onToggleDraftSelection={handleToggleDraftSelection}
               onBatchWrite={() => void handleCreateExecutionBatch()}
+              onBatchSend={() => void handleCreateSendBatch(selectedDrafts)}
               onBatchMarkSent={() => void handleBatchMarkSent()}
               onBatchRestorePending={() => void handleBatchRestorePending()}
             />
@@ -2423,6 +2744,10 @@ export default function BroadcastWorkspace() {
               }
               pasteDisabledReason={pasteActionDisabledReason}
               pasteHint={pasteVerificationHint}
+              canSendDraft={
+                sendExecutionAvailable && canSendDraftForReal(activeDraft)
+              }
+              sendDisabledReason={sendActionDisabledReason}
               onStartEdit={handleStartEdit}
               onDraftEditorTextChange={setDraftEditorText}
               onSaveDraft={() => void handleSaveDraft()}
@@ -2445,6 +2770,9 @@ export default function BroadcastWorkspace() {
               }
               onPasteDraft={() =>
                 activeDraft && void handlePasteDraft(activeDraft)
+              }
+              onSendDraft={() =>
+                activeDraft && void handleCreateSendBatch([activeDraft])
               }
               onUploadAttachments={(files) => {
                 if (!activeDraft) {
@@ -2512,6 +2840,8 @@ export default function BroadcastWorkspace() {
             latestBatch={latestExecutionBatch}
             executorCapability={executorCapability}
             executorHealth={executorHealth}
+            executorHealthLoading={executorStateLoading}
+            executorHealthMessage={executorHealthMessage}
             pasteExecutionAvailable={pasteExecutionAvailable}
             pasteVerificationAvailable={pasteVerificationAvailable}
             pasteVerificationMethod={pasteVerificationMethod}
@@ -2519,6 +2849,7 @@ export default function BroadcastWorkspace() {
             pasteActionDisabledReason={pasteExecutionDisabledReason}
             pasteVerificationHint={pasteVerificationHint}
             busy={draftBusy}
+            onRecheckExecutorHealth={() => void refreshExecutorState(scope)}
             onStartBatch={() => void handleBatchAction('start')}
             onPauseBatch={() => void handleBatchAction('pause')}
             onResumeBatch={() => void handleBatchAction('resume')}

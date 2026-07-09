@@ -6,7 +6,12 @@ import type { RuntimeBootstrapConfig } from '../domain/runtime-types'
 import { createWindowsPasteVerificationProvider } from '../input/windows-paste-verifier'
 
 export async function bootstrapRuntimeApp(_app: App, config: RuntimeBootstrapConfig): Promise<void> {
-  const stateStore = new RuntimeStateStore(config.protocolVersion, config.runtimeVersion)
+  const stateStore = new RuntimeStateStore(config.protocolVersion, config.runtimeVersion, {
+    broadcastSendEnabled: config.broadcastSendEnabled,
+    allowedConnectorCount: config.allowedConnectorCount,
+    allowedConnectors: config.allowedConnectors,
+    broadcastSendErrorCode: config.broadcastSendErrorCode,
+  })
   const pasteVerificationProvider = createWindowsPasteVerificationProvider({
     providerInstanceId: `provider-${process.pid}`,
   })

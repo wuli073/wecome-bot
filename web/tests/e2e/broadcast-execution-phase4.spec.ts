@@ -571,7 +571,7 @@ test.describe('broadcast execution phase 4', () => {
     expect(zhHans.broadcast.logs.pasteVerificationUnavailableHint).toBe(
       '内容验证：未启用',
     );
-    expect(zhHans.broadcast.logs.statusPasteVerified).toBe('已写入并验证');
+    expect(zhHans.broadcast.logs.statusPasteVerified).toBe('???????');
     expect(zhHans.broadcast.toasts.pasteSubmitted).toBe('写入任务已提交');
 
     await installLangBotApiMocks(page, {

@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 import math
@@ -8,7 +9,7 @@ import os
 import re
 import secrets
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -37,17 +38,17 @@ from .errors import (
     FILE_CLIPBOARD_OUTPUT_INVALID,
     FILE_CLIPBOARD_PATH_MISMATCH,
     BROADCAST_DRAFT_BODY_EMPTY,
+    BROADCAST_DRAFT_ALREADY_SENT,
     BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN,
     BROADCAST_DRAFT_NOT_FOUND,
+    BROADCAST_DRAFT_NOT_SENDABLE,
     BROADCAST_DRAFT_SCOPE_MISMATCH,
+    BROADCAST_DRAFT_SEND_IN_PROGRESS,
     BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN,
     BROADCAST_DRAFT_STATUS_INVALID,
     BATCH_VALIDATION_FAILED,
     BROADCAST_EXECUTION_BATCH_NOT_FOUND,
     BROADCAST_EXECUTION_BATCH_STATUS_INVALID,
-    BROADCAST_EXECUTION_CONFIRMATION_EXPIRED,
-    BROADCAST_EXECUTION_CONFIRMATION_INVALID,
-    BROADCAST_EXECUTION_CONFIRMATION_REQUIRED,
     BROADCAST_EXECUTION_DRAFT_LIMIT_EXCEEDED,
     BROADCAST_EXECUTION_DRAFT_NOT_READY,
     BROADCAST_EXECUTION_DRAFT_STALE,
@@ -56,6 +57,8 @@ from .errors import (
     BROADCAST_EXECUTION_SCOPE_MISMATCH,
     BROADCAST_EXECUTION_RUNTIME_TASK_ID_CONFLICT,
     BROADCAST_EXECUTION_SEND_DISABLED,
+    EXECUTOR_ATTACHMENT_SEND_UNSUPPORTED,
+    EXECUTOR_SEND_UNSUPPORTED,
     BROADCAST_EXECUTION_SEND_TRIGGERED,
     BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED,
     BROADCAST_EXECUTION_TASK_NOT_FOUND,
@@ -73,6 +76,16 @@ from .errors import (
     BROADCAST_IMPORT_READY_DRAFT_EXISTS,
     BROADCAST_IMPORT_REMATCH_FIELDS_MISSING,
     BROADCAST_IMPORT_VARIABLE_PROFILE_REQUIRED,
+    BROADCAST_CONVERSATION_NOT_FOUND,
+    BROADCAST_BODY_WRITE_FAILED,
+    BROADCAST_ATTACHMENT_WRITE_FAILED,
+    BROADCAST_PRE_SEND_VERIFICATION_FAILED,
+    BROADCAST_ENTER_DISPATCH_FAILED,
+    BROADCAST_POST_SEND_VERIFICATION_FAILED,
+    BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN,
+    BROADCAST_RETRY_SEND_RESULT_UNKNOWN,
+    BROADCAST_SEND_RESULT_UNKNOWN,
+    BROADCAST_SEND_RESULT_UNKNOWN_REQUIRES_REVIEW,
     DUPLICATE_TARGET_CONVERSATION,
     BROADCAST_GROUP_NAME_DUPLICATE,
     BROADCAST_GROUP_NAME_NOT_FOUND,
@@ -109,6 +122,7 @@ from .import_processor import (
 from .repository import BroadcastRepository
 from .runtime_gateway import BroadcastRuntimeGateway
 from .schemas import VALID_MATCH_TYPES, VALID_MERGE_MODES
+from .send_gate import resolve_broadcast_send_gate
 from .template_engine import extract_variables, render_template as safe_render_template
 
 ATTACHMENT_MAX_COUNT = 9
@@ -133,6 +147,20 @@ FAILED_RUNTIME_PASTE_ERROR_CODES = {
     TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE,
     ATTACHMENT_PASTE_FAILED,
 }
+
+RUNTIME_TASK_TERMINAL_STATUSES = {
+    'succeeded',
+    'succeeded_with_warning',
+    'blocked',
+    'failed',
+    'cancelled',
+    'interrupted',
+    'timed_out',
+}
+RUNTIME_TASK_POLL_INTERVAL_SECONDS = 0.05
+RUNTIME_TASK_CANCEL_GRACE_POLLS = 10
+SEND_TERMINAL_STATE_UNKNOWN_MESSAGE = '发送结果无法确认，请人工检查目标会话'
+SEND_CANCELLED_BEFORE_DISPATCH_MESSAGE = '发送任务已在触发 Enter 前取消'
 
 DRAFT_GENERATION_MODIFIED_FIELDS = [
     'template_id',
@@ -2001,8 +2029,6 @@ class BroadcastService:
         draft_ids = [int(draft_id) for draft_id in list(raw_draft_ids or [])]
         if not draft_ids:
             raise BroadcastError(BROADCAST_EXECUTION_DRAFT_LIMIT_EXCEEDED, '至少需要选择一条草稿')
-        if mode == 'send' and len(draft_ids) != 1:
-            raise BroadcastError(BROADCAST_EXECUTION_DRAFT_LIMIT_EXCEEDED, '真实发送当前仅允许单条任务')
 
         operator = str(payload.get('operator') or '').strip() or 'unknown'
         allow_sent_rewrite = (
@@ -2041,15 +2067,15 @@ class BroadcastService:
                         INVALID_SEND_STATUS,
                         '已发送草稿不允许参与批量写入，请先恢复为待发送',
                     )
+                self._assert_unique_target_conversations(drafts)
 
             for draft in drafts:
                 await self._assert_draft_ready_for_execution(
                     draft,
                     validated_scope,
+                    mode=mode,
                     allow_sent_rewrite=allow_sent_rewrite,
                 )
-
-            self._assert_unique_target_conversations(drafts)
 
             draft_attachments_by_id: dict[int, list[dict[str, Any]]] = {}
             for draft in drafts:
@@ -2062,6 +2088,20 @@ class BroadcastService:
                 for attachment in draft_attachments:
                     self._resolve_attachment_relative_path(attachment)
                 draft_attachments_by_id[int(draft.id)] = draft_attachments
+
+            if mode == 'send':
+                executor = build_executor('wxwork_database', self._get_runtime_gateway())
+                capability = executor.validate_capability('send_message')
+                if not bool(capability.get('supports_send', False)):
+                    raise BroadcastError(EXECUTOR_SEND_UNSUPPORTED, '当前执行器不支持真实发送')
+                if any(
+                    draft_attachments_by_id.get(int(draft.id))
+                    for draft in drafts
+                ) and not bool(capability.get('supports_attachment_send', False)):
+                    raise BroadcastError(
+                        EXECUTOR_ATTACHMENT_SEND_UNSUPPORTED,
+                        '当前执行器不支持携带附件的真实发送',
+                    )
 
             batch_id = await self.repository.create_execution_batch(
                 conn,
@@ -2133,6 +2173,8 @@ class BroadcastService:
                             'sort_order': int(attachment['sort_order']),
                         },
                     )
+        if mode == 'send':
+            return await self._execute_send_batch(batch_id, validated_scope, operator=operator)
         return await self.get_execution_batch_detail(batch_id, validated_scope)
 
     async def list_execution_batches(self, scope: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2148,6 +2190,8 @@ class BroadcastService:
         tasks = await self.repository.list_execution_tasks(batch_id, **validated_scope)
         data = self._serialize_execution_batch(batch)
         data['tasks'] = [await self._serialize_execution_task(row) for row in tasks]
+        if str(batch.mode) == 'send':
+            data.update(await self._build_send_batch_result(validated_scope, data['tasks']))
         return data
 
     async def get_execution_task_detail(self, task_id: int, scope: dict[str, Any]) -> dict[str, Any]:
@@ -2638,6 +2682,12 @@ class BroadcastService:
             raise BroadcastError(BROADCAST_EXECUTION_TASK_NOT_FOUND, '执行任务不存在或已被删除')
         if task.status not in {'failed', 'interrupted'}:
             raise BroadcastError(BROADCAST_EXECUTION_TASK_STATUS_INVALID, '当前任务状态不允许重试')
+        retry_state = await self._get_send_task_retry_state(task, validated_scope)
+        if retry_state['allowed'] is False:
+            raise BroadcastError(
+                retry_state['reason_code'] or BROADCAST_RETRY_SEND_RESULT_UNKNOWN,
+                '当前发送结果无法确认，仅允许重试已明确确认在 Enter 之前失败的任务',
+            )
 
         next_attempt_no = int(task.attempt_count or 0) + 1
         operator = str(payload.get('operator') or '').strip() or 'unknown'
@@ -2808,10 +2858,13 @@ class BroadcastService:
                 'runtime_version': health.get('runtimeVersion'),
                 'capability': capability_payload,
                 'runtime_status': self._sanitize_runtime_result(runtime_status),
+                'error_code': None,
                 'error_message': None,
             }
         except Exception as exc:
             error_code = getattr(exc, 'error_code', None)
+            if error_code is None:
+                error_code = getattr(exc, 'code', None)
             if error_code is None and isinstance(exc, BroadcastError):
                 error_code = exc.code
             if error_code is None:
@@ -2824,143 +2877,125 @@ class BroadcastService:
                 'runtime_version': None,
                 'capability': capability_payload,
                 'runtime_status': None,
-                'error_message': error_code or BROADCAST_EXECUTION_HEALTH_CHECK_FAILED,
+                'error_code': error_code or BROADCAST_EXECUTION_HEALTH_CHECK_FAILED,
+                'error_message': str(exc) if str(exc).strip() else error_code or BROADCAST_EXECUTION_HEALTH_CHECK_FAILED,
             }
 
-    async def issue_send_confirmation(self, scope: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-        validated_scope = await self.validate_scope(scope)
-        self._assert_send_feature_enabled(validated_scope)
-        task_id = int(payload.get('execution_task_id') or 0)
-        task = await self.repository.get_execution_task(task_id, **validated_scope)
-        if task is None:
-            raise BroadcastError(BROADCAST_EXECUTION_TASK_NOT_FOUND, '执行任务不存在或已被删除')
-        batch = await self.repository.get_execution_batch(int(task.execution_batch_id), **validated_scope)
-        if batch is None or str(batch.mode) != 'send':
-            raise BroadcastError(BROADCAST_EXECUTION_MODE_INVALID, '仅 send 模式任务可申请发送确认')
-        if task.status != 'pending':
-            raise BroadcastError(BROADCAST_EXECUTION_TASK_STATUS_INVALID, '当前任务状态不允许申请发送确认')
+    async def _execute_send_batch(
+        self,
+        batch_id: int,
+        scope: dict[str, Any],
+        *,
+        operator: str,
+    ) -> dict[str, Any]:
+        batch = await self.repository.get_execution_batch(batch_id, **scope)
+        if batch is None:
+            raise BroadcastError(BROADCAST_EXECUTION_BATCH_NOT_FOUND, '执行批次不存在或已被删除')
+        if str(batch.mode) != 'send':
+            raise BroadcastError(BROADCAST_EXECUTION_MODE_INVALID, '当前批次不是真实发送批次')
 
-        operator = str(payload.get('operator') or '').strip() or 'unknown'
-        token = secrets.token_urlsafe(24)
-        token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
         async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
-            confirmation_id = await self.repository.create_send_confirmation(
-                conn,
-                {
-                    'execution_task_id': task_id,
-                    'confirmation_token_hash': token_hash,
-                    'issued_at': datetime.now(timezone.utc),
-                    'expires_at': expires_at,
-                    'used_at': None,
-                    'issued_by': operator,
-                    'used_by': None,
-                    'status': 'issued',
+            await self.repository.update_execution_batch(
+                batch_id,
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
+                updates={
+                    'status': 'running',
+                    'started_at': sqlalchemy.func.now(),
+                    'paused_at': None,
+                    'last_action_by': operator,
                 },
-            )
-            confirmation = await self.repository.get_send_confirmation(
-                confirmation_id,
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
                 conn=conn,
             )
-        return {
-            'id': int(confirmation.id),
-            'token': token,
-            'expires_at': confirmation.expires_at.isoformat() if confirmation.expires_at else None,
-            'execution_task_id': int(task.id),
-        }
+            await self.repository.recompute_execution_batch_counts(
+                batch_id,
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
+                conn=conn,
+            )
 
-    async def send_execution_task(
+        tasks = await self.repository.list_execution_tasks(batch_id, **scope)
+        for task in tasks:
+            if str(task.status) != 'pending':
+                continue
+            await self._execute_send_task(task, scope, operator=operator)
+        return await self.get_execution_batch_detail(batch_id, scope)
+
+    async def _execute_send_task(
         self,
-        task_id: int,
+        task,
         scope: dict[str, Any],
-        payload: dict[str, Any],
+        *,
+        operator: str,
     ) -> dict[str, Any]:
-        validated_scope = await self.validate_scope(scope)
-        self._assert_send_feature_enabled(validated_scope)
-        task = await self.repository.get_execution_task(task_id, **validated_scope)
-        if task is None:
-            raise BroadcastError(BROADCAST_EXECUTION_TASK_NOT_FOUND, '执行任务不存在或已被删除')
-        if str(task.action) != 'send_message':
-            raise BroadcastError(BROADCAST_EXECUTION_MODE_INVALID, '当前任务不是发送任务')
-        if task.status != 'pending':
-            raise BroadcastError(BROADCAST_EXECUTION_TASK_STATUS_INVALID, '当前任务状态不允许发送')
-
-        confirmation_token = str(payload.get('confirmation_token') or '').strip()
-        if not confirmation_token:
-            raise BroadcastError(BROADCAST_EXECUTION_CONFIRMATION_REQUIRED, '缺少发送确认 token')
-        confirmation_hash = hashlib.sha256(confirmation_token.encode('utf-8')).hexdigest()
-        confirmation = await self.repository.get_send_confirmation_by_hash(
-            confirmation_hash,
-            bot_uuid=validated_scope['bot_uuid'],
-            connector_id=validated_scope['connector_id'],
-        )
-        if confirmation is None or int(confirmation.execution_task_id) != int(task.id):
-            raise BroadcastError(BROADCAST_EXECUTION_CONFIRMATION_INVALID, '发送确认 token 无效')
-        if confirmation.used_at is not None or str(confirmation.status) == 'used':
-            raise BroadcastError(BROADCAST_EXECUTION_CONFIRMATION_INVALID, '发送确认 token 已使用')
-        expires_at = confirmation.expires_at
-        if expires_at is not None:
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-            if expires_at < datetime.now(timezone.utc):
-                raise BroadcastError(BROADCAST_EXECUTION_CONFIRMATION_EXPIRED, '发送确认 token 已过期')
-
         gateway = self._get_runtime_gateway()
         executor = build_executor(str(task.channel), gateway)
-        capability = executor.validate_capability('paste_draft')
-        if not self._is_send_enabled(validated_scope) or not bool(capability.get('supports_send', False)):
-            raise BroadcastError(BROADCAST_EXECUTION_SEND_DISABLED, '真实发送功能未开启')
+        capability = executor.validate_capability('send_message')
+        if not bool(capability.get('supports_send', False)):
+            raise BroadcastError(EXECUTOR_SEND_UNSUPPORTED, '当前执行器不支持真实发送')
 
         async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
             await self.repository.update_execution_task(
-                task_id,
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
+                int(task.id),
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
                 updates={
                     'status': 'running',
                     'started_at': sqlalchemy.func.now(),
                     'error_code': None,
                     'error_message': None,
+                    'runtime_task_id': None,
                 },
                 conn=conn,
             )
             await self.repository.update_execution_batch(
                 int(task.execution_batch_id),
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
-                updates={'status': 'running', 'started_at': sqlalchemy.func.now()},
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
+                updates={
+                    'status': 'running',
+                    'started_at': sqlalchemy.func.now(),
+                    'last_action_by': operator,
+                },
                 conn=conn,
             )
 
+        task_attachments = await self.repository.list_execution_task_attachments(
+            int(task.id),
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+        )
+        if task_attachments and not bool(capability.get('supports_attachment_send', False)):
+            raise BroadcastError(
+                EXECUTOR_ATTACHMENT_SEND_UNSUPPORTED,
+                '当前执行器不支持携带附件的真实发送',
+            )
+
         attempt_no = int(task.attempt_count or 0) + 1
-        idempotency_key = f'broadcast:{task_id}:{attempt_no}'
+        idempotency_key = f'broadcast:{int(task.id)}:{attempt_no}'
         async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
             await self.repository.update_execution_task(
-                task_id,
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
+                int(task.id),
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
                 updates={
                     'attempt_count': attempt_no,
                     'idempotency_key': idempotency_key,
+                    'error_code': None,
+                    'error_message': None,
                 },
                 conn=conn,
             )
             attempt_id = await self.repository.create_execution_attempt(
                 conn,
                 {
-                    'execution_task_id': task_id,
+                    'execution_task_id': int(task.id),
                     'attempt_no': attempt_no,
                     'idempotency_key': idempotency_key,
                     'request_digest': str(task.request_digest),
                     'runtime_task_id': None,
                     'request_summary': json.dumps(
-                        {
-                            'action': 'send_message',
-                            'channel': str(task.channel),
-                            'target_conversation': str(task.target_conversation_snapshot),
-                        },
+                        self._build_send_request_summary(task, task_attachments),
                         ensure_ascii=False,
                     ),
                     'response_summary': None,
@@ -2972,22 +3007,81 @@ class BroadcastService:
             )
 
         runtime_result = None
+        evidence = None
         task_status = 'interrupted'
         error_code = None
         error_message = None
         try:
-            runtime_result = await executor.send_message(
-                conversation_name=str(task.target_conversation_snapshot),
-                message_text=str(task.draft_text_snapshot),
-                idempotency_key=idempotency_key,
-                request_digest=str(task.request_digest),
-                confirmation_token=confirmation_token,
+            send_kwargs = {
+                'conversation_name': str(task.target_conversation_snapshot),
+                'message_text': str(task.draft_text_snapshot),
+                'idempotency_key': idempotency_key,
+                'request_digest': str(task.request_digest),
+            }
+            if task_attachments:
+                send_kwargs['attachment_root'] = str(self._attachments_root())
+                send_kwargs['attachments'] = [
+                    {
+                        'relativePath': self._resolve_attachment_relative_path(item),
+                        'filename': str(item['original_name_snapshot']),
+                        'size': int(item['size_bytes_snapshot']),
+                        'sha256': str(item['sha256_snapshot']),
+                    }
+                    for item in task_attachments
+                ]
+            runtime_result = await executor.send_message(**send_kwargs)
+            runtime_result = await self._wait_for_send_task_terminal(
+                executor=executor,
+                capability=capability,
+                initial_task=runtime_result,
             )
             decoded_runtime_result = decode_runtime_task(runtime_result)
-            runtime_status = str(decoded_runtime_result.get('status') or '')
-            task_status = self._coerce_terminal_task_status(runtime_status)
-            error_code = str(decoded_runtime_result.get('error_code') or runtime_result.get('error_code') or '').strip() or None
-            error_message = str(runtime_result.get('errorMessage') or runtime_result.get('error_message') or '').strip() or None
+            evidence = executor.normalize_evidence(runtime_result)
+            send_result = self._extract_send_terminal_result(runtime_result, evidence)
+            runtime_status = str(decoded_runtime_result.get('status') or '').strip().lower()
+            runtime_error_code = self._extract_runtime_error_code(runtime_result)
+            runtime_error_message = self._extract_runtime_error_message(runtime_result)
+            coerced_runtime_status = self._coerce_terminal_task_status(runtime_status)
+
+            if not send_result['terminal_confirmed']:
+                task_status = 'interrupted'
+                error_code = runtime_error_code or BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN
+                error_message = runtime_error_message or SEND_TERMINAL_STATE_UNKNOWN_MESSAGE
+            elif runtime_status == 'succeeded':
+                if send_result['message_sent'] is True:
+                    task_status = 'succeeded'
+                    error_code = None
+                    error_message = None
+                else:
+                    task_status = 'interrupted'
+                    error_code = runtime_error_code or BROADCAST_SEND_RESULT_UNKNOWN
+                    error_message = runtime_error_message or SEND_TERMINAL_STATE_UNKNOWN_MESSAGE
+            elif runtime_status == 'succeeded_with_warning':
+                task_status = 'interrupted'
+                error_code = runtime_error_code or BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN
+                error_message = runtime_error_message or SEND_TERMINAL_STATE_UNKNOWN_MESSAGE
+            elif coerced_runtime_status == 'cancelled':
+                if send_result['enter_dispatched'] is False and send_result['message_sent'] is not True:
+                    task_status = 'cancelled'
+                    error_code = runtime_error_code
+                    error_message = runtime_error_message or SEND_CANCELLED_BEFORE_DISPATCH_MESSAGE
+                else:
+                    task_status = 'interrupted'
+                    error_code = runtime_error_code or BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN
+                    error_message = runtime_error_message or SEND_TERMINAL_STATE_UNKNOWN_MESSAGE
+            elif send_result['enter_dispatched'] is False:
+                if runtime_status == 'interrupted' and runtime_error_code not in {None, BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN}:
+                    task_status = 'failed'
+                    error_code = runtime_error_code
+                    error_message = runtime_error_message or error_code
+                else:
+                    task_status = 'failed'
+                    error_code = runtime_error_code or self._map_pre_send_failure_code(None, evidence)
+                    error_message = runtime_error_message or error_code
+            else:
+                task_status = 'interrupted'
+                error_code = runtime_error_code or BROADCAST_SEND_RESULT_UNKNOWN
+                error_message = runtime_error_message or SEND_TERMINAL_STATE_UNKNOWN_MESSAGE
         except BroadcastError as exc:
             task_status = 'failed'
             error_code = exc.code
@@ -3004,8 +3098,7 @@ class BroadcastService:
         )
         sanitized_runtime_result = self._sanitize_runtime_result(runtime_result)
         evidence_payload = None
-        if runtime_result is not None:
-            evidence = executor.normalize_evidence(runtime_result)
+        if evidence is not None:
             evidence_payload = {
                 'execution_attempt_id': int(attempt_id),
                 'window_title': evidence.get('window_title'),
@@ -3028,8 +3121,8 @@ class BroadcastService:
         async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
             await self.repository.update_execution_attempt(
                 int(attempt_id),
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
                 updates={
                     'status': task_status,
                     'runtime_task_id': runtime_task_id,
@@ -3045,9 +3138,9 @@ class BroadcastService:
             if evidence_payload is not None:
                 await self.repository.create_execution_evidence(conn, evidence_payload)
             updated = await self.repository.update_execution_task(
-                task_id,
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
+                int(task.id),
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
                 updates={
                     'status': task_status,
                     'runtime_task_id': runtime_task_id,
@@ -3057,24 +3150,432 @@ class BroadcastService:
                 },
                 conn=conn,
             )
-            await self.repository.update_send_confirmation(
-                int(confirmation.id),
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
-                updates={
-                    'status': 'used',
-                    'used_at': sqlalchemy.func.now(),
-                    'used_by': str(payload.get('operator') or '').strip() or 'unknown',
-                },
-                conn=conn,
-            )
+            if getattr(task, 'draft_id', None):
+                await self.repository.update_draft(
+                    int(task.draft_id),
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                    updates=self._build_send_status_updates(task_status, error_message),
+                    conn=conn,
+                )
             await self.repository.recompute_execution_batch_counts(
                 int(task.execution_batch_id),
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
                 conn=conn,
             )
         return await self._serialize_execution_task(updated)
+
+    async def _wait_for_send_task_terminal(
+        self,
+        *,
+        executor,
+        capability: dict[str, Any],
+        initial_task: dict[str, Any],
+    ) -> dict[str, Any]:
+        action = str(initial_task.get('action') or 'send_message')
+        current_task = self._with_runtime_task_action(initial_task, action)
+        decoded = decode_runtime_task(current_task)
+        if self._is_terminal_runtime_task_status(decoded.get('status')):
+            return current_task
+
+        runtime_task_id = str(decoded.get('id') or '').strip()
+        if not runtime_task_id:
+            return self._build_send_terminal_unknown_task(
+                task=current_task,
+                action=action,
+                error_message=SEND_TERMINAL_STATE_UNKNOWN_MESSAGE,
+                diagnostic_stage='task_id_missing',
+            )
+
+        if not bool(capability.get('supports_status_query', False)):
+            return self._build_send_terminal_unknown_task(
+                task=current_task,
+                action=action,
+                error_message=SEND_TERMINAL_STATE_UNKNOWN_MESSAGE,
+                diagnostic_stage='status_query_unsupported',
+            )
+
+        timeout_seconds = max(
+            0,
+            int(self.ap.instance_config.data.get('desktop_automation', {}).get('task_timeout_seconds', 120)),
+        )
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        while True:
+            if timeout_seconds == 0 or asyncio.get_running_loop().time() > deadline:
+                if bool(capability.get('supports_cancel', False)):
+                    return await self._request_send_task_cancellation(
+                        executor=executor,
+                        runtime_task_id=runtime_task_id,
+                        task=current_task,
+                        action=action,
+                    )
+                return self._build_send_terminal_unknown_task(
+                    task=current_task,
+                    action=action,
+                    error_message=SEND_TERMINAL_STATE_UNKNOWN_MESSAGE,
+                    diagnostic_stage='terminal_timeout',
+                )
+
+            await asyncio.sleep(RUNTIME_TASK_POLL_INTERVAL_SECONDS)
+            try:
+                polled = await executor.query_status(runtime_task_id)
+            except Exception as exc:
+                if bool(capability.get('supports_cancel', False)):
+                    return await self._request_send_task_cancellation(
+                        executor=executor,
+                        runtime_task_id=runtime_task_id,
+                        task=current_task,
+                        action=action,
+                        error_message=f'{SEND_TERMINAL_STATE_UNKNOWN_MESSAGE}: {exc.__class__.__name__}',
+                        diagnostic_code=exc.__class__.__name__,
+                        diagnostic_stage='query_failed',
+                    )
+                return self._build_send_terminal_unknown_task(
+                    task=current_task,
+                    action=action,
+                    error_message=f'{SEND_TERMINAL_STATE_UNKNOWN_MESSAGE}: {exc.__class__.__name__}',
+                    diagnostic_code=exc.__class__.__name__,
+                    diagnostic_stage='query_failed',
+                )
+
+            if not self._is_runtime_task_status_recognized(polled):
+                if bool(capability.get('supports_cancel', False)):
+                    return await self._request_send_task_cancellation(
+                        executor=executor,
+                        runtime_task_id=runtime_task_id,
+                        task=current_task,
+                        action=action,
+                        error_message=SEND_TERMINAL_STATE_UNKNOWN_MESSAGE,
+                        diagnostic_stage='query_shape_invalid',
+                    )
+                return self._build_send_terminal_unknown_task(
+                    task=current_task,
+                    action=action,
+                    error_message=SEND_TERMINAL_STATE_UNKNOWN_MESSAGE,
+                    diagnostic_stage='query_shape_invalid',
+                )
+
+            current_task = self._with_runtime_task_action(polled, action)
+            if self._is_terminal_runtime_task_status(decode_runtime_task(current_task).get('status')):
+                return current_task
+
+    async def _request_send_task_cancellation(
+        self,
+        *,
+        executor,
+        runtime_task_id: str,
+        task: dict[str, Any] | None,
+        action: str,
+        error_message: str = SEND_TERMINAL_STATE_UNKNOWN_MESSAGE,
+        diagnostic_code: str | None = None,
+        diagnostic_stage: str = 'cancel_requested',
+    ) -> dict[str, Any]:
+        current_task = self._with_runtime_task_action(
+            task or {
+                'id': runtime_task_id,
+                'status': 'running',
+                'stage': 'running',
+            },
+            action,
+        )
+        if self._is_terminal_runtime_task_status(decode_runtime_task(current_task).get('status')):
+            return self._normalize_cancelled_send_task(current_task, action=action)
+
+        try:
+            cancel_result = await executor.cancel(runtime_task_id)
+        except Exception as exc:
+            return self._build_send_terminal_unknown_task(
+                task=current_task,
+                action=action,
+                error_message=f'{error_message}: {exc.__class__.__name__}',
+                diagnostic_code=diagnostic_code or exc.__class__.__name__,
+                diagnostic_stage='cancel_failed',
+            )
+
+        current_task = self._with_runtime_task_action(cancel_result, action)
+        if self._is_terminal_runtime_task_status(decode_runtime_task(current_task).get('status')):
+            return self._normalize_cancelled_send_task(current_task, action=action)
+
+        for _ in range(RUNTIME_TASK_CANCEL_GRACE_POLLS):
+            await asyncio.sleep(RUNTIME_TASK_POLL_INTERVAL_SECONDS)
+            try:
+                polled = await executor.query_status(runtime_task_id)
+            except Exception as exc:
+                return self._build_send_terminal_unknown_task(
+                    task=current_task,
+                    action=action,
+                    error_message=f'{error_message}: {exc.__class__.__name__}',
+                    diagnostic_code=diagnostic_code or exc.__class__.__name__,
+                    diagnostic_stage='cancel_poll_failed',
+                )
+            current_task = self._with_runtime_task_action(polled, action)
+            if self._is_terminal_runtime_task_status(decode_runtime_task(current_task).get('status')):
+                return self._normalize_cancelled_send_task(current_task, action=action)
+
+        return self._build_send_terminal_unknown_task(
+            task=current_task,
+            action=action,
+            error_message=error_message,
+            diagnostic_code=diagnostic_code,
+            diagnostic_stage=diagnostic_stage,
+        )
+
+    def _normalize_cancelled_send_task(
+        self,
+        task: dict[str, Any],
+        *,
+        action: str,
+    ) -> dict[str, Any]:
+        normalized_task = self._with_runtime_task_action(task, action)
+        decoded = decode_runtime_task(normalized_task)
+        if str(decoded.get('status') or '').strip().lower() != 'cancelled':
+            return normalized_task
+
+        send_result = self._extract_send_terminal_result(normalized_task)
+        if send_result['enter_dispatched'] is not False or send_result['message_sent'] is True:
+            return self._build_send_terminal_unknown_task(
+                task=normalized_task,
+                action=action,
+                error_message=SEND_TERMINAL_STATE_UNKNOWN_MESSAGE,
+                diagnostic_stage='cancelled_after_dispatch',
+            )
+        return normalized_task
+
+    @staticmethod
+    def _is_terminal_runtime_task_status(runtime_status: Any) -> bool:
+        return str(runtime_status or '').strip().lower() in RUNTIME_TASK_TERMINAL_STATUSES
+
+    @staticmethod
+    def _is_runtime_task_status_recognized(task: Any) -> bool:
+        if not isinstance(task, dict):
+            return False
+        status = str(task.get('status') or '').strip().lower()
+        return status in RUNTIME_TASK_TERMINAL_STATUSES | {'running', 'queued'}
+
+    @staticmethod
+    def _with_runtime_task_action(task: dict[str, Any] | None, action: str) -> dict[str, Any]:
+        normalized = dict(task or {})
+        normalized.setdefault('action', action)
+        return normalized
+
+    def _build_send_terminal_unknown_task(
+        self,
+        *,
+        task: dict[str, Any] | None,
+        action: str,
+        error_message: str,
+        diagnostic_code: str | None = None,
+        diagnostic_stage: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_task = self._with_runtime_task_action(task, action)
+        decoded = decode_runtime_task(normalized_task)
+        payload = {
+            'terminalSource': 'backend_synthetic_unknown',
+            'terminalConfirmed': False,
+            'enterDispatched': None,
+            'messageSent': None,
+            'stage': 'terminal_state_unknown',
+            'errorCode': BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN,
+            'errorMessage': error_message,
+            'lastObservedStatus': str(decoded.get('status') or '').strip() or None,
+            'lastObservedStage': str(decoded.get('stage') or '').strip() or None,
+        }
+        if diagnostic_code:
+            payload['diagnosticCode'] = diagnostic_code
+        if diagnostic_stage:
+            payload['diagnosticStage'] = diagnostic_stage
+        return {
+            **normalized_task,
+            'id': str(decoded.get('id') or normalized_task.get('id') or ''),
+            'status': 'unknown',
+            'stage': 'terminal_state_unknown',
+            'errorCode': BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN,
+            'errorMessage': error_message,
+            'result': payload,
+        }
+
+    @staticmethod
+    def _build_send_request_summary(task, task_attachments: list[dict[str, Any]]) -> dict[str, Any]:
+        draft_text = str(task.draft_text_snapshot or '')
+        return {
+            'action': 'send_message',
+            'broadcast_action': 'send_message',
+            'runtime_action': 'send_draft',
+            'channel': str(task.channel),
+            'target_conversation': str(task.target_conversation_snapshot),
+            'send_authorized': True,
+            'allow_auto_send': True,
+            'send_strategy': 'enter',
+            'attachment_count': len(task_attachments),
+            'draft_length': len(draft_text),
+            'draft_digest': hashlib.sha256(draft_text.encode('utf-8')).hexdigest(),
+        }
+
+    @staticmethod
+    def _extract_runtime_error_code(runtime_result: dict[str, Any] | None) -> str | None:
+        decoded_runtime_result = decode_runtime_task(runtime_result)
+        return (
+            str(
+                decoded_runtime_result.get('error_code')
+                or (runtime_result or {}).get('errorCode')
+                or (runtime_result or {}).get('error_code')
+                or (decoded_runtime_result.get('result_payload') or {}).get('errorCode')
+                or ''
+            ).strip()
+            or None
+        )
+
+    @staticmethod
+    def _extract_runtime_error_message(runtime_result: dict[str, Any] | None) -> str | None:
+        if runtime_result is None:
+            return None
+        payload = dict(decode_runtime_task(runtime_result).get('result_payload') or {})
+        return (
+            str(
+                runtime_result.get('errorMessage')
+                or runtime_result.get('error_message')
+                or payload.get('errorMessage')
+                or payload.get('error_message')
+                or ''
+            ).strip()
+            or None
+        )
+
+    @staticmethod
+    def _extract_send_terminal_flag(
+        payload: dict[str, Any],
+        *keys: str,
+    ) -> bool | None:
+        for key in keys:
+            if key not in payload:
+                continue
+            value = payload.get(key)
+            if isinstance(value, bool) or value is None:
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in {'true', '1', 'yes'}:
+                    return True
+                if normalized in {'false', '0', 'no'}:
+                    return False
+        return None
+
+    def _extract_send_terminal_result(
+        self,
+        runtime_result: dict[str, Any] | None,
+        evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        has_runtime_task = isinstance(runtime_result, dict) and bool(runtime_result)
+        decoded = decode_runtime_task(runtime_result)
+        payload = dict(decoded.get('result_payload') or {})
+        raw_technical_details = (evidence or {}).get('technical_details')
+        if isinstance(raw_technical_details, str) and raw_technical_details.strip():
+            try:
+                loaded_technical_details = json.loads(raw_technical_details)
+            except Exception:
+                loaded_technical_details = None
+        else:
+            loaded_technical_details = raw_technical_details
+        technical_details = (
+            dict(loaded_technical_details)
+            if isinstance(loaded_technical_details, dict)
+            else {}
+        )
+        enter_dispatched = self._extract_send_terminal_flag(
+            payload,
+            'enterDispatched',
+            'enter_dispatched',
+        )
+        if enter_dispatched is None:
+            enter_dispatched = self._extract_send_terminal_flag(
+                technical_details,
+                'enter_dispatched',
+                'enterDispatched',
+            )
+        payload_has_message_sent = 'messageSent' in payload or 'message_sent' in payload
+        message_sent = self._extract_send_terminal_flag(payload, 'messageSent', 'message_sent')
+        if message_sent is None and not payload_has_message_sent:
+            message_sent = self._extract_send_terminal_flag(
+                technical_details,
+                'message_sent',
+                'messageSent',
+            )
+        post_send_verified = self._extract_send_terminal_flag(
+            payload,
+            'postSendVerified',
+            'post_send_verified',
+        )
+        if post_send_verified is None:
+            post_send_verified = self._extract_send_terminal_flag(
+                technical_details,
+                'post_send_verified',
+                'postSendVerified',
+            )
+        outcome = str(
+            payload.get('outcome')
+            or technical_details.get('outcome')
+            or ''
+        ).strip().lower()
+        runtime_stage = str(decoded.get('stage') or '').strip().lower()
+        runtime_error_code = str(
+            decoded.get('error_code')
+            or (runtime_result or {}).get('errorCode')
+            or (runtime_result or {}).get('error_code')
+            or payload.get('errorCode')
+            or payload.get('error_code')
+            or technical_details.get('error_code')
+            or ''
+        ).strip().upper()
+        terminal_source = str(
+            payload.get('terminalSource')
+            or technical_details.get('terminal_source')
+            or 'runtime'
+        )
+        terminal_confirmed_raw = payload.get('terminalConfirmed')
+        if isinstance(terminal_confirmed_raw, bool):
+            terminal_confirmed = terminal_confirmed_raw
+        elif not has_runtime_task:
+            terminal_confirmed = False
+        else:
+            terminal_confirmed = self._is_terminal_runtime_task_status(decoded.get('status')) and str(
+                decoded.get('status') or ''
+            ).strip().lower() != 'unknown'
+        send_key_count = payload.get('sendKeyCount')
+        if send_key_count is None:
+            send_key_count = technical_details.get('send_key_count', technical_details.get('sendKeyCount'))
+        if enter_dispatched is None:
+            if isinstance(send_key_count, (int, float)) and int(send_key_count) > 0:
+                enter_dispatched = True
+            elif outcome == 'unknown' or runtime_stage == 'post_send_verification_failed':
+                enter_dispatched = True
+        enter_after_paste_result_unknown = (
+            enter_dispatched is True
+            and post_send_verified is not True
+            and (
+                outcome == 'unknown'
+                or runtime_stage == 'post_send_verification_failed'
+                or runtime_error_code in {
+                    'POST_SEND_VERIFICATION_FAILED',
+                    'POST_SEND_VERIFICATION_UNAVAILABLE',
+                    'BROADCAST_SEND_RESULT_UNKNOWN',
+                    'BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN',
+                }
+            )
+        )
+        if enter_after_paste_result_unknown:
+            terminal_confirmed = False
+            message_sent = None
+        if enter_dispatched is None and message_sent is True and terminal_confirmed:
+            enter_dispatched = True
+        return {
+            'enter_dispatched': enter_dispatched,
+            'message_sent': message_sent,
+            'terminal_confirmed': terminal_confirmed,
+            'terminal_source': terminal_source,
+        }
 
     @staticmethod
     def extract_template_variables(content: str) -> list[str]:
@@ -3680,6 +4181,8 @@ class BroadcastService:
         data = self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastDraft, row)
         data['send_status'] = self._normalize_draft_send_status(row)
         data['legacy_status'] = data['status']
+        data['conversation_name'] = data.get('target_conversation_name')
+        data['conversation_id'] = data.get('target_conversation_id')
         batch = await self.repository.get_import_batch(
             int(row.import_batch_id),
             bot_uuid=str(row.bot_uuid),
@@ -3700,20 +4203,44 @@ class BroadcastService:
         draft,
         scope: dict[str, str],
         *,
+        mode: str = 'paste_only',
         allow_sent_rewrite: bool = False,
     ) -> None:
         if str(draft.status) == 'invalid':
             raise BroadcastError(BROADCAST_EXECUTION_DRAFT_NOT_READY, '无效草稿不允许执行')
         send_status = self._normalize_draft_send_status(draft)
-        if send_status == 'sent' and not allow_sent_rewrite:
+        if mode == 'send':
+            if send_status == 'sent':
+                raise BroadcastError(BROADCAST_DRAFT_ALREADY_SENT, '该草稿已标记为已发送，不能再次真实发送')
+            if send_status == 'unknown':
+                raise BroadcastError(
+                    BROADCAST_SEND_RESULT_UNKNOWN_REQUIRES_REVIEW,
+                    '该草稿最近一次发送结果待确认，请先人工处理',
+                )
+            active_send_task = await self.repository.get_active_send_task_for_draft(
+                int(draft.id),
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
+            )
+            if active_send_task is not None:
+                raise BroadcastError(
+                    BROADCAST_DRAFT_SEND_IN_PROGRESS,
+                    '该草稿已有真实发送任务进行中，不能直接再次发送',
+                )
+        elif send_status == 'sent' and not allow_sent_rewrite:
             raise BroadcastError(INVALID_SEND_STATUS, '已发送草稿不允许参与批量写入，请先恢复为待发送')
         if not str(draft.target_conversation_name or '').strip():
-            raise BroadcastError(BROADCAST_EXECUTION_DRAFT_NOT_READY, '鐩爣缇よ亰涓嶈兘涓虹┖')
+            raise BroadcastError(BROADCAST_DRAFT_NOT_SENDABLE if mode == 'send' else BROADCAST_EXECUTION_DRAFT_NOT_READY, '目标群聊不能为空')
+        if not str(draft.target_conversation_id or '').strip():
+            raise BroadcastError(
+                BROADCAST_DRAFT_NOT_SENDABLE if mode == 'send' else BROADCAST_EXECUTION_DRAFT_NOT_READY,
+                '目标群聊稳定 ID 不能为空',
+            )
         if not str(draft.draft_text or '').strip():
-            raise BroadcastError(BROADCAST_EXECUTION_DRAFT_NOT_READY, '鑽夌姝ｆ枃涓嶈兘涓虹┖')
+            raise BroadcastError(BROADCAST_DRAFT_NOT_SENDABLE if mode == 'send' else BROADCAST_EXECUTION_DRAFT_NOT_READY, '草稿正文不能为空')
         batch = await self.repository.get_import_batch(int(draft.import_batch_id), **scope)
         if batch is None:
-            raise BroadcastError(BROADCAST_IMPORT_NOT_FOUND, '瀵煎叆鎵规涓嶅瓨鍦ㄦ垨宸茶鍒犻櫎')
+            raise BroadcastError(BROADCAST_IMPORT_NOT_FOUND, '导入批次不存在或已被删除')
         if bool(batch.drafts_stale):
             raise BroadcastError(BROADCAST_EXECUTION_DRAFT_STALE, '当前草稿已过期，请重新生成草稿后再执行。')
         if bool(getattr(draft, 'attachments_stale', False)):
@@ -3750,8 +4277,8 @@ class BroadcastService:
             )
 
         current_status = next(iter(current_statuses))
-        expected_current_status = 'pending' if target_status == 'sent' else 'sent'
-        if current_status != expected_current_status:
+        allowed_current_statuses = {'pending', 'unknown'} if target_status == 'sent' else {'sent', 'unknown'}
+        if current_status not in allowed_current_statuses:
             raise BroadcastError(
                 INVALID_SEND_STATUS,
                 '所选草稿当前状态不允许执行该操作',
@@ -3759,26 +4286,36 @@ class BroadcastService:
 
         sent_at = datetime.now(timezone.utc).replace(tzinfo=None) if target_status == 'sent' else None
         async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
-            updated_count = await self.repository.update_draft_send_statuses(
-                draft_ids=unique_ids,
-                bot_uuid=scope['bot_uuid'],
-                connector_id=scope['connector_id'],
-                current_send_status=current_status,
-                target_send_status=target_status,
-                sent_at=sent_at,
-                conn=conn,
-            )
+            updated_count = 0
+            for allowed_current_status in allowed_current_statuses:
+                updated_count += await self.repository.update_draft_send_statuses(
+                    draft_ids=unique_ids,
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                    current_send_status=allowed_current_status,
+                    target_send_status=target_status,
+                    sent_at=sent_at,
+                    conn=conn,
+                )
             if updated_count != len(unique_ids):
                 raise BroadcastError(
                     BATCH_VALIDATION_FAILED,
                     '草稿状态在提交期间已发生变化，请刷新后重试',
                 )
+            for draft_id in unique_ids:
+                await self.repository.update_draft(
+                    draft_id,
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                    updates={'error_message': None},
+                    conn=conn,
+                )
         return {'updated_count': updated_count}
 
     def _normalize_draft_send_status(self, draft) -> str:
         send_status = str(getattr(draft, 'send_status', '') or '').strip()
-        if send_status == 'sent':
-            return 'sent'
+        if send_status in {'sent', 'unknown'}:
+            return send_status
         return 'pending'
 
     def _assert_unique_target_conversations(self, drafts: list[Any]) -> None:
@@ -3889,27 +4426,156 @@ class BroadcastService:
             return 'succeeded'
         if normalized == 'succeeded_with_warning':
             return 'succeeded_with_warning'
-        if normalized in {'timed_out', 'timeout', 'unknown', 'running', 'queued'}:
+        if normalized in {'timed_out', 'timeout', 'unknown', 'running', 'queued', 'interrupted'}:
             return 'interrupted'
         if normalized in {'cancelled'}:
             return 'cancelled'
         return 'failed'
 
+    @staticmethod
+    def _map_pre_send_failure_code(runtime_error_code: str | None, evidence: dict[str, Any] | None) -> str:
+        normalized_code = str(runtime_error_code or '').strip()
+        if normalized_code in {'TARGET_WINDOW_NOT_FOUND', 'CONVERSATION_MISMATCH', 'SEARCH_RESULT_CONFIRM_FAILED'}:
+            return BROADCAST_CONVERSATION_NOT_FOUND
+        if normalized_code in FAILED_RUNTIME_PASTE_ERROR_CODES:
+            return BROADCAST_ATTACHMENT_WRITE_FAILED
+        if normalized_code in {'PASTE_VERIFICATION_UNAVAILABLE', 'INPUT_NOT_LOCATED', 'TARGET_WINDOW_CHANGED'}:
+            return BROADCAST_PRE_SEND_VERIFICATION_FAILED
+        if evidence is not None and bool(evidence.get('draft_written', False)):
+            return BROADCAST_ENTER_DISPATCH_FAILED
+        return BROADCAST_BODY_WRITE_FAILED
+
+    @staticmethod
+    def _build_send_status_updates(task_status: str, error_message: str | None) -> dict[str, Any]:
+        if task_status == 'succeeded':
+            return {
+                'send_status': 'sent',
+                'sent_at': datetime.now(timezone.utc).replace(tzinfo=None),
+                'error_message': None,
+            }
+        if task_status == 'interrupted':
+            return {
+                'send_status': 'unknown',
+                'sent_at': None,
+                'error_message': error_message or SEND_TERMINAL_STATE_UNKNOWN_MESSAGE,
+            }
+        return {
+            'send_status': 'pending',
+            'sent_at': None,
+            'error_message': error_message,
+        }
+
+    async def _get_send_task_retry_state(
+        self,
+        task_row: dict[str, Any] | Any,
+        scope: dict[str, Any],
+    ) -> dict[str, Any]:
+        action = str(
+            task_row.get('action') if isinstance(task_row, dict) else getattr(task_row, 'action', '')
+        ).strip()
+        task_id = int(task_row.get('id') if isinstance(task_row, dict) else getattr(task_row, 'id'))
+        task_status = str(
+            task_row.get('status') if isinstance(task_row, dict) else getattr(task_row, 'status', '')
+        ).strip()
+        attempts = await self.repository.list_execution_attempts(
+            task_id,
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+        )
+        latest_attempt = attempts[-1] if attempts else None
+        response_summary = None
+        if latest_attempt is not None and str(getattr(latest_attempt, 'response_summary', '') or '').strip():
+            try:
+                loaded_summary = json.loads(str(latest_attempt.response_summary))
+                if isinstance(loaded_summary, dict):
+                    response_summary = loaded_summary
+            except Exception:
+                response_summary = None
+        evidence = (
+            await self.repository.get_execution_evidence(
+                int(latest_attempt.id),
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
+            )
+            if latest_attempt is not None
+            else None
+        )
+        evidence_payload = self._serialize_execution_evidence(evidence) if evidence is not None else None
+        if action != 'send_message':
+            terminal_confirmed = None
+            terminal_source = None
+            if response_summary is not None:
+                decoded = decode_runtime_task(response_summary)
+                response_status = str(decoded.get('status') or '').strip().lower()
+                result_payload = dict(decoded.get('result_payload') or {})
+                terminal_confirmed_raw = result_payload.get('terminalConfirmed')
+                if isinstance(terminal_confirmed_raw, bool):
+                    terminal_confirmed = terminal_confirmed_raw
+                else:
+                    terminal_confirmed = self._is_terminal_runtime_task_status(response_status) and (
+                        response_status != 'unknown'
+                    )
+                terminal_source = str(result_payload.get('terminalSource') or 'runtime')
+            elif self._is_terminal_runtime_task_status(task_status) and task_status.lower() != 'unknown':
+                terminal_confirmed = True
+                terminal_source = 'runtime'
+            has_terminal_attempt = latest_attempt is not None or terminal_confirmed is True
+            return {
+                'allowed': task_status in {'failed', 'interrupted'},
+                'reason_code': None,
+                'enter_dispatched': False if has_terminal_attempt else None,
+                'message_sent': False if has_terminal_attempt else None,
+                'terminal_confirmed': terminal_confirmed,
+                'terminal_source': terminal_source,
+                'outcome': None,
+            }
+
+        send_result = self._extract_send_terminal_result(response_summary, evidence_payload)
+        outcome = self._derive_send_task_outcome(task_status, send_result['enter_dispatched'])
+        response_status = str((response_summary or {}).get('status') or '').strip().lower()
+
+        reason_code = None
+        allowed = True
+        if task_status != 'failed':
+            allowed = False
+            reason_code = BROADCAST_RETRY_SEND_RESULT_UNKNOWN
+        elif response_status in {'running', 'queued', ''}:
+            allowed = False
+            reason_code = BROADCAST_RETRY_SEND_RESULT_UNKNOWN
+        elif not bool(send_result['terminal_confirmed']):
+            allowed = False
+            reason_code = BROADCAST_RETRY_SEND_RESULT_UNKNOWN
+        elif send_result['enter_dispatched'] is not False:
+            allowed = False
+            reason_code = BROADCAST_RETRY_SEND_RESULT_UNKNOWN
+        elif outcome != 'failed':
+            allowed = False
+            reason_code = BROADCAST_RETRY_SEND_RESULT_UNKNOWN
+
+        return {
+            'allowed': allowed,
+            'reason_code': reason_code,
+            'enter_dispatched': send_result['enter_dispatched'],
+            'message_sent': send_result['message_sent'],
+            'terminal_confirmed': send_result['terminal_confirmed'],
+            'terminal_source': send_result['terminal_source'],
+            'outcome': outcome,
+        }
+
     def _is_send_enabled(self, scope: dict[str, Any]) -> bool:
-        config_enabled = str(self.ap.instance_config.data.get('broadcast', {}).get('send_enabled', '0')) == '1'
-        env_enabled = str(os.environ.get('LANGBOT_BROADCAST_SEND_ENABLED') or '0') == '1'
-        return self._is_connector_send_allowed(scope) and (config_enabled or env_enabled)
+        gate = resolve_broadcast_send_gate(
+            broadcast_config=self.ap.instance_config.data.get('broadcast', {}),
+            env=os.environ,
+        )
+        return gate.is_scope_send_enabled(scope.get('connector_id'))
 
     def _is_connector_send_allowed(self, scope: dict[str, Any]) -> bool:
         try:
-            bindings = self.ap.instance_config.data.get('broadcast', {}).get('allow_send_connectors') or {}
-            connector_id = str(scope.get('connector_id') or '')
-            if connector_id in bindings:
-                return bool(bindings.get(connector_id))
-            env_list = str(os.environ.get('LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS') or '').strip()
-            if not env_list:
-                return False
-            return connector_id in {item.strip() for item in env_list.split(',') if item.strip()}
+            gate = resolve_broadcast_send_gate(
+                broadcast_config=self.ap.instance_config.data.get('broadcast', {}),
+                env=os.environ,
+            )
+            return gate.is_connector_allowed(str(scope.get('connector_id') or ''))
         except Exception:
             return False
 
@@ -4158,6 +4824,101 @@ class BroadcastService:
     def _serialize_execution_batch(self, row) -> dict[str, Any]:
         return self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastExecutionBatch, row)
 
+    async def _build_send_batch_result(
+        self,
+        scope: dict[str, Any],
+        tasks: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        items: list[dict[str, Any]] = []
+        duplicate_target_count = 0
+        seen_targets: dict[str, int] = {}
+        sent_count = 0
+        failed_count = 0
+        unknown_count = 0
+        skipped_count = 0
+
+        for task in tasks:
+            target = str(task.get('target_conversation_snapshot') or '').strip()
+            if target:
+                seen_targets[target] = seen_targets.get(target, 0) + 1
+                if seen_targets[target] > 1:
+                    duplicate_target_count += 1
+
+            attempts = await self.repository.list_execution_attempts(
+                int(task['id']),
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
+            )
+            latest_attempt = attempts[-1] if attempts else None
+            response_summary = None
+            if latest_attempt is not None and str(getattr(latest_attempt, 'response_summary', '') or '').strip():
+                try:
+                    loaded_summary = json.loads(str(latest_attempt.response_summary))
+                    if isinstance(loaded_summary, dict):
+                        response_summary = loaded_summary
+                except Exception:
+                    response_summary = None
+            evidence = (
+                await self.repository.get_execution_evidence(
+                    int(latest_attempt.id),
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                )
+                if latest_attempt is not None
+                else None
+            )
+            evidence_payload = self._serialize_execution_evidence(evidence) if evidence is not None else None
+            send_result = self._extract_send_terminal_result(response_summary, evidence_payload)
+            enter_dispatched = send_result['enter_dispatched']
+            outcome = self._derive_send_task_outcome(str(task.get('status') or ''), enter_dispatched)
+            if outcome == 'sent':
+                sent_count += 1
+            elif outcome == 'failed':
+                failed_count += 1
+            elif outcome == 'unknown':
+                unknown_count += 1
+            elif outcome == 'skipped':
+                skipped_count += 1
+            items.append(
+                {
+                    'draft_id': int(task['draft_id']) if task.get('draft_id') is not None else None,
+                    'outcome': outcome,
+                    'error_code': task.get('error_code'),
+                    'error_message': task.get('error_message'),
+                    'enter_dispatched': enter_dispatched,
+                    'message_sent': send_result['message_sent'],
+                    'terminal_confirmed': send_result['terminal_confirmed'],
+                    'terminal_source': send_result['terminal_source'],
+                    'started_at': task.get('started_at'),
+                    'completed_at': task.get('finished_at'),
+                }
+            )
+
+        return {
+            'total_count': len(tasks),
+            'sent_count': sent_count,
+            'failed_count': failed_count,
+            'unknown_count': unknown_count,
+            'skipped_count': skipped_count,
+            'duplicate_target_count': duplicate_target_count,
+            'items': items,
+        }
+
+    @staticmethod
+    def _derive_send_task_outcome(task_status: str, enter_dispatched: bool | None) -> str:
+        normalized = str(task_status or '').strip().lower()
+        if normalized == 'succeeded':
+            return 'sent'
+        if normalized in {'cancelled'}:
+            return 'skipped'
+        if normalized in {'interrupted', 'succeeded_with_warning'}:
+            return 'unknown'
+        if enter_dispatched is None:
+            return 'unknown'
+        if enter_dispatched:
+            return 'unknown'
+        return 'failed'
+
     async def _serialize_execution_task(self, row) -> dict[str, Any]:
         data = self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastExecutionTask, row)
         scope_data = await self.repository.get_execution_task_scope(int(row.id))
@@ -4170,6 +4931,19 @@ class BroadcastService:
             connector_id=str(scope_data['connector_id']),
         )
         data['attachments'] = [self._serialize_execution_task_attachment(item) for item in attachments]
+        retry_state = await self._get_send_task_retry_state(
+            data,
+            {
+                'bot_uuid': str(scope_data['bot_uuid']),
+                'connector_id': str(scope_data['connector_id']),
+            },
+        )
+        data['retry_allowed'] = retry_state['allowed']
+        data['send_outcome'] = retry_state['outcome']
+        data['enter_dispatched'] = retry_state['enter_dispatched']
+        data['message_sent'] = retry_state['message_sent']
+        data['terminal_confirmed'] = retry_state['terminal_confirmed']
+        data['terminal_source'] = retry_state.get('terminal_source')
         return data
 
     def _serialize_execution_attempt(self, row) -> dict[str, Any]:

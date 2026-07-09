@@ -38,7 +38,7 @@ import type {
   BroadcastExecutorCapability,
   BroadcastExecutorHealth,
   BroadcastExecutionLog,
-  BroadcastSendConfirmation,
+  BroadcastSendBatchItem,
   BroadcastExecutionTaskSummary,
   BroadcastDraftFilters,
   BroadcastDraftStatus,
@@ -455,6 +455,25 @@ function fromApiExecutionTask(
     startedAt: task.started_at,
     finishedAt: task.finished_at,
     updatedAt: task.updated_at,
+    retryAllowed:
+      typeof task.retry_allowed === 'boolean' ? task.retry_allowed : undefined,
+    sendOutcome: task.send_outcome ?? null,
+    enterDispatched:
+      typeof task.enter_dispatched === 'boolean' ||
+      task.enter_dispatched === null
+        ? task.enter_dispatched
+        : undefined,
+    messageSent:
+      typeof task.message_sent === 'boolean' || task.message_sent === null
+        ? task.message_sent
+        : undefined,
+    terminalConfirmed:
+      typeof task.terminal_confirmed === 'boolean' ||
+      task.terminal_confirmed === null
+        ? task.terminal_confirmed
+        : undefined,
+    terminalSource:
+      typeof task.terminal_source === 'string' ? task.terminal_source : null,
     attachments: (task.attachments ?? []).map(fromApiAttachment),
   };
 }
@@ -479,6 +498,36 @@ function fromApiExecutionBatch(
     startedAt: batch.started_at,
     finishedAt: batch.finished_at,
     tasks: (batch.tasks || []).map(fromApiExecutionTask),
+    totalCount: batch.total_count,
+    sentCount: batch.sent_count,
+    failedCount: batch.failed_count,
+    unknownCount: batch.unknown_count,
+    skippedCount: batch.skipped_count,
+    duplicateTargetCount: batch.duplicate_target_count,
+    items: (batch.items || []).map(
+      (item): BroadcastSendBatchItem => ({
+        draftId: item.draft_id,
+        outcome: item.outcome,
+        errorCode: item.error_code,
+        errorMessage: item.error_message,
+        enterDispatched: item.enter_dispatched,
+        messageSent:
+          typeof item.message_sent === 'boolean' || item.message_sent === null
+            ? item.message_sent
+            : undefined,
+        terminalConfirmed:
+          typeof item.terminal_confirmed === 'boolean' ||
+          item.terminal_confirmed === null
+            ? item.terminal_confirmed
+            : undefined,
+        terminalSource:
+          typeof item.terminal_source === 'string'
+            ? item.terminal_source
+            : null,
+        startedAt: item.started_at,
+        completedAt: item.completed_at,
+      }),
+    ),
   };
 }
 
@@ -518,33 +567,28 @@ function fromApiExecutorCapability(
 function fromApiExecutorHealth(
   payload: Record<string, unknown>,
 ): BroadcastExecutorHealth {
+  const status = String(payload.status || 'unknown');
   return {
+    available:
+      typeof payload.available === 'boolean'
+        ? payload.available
+        : status === 'ready',
     channel: String(payload.channel || 'wxwork_database'),
-    status: String(payload.status || 'unknown'),
+    status,
     protocol_version: payload.protocol_version
       ? String(payload.protocol_version)
       : null,
     runtime_version: payload.runtime_version
       ? String(payload.runtime_version)
       : null,
+    error_code:
+      typeof payload.error_code === 'string' ? payload.error_code : null,
+    error_message:
+      typeof payload.error_message === 'string' ? payload.error_message : null,
     capability: fromApiExecutorCapability(
       (payload.capability as Record<string, unknown>) || {},
     ),
     runtime_status: (payload.runtime_status as Record<string, unknown>) || null,
-  };
-}
-
-function fromApiSendConfirmation(payload: {
-  id: number;
-  token: string;
-  expires_at: string | null;
-  execution_task_id: number;
-}): BroadcastSendConfirmation {
-  return {
-    id: payload.id,
-    token: payload.token,
-    expiresAt: payload.expires_at,
-    executionTaskId: payload.execution_task_id,
   };
 }
 
@@ -841,23 +885,12 @@ export interface BroadcastDataSource {
     taskId: number,
     operator: string,
   ) => Promise<BroadcastExecutionTaskSummary>;
-  sendExecutionTask: (
-    scope: BroadcastScope,
-    taskId: number,
-    confirmationToken: string,
-    operator: string,
-  ) => Promise<BroadcastExecutionTaskSummary>;
   getExecutorCapabilities: (
     scope: BroadcastScope,
   ) => Promise<BroadcastExecutorCapability>;
   getExecutorHealth: (
     scope: BroadcastScope,
   ) => Promise<BroadcastExecutorHealth>;
-  createSendConfirmation: (
-    scope: BroadcastScope,
-    taskId: number,
-    operator: string,
-  ) => Promise<BroadcastSendConfirmation>;
   getExecutionBatchDetail: (
     scope: BroadcastScope,
     batchId: number,
@@ -1349,17 +1382,6 @@ export function createBroadcastDataSource(): BroadcastDataSource {
           operator,
         ),
       ),
-    sendExecutionTask: async (scope, taskId, confirmationToken, operator) =>
-      fromApiExecutionTask(
-        await backendClient.sendBroadcastExecutionTask(
-          toApiScope(scope),
-          taskId,
-          {
-            confirmation_token: confirmationToken,
-            operator,
-          },
-        ),
-      ),
     getExecutorCapabilities: async (scope) =>
       fromApiExecutorCapability(
         await backendClient.getBroadcastExecutorCapabilities(toApiScope(scope)),
@@ -1367,13 +1389,6 @@ export function createBroadcastDataSource(): BroadcastDataSource {
     getExecutorHealth: async (scope) =>
       fromApiExecutorHealth(
         await backendClient.getBroadcastExecutorHealth(toApiScope(scope)),
-      ),
-    createSendConfirmation: async (scope, taskId, operator) =>
-      fromApiSendConfirmation(
-        await backendClient.createBroadcastSendConfirmation(toApiScope(scope), {
-          execution_task_id: taskId,
-          operator,
-        }),
       ),
     getExecutionBatchDetail: async (scope, batchId) =>
       fromApiExecutionBatch(

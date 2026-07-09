@@ -9,6 +9,7 @@ RUNTIME_START_FAILED = 'RUNTIME_START_FAILED'
 RUNTIME_UNAVAILABLE = 'RUNTIME_UNAVAILABLE'
 RUNTIME_UNAUTHORIZED = 'RUNTIME_UNAUTHORIZED'
 RUNTIME_PROTOCOL_MISMATCH = 'RUNTIME_PROTOCOL_MISMATCH'
+RUNTIME_OWNERSHIP_CONFLICT = 'RUNTIME_OWNERSHIP_CONFLICT'
 BOT_NOT_FOUND = 'BOT_NOT_FOUND'
 BOT_ADAPTER_UNSUPPORTED = 'BOT_ADAPTER_UNSUPPORTED'
 BOT_DISABLED = 'BOT_DISABLED'
@@ -49,6 +50,7 @@ SEND_FAILED = 'SEND_FAILED'
 
 
 class DesktopAutomationError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, details: dict | None = None) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details

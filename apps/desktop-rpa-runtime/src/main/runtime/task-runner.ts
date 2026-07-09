@@ -48,6 +48,7 @@ export class TaskRunner {
   private readonly getActiveWindow: () => Promise<WindowDescriptor | null>
   private readonly getPasteVerificationCapabilityInternal: () => PasteVerificationCapability
   private readonly refreshPasteVerificationCapabilityInternal: (force?: boolean) => Promise<PasteVerificationCapability>
+  private readonly pasteVerificationProvider?: PasteVerificationProvider
 
   constructor(options: TaskRunnerOptions = {}) {
     this.runtimeAutoSendEnabled = Boolean(options.runtimeAutoSendEnabled)
@@ -59,6 +60,7 @@ export class TaskRunner {
     this.findTargetWindow = options.findTargetWindow ?? findUniqueVisibleWxWorkMainWindow
     this.activateTargetWindow = options.activateTargetWindow ?? activateWindow
     this.getActiveWindow = options.getActiveWindow ?? getActiveWindowDescriptor
+    this.pasteVerificationProvider = options.pasteVerificationProvider
     if (options.pasteVerificationCapability || options.pasteVerificationProvider) {
       const staticCapability = options.pasteVerificationCapability
         ? options.pasteVerificationCapability as PasteVerificationCapability
@@ -98,13 +100,22 @@ export class TaskRunner {
         fileClipboard: this.fileClipboard,
         getActiveWindow: this.getActiveWindow,
         isCancelled: options?.isCancelled,
+        pasteVerificationProvider: this.pasteVerificationProvider,
       })
     }
     if (request.action === 'send_draft' || request.action === 'send_message') {
       return runSendMessageTask(request, {
+        clipboard: this.clipboard,
         input: this.input,
         runtimeAutoSendEnabled: this.runtimeAutoSendEnabled,
         sendDriverForceDisabled: this.sendDriverForceDisabled,
+        sleep: this.sleep,
+        findTargetWindow: this.findTargetWindow,
+        activateTargetWindow: this.activateTargetWindow,
+        fileClipboard: this.fileClipboard,
+        getActiveWindow: this.getActiveWindow,
+        isCancelled: options?.isCancelled,
+        pasteVerificationProvider: this.pasteVerificationProvider,
       })
     }
     return { status: 'blocked', stage: `${request.action}_disabled`, errorCode: 'UNSUPPORTED_TASK_ACTION', messageSent: false }

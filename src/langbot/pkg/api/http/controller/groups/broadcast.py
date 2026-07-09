@@ -18,20 +18,21 @@ from .....broadcast.errors import (
     BATCH_VALIDATION_FAILED,
     BROADCAST_DRAFT_BODY_EMPTY,
     BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN,
+    BROADCAST_DRAFT_ALREADY_SENT,
+    BROADCAST_DRAFT_NOT_SENDABLE,
     BROADCAST_DRAFT_NOT_FOUND,
     BROADCAST_DRAFT_SCOPE_MISMATCH,
+    BROADCAST_DRAFT_SEND_IN_PROGRESS,
     BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN,
     BROADCAST_DRAFT_STATUS_INVALID,
     BROADCAST_EXECUTION_BATCH_NOT_FOUND,
     BROADCAST_EXECUTION_BATCH_STATUS_INVALID,
-    BROADCAST_EXECUTION_CONFIRMATION_EXPIRED,
-    BROADCAST_EXECUTION_CONFIRMATION_INVALID,
-    BROADCAST_EXECUTION_CONFIRMATION_REQUIRED,
     BROADCAST_EXECUTION_DRAFT_LIMIT_EXCEEDED,
     BROADCAST_EXECUTION_DRAFT_NOT_READY,
     BROADCAST_EXECUTION_DRAFT_STALE,
     BROADCAST_EXECUTION_EVIDENCE_NOT_AVAILABLE,
     BROADCAST_EXECUTION_MODE_INVALID,
+    BROADCAST_RETRY_SEND_RESULT_UNKNOWN,
     BROADCAST_EXECUTION_SEND_DISABLED,
     BROADCAST_EXECUTION_SCOPE_MISMATCH,
     BROADCAST_EXECUTION_TASK_NOT_FOUND,
@@ -46,6 +47,8 @@ from .....broadcast.errors import (
     BROADCAST_IMPORT_REMATCH_FIELDS_MISSING,
     BROADCAST_IMPORT_VARIABLE_PROFILE_REQUIRED,
     DUPLICATE_TARGET_CONVERSATION,
+    EXECUTOR_ATTACHMENT_SEND_UNSUPPORTED,
+    EXECUTOR_SEND_UNSUPPORTED,
     BROADCAST_GROUP_NAME_DUPLICATE,
     BROADCAST_GROUP_NAME_NOT_FOUND,
     BROADCAST_GROUP_RULE_DUPLICATE,
@@ -58,6 +61,7 @@ from .....broadcast.errors import (
     BROADCAST_VARIABLE_PROFILE_INVALID,
     INVALID_SEND_STATUS,
     MIXED_SEND_STATUS,
+    BROADCAST_SEND_RESULT_UNKNOWN_REQUIRES_REVIEW,
     TEMPLATE_RENDER_INPUT_INVALID,
     BroadcastError,
 )
@@ -592,16 +596,6 @@ class BroadcastRouterGroup(group.RouterGroup):
             except BroadcastError as exc:
                 return self._broadcast_error_response(exc)
 
-        @self.route('/execution-tasks/<int:task_id>/send', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
-        async def execution_task_send(task_id: int) -> str:
-            payload = await quart.request.get_json(silent=True) or {}
-            try:
-                scope = await self.validate_scope(from_query=False, payload=payload)
-                data = await self.ap.broadcast_service.send_execution_task(task_id, scope, payload)
-                return self.success(data=data)
-            except BroadcastError as exc:
-                return self._broadcast_error_response(exc)
-
         @self.route('/executors/capabilities', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
         async def executor_capabilities() -> str:
             try:
@@ -616,16 +610,6 @@ class BroadcastRouterGroup(group.RouterGroup):
             try:
                 scope = await self.validate_scope(from_query=True)
                 data = await self.ap.broadcast_service.get_executor_health(scope)
-                return self.success(data=data)
-            except BroadcastError as exc:
-                return self._broadcast_error_response(exc)
-
-        @self.route('/send-confirmations', methods=['POST'], auth_type=group.AuthType.USER_TOKEN)
-        async def send_confirmations() -> str:
-            payload = await quart.request.get_json(silent=True) or {}
-            try:
-                scope = await self.validate_scope(from_query=False, payload=payload)
-                data = await self.ap.broadcast_service.issue_send_confirmation(scope, payload)
                 return self.success(data=data)
             except BroadcastError as exc:
                 return self._broadcast_error_response(exc)
@@ -673,9 +657,12 @@ class BroadcastRouterGroup(group.RouterGroup):
             BROADCAST_IMPORT_GROUP_NOT_FOUND,
             BROADCAST_DRAFT_BODY_EMPTY,
             BROADCAST_DRAFT_STATUS_INVALID,
+            BROADCAST_DRAFT_NOT_SENDABLE,
             BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN,
             BROADCAST_DRAFT_STALE_CONFIRM_FORBIDDEN,
             BROADCAST_DRAFT_SCOPE_MISMATCH,
+            BROADCAST_DRAFT_SEND_IN_PROGRESS,
+            BROADCAST_DRAFT_ALREADY_SENT,
             BROADCAST_EXECUTION_DRAFT_NOT_READY,
             BROADCAST_EXECUTION_DRAFT_STALE,
             BROADCAST_EXECUTION_SCOPE_MISMATCH,
@@ -683,10 +670,8 @@ class BroadcastRouterGroup(group.RouterGroup):
             BROADCAST_EXECUTION_DRAFT_LIMIT_EXCEEDED,
             BROADCAST_EXECUTION_BATCH_STATUS_INVALID,
             BROADCAST_EXECUTION_TASK_STATUS_INVALID,
-            BROADCAST_EXECUTION_CONFIRMATION_REQUIRED,
-            BROADCAST_EXECUTION_CONFIRMATION_INVALID,
-            BROADCAST_EXECUTION_CONFIRMATION_EXPIRED,
             BROADCAST_EXECUTION_SEND_DISABLED,
+            BROADCAST_RETRY_SEND_RESULT_UNKNOWN,
             BROADCAST_TEMPLATE_CONTENT_REQUIRED,
             BROADCAST_VARIABLE_PROFILE_INVALID,
             BROADCAST_GROUP_RULE_REGEX_INVALID,
@@ -695,6 +680,9 @@ class BroadcastRouterGroup(group.RouterGroup):
             BATCH_VALIDATION_FAILED,
             BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED,
             TEMPLATE_RENDER_INPUT_INVALID,
+            EXECUTOR_SEND_UNSUPPORTED,
+            EXECUTOR_ATTACHMENT_SEND_UNSUPPORTED,
+            BROADCAST_SEND_RESULT_UNKNOWN_REQUIRES_REVIEW,
             ATTACHMENT_UNSUPPORTED_TYPE,
             ATTACHMENT_FILE_TOO_LARGE,
             ATTACHMENT_TOTAL_TOO_LARGE,

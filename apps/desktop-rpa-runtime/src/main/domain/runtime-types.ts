@@ -12,6 +12,10 @@ export interface RuntimeStatusPayload {
   captureAvailable: boolean
   inputAvailable: boolean
   providerHubReady: boolean
+  sendEnabled: boolean
+  allowedConnectorCount: number
+  allowedConnectors: string[]
+  sendErrorCode: string | null
   activeTaskCount: number
   lastErrorCode: string | null
   pasteVerification: {
@@ -48,4 +52,8 @@ export interface RuntimeBootstrapConfig {
   token: string
   protocolVersion: string
   runtimeVersion: string
+  broadcastSendEnabled: boolean
+  allowedConnectorCount: number
+  allowedConnectors: string[]
+  broadcastSendErrorCode: string | null
 }

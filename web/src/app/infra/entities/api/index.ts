@@ -1004,7 +1004,7 @@ export interface ApiBroadcastImportGroupRowsResponse {
   rows: ApiBroadcastImportRow[];
 }
 
-export type ApiBroadcastDraftSendStatus = 'pending' | 'sent';
+export type ApiBroadcastDraftSendStatus = 'pending' | 'sent' | 'unknown';
 export type ApiBroadcastDraftStatus =
   | 'pending_review'
   | 'ready'
@@ -1088,6 +1088,12 @@ export interface ApiBroadcastExecutionTask {
   finished_at: string | null;
   cancelled_at: string | null;
   updated_at: string;
+  retry_allowed?: boolean;
+  send_outcome?: 'sent' | 'failed' | 'unknown' | 'skipped' | null;
+  enter_dispatched?: boolean | null;
+  message_sent?: boolean | null;
+  terminal_confirmed?: boolean | null;
+  terminal_source?: string | null;
   attachments?: ApiBroadcastAttachment[];
 }
 
@@ -1115,6 +1121,24 @@ export interface ApiBroadcastExecutionBatch {
   finished_at: string | null;
   cancelled_at: string | null;
   tasks?: ApiBroadcastExecutionTask[];
+  total_count?: number;
+  sent_count?: number;
+  failed_count?: number;
+  unknown_count?: number;
+  skipped_count?: number;
+  duplicate_target_count?: number;
+  items?: Array<{
+    draft_id: number | null;
+    outcome: 'sent' | 'failed' | 'unknown' | 'skipped';
+    error_code: string | null;
+    error_message: string | null;
+    enter_dispatched: boolean | null;
+    message_sent?: boolean | null;
+    terminal_confirmed?: boolean | null;
+    terminal_source?: string | null;
+    started_at: string | null;
+    completed_at: string | null;
+  }>;
 }
 
 export interface ApiBroadcastExecutionAttempt {

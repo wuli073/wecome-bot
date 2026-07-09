@@ -188,4 +188,6 @@ export interface DesktopRuntimeStatus {
   runtime_startable?: boolean;
   runtime_reachable?: boolean;
   send_enabled?: boolean;
+  allowed_connector_count?: number;
+  send_error_code?: string | null;
 }

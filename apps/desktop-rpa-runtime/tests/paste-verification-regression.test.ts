@@ -62,7 +62,7 @@ class NoopInput implements InputDriver {
   readonly events: string[][] = []
   async click(): Promise<void> {}
   async hotkey(keys: string[]): Promise<void> { this.events.push(keys) }
-  async typeText(): Promise<void> {}
+  async typeText(text: string): Promise<void> { this.events.push(['typeText', text]) }
 }
 
 function fakeClipboardAdapter(formats: string[], data: Record<string, string> = {}): ClipboardAdapter {
@@ -210,11 +210,11 @@ test('paste_only aborts before draft Ctrl+V when clipboard roundtrip mutates uni
     sleep: async () => undefined,
   } as never)
 
-  assert.equal(result.status, 'succeeded_with_warning')
+  assert.equal(result.status, 'succeeded')
   assert.equal(result.stage, 'text_pasted_unverified')
   assert.equal(result.errorCode, undefined)
   assert.equal(result.draftPasteCount, 1)
-  assert.deepEqual(input.events, [['Control', 'F'], ['Control', 'A'], ['Control', 'V'], ['Enter'], ['Control', 'V']])
+  assert.deepEqual(input.events, [['Control', 'F'], ['Control', 'A'], ['typeText', '小满'], ['Enter'], ['Control', 'V']])
 })
 
 test('paste_only distinguishes unavailable verification from content mismatch', async () => {
@@ -272,23 +272,23 @@ test('paste_only distinguishes unavailable verification from content mismatch', 
         },
   } as never)
 
-  assert.equal(unavailable.status, 'succeeded_with_warning')
+  assert.equal(unavailable.status, 'succeeded')
   assert.equal(unavailable.stage, 'text_pasted_unverified')
   assert.equal(unavailable.contentVerified, false)
   assert.equal(unavailable.draftWritten, true)
-  assert.equal(mismatch.status, 'succeeded_with_warning')
+  assert.equal(mismatch.status, 'succeeded')
   assert.equal(mismatch.stage, 'text_pasted_unverified')
   assert.equal(mismatch.contentVerified, false)
   assert.equal(mismatch.draftWritten, true)
 })
 
-test('paste_only refuses to paste when current conversation does not match the requested target', async () => {
+test('paste_only still pastes once when legacy verifier fields are injected on deps', async () => {
   const input = new NoopInput()
 
   const result = await runPasteOnlyTask({
     action: 'paste_draft',
-    idempotencyKey: 'p-conversation-mismatch',
-    requestDigest: 'digest-conversation-mismatch',
+    idempotencyKey: 'p-legacy-verifier-fields',
+    requestDigest: 'digest-legacy-verifier-fields',
     conversationName: '小满',
     draftText: '第一行\n第二行',
   }, {
@@ -299,12 +299,10 @@ test('paste_only refuses to paste when current conversation does not match the r
     sleep: async () => undefined,
     verifyPasteContent: async ({ phase }: { phase: 'before_paste' | 'after_paste' }) => phase === 'before_paste'
       ? {
-          ok: false,
+          ok: true,
           inputLocated: true,
           draftWritten: false,
           contentVerified: false,
-          runtimeState: 'conversation_mismatch',
-          errorCode: 'CONVERSATION_MISMATCH',
         }
       : {
           ok: true,
@@ -314,10 +312,10 @@ test('paste_only refuses to paste when current conversation does not match the r
         },
   } as never)
 
-  assert.equal(result.status, 'succeeded_with_warning')
+  assert.equal(result.status, 'succeeded')
   assert.equal(result.errorCode, undefined)
   assert.equal(result.draftPasteCount, 1)
-  assert.deepEqual(input.events, [['Control', 'F'], ['Control', 'A'], ['Control', 'V'], ['Enter'], ['Control', 'V']])
+  assert.deepEqual(input.events, [['Control', 'F'], ['Control', 'A'], ['typeText', '小满'], ['Enter'], ['Control', 'V']])
 })
 
 test('paste_only keeps selected window diagnostics when input inspection fails after activation', async () => {
@@ -391,7 +389,7 @@ test('paste_only keeps selected window diagnostics when input inspection fails a
         },
   } as never)
 
-  assert.equal(result.status, 'succeeded_with_warning')
+  assert.equal(result.status, 'succeeded')
   assert.equal(result.errorCode, undefined)
   assert.equal((result as any).candidateCountBeforeFilter, 3)
   assert.equal((result as any).candidateCountAfterFilter, 1)
@@ -420,7 +418,7 @@ test('task runner executes paste-only path without UIA verifier injection', asyn
     draftText: '第一行\n第二行',
   })
 
-  assert.equal(result.status, 'succeeded_with_warning')
+  assert.equal(result.status, 'succeeded')
   assert.equal(result.stage, 'text_pasted_unverified')
 })
 
@@ -475,7 +473,6 @@ test('runtime status can surface technical diagnostic code while remaining avail
         requiresManualConversationOpen: true,
         supportedErrorCodes: [
           'TARGET_WINDOW_CHANGED',
-          'CONVERSATION_MISMATCH',
           'INPUT_NOT_LOCATED',
           'PASTE_CONTENT_MISMATCH',
           'PASTE_VERIFICATION_UNAVAILABLE',
@@ -786,7 +783,6 @@ test('runtime status and paste task surface the same providerInstanceId for diag
       requiresManualConversationOpen: true,
       supportedErrorCodes: [
         'TARGET_WINDOW_CHANGED',
-        'CONVERSATION_MISMATCH',
         'INPUT_NOT_LOCATED',
         'PASTE_CONTENT_MISMATCH',
         'PASTE_VERIFICATION_UNAVAILABLE',
@@ -868,7 +864,7 @@ test('runtime status warm cache is reused by paste task without spawning another
     await new Promise((resolve) => setTimeout(resolve, 20))
     const finalTask = await request(server.port, 'GET', `/v1/tasks/${task.payload.id}`)
     assert.equal(finalTask.statusCode, 200)
-    assert.equal(finalTask.payload.status, 'succeeded_with_warning')
+    assert.equal(finalTask.payload.status, 'succeeded')
     assert.equal(finalTask.payload.stage, 'text_pasted_unverified')
     assert.equal((finalTask.payload.result as any).providerInstanceId, undefined)
     assert.equal(availabilityProbeCount, 1)
@@ -929,9 +925,284 @@ test('expired capability cache refreshes once per task instead of re-probing bef
     await new Promise((resolve) => setTimeout(resolve, 20))
     const finalTask = await request(server.port, 'GET', `/v1/tasks/${task.payload.id}`)
     assert.equal(finalTask.statusCode, 200)
-    assert.equal(finalTask.payload.status, 'succeeded_with_warning')
+    assert.equal(finalTask.payload.status, 'succeeded')
     assert.equal(availabilityProbeCount, 1)
   } finally {
     await server.close()
   }
+})
+
+test('before-paste verification accepts a WXWork child foreground hwnd when the root owner window is unchanged', async () => {
+  const provider = createWindowsPasteVerificationProvider({
+    runAvailabilityProbe: async () => ({ ok: true, errorCode: null }),
+    execPowerShell: async () => ({
+      activeWindowHandle: 'wxwork-child',
+      activeOwnerWindowHandle: wxworkWindow.windowId,
+      activeRootOwnerWindowHandle: wxworkWindow.rootWindowId,
+      activeProcessId: wxworkWindow.processId,
+      activeExecutablePath: wxworkWindow.executablePath,
+      activeWindowTitle: '小满',
+      activeWindowClassName: 'QtChildWindow',
+      activeRootOwnerWindowTitle: '小满',
+      activeRootOwnerWindowClassName: wxworkWindow.className,
+      conversationCandidates: ['小满', '企业微信'],
+      inputLocated: true,
+      actualText: '',
+    }),
+  } as never)
+
+  const result = await provider.verifyInputContent({
+    conversationName: '小满',
+    draftText: '第一行\n第二行',
+    window: wxworkWindow,
+    phase: 'before_paste',
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.errorCode, undefined)
+  assert.equal(result.inputLocated, true)
+  assert.equal(result.draftWritten, false)
+})
+
+test('after-paste verification reads content from the WXWork root window when the foreground hwnd is a child control', async () => {
+  const provider = createWindowsPasteVerificationProvider({
+    runAvailabilityProbe: async () => ({ ok: true, errorCode: null }),
+    execPowerShell: async () => ({
+      activeWindowHandle: 'wxwork-editor-child',
+      activeOwnerWindowHandle: wxworkWindow.windowId,
+      activeRootOwnerWindowHandle: wxworkWindow.rootWindowId,
+      activeProcessId: wxworkWindow.processId,
+      activeExecutablePath: wxworkWindow.executablePath,
+      activeWindowTitle: '小满',
+      activeWindowClassName: 'QtChildWindow',
+      activeRootOwnerWindowTitle: '小满',
+      activeRootOwnerWindowClassName: wxworkWindow.className,
+      conversationCandidates: ['小满', '企业微信'],
+      inputLocated: true,
+      actualText: '第一行\n第二行',
+    }),
+  } as never)
+
+  const result = await provider.verifyInputContent({
+    conversationName: '小满',
+    draftText: '第一行\n第二行',
+    window: wxworkWindow,
+    phase: 'after_paste',
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.errorCode, undefined)
+  assert.equal(result.draftWritten, true)
+  assert.equal(result.contentVerified, true)
+})
+
+test('before-paste verification waits for the trusted WXWork window state to stabilize after conversation switching', async () => {
+  let probeCount = 0
+  const provider = createWindowsPasteVerificationProvider({
+    runAvailabilityProbe: async () => ({ ok: true, errorCode: null }),
+    execPowerShell: async () => {
+      probeCount += 1
+      if (probeCount === 1) {
+        return {
+          activeWindowHandle: 'wxwork-child-1',
+          activeOwnerWindowHandle: wxworkWindow.windowId,
+          activeRootOwnerWindowHandle: wxworkWindow.rootWindowId,
+          activeProcessId: wxworkWindow.processId,
+          activeExecutablePath: wxworkWindow.executablePath,
+          activeWindowTitle: '企业微信',
+          activeWindowClassName: 'QtChildWindow',
+          activeRootOwnerWindowTitle: '企业微信',
+          activeRootOwnerWindowClassName: wxworkWindow.className,
+          conversationCandidates: [],
+          inputLocated: false,
+          actualText: '',
+        }
+      }
+      return {
+        activeWindowHandle: 'wxwork-child-2',
+        activeOwnerWindowHandle: wxworkWindow.windowId,
+        activeRootOwnerWindowHandle: wxworkWindow.rootWindowId,
+        activeProcessId: wxworkWindow.processId,
+        activeExecutablePath: wxworkWindow.executablePath,
+        activeWindowTitle: '小满',
+        activeWindowClassName: 'QtChildWindow',
+        activeRootOwnerWindowTitle: '小满',
+        activeRootOwnerWindowClassName: wxworkWindow.className,
+        conversationCandidates: ['小满', '企业微信'],
+        inputLocated: true,
+        actualText: '',
+      }
+    },
+  } as never)
+
+  const result = await provider.verifyInputContent({
+    conversationName: '小满',
+    draftText: '第一行\n第二行',
+    window: wxworkWindow,
+    phase: 'before_paste',
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.errorCode, undefined)
+  assert.equal(probeCount, 2)
+})
+
+test('before-paste verification treats title changes as diagnostic-only when the trusted WXWork root window is unchanged', async () => {
+  const provider = createWindowsPasteVerificationProvider({
+    runAvailabilityProbe: async () => ({ ok: true, errorCode: null }),
+    execPowerShell: async () => ({
+      activeWindowHandle: wxworkWindow.windowId,
+      activeOwnerWindowHandle: '0',
+      activeRootOwnerWindowHandle: wxworkWindow.rootWindowId,
+      activeProcessId: wxworkWindow.processId,
+      activeExecutablePath: wxworkWindow.executablePath,
+      activeWindowTitle: '小满',
+      activeWindowClassName: wxworkWindow.className,
+      activeRootOwnerWindowTitle: '小满',
+      activeRootOwnerWindowClassName: wxworkWindow.className,
+      conversationCandidates: ['小满', '企业微信'],
+      inputLocated: true,
+      actualText: '',
+    }),
+  } as never)
+
+  const result = await provider.verifyInputContent({
+    conversationName: '小满',
+    draftText: '第一行\n第二行',
+    window: wxworkWindow,
+    phase: 'before_paste',
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.errorCode, undefined)
+})
+
+test('before-paste verification ignores a different conversation title when the trusted WXWork window is unchanged', async () => {
+  let probeCount = 0
+  const provider = createWindowsPasteVerificationProvider({
+    runAvailabilityProbe: async () => ({ ok: true, errorCode: null }),
+    execPowerShell: async () => {
+      probeCount += 1
+      return {
+        activeWindowHandle: wxworkWindow.windowId,
+        activeOwnerWindowHandle: '0',
+        activeRootOwnerWindowHandle: wxworkWindow.rootWindowId,
+        activeProcessId: wxworkWindow.processId,
+        activeExecutablePath: wxworkWindow.executablePath,
+        activeWindowTitle: '另一个会话',
+        activeWindowClassName: wxworkWindow.className,
+        activeRootOwnerWindowTitle: '另一个会话',
+        activeRootOwnerWindowClassName: wxworkWindow.className,
+        conversationCandidates: ['另一个会话', '企业微信'],
+        inputLocated: true,
+        actualText: '',
+      }
+    },
+  } as never)
+
+  const result = await provider.verifyInputContent({
+    conversationName: '小满',
+    draftText: '第一行\n第二行',
+    window: wxworkWindow,
+    phase: 'before_paste',
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.errorCode, undefined)
+  assert.equal(probeCount, 1)
+})
+
+test('before-paste verification continues when conversation title is empty or unavailable', async () => {
+  let probeCount = 0
+  const provider = createWindowsPasteVerificationProvider({
+    runAvailabilityProbe: async () => ({ ok: true, errorCode: null }),
+    execPowerShell: async () => {
+      probeCount += 1
+      return {
+        activeWindowHandle: wxworkWindow.windowId,
+        activeOwnerWindowHandle: '0',
+        activeRootOwnerWindowHandle: wxworkWindow.rootWindowId,
+        activeProcessId: wxworkWindow.processId,
+        activeExecutablePath: wxworkWindow.executablePath,
+        activeWindowTitle: '',
+        activeWindowClassName: wxworkWindow.className,
+        activeRootOwnerWindowTitle: '',
+        activeRootOwnerWindowClassName: wxworkWindow.className,
+        conversationCandidates: [],
+        inputLocated: true,
+        actualText: '',
+      }
+    },
+  } as never)
+
+  const result = await provider.verifyInputContent({
+    conversationName: '小满',
+    draftText: '第一行\n第二行',
+    window: wxworkWindow,
+    phase: 'before_paste',
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.errorCode, undefined)
+  assert.equal(probeCount, 1)
+})
+
+test('before-paste verification still rejects a foreground switch to another application', async () => {
+  const provider = createWindowsPasteVerificationProvider({
+    runAvailabilityProbe: async () => ({ ok: true, errorCode: null }),
+    execPowerShell: async () => ({
+      activeWindowHandle: 'chrome-main',
+      activeOwnerWindowHandle: '0',
+      activeRootOwnerWindowHandle: 'chrome-main',
+      activeProcessId: 9988,
+      activeExecutablePath: 'C:/Program Files/Google/Chrome/chrome.exe',
+      activeWindowTitle: 'Docs',
+      activeWindowClassName: 'Chrome_WidgetWin_1',
+      activeRootOwnerWindowTitle: 'Docs',
+      activeRootOwnerWindowClassName: 'Chrome_WidgetWin_1',
+      conversationCandidates: ['小满'],
+      inputLocated: true,
+      actualText: '',
+    }),
+  } as never)
+
+  const result = await provider.verifyInputContent({
+    conversationName: '小满',
+    draftText: '第一行\n第二行',
+    window: wxworkWindow,
+    phase: 'before_paste',
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.errorCode, 'TARGET_WINDOW_CHANGED')
+})
+
+test('before-paste verification still rejects another WXWork root window even when pid and executable path are unchanged', async () => {
+  const provider = createWindowsPasteVerificationProvider({
+    runAvailabilityProbe: async () => ({ ok: true, errorCode: null }),
+    execPowerShell: async () => ({
+      activeWindowHandle: 'wxwork-other-window',
+      activeOwnerWindowHandle: '0',
+      activeRootOwnerWindowHandle: 'wxwork-other-window',
+      activeProcessId: wxworkWindow.processId,
+      activeExecutablePath: wxworkWindow.executablePath,
+      activeWindowTitle: '另一个企业微信窗口',
+      activeWindowClassName: wxworkWindow.className,
+      activeRootOwnerWindowTitle: '另一个企业微信窗口',
+      activeRootOwnerWindowClassName: wxworkWindow.className,
+      conversationCandidates: ['小满', '企业微信'],
+      inputLocated: true,
+      actualText: '',
+    }),
+  } as never)
+
+  const result = await provider.verifyInputContent({
+    conversationName: '小满',
+    draftText: '第一行\n第二行',
+    window: wxworkWindow,
+    phase: 'before_paste',
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.errorCode, 'TARGET_WINDOW_CHANGED')
 })

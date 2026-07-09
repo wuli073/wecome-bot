@@ -2556,24 +2556,6 @@ export class BackendClient extends BaseHttpClient {
     });
   }
 
-  public sendBroadcastExecutionTask(
-    scope: ApiBroadcastScope,
-    taskId: number,
-    payload: {
-      operator: string;
-      confirmation_token: string;
-    },
-  ): Promise<ApiBroadcastExecutionTask> {
-    return this.requestBroadcast<ApiBroadcastExecutionTask>({
-      method: 'post',
-      url: `/api/v1/broadcast/execution-tasks/${taskId}/send`,
-      data: {
-        ...scope,
-        ...payload,
-      },
-    });
-  }
-
   public getBroadcastExecutionAttempts(
     scope: ApiBroadcastScope,
     taskId: number,
@@ -2611,28 +2593,6 @@ export class BackendClient extends BaseHttpClient {
     scope: ApiBroadcastScope,
   ): Promise<Record<string, unknown>> {
     return this.get('/api/v1/broadcast/executors/health', scope);
-  }
-
-  public createBroadcastSendConfirmation(
-    scope: ApiBroadcastScope,
-    payload: {
-      execution_task_id: number;
-      operator: string;
-    },
-  ): Promise<{
-    id: number;
-    token: string;
-    expires_at: string | null;
-    execution_task_id: number;
-  }> {
-    return this.requestBroadcast({
-      method: 'post',
-      url: '/api/v1/broadcast/send-confirmations',
-      data: {
-        ...scope,
-        ...payload,
-      },
-    });
   }
 }
 

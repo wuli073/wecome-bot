@@ -363,6 +363,248 @@ async def _create_invalid_import_draft(
         )
 
 
+def _enable_real_send(fake_broadcast_app, connector_id: str = 'wxwork-local') -> None:
+    fake_broadcast_app.instance_config.data.setdefault('broadcast', {}).update(
+        {
+            'send_enabled': '1',
+            'allow_send_connectors': {connector_id: True},
+        }
+    )
+
+
+class _QueuedRuntimeClient:
+    def __init__(self, responses: list[dict[str, object]]) -> None:
+        self.responses = list(responses)
+        self.requests: list[dict[str, object]] = []
+
+    async def create_task(self, *, request):
+        self.requests.append(request)
+        if not self.responses:
+            raise AssertionError('unexpected runtime send request')
+        return self.responses.pop(0)
+
+
+async def _create_ready_drafts(
+    quart_test_client,
+    *,
+    group_values: list[str],
+    conversation_targets: dict[str, tuple[str, str]] | None = None,
+    template_content: str = 'Hello {{customer_name}}',
+) -> list[dict[str, object]]:
+    await quart_test_client.put(
+        '/api/v1/broadcast/variable-profile',
+        headers=_auth_headers(),
+        json={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'group_field': '客户名称',
+            'mapping_rules': [
+                {
+                    'source_field': '客户名称',
+                    'variable_key': 'customer_name',
+                    'merge_mode': 'first',
+                    'order': 1,
+                }
+            ],
+        },
+    )
+
+    for group_value in group_values:
+        target_name, target_id = (conversation_targets or {}).get(
+            group_value,
+            (f'{group_value} Group', f'{group_value} Group'),
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': group_value,
+                'match_type': 'exact',
+                'match_expression': group_value,
+                'target_conversation_name': target_name,
+                'target_conversation_id': target_id,
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+
+    upload_response = await quart_test_client.post(
+        '/api/v1/broadcast/imports',
+        headers=_auth_headers(),
+        form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        files={
+            'file': FileStorage(
+                stream=BytesIO(
+                    ('客户名称\n' + '\n'.join(group_values) + '\n').encode('utf-8')
+                ),
+                filename='customers.csv',
+            ),
+        },
+    )
+    import_id = (await upload_response.get_json())['data']['id']
+
+    template_response = await quart_test_client.post(
+        '/api/v1/broadcast/templates',
+        headers=_auth_headers(),
+        json={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'name': f'Arrival Reminder {"-".join(group_values)}',
+            'content': template_content,
+            'enabled': True,
+        },
+    )
+    template_id = (await template_response.get_json())['data']['id']
+
+    await quart_test_client.post(
+        f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+        headers=_auth_headers(),
+        json={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'template_id': template_id,
+            'group_keys': await _get_all_import_group_keys(quart_test_client, import_id),
+        },
+    )
+
+    drafts_response = await quart_test_client.get(
+        f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+        headers=_auth_headers(),
+    )
+    drafts = (await drafts_response.get_json())['data']
+    drafts_by_group_value = {draft['group_value']: draft for draft in drafts}
+    ordered_drafts = [drafts_by_group_value[group_value] for group_value in group_values]
+
+    await quart_test_client.post(
+        '/api/v1/broadcast/drafts/batch-status',
+        headers=_auth_headers(),
+        json={
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-local',
+            'draft_ids': [int(draft['id']) for draft in ordered_drafts],
+            'status': 'ready',
+        },
+    )
+
+    refreshed_response = await quart_test_client.get(
+        f'/api/v1/broadcast/drafts?{_query_scope()}&import_batch_id={import_id}',
+        headers=_auth_headers(),
+    )
+    refreshed_drafts = (await refreshed_response.get_json())['data']
+    refreshed_by_group_value = {draft['group_value']: draft for draft in refreshed_drafts}
+    return [refreshed_by_group_value[group_value] for group_value in group_values]
+
+
+async def _create_send_execution_task_with_attempt(
+    quart_test_client,
+    fake_broadcast_app,
+    *,
+    task_status: str,
+    response_summary: dict[str, object] | None,
+    technical_details: dict[str, object] | None = None,
+    send_triggered: bool = False,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> int:
+    draft = (
+        await _create_ready_drafts(
+            quart_test_client,
+            group_values=['Acme'],
+            conversation_targets={'Acme': ('Acme Group', 'acme-group')},
+        )
+    )[0]
+    repository = fake_broadcast_app.broadcast_service.repository
+    async with fake_broadcast_app.persistence_mgr.get_db_engine().begin() as conn:
+        batch_id = await repository.create_execution_batch(
+            conn,
+            {
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'channel': 'wxwork_database',
+                'mode': 'send',
+                'status': 'running',
+                'total_tasks': 1,
+                'pending_tasks': 0,
+                'running_tasks': 1,
+                'succeeded_tasks': 0,
+                'failed_tasks': 0,
+                'cancelled_tasks': 0,
+                'interrupted_tasks': 0,
+                'created_by': 'tester@example.com',
+                'last_action_by': 'tester@example.com',
+                'error_message': None,
+                'version': 1,
+            },
+        )
+        task_id = await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': batch_id,
+                'draft_id': int(draft['id']),
+                'draft_text_snapshot': str(draft['draft_text']),
+                'target_conversation_snapshot': str(draft['target_conversation_name']),
+                'channel': 'wxwork_database',
+                'action': 'send_message',
+                'status': task_status,
+                'sequence_no': 1,
+                'attempt_count': 1,
+                'max_attempts': 3,
+                'idempotency_key': f'broadcast:{batch_id}:1',
+                'request_digest': 'fixture-digest',
+                'runtime_task_id': 'runtime-fixture',
+                'error_code': error_code,
+                'error_message': error_message,
+                'operator_note': None,
+                'finished_at': sqlalchemy.func.now(),
+            },
+        )
+        attempt_id = await repository.create_execution_attempt(
+            conn,
+            {
+                'execution_task_id': task_id,
+                'attempt_no': 1,
+                'idempotency_key': f'broadcast:{task_id}:1',
+                'request_digest': 'fixture-digest',
+                'runtime_task_id': 'runtime-fixture',
+                'request_summary': json.dumps({'action': 'send_message'}, ensure_ascii=False),
+                'response_summary': json.dumps(response_summary, ensure_ascii=False)
+                if response_summary is not None
+                else None,
+                'status': task_status,
+                'error_code': error_code,
+                'error_message': error_message,
+                'finished_at': sqlalchemy.func.now(),
+            },
+        )
+        await repository.create_execution_evidence(
+            conn,
+            {
+                'execution_attempt_id': int(attempt_id),
+                'window_title': '企业微信',
+                'target_conversation': str(draft['target_conversation_name']),
+                'action': 'send_message',
+                'input_located': True,
+                'draft_written': True,
+                'send_triggered': send_triggered,
+                'clipboard_restored': True,
+                'runtime_state': str((response_summary or {}).get('status') or task_status),
+                'evidence_summary': 'fixture',
+                'technical_details': json.dumps(technical_details, ensure_ascii=False)
+                if technical_details is not None
+                else None,
+            },
+        )
+        await repository.recompute_execution_batch_counts(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+    return int(task_id)
+
+
 @pytest.mark.usefixtures('mock_circular_import_chain')
 class TestBroadcastApi:
     @pytest.mark.asyncio
@@ -4208,6 +4450,9 @@ class TestBroadcastApi:
         start_payload = await start_response.get_json()
         assert start_response.status_code == 200
         assert start_payload['data']['error_code'] == 'INPUT_NOT_LOCATED'
+        assert start_payload['data']['enter_dispatched'] is False
+        assert start_payload['data']['message_sent'] is False
+        assert start_payload['data']['terminal_confirmed'] is True
 
         attempts_response = await quart_test_client.get(
             f'/api/v1/broadcast/execution-tasks/{task_id}/attempts?{_query_scope()}',
@@ -4227,3 +4472,967 @@ class TestBroadcastApi:
         assert technical_details['error_code'] == 'INPUT_NOT_LOCATED'
         assert technical_details['selected_window']['hwnd'] == '1769682'
         assert technical_details['task_verification_diagnostic']['failureStep'] == 'INPUT_LOOKUP'
+
+    @pytest.mark.asyncio
+    async def test_send_execution_uses_executions_api_and_updates_draft_status(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        _enable_real_send(fake_broadcast_app)
+        runtime_client = _QueuedRuntimeClient(
+            [
+                {
+                    'id': 'runtime-send-success',
+                    'status': 'succeeded',
+                    'stage': 'sent',
+                    'result': {
+                        'messageSent': True,
+                        'sendKeyCount': 1,
+                    },
+                }
+            ]
+        )
+        fake_broadcast_app.desktop_automation_service = SimpleNamespace(
+            runtime_client=runtime_client,
+        )
+        drafts = await _create_ready_drafts(
+            quart_test_client,
+            group_values=['Acme'],
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [drafts[0]['id']],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 200
+        assert payload['data']['mode'] == 'send'
+        assert payload['data']['sent_count'] == 1
+        assert payload['data']['failed_count'] == 0
+        assert payload['data']['unknown_count'] == 0
+        assert payload['data']['items'][0]['outcome'] == 'sent'
+        assert runtime_client.requests == [
+            {
+                'action': 'send_draft',
+                'conversationName': 'Acme Group',
+                'draftText': 'Hello Acme',
+                'idempotencyKey': runtime_client.requests[0]['idempotencyKey'],
+                'requestDigest': runtime_client.requests[0]['requestDigest'],
+                'attachments': [],
+                'sendAuthorized': True,
+                'allowAutoSend': True,
+                'sendStrategy': 'enter',
+            }
+        ]
+
+        drafts_response = await quart_test_client.get(
+            f'/api/v1/broadcast/drafts?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        draft_payload = (await drafts_response.get_json())['data'][0]
+        assert draft_payload['send_status'] == 'sent'
+
+    @pytest.mark.asyncio
+    async def test_send_execution_rejects_invalid_mode(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        _enable_real_send(fake_broadcast_app)
+        fake_broadcast_app.desktop_automation_service = SimpleNamespace(
+            runtime_client=_QueuedRuntimeClient([]),
+        )
+        drafts = await _create_ready_drafts(quart_test_client, group_values=['Acme'])
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [drafts[0]['id']],
+                'mode': 'invalid-mode',
+                'operator': 'tester@example.com',
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 400
+        assert payload['msg'] == 'BROADCAST_EXECUTION_MODE_INVALID'
+
+    @pytest.mark.asyncio
+    async def test_send_execution_rejects_executor_without_send_support(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+        monkeypatch,
+    ):
+        _enable_real_send(fake_broadcast_app)
+        fake_broadcast_app.desktop_automation_service = SimpleNamespace(
+            runtime_client=_QueuedRuntimeClient([]),
+        )
+        drafts = await _create_ready_drafts(quart_test_client, group_values=['Acme'])
+
+        class _UnsupportedSendExecutor:
+            def validate_capability(self, _action: str):
+                return {
+                    'supports_send': False,
+                    'supports_attachment_send': False,
+                }
+
+        monkeypatch.setattr(
+            'langbot.pkg.broadcast.service.build_executor',
+            lambda _channel, _gateway: _UnsupportedSendExecutor(),
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [drafts[0]['id']],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 400
+        assert payload['msg'] == 'EXECUTOR_SEND_UNSUPPORTED'
+
+    @pytest.mark.asyncio
+    async def test_send_execution_rejects_attachment_send_without_executor_support(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+        monkeypatch,
+    ):
+        _enable_real_send(fake_broadcast_app)
+        fake_broadcast_app.desktop_automation_service = SimpleNamespace(
+            runtime_client=_QueuedRuntimeClient([]),
+        )
+        draft = (await _create_ready_drafts(quart_test_client, group_values=['Acme']))[0]
+
+        attachment_response = await quart_test_client.post(
+            f"/api/v1/broadcast/drafts/{draft['id']}/attachments",
+            headers=_auth_headers(),
+            form={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+            },
+            files={
+                'files': FileStorage(
+                    stream=BytesIO(b'quote-data'),
+                    filename='quote.txt',
+                ),
+            },
+        )
+        assert attachment_response.status_code == 200
+
+        await quart_test_client.post(
+            '/api/v1/broadcast/drafts/batch-status',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'status': 'ready',
+            },
+        )
+
+        class _NoAttachmentSendExecutor:
+            def validate_capability(self, _action: str):
+                return {
+                    'supports_send': True,
+                    'supports_attachment_send': False,
+                }
+
+        monkeypatch.setattr(
+            'langbot.pkg.broadcast.service.build_executor',
+            lambda _channel, _gateway: _NoAttachmentSendExecutor(),
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 400
+        assert payload['msg'] == 'EXECUTOR_ATTACHMENT_SEND_UNSUPPORTED'
+
+    @pytest.mark.asyncio
+    async def test_send_execution_continues_after_failed_item(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        _enable_real_send(fake_broadcast_app)
+        runtime_client = _QueuedRuntimeClient(
+            [
+                {
+                    'id': 'runtime-send-failed',
+                    'status': 'failed',
+                    'stage': 'input_focus',
+                    'errorCode': 'INPUT_NOT_LOCATED',
+                    'result': {
+                        'enterDispatched': False,
+                        'messageSent': False,
+                        'inputLocated': False,
+                    },
+                },
+                {
+                    'id': 'runtime-send-succeeded',
+                    'status': 'succeeded',
+                    'stage': 'sent',
+                    'result': {
+                        'messageSent': True,
+                    },
+                },
+            ]
+        )
+        fake_broadcast_app.desktop_automation_service = SimpleNamespace(
+            runtime_client=runtime_client,
+        )
+        drafts = await _create_ready_drafts(
+            quart_test_client,
+            group_values=['Acme', 'Northwind'],
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id'] for draft in drafts],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 200
+        assert payload['data']['failed_count'] == 1
+        assert payload['data']['sent_count'] == 1
+        assert [item['outcome'] for item in payload['data']['items']] == ['failed', 'sent']
+        assert len(runtime_client.requests) == 2
+
+    @pytest.mark.asyncio
+    async def test_send_execution_continues_after_unknown_item(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        _enable_real_send(fake_broadcast_app)
+        runtime_client = _QueuedRuntimeClient(
+            [
+                {
+                    'id': 'runtime-send-unknown',
+                    'status': 'running',
+                    'stage': 'sent_pending_confirmation',
+                    'result': {
+                        'messageSent': True,
+                        'sendKeyCount': 1,
+                    },
+                },
+                {
+                    'id': 'runtime-send-succeeded',
+                    'status': 'succeeded',
+                    'stage': 'sent',
+                    'result': {
+                        'messageSent': True,
+                    },
+                },
+            ]
+        )
+        fake_broadcast_app.desktop_automation_service = SimpleNamespace(
+            runtime_client=runtime_client,
+        )
+        drafts = await _create_ready_drafts(
+            quart_test_client,
+            group_values=['Acme', 'Northwind'],
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id'] for draft in drafts],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 200
+        assert payload['data']['unknown_count'] == 1
+        assert payload['data']['sent_count'] == 1
+        assert [item['outcome'] for item in payload['data']['items']] == ['unknown', 'sent']
+        assert len(runtime_client.requests) == 2
+
+    @pytest.mark.asyncio
+    async def test_send_execution_allows_duplicate_target_conversations(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        _enable_real_send(fake_broadcast_app)
+        runtime_client = _QueuedRuntimeClient(
+            [
+                {
+                    'id': 'runtime-send-success-1',
+                    'status': 'succeeded',
+                    'stage': 'sent',
+                    'result': {'messageSent': True},
+                },
+                {
+                    'id': 'runtime-send-success-2',
+                    'status': 'succeeded',
+                    'stage': 'sent',
+                    'result': {'messageSent': True},
+                },
+            ]
+        )
+        fake_broadcast_app.desktop_automation_service = SimpleNamespace(
+            runtime_client=runtime_client,
+        )
+        drafts = await _create_ready_drafts(
+            quart_test_client,
+            group_values=['Acme', 'Northwind'],
+            conversation_targets={
+                'Acme': ('VIP Group', 'vip-group'),
+                'Northwind': ('VIP Group', 'vip-group'),
+            },
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id'] for draft in drafts],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 200
+        assert payload['data']['duplicate_target_count'] == 1
+        assert len(payload['data']['items']) == 2
+        assert len(runtime_client.requests) == 2
+
+    @pytest.mark.asyncio
+    async def test_send_execution_detail_reports_sent_failed_unknown_skipped_and_duplicates(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        drafts = await _create_ready_drafts(
+            quart_test_client,
+            group_values=['Acme', 'Northwind', 'Contoso', 'Fabrikam'],
+            conversation_targets={
+                'Acme': ('VIP Group', 'vip-group'),
+                'Northwind': ('VIP Group', 'vip-group'),
+                'Contoso': ('Contoso Group', 'contoso-group'),
+                'Fabrikam': ('Fabrikam Group', 'fabrikam-group'),
+            },
+        )
+
+        async with fake_broadcast_app.persistence_mgr.get_db_engine().begin() as conn:
+            repository = fake_broadcast_app.broadcast_service.repository
+            batch_id = await repository.create_execution_batch(
+                conn,
+                {
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'channel': 'wxwork_database',
+                    'mode': 'send',
+                    'status': 'completed',
+                    'total_tasks': 4,
+                    'pending_tasks': 0,
+                    'running_tasks': 0,
+                    'succeeded_tasks': 1,
+                    'failed_tasks': 1,
+                    'cancelled_tasks': 1,
+                    'interrupted_tasks': 1,
+                    'created_by': 'tester@example.com',
+                    'last_action_by': 'tester@example.com',
+                    'error_message': None,
+                    'version': 1,
+                },
+            )
+
+            task_specs = [
+                (drafts[0], 'VIP Group', 'succeeded', True),
+                (drafts[1], 'VIP Group', 'failed', False),
+                (drafts[2], 'Contoso Group', 'interrupted', True),
+                (drafts[3], 'Fabrikam Group', 'cancelled', False),
+            ]
+            for sequence_no, (draft, target_name, status, send_triggered) in enumerate(task_specs, start=1):
+                task_id = await repository.create_execution_task(
+                    conn,
+                    {
+                        'execution_batch_id': batch_id,
+                        'draft_id': int(draft['id']),
+                        'draft_text_snapshot': str(draft['draft_text']),
+                        'target_conversation_snapshot': target_name,
+                        'channel': 'wxwork_database',
+                        'action': 'send_message',
+                        'status': status,
+                        'sequence_no': sequence_no,
+                        'attempt_count': 1,
+                        'max_attempts': 1,
+                        'idempotency_key': f'broadcast:{batch_id}:{sequence_no}',
+                        'request_digest': f'digest-{sequence_no}',
+                        'runtime_task_id': f'runtime-{sequence_no}',
+                        'error_code': None if status == 'succeeded' else f'error-{sequence_no}',
+                        'error_message': None if status == 'succeeded' else f'message-{sequence_no}',
+                        'operator_note': None,
+                    },
+                )
+                attempt_id = await repository.create_execution_attempt(
+                    conn,
+                    {
+                        'execution_task_id': task_id,
+                        'attempt_no': 1,
+                        'idempotency_key': f'broadcast:{task_id}:1',
+                        'request_digest': f'digest-{sequence_no}',
+                        'runtime_task_id': f'runtime-{sequence_no}',
+                        'request_summary': json.dumps(
+                            {
+                                'action': 'send_message',
+                                'channel': 'wxwork_database',
+                                'target_conversation': target_name,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        'response_summary': json.dumps(
+                            {
+                                'id': f'runtime-{sequence_no}',
+                                'status': (
+                                    'succeeded'
+                                    if status == 'succeeded'
+                                    else 'failed'
+                                    if status == 'failed'
+                                    else 'unknown'
+                                    if status == 'interrupted'
+                                    else 'cancelled'
+                                ),
+                                'stage': (
+                                    'message_sent'
+                                    if status == 'succeeded'
+                                    else 'pre_send_verification_failed'
+                                    if status == 'failed'
+                                    else 'terminal_state_unknown'
+                                    if status == 'interrupted'
+                                    else 'cancelled'
+                                ),
+                                'errorCode': (
+                                    'BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN'
+                                    if status == 'interrupted'
+                                    else None
+                                ),
+                                'result': (
+                                    {
+                                        'enterDispatched': True,
+                                        'messageSent': True,
+                                        'terminalConfirmed': True,
+                                        'terminalSource': 'runtime',
+                                    }
+                                    if status == 'succeeded'
+                                    else {
+                                        'enterDispatched': False,
+                                        'messageSent': False,
+                                        'terminalConfirmed': True,
+                                        'terminalSource': 'runtime',
+                                    }
+                                    if status == 'failed'
+                                    else {
+                                        'enterDispatched': None,
+                                        'messageSent': None,
+                                        'terminalConfirmed': False,
+                                        'terminalSource': 'backend_synthetic_unknown',
+                                    }
+                                    if status == 'interrupted'
+                                    else {
+                                        'enterDispatched': False,
+                                        'messageSent': False,
+                                        'terminalConfirmed': True,
+                                        'terminalSource': 'runtime',
+                                    }
+                                ),
+                            },
+                            ensure_ascii=False,
+                        ),
+                        'status': status,
+                        'error_code': None if status == 'succeeded' else f'error-{sequence_no}',
+                        'error_message': None if status == 'succeeded' else f'message-{sequence_no}',
+                        'finished_at': None,
+                    },
+                )
+                await repository.create_execution_evidence(
+                    conn,
+                    {
+                        'execution_attempt_id': int(attempt_id),
+                        'window_title': '企业微信',
+                        'target_conversation': target_name,
+                        'action': 'send_message',
+                        'input_located': True,
+                        'draft_written': True,
+                        'send_triggered': send_triggered,
+                        'clipboard_restored': True,
+                        'runtime_state': status,
+                        'evidence_summary': status,
+                        'technical_details': json.dumps(
+                            {
+                                'status': status,
+                                'send_triggered': send_triggered,
+                                'enter_dispatched': (
+                                    True
+                                    if status == 'succeeded'
+                                    else False
+                                    if status in {'failed', 'cancelled'}
+                                    else None
+                                ),
+                                'message_sent': True if status == 'succeeded' else False,
+                                'terminal_source': (
+                                    'backend_synthetic_unknown'
+                                    if status == 'interrupted'
+                                    else 'runtime'
+                                ),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                )
+
+        response = await quart_test_client.get(
+            f'/api/v1/broadcast/executions/{batch_id}?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 200
+        assert payload['data']['sent_count'] == 1
+        assert payload['data']['failed_count'] == 1
+        assert payload['data']['unknown_count'] == 1
+        assert payload['data']['skipped_count'] == 1
+        assert payload['data']['duplicate_target_count'] == 1
+        assert [item['outcome'] for item in payload['data']['items']] == [
+            'sent',
+            'failed',
+            'unknown',
+            'skipped',
+        ]
+        assert [item['enter_dispatched'] for item in payload['data']['items']] == [
+            True,
+            False,
+            None,
+            False,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_send_execution_rejects_sent_sending_and_unknown_drafts(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+        monkeypatch,
+    ):
+        _enable_real_send(fake_broadcast_app)
+        runtime_client = _QueuedRuntimeClient(
+            [
+                {
+                    'id': 'runtime-send-unknown',
+                    'status': 'running',
+                    'stage': 'sent_pending_confirmation',
+                    'result': {'messageSent': True},
+                }
+            ]
+        )
+        fake_broadcast_app.desktop_automation_service = SimpleNamespace(
+            runtime_client=runtime_client,
+        )
+
+        sent_draft = (await _create_ready_drafts(quart_test_client, group_values=['Acme']))[0]
+        await quart_test_client.post(
+            '/api/v1/broadcast/drafts/batch-status',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [sent_draft['id']],
+                'status': 'sent',
+            },
+        )
+
+        unknown_draft = (await _create_ready_drafts(quart_test_client, group_values=['Northwind']))[0]
+        await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [unknown_draft['id']],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+
+        sending_draft = (await _create_ready_drafts(quart_test_client, group_values=['Contoso']))[0]
+        async with fake_broadcast_app.persistence_mgr.get_db_engine().begin() as conn:
+            batch_id = await fake_broadcast_app.broadcast_service.repository.create_execution_batch(
+                conn,
+                {
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'channel': 'wxwork_database',
+                    'mode': 'send',
+                    'status': 'running',
+                    'total_tasks': 1,
+                    'pending_tasks': 0,
+                    'running_tasks': 1,
+                    'succeeded_tasks': 0,
+                    'failed_tasks': 0,
+                    'cancelled_tasks': 0,
+                    'interrupted_tasks': 0,
+                    'created_by': 'tester@example.com',
+                    'last_action_by': 'tester@example.com',
+                    'error_message': None,
+                    'version': 1,
+                },
+            )
+            await fake_broadcast_app.broadcast_service.repository.create_execution_task(
+                conn,
+                {
+                    'execution_batch_id': batch_id,
+                    'draft_id': int(sending_draft['id']),
+                    'draft_text_snapshot': 'Hello Contoso',
+                    'target_conversation_snapshot': 'Contoso Group',
+                    'channel': 'wxwork_database',
+                    'action': 'send_message',
+                    'status': 'running',
+                    'sequence_no': 1,
+                    'attempt_count': 1,
+                    'max_attempts': 1,
+                    'idempotency_key': 'broadcast:active-send:1',
+                    'request_digest': 'digest-active-send',
+                    'runtime_task_id': 'runtime-active-send',
+                    'error_code': None,
+                    'error_message': None,
+                    'operator_note': None,
+                },
+            )
+
+        sent_response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [sent_draft['id']],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+        sent_payload = await sent_response.get_json()
+        assert sent_response.status_code == 400
+        assert sent_payload['msg'] == 'BROADCAST_DRAFT_ALREADY_SENT'
+
+        unknown_response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [unknown_draft['id']],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+        unknown_payload = await unknown_response.get_json()
+        assert unknown_response.status_code == 400
+        assert (
+            unknown_payload['msg']
+            == 'BROADCAST_SEND_RESULT_UNKNOWN_REQUIRES_REVIEW'
+        )
+
+        sending_response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [sending_draft['id']],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+        sending_payload = await sending_response.get_json()
+        assert sending_response.status_code == 400
+        assert sending_payload['msg'] == 'BROADCAST_DRAFT_SEND_IN_PROGRESS'
+
+    @pytest.mark.asyncio
+    async def test_unknown_draft_must_be_manually_restored_before_resend(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        _enable_real_send(fake_broadcast_app)
+        runtime_client = _QueuedRuntimeClient(
+            [
+                {
+                    'id': 'runtime-send-unknown',
+                    'status': 'running',
+                    'stage': 'sent_pending_confirmation',
+                    'result': {'messageSent': True},
+                },
+                {
+                    'id': 'runtime-send-success',
+                    'status': 'succeeded',
+                    'stage': 'sent',
+                    'result': {'messageSent': True},
+                },
+            ]
+        )
+        fake_broadcast_app.desktop_automation_service = SimpleNamespace(
+            runtime_client=runtime_client,
+        )
+        draft = (await _create_ready_drafts(quart_test_client, group_values=['Acme']))[0]
+
+        first_send_response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+        first_send_payload = await first_send_response.get_json()
+        assert first_send_response.status_code == 200
+        assert first_send_payload['data']['unknown_count'] == 1
+
+        blocked_retry_response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+        blocked_retry_payload = await blocked_retry_response.get_json()
+        assert blocked_retry_response.status_code == 400
+        assert (
+            blocked_retry_payload['msg']
+            == 'BROADCAST_SEND_RESULT_UNKNOWN_REQUIRES_REVIEW'
+        )
+
+        restore_response = await quart_test_client.post(
+            '/api/v1/broadcast/drafts/batch-status',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'status': 'pending',
+            },
+        )
+        restore_payload = await restore_response.get_json()
+        assert restore_response.status_code == 200
+        assert restore_payload['data']['updated_count'] == 1
+
+        resend_response = await quart_test_client.post(
+            '/api/v1/broadcast/executions',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+        resend_payload = await resend_response.get_json()
+        assert resend_response.status_code == 200
+        assert resend_payload['data']['sent_count'] == 1
+        assert len(runtime_client.requests) == 2
+
+    @pytest.mark.asyncio
+    async def test_retry_unknown_send_task_returns_explicit_rejection(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        task_id = await _create_send_execution_task_with_attempt(
+            quart_test_client,
+            fake_broadcast_app,
+            task_status='interrupted',
+            response_summary={
+                'id': 'runtime-unknown',
+                'status': 'unknown',
+                'stage': 'terminal_state_unknown',
+                'errorCode': 'BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN',
+                'result': {
+                    'enterDispatched': None,
+                    'messageSent': None,
+                    'terminalConfirmed': False,
+                    'terminalSource': 'backend_synthetic_unknown',
+                },
+            },
+            technical_details={
+                'message_sent': True,
+                'terminal_source': 'backend_synthetic_unknown',
+            },
+            send_triggered=True,
+            error_code='BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN',
+            error_message='发送结果无法确认，请人工检查目标会话',
+        )
+
+        task_response = await quart_test_client.get(
+            f'/api/v1/broadcast/execution-tasks/{task_id}?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        task_payload = await task_response.get_json()
+        assert task_response.status_code == 200
+        assert task_payload['data']['retry_allowed'] is False
+        assert task_payload['data']['enter_dispatched'] is None
+        assert task_payload['data']['message_sent'] is None
+        assert task_payload['data']['terminal_confirmed'] is False
+        assert (
+            task_payload['data']['terminal_source']
+            == 'backend_synthetic_unknown'
+        )
+
+        retry_response = await quart_test_client.post(
+            f'/api/v1/broadcast/execution-tasks/{task_id}/retry',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'operator': 'tester@example.com',
+            },
+        )
+        retry_payload = await retry_response.get_json()
+
+        assert retry_response.status_code == 400
+        assert retry_payload['msg'] == 'BROADCAST_RETRY_SEND_RESULT_UNKNOWN'
+
+    @pytest.mark.asyncio
+    async def test_retry_confirmed_pre_send_failure_requeues_task(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        task_id = await _create_send_execution_task_with_attempt(
+            quart_test_client,
+            fake_broadcast_app,
+            task_status='failed',
+            response_summary={
+                'id': 'runtime-failed',
+                'status': 'failed',
+                'stage': 'pre_send_verification_failed',
+                'errorCode': 'BROADCAST_PRE_SEND_VERIFICATION_FAILED',
+                'result': {
+                    'enterDispatched': False,
+                    'messageSent': False,
+                    'terminalConfirmed': True,
+                    'terminalSource': 'runtime',
+                },
+            },
+            technical_details={
+                'enter_dispatched': False,
+                'message_sent': False,
+                'terminal_source': 'runtime',
+            },
+            send_triggered=False,
+            error_code='BROADCAST_PRE_SEND_VERIFICATION_FAILED',
+            error_message='Unable to verify the prepared message before sending',
+        )
+
+        before_response = await quart_test_client.get(
+            f'/api/v1/broadcast/execution-tasks/{task_id}?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        before_payload = await before_response.get_json()
+        assert before_response.status_code == 200
+        assert before_payload['data']['retry_allowed'] is True
+        assert before_payload['data']['send_outcome'] == 'failed'
+        assert before_payload['data']['enter_dispatched'] is False
+        assert before_payload['data']['message_sent'] is False
+        assert before_payload['data']['terminal_confirmed'] is True
+
+        retry_response = await quart_test_client.post(
+            f'/api/v1/broadcast/execution-tasks/{task_id}/retry',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'operator': 'tester@example.com',
+            },
+        )
+        retry_payload = await retry_response.get_json()
+        assert retry_response.status_code == 200
+        assert retry_payload['data']['status'] == 'pending'
+
+        after_response = await quart_test_client.get(
+            f'/api/v1/broadcast/execution-tasks/{task_id}?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        after_payload = await after_response.get_json()
+        assert after_response.status_code == 200
+        assert after_payload['data']['status'] == 'pending'
+
+    @pytest.mark.asyncio
+    async def test_mark_sent_updates_state_without_calling_executor(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        draft = (await _create_ready_drafts(quart_test_client, group_values=['Acme']))[0]
+        runtime_client = _QueuedRuntimeClient([])
+        fake_broadcast_app.desktop_automation_service = SimpleNamespace(
+            runtime_client=runtime_client,
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/drafts/batch-status',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'draft_ids': [draft['id']],
+                'status': 'sent',
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 200
+        assert payload['data']['updated_count'] == 1
+        assert runtime_client.requests == []

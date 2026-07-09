@@ -4,7 +4,6 @@ import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { verifyConversationName } from '../vision/session-verifier'
 import type {
   PasteVerificationArgs,
   PasteVerificationCapability,
@@ -28,7 +27,6 @@ const UIA_DIAGNOSTIC_CODES = {
 } as const
 const SUPPORTED_ERROR_CODES = [
   'TARGET_WINDOW_CHANGED',
-  'CONVERSATION_MISMATCH',
   'INPUT_NOT_LOCATED',
   'PASTE_CONTENT_MISMATCH',
   'UIA_TASK_SCRIPT_FAILED',
@@ -37,12 +35,19 @@ const SUPPORTED_ERROR_CODES = [
 const DEFAULT_PROBE_TTL_MS = 30_000
 const DEFAULT_COMMAND_TIMEOUT_MS = 8_000
 const CLEANUP_RETRY_DELAYS_MS = [50, 150, 300] as const
+const WINDOW_STABILIZATION_RETRY_DELAYS_MS = [120, 180, 250] as const
 const STARTUP_ERROR_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'UNKNOWN'])
 
 type RawVerifierPayload = {
   activeWindowHandle?: string | number | null
+  activeOwnerWindowHandle?: string | number | null
+  activeRootOwnerWindowHandle?: string | number | null
   activeProcessId?: number | null
   activeExecutablePath?: string | null
+  activeWindowTitle?: string | null
+  activeWindowClassName?: string | null
+  activeRootOwnerWindowTitle?: string | null
+  activeRootOwnerWindowClassName?: string | null
   conversationCandidates?: string[] | null
   inputLocated?: boolean
   actualText?: string | null
@@ -135,9 +140,49 @@ public static class LangBotUser32 {
   public static extern IntPtr GetForegroundWindow();
 
   [DllImport("user32.dll", SetLastError = true)]
+  public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+  [DllImport("user32.dll", SetLastError = true)]
+  public static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);
+
+  [DllImport("user32.dll", SetLastError = true)]
   public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+  [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+  [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
 }
 "@
+
+function Get-WindowClassNameValue([System.IntPtr]$handle) {
+  if ($handle -eq [System.IntPtr]::Zero) {
+    return $null
+  }
+
+  $builder = New-Object System.Text.StringBuilder 256
+  [void][LangBotUser32]::GetClassName($handle, $builder, $builder.Capacity)
+  $value = [string]$builder.ToString()
+  if ([string]::IsNullOrWhiteSpace($value)) {
+    return $null
+  }
+  return $value
+}
+
+function Get-WindowTitleValue([System.IntPtr]$handle) {
+  if ($handle -eq [System.IntPtr]::Zero) {
+    return $null
+  }
+
+  $builder = New-Object System.Text.StringBuilder 1024
+  [void][LangBotUser32]::GetWindowText($handle, $builder, $builder.Capacity)
+  $value = [string]$builder.ToString()
+  if ([string]::IsNullOrWhiteSpace($value)) {
+    return $null
+  }
+  return $value
+}
 
 function Get-ElementText([System.Windows.Automation.AutomationElement]$element) {
   $values = New-Object System.Collections.Generic.List[string]
@@ -273,6 +318,11 @@ function Get-ConversationCandidates([System.Windows.Automation.AutomationElement
 try {
   $payload = ConvertFrom-Json ([Environment]::GetEnvironmentVariable('LANGBOT_PASTE_VERIFIER_REQUEST'))
   $foreground = [LangBotUser32]::GetForegroundWindow()
+  $owner = [LangBotUser32]::GetWindow($foreground, 4)
+  $rootOwner = [LangBotUser32]::GetAncestor($foreground, 3)
+  if ($rootOwner -eq [System.IntPtr]::Zero) {
+    $rootOwner = $foreground
+  }
   $processId = 0
   [void][LangBotUser32]::GetWindowThreadProcessId($foreground, [ref]$processId)
   $processPath = $null
@@ -282,7 +332,7 @@ try {
     $processPath = $null
   }
 
-  $windowHandleInt = [int][Int64]$foreground
+  $windowHandleInt = [int][Int64]$rootOwner
   $root = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
     [System.Windows.Automation.TreeScope]::Children,
     (New-Object System.Windows.Automation.PropertyCondition(
@@ -305,8 +355,14 @@ try {
 
   [Console]::WriteLine(([PSCustomObject]@{
     activeWindowHandle = [string]([Int64]$foreground)
+    activeOwnerWindowHandle = [string]([Int64]$owner)
+    activeRootOwnerWindowHandle = [string]([Int64]$rootOwner)
     activeProcessId = [int]$processId
     activeExecutablePath = $processPath
+    activeWindowTitle = Get-WindowTitleValue $foreground
+    activeWindowClassName = Get-WindowClassNameValue $foreground
+    activeRootOwnerWindowTitle = Get-WindowTitleValue $rootOwner
+    activeRootOwnerWindowClassName = Get-WindowClassNameValue $rootOwner
     conversationCandidates = @($conversationCandidates)
     inputLocated = [bool]($editableTexts.Count -gt 0)
     actualText = $actualText
@@ -324,6 +380,42 @@ try {
 
 function normalizeExecutablePath(value: string | null | undefined): string {
   return String(value ?? '').trim().replace(/\\/g, '/').toLowerCase()
+}
+
+function normalizeHandle(value: string | number | null | undefined): string {
+  const normalized = String(value ?? '').trim()
+  return normalized.length > 0 ? normalized : '0'
+}
+
+function normalizeWindowClassName(value: string | null | undefined): string {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function expectedRootOwnerHandle(window: PasteVerificationArgs['window']): string {
+  return normalizeHandle(window.rootWindowId ?? window.ownerWindowId ?? window.windowId)
+}
+
+function actualRootOwnerHandle(raw: RawVerifierPayload): string {
+  return normalizeHandle(raw.activeRootOwnerWindowHandle ?? raw.activeOwnerWindowHandle ?? raw.activeWindowHandle)
+}
+
+function expectedTrustedClass(window: PasteVerificationArgs['window']): string {
+  return normalizeWindowClassName(window.className)
+}
+
+function actualTrustedClass(raw: RawVerifierPayload): string {
+  return normalizeWindowClassName(raw.activeRootOwnerWindowClassName ?? raw.activeWindowClassName)
+}
+
+function matchesTrustedWindowIdentity(args: PasteVerificationArgs, raw: RawVerifierPayload): boolean {
+  return actualRootOwnerHandle(raw) === expectedRootOwnerHandle(args.window)
+    && Number(raw.activeProcessId ?? 0) === Number(args.window.processId)
+    && normalizeExecutablePath(raw.activeExecutablePath) === normalizeExecutablePath(args.window.executablePath)
+    && (
+      expectedTrustedClass(args.window).length === 0
+      || actualTrustedClass(raw).length === 0
+      || actualTrustedClass(raw) === expectedTrustedClass(args.window)
+    )
 }
 
 function normalizeNewlines(text: string): string {
@@ -702,7 +794,7 @@ function buildUnavailableResult(
 
 function taskScriptErrorToDiagnostic(
   error: unknown,
-  phase: 'before_paste' | 'after_paste',
+  phase: 'before_paste' | 'after_paste' | 'after_send',
 ): TaskVerificationDiagnostic {
   const executionError = error as PowerShellExecutionError
   return {
@@ -855,125 +947,172 @@ export function createWindowsPasteVerificationProvider(
   }
 
   const verifyInputContent = async (args: PasteVerificationArgs) => {
-    let raw: RawVerifierPayload
-    try {
-      raw = await execPowerShell({
-        conversationName: args.conversationName,
-        draftText: args.draftText,
-        expectedWindowId: String(args.window.windowId),
-        expectedProcessId: Number(args.window.processId),
-        expectedExecutablePath: normalizeExecutablePath(args.window.executablePath),
-        phase: args.phase,
-      })
-    } catch (error) {
-      const executionError = error as PowerShellExecutionError
-      const stdoutJson = getStructuredScriptError(error)
-      const diagnosticCode = stdoutJson?.errorCategory ?? unavailableDiagnosticCode(error)
-      const verificationErrorCode = stdoutJson?.errorCode ?? diagnosticCode
-      const taskDiagnostic = taskScriptErrorToDiagnostic({
-        ...executionError,
-        failureStep: stdoutJson?.failureStep ?? executionError.failureStep,
-        stderrCategory: stdoutJson?.errorCategory ?? executionError.stderrCategory,
-        stdoutJsonFound: stdoutJson ? true : executionError.stdoutJsonFound,
-      }, args.phase)
-      return buildUnavailableResult(
-        'UIA_TASK_SCRIPT_FAILED',
-        verificationErrorCode,
-        diagnosticCode,
-        args.phase === 'before_paste' ? 'before_paste_verification' : 'after_paste_verification',
-        providerInstanceId,
-        taskDiagnostic,
-      )
-    }
+    const maxAttempts = args.phase === 'before_paste'
+      ? WINDOW_STABILIZATION_RETRY_DELAYS_MS.length + 1
+      : 1
 
-    if (
-      String(raw.activeWindowHandle ?? '') !== String(args.window.windowId)
-      || Number(raw.activeProcessId ?? 0) !== Number(args.window.processId)
-      || normalizeExecutablePath(raw.activeExecutablePath) !== normalizeExecutablePath(args.window.executablePath)
-    ) {
-      return {
-        ok: false,
-        inputLocated: false,
-        draftWritten: false,
-        contentVerified: false,
-        providerInstanceId,
-        observationAvailable: false,
-        runtimeState: 'target_window_changed',
-        errorCode: 'TARGET_WINDOW_CHANGED',
-        verificationMethod: VERIFICATION_METHOD,
-        verificationErrorCode: 'TARGET_WINDOW_CHANGED',
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      let raw: RawVerifierPayload
+      try {
+        raw = await execPowerShell({
+          conversationName: args.conversationName,
+          draftText: args.draftText,
+          expectedWindowId: String(args.window.windowId),
+          expectedRootOwnerWindowId: expectedRootOwnerHandle(args.window),
+          expectedProcessId: Number(args.window.processId),
+          expectedExecutablePath: normalizeExecutablePath(args.window.executablePath),
+          expectedWindowClassName: expectedTrustedClass(args.window),
+          phase: args.phase,
+        })
+      } catch (error) {
+        const executionError = error as PowerShellExecutionError
+        const stdoutJson = getStructuredScriptError(error)
+        const diagnosticCode = stdoutJson?.errorCategory ?? unavailableDiagnosticCode(error)
+        const verificationErrorCode = stdoutJson?.errorCode ?? diagnosticCode
+        const taskDiagnostic = taskScriptErrorToDiagnostic({
+          ...executionError,
+          failureStep: stdoutJson?.failureStep ?? executionError.failureStep,
+          stderrCategory: stdoutJson?.errorCategory ?? executionError.stderrCategory,
+          stdoutJsonFound: stdoutJson ? true : executionError.stdoutJsonFound,
+        }, args.phase)
+        return buildUnavailableResult(
+          'UIA_TASK_SCRIPT_FAILED',
+          verificationErrorCode,
+          diagnosticCode,
+          args.phase === 'before_paste'
+            ? 'before_paste_verification'
+            : args.phase === 'after_send'
+              ? 'after_send_verification'
+              : 'after_paste_verification',
+          providerInstanceId,
+          taskDiagnostic,
+        )
       }
-    }
 
-    const candidates = (raw.conversationCandidates ?? []).filter(
-      (value): value is string => typeof value === 'string' && value.trim().length > 0,
-    )
-    const matchedConversation = candidates.find(
-      (candidate) => verifyConversationName(args.conversationName, candidate).ok,
-    )
-    if (!matchedConversation) {
-      return {
-        ok: false,
-        inputLocated: Boolean(raw.inputLocated),
-        draftWritten: false,
-        contentVerified: false,
-        providerInstanceId,
-        observationAvailable: false,
-        runtimeState: 'conversation_mismatch',
-        errorCode: 'CONVERSATION_MISMATCH',
-        verificationMethod: VERIFICATION_METHOD,
-        verificationErrorCode: 'CONVERSATION_MISMATCH',
+      if (!matchesTrustedWindowIdentity(args, raw)) {
+        return {
+          ok: false,
+          inputLocated: false,
+          draftWritten: false,
+          contentVerified: false,
+          providerInstanceId,
+          observationAvailable: false,
+          runtimeState: 'target_window_changed',
+          errorCode: 'TARGET_WINDOW_CHANGED',
+          verificationMethod: VERIFICATION_METHOD,
+          verificationErrorCode: 'TARGET_WINDOW_CHANGED',
+        }
       }
-    }
 
-    if (!raw.inputLocated) {
-      return {
-        ok: false,
-        inputLocated: false,
-        draftWritten: false,
-        contentVerified: false,
-        providerInstanceId,
-        observationAvailable: false,
-        runtimeState: 'input_not_located',
-        errorCode: 'INPUT_NOT_LOCATED',
-        verificationMethod: VERIFICATION_METHOD,
-        verificationErrorCode: 'INPUT_NOT_LOCATED',
+      if (!raw.inputLocated) {
+        if (args.phase === 'before_paste' && attempt < maxAttempts - 1) {
+          await delay(WINDOW_STABILIZATION_RETRY_DELAYS_MS[attempt]!)
+          continue
+        }
+        return {
+          ok: false,
+          inputLocated: false,
+          draftWritten: false,
+          contentVerified: false,
+          providerInstanceId,
+          observationAvailable: false,
+          runtimeState: 'input_not_located',
+          errorCode: 'INPUT_NOT_LOCATED',
+          verificationMethod: VERIFICATION_METHOD,
+          verificationErrorCode: 'INPUT_NOT_LOCATED',
+        }
       }
-    }
 
-    if (args.phase === 'before_paste') {
+      if (args.phase === 'before_paste') {
+        return {
+          ok: true,
+          inputLocated: true,
+          draftWritten: false,
+          contentVerified: false,
+          providerInstanceId,
+          observationAvailable: false,
+          verificationMethod: VERIFICATION_METHOD,
+        }
+      }
+
+      const actualText = typeof raw.actualText === 'string' ? raw.actualText : ''
+      const expectedDiagnostics = measureText(args.draftText)
+      const actualDiagnostics = measureText(actualText)
+      if (args.phase === 'after_send') {
+        const inputCleared = actualText.length === 0
+        if (!inputCleared) {
+          return {
+            ok: false,
+            inputLocated: true,
+            draftWritten: true,
+            contentVerified: false,
+            providerInstanceId,
+            observationAvailable: true,
+            runtimeState: 'post_send_input_not_cleared',
+            errorCode: 'POST_SEND_INPUT_NOT_CLEARED',
+            verificationMethod: VERIFICATION_METHOD,
+            verificationErrorCode: 'POST_SEND_INPUT_NOT_CLEARED',
+            actualTextLength: actualDiagnostics.textLengthUtf16,
+            actualCodePointCount: actualDiagnostics.codePointCount,
+            actualDigest: actualDiagnostics.digest,
+            actualLineCount: actualDiagnostics.lineCount,
+            actualCrCount: actualDiagnostics.crCount,
+            actualLfCount: actualDiagnostics.lfCount,
+          }
+        }
+        return {
+          ok: true,
+          inputLocated: true,
+          draftWritten: false,
+          contentVerified: true,
+          providerInstanceId,
+          observationAvailable: true,
+          runtimeState: 'post_send_input_cleared',
+          verificationMethod: VERIFICATION_METHOD,
+          actualTextLength: actualDiagnostics.textLengthUtf16,
+          actualCodePointCount: actualDiagnostics.codePointCount,
+          actualDigest: actualDiagnostics.digest,
+          actualLineCount: actualDiagnostics.lineCount,
+          actualCrCount: actualDiagnostics.crCount,
+          actualLfCount: actualDiagnostics.lfCount,
+        }
+      }
+
+      const contentVerified =
+        expectedDiagnostics.textLengthUtf16 === actualDiagnostics.textLengthUtf16
+        && expectedDiagnostics.codePointCount === actualDiagnostics.codePointCount
+        && expectedDiagnostics.digest === actualDiagnostics.digest
+        && expectedDiagnostics.lineCount === actualDiagnostics.lineCount
+
+      if (!contentVerified) {
+        return {
+          ok: false,
+          inputLocated: true,
+          draftWritten: actualText.length > 0,
+          contentVerified: false,
+          providerInstanceId,
+          observationAvailable: true,
+          runtimeState: 'paste_content_mismatch',
+          errorCode: 'PASTE_CONTENT_MISMATCH',
+          verificationMethod: VERIFICATION_METHOD,
+          verificationErrorCode: 'PASTE_CONTENT_MISMATCH',
+          actualTextLength: actualDiagnostics.textLengthUtf16,
+          actualCodePointCount: actualDiagnostics.codePointCount,
+          actualDigest: actualDiagnostics.digest,
+          actualLineCount: actualDiagnostics.lineCount,
+          actualCrCount: actualDiagnostics.crCount,
+          actualLfCount: actualDiagnostics.lfCount,
+        }
+      }
+
       return {
         ok: true,
         inputLocated: true,
-        draftWritten: false,
-        contentVerified: false,
-        providerInstanceId,
-        observationAvailable: false,
-        verificationMethod: VERIFICATION_METHOD,
-      }
-    }
-
-    const actualText = typeof raw.actualText === 'string' ? raw.actualText : ''
-    const expectedDiagnostics = measureText(args.draftText)
-    const actualDiagnostics = measureText(actualText)
-    const contentVerified =
-      expectedDiagnostics.textLengthUtf16 === actualDiagnostics.textLengthUtf16
-      && expectedDiagnostics.codePointCount === actualDiagnostics.codePointCount
-      && expectedDiagnostics.digest === actualDiagnostics.digest
-      && expectedDiagnostics.lineCount === actualDiagnostics.lineCount
-
-    if (!contentVerified) {
-      return {
-        ok: false,
-        inputLocated: true,
-        draftWritten: actualText.length > 0,
-        contentVerified: false,
+        draftWritten: true,
+        contentVerified: true,
         providerInstanceId,
         observationAvailable: true,
-        runtimeState: 'paste_content_mismatch',
-        errorCode: 'PASTE_CONTENT_MISMATCH',
         verificationMethod: VERIFICATION_METHOD,
-        verificationErrorCode: 'PASTE_CONTENT_MISMATCH',
         actualTextLength: actualDiagnostics.textLengthUtf16,
         actualCodePointCount: actualDiagnostics.codePointCount,
         actualDigest: actualDiagnostics.digest,
@@ -984,19 +1123,16 @@ export function createWindowsPasteVerificationProvider(
     }
 
     return {
-      ok: true,
-      inputLocated: true,
-      draftWritten: true,
-      contentVerified: true,
+      ok: false,
+      inputLocated: false,
+      draftWritten: false,
+      contentVerified: false,
       providerInstanceId,
-      observationAvailable: true,
+      observationAvailable: false,
+      runtimeState: 'input_not_located',
+      errorCode: 'INPUT_NOT_LOCATED',
       verificationMethod: VERIFICATION_METHOD,
-      actualTextLength: actualDiagnostics.textLengthUtf16,
-      actualCodePointCount: actualDiagnostics.codePointCount,
-      actualDigest: actualDiagnostics.digest,
-      actualLineCount: actualDiagnostics.lineCount,
-      actualCrCount: actualDiagnostics.crCount,
-      actualLfCount: actualDiagnostics.lfCount,
+      verificationErrorCode: 'INPUT_NOT_LOCATED',
     }
   }
 

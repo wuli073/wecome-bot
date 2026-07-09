@@ -190,7 +190,7 @@ interface BroadcastDraftMock {
   draft_text: string;
   status: 'pending_review' | 'ready' | 'invalid';
   legacy_status?: 'pending_review' | 'ready' | 'invalid';
-  send_status: 'pending' | 'sent';
+  send_status: 'pending' | 'sent' | 'unknown';
   sent_at?: string | null;
   error_message: string | null;
   drafts_stale: boolean;
@@ -225,6 +225,24 @@ interface BroadcastExecutionBatchMock {
   finished_at: string | null;
   cancelled_at: string | null;
   scripted_failure_emitted?: boolean;
+  total_count?: number;
+  sent_count?: number;
+  failed_count?: number;
+  unknown_count?: number;
+  skipped_count?: number;
+  duplicate_target_count?: number;
+  items?: Array<{
+    draft_id: number | null;
+    outcome: 'sent' | 'failed' | 'unknown' | 'skipped';
+    error_code: string | null;
+    error_message: string | null;
+    enter_dispatched: boolean | null;
+    message_sent?: boolean | null;
+    terminal_confirmed?: boolean | null;
+    terminal_source?: string | null;
+    started_at: string | null;
+    completed_at: string | null;
+  }>;
 }
 
 interface BroadcastExecutionTaskMock {
@@ -250,6 +268,12 @@ interface BroadcastExecutionTaskMock {
   finished_at: string | null;
   cancelled_at: string | null;
   updated_at: string;
+  retry_allowed?: boolean;
+  send_outcome?: 'sent' | 'failed' | 'unknown' | 'skipped' | null;
+  enter_dispatched?: boolean | null;
+  message_sent?: boolean | null;
+  terminal_confirmed?: boolean | null;
+  terminal_source?: string | null;
   attachments?: BroadcastAttachmentMock[];
 }
 
@@ -285,22 +309,15 @@ interface BroadcastExecutionEvidenceMock {
   created_at: string;
 }
 
-interface BroadcastSendConfirmationMock {
-  id: number;
-  execution_task_id: number;
-  token: string;
-  token_hash: string;
-  expires_at: string;
-  used_at: string | null;
-}
-
 interface LangBotApiMockState {
   bots: BotMock[];
+  broadcastExecutorCapability?: Record<string, unknown> | null;
+  broadcastExecutorHealth?: Record<string, unknown> | null;
+  broadcastExecutorHealthDelayMs?: number;
   broadcastDrafts: BroadcastDraftMock[];
   broadcastExecutionAttempts: BroadcastExecutionAttemptMock[];
   broadcastExecutionBatches: BroadcastExecutionBatchMock[];
   broadcastExecutionEvidence: BroadcastExecutionEvidenceMock[];
-  broadcastSendConfirmations: BroadcastSendConfirmationMock[];
   broadcastExecutionTasks: BroadcastExecutionTaskMock[];
   broadcastGroupAttachments: Record<string, BroadcastAttachmentMock[]>;
   broadcastGroupTemplateAssignments: Record<string, number>;
@@ -387,6 +404,17 @@ function now() {
 function nextId(state: LangBotApiMockState, prefix: string) {
   state.counters[prefix] = (state.counters[prefix] || 0) + 1;
   return `${prefix}-${state.counters[prefix]}`;
+}
+
+function tryParseJson(value: unknown) {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return null;
+  }
+  try {
+    return JSON.parse(value) as JsonRecord;
+  } catch {
+    return null;
+  }
 }
 
 function makeGroupKey(importId: number, groupValue: string) {
@@ -1120,14 +1148,228 @@ function syncImportBatchCounts(
   };
 }
 
-function hashToken(token: string) {
-  return `hash:${token}`;
-}
-
 function findExecutionBatch(state: LangBotApiMockState, batchId: number) {
   return (
     state.broadcastExecutionBatches.find((item) => item.id === batchId) || null
   );
+}
+
+function getLatestExecutionAttempt(state: LangBotApiMockState, taskId: number) {
+  return (
+    state.broadcastExecutionAttempts
+      .filter((item) => item.execution_task_id === taskId)
+      .sort((left, right) => left.attempt_no - right.attempt_no)
+      .at(-1) || null
+  );
+}
+
+function getExecutionEvidenceForAttempt(
+  state: LangBotApiMockState,
+  attemptId: number,
+) {
+  return (
+    state.broadcastExecutionEvidence.find(
+      (item) => item.execution_attempt_id === attemptId,
+    ) || null
+  );
+}
+
+function getSendTerminalFlag(
+  payload: JsonRecord,
+  ...keys: string[]
+): boolean | null {
+  for (const key of keys) {
+    if (!(key in payload)) {
+      continue;
+    }
+    const value = payload[key];
+    if (typeof value === 'boolean' || value === null) {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return value !== 0;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (['true', '1', 'yes'].includes(normalized)) {
+        return true;
+      }
+      if (['false', '0', 'no'].includes(normalized)) {
+        return false;
+      }
+    }
+  }
+  return null;
+}
+
+function deriveSendTaskState(
+  state: LangBotApiMockState,
+  task: BroadcastExecutionTaskMock,
+) {
+  const attempt = getLatestExecutionAttempt(state, task.id);
+  const responseSummary = attempt
+    ? tryParseJson(attempt.response_summary)
+    : null;
+  if (task.action !== 'send_message') {
+    const responseStatus = String(responseSummary?.status || '')
+      .trim()
+      .toLowerCase();
+    const resultPayload =
+      responseSummary &&
+      responseSummary.result &&
+      typeof responseSummary.result === 'object'
+        ? (responseSummary.result as JsonRecord)
+        : {};
+    const terminalConfirmedRaw = resultPayload.terminalConfirmed;
+    const terminalConfirmed =
+      typeof terminalConfirmedRaw === 'boolean'
+        ? terminalConfirmedRaw
+        : responseSummary
+          ? [
+              'succeeded',
+              'succeeded_with_warning',
+              'blocked',
+              'failed',
+              'cancelled',
+              'interrupted',
+              'timed_out',
+            ].includes(responseStatus) && responseStatus !== 'unknown'
+          : null;
+    const hasTerminalAttempt = Boolean(responseSummary) || terminalConfirmed === true;
+    return {
+      retry_allowed: task.status === 'failed' || task.status === 'interrupted',
+      send_outcome: null,
+      enter_dispatched: hasTerminalAttempt ? false : null,
+      message_sent: hasTerminalAttempt ? false : null,
+      terminal_confirmed: terminalConfirmed,
+      terminal_source: hasTerminalAttempt
+        ? typeof resultPayload.terminalSource === 'string'
+          ? String(resultPayload.terminalSource)
+          : 'runtime'
+        : null,
+    };
+  }
+  const evidence = attempt
+    ? getExecutionEvidenceForAttempt(state, attempt.id)
+    : null;
+  const technicalDetails =
+    evidence &&
+    evidence.technical_details &&
+    !Array.isArray(evidence.technical_details)
+      ? evidence.technical_details
+      : {};
+  const resultPayload =
+    responseSummary &&
+    responseSummary.result &&
+    typeof responseSummary.result === 'object'
+      ? (responseSummary.result as JsonRecord)
+      : {};
+  let enterDispatched = getSendTerminalFlag(
+    resultPayload,
+    'enterDispatched',
+    'enter_dispatched',
+  );
+  if (enterDispatched === null) {
+    enterDispatched = getSendTerminalFlag(
+      technicalDetails as JsonRecord,
+      'enter_dispatched',
+      'enterDispatched',
+    );
+  }
+  let messageSent = getSendTerminalFlag(
+    resultPayload,
+    'messageSent',
+    'message_sent',
+  );
+  if (messageSent === null) {
+    messageSent = getSendTerminalFlag(
+      technicalDetails as JsonRecord,
+      'message_sent',
+      'messageSent',
+    );
+  }
+  const responseStatus = String(responseSummary?.status || '')
+    .trim()
+    .toLowerCase();
+  const terminalConfirmedRaw = resultPayload.terminalConfirmed;
+  const terminalConfirmed =
+    typeof terminalConfirmedRaw === 'boolean'
+      ? terminalConfirmedRaw
+      : [
+          'succeeded',
+          'succeeded_with_warning',
+          'blocked',
+          'failed',
+          'cancelled',
+          'interrupted',
+          'timed_out',
+        ].includes(responseStatus) && responseStatus !== 'unknown';
+  if (enterDispatched === null && messageSent === true && terminalConfirmed) {
+    enterDispatched = true;
+  }
+  const terminalSource =
+    typeof resultPayload.terminalSource === 'string'
+      ? resultPayload.terminalSource
+      : typeof (technicalDetails as JsonRecord).terminal_source === 'string'
+        ? String((technicalDetails as JsonRecord).terminal_source)
+        : responseSummary
+          ? 'runtime'
+          : null;
+
+  let sendOutcome: 'sent' | 'failed' | 'unknown' | 'skipped';
+  if (task.status === 'succeeded') {
+    sendOutcome = 'sent';
+  } else if (task.status === 'cancelled') {
+    sendOutcome = 'skipped';
+  } else if (
+    task.status === 'interrupted' ||
+    task.status === 'succeeded_with_warning'
+  ) {
+    sendOutcome = 'unknown';
+  } else if (enterDispatched === null || enterDispatched === true) {
+    sendOutcome = 'unknown';
+  } else {
+    sendOutcome = 'failed';
+  }
+
+  const retryAllowed =
+    task.status === 'failed' &&
+    !['', 'queued', 'running'].includes(responseStatus) &&
+    terminalConfirmed === true &&
+    enterDispatched === false &&
+    sendOutcome === 'failed';
+
+  return {
+    retry_allowed: retryAllowed,
+    send_outcome: sendOutcome,
+    enter_dispatched: enterDispatched,
+    message_sent: messageSent,
+    terminal_confirmed: terminalConfirmed,
+    terminal_source: terminalSource,
+  };
+}
+
+function syncTaskDerivedState(
+  state: LangBotApiMockState,
+  task: BroadcastExecutionTaskMock,
+) {
+  const derived = deriveSendTaskState(state, task);
+  task.retry_allowed = derived.retry_allowed;
+  task.send_outcome = derived.send_outcome;
+  task.enter_dispatched = derived.enter_dispatched;
+  task.message_sent = derived.message_sent;
+  task.terminal_confirmed = derived.terminal_confirmed;
+  task.terminal_source = derived.terminal_source;
+  return task;
+}
+
+function serializeExecutionTask(
+  state: LangBotApiMockState,
+  task: BroadcastExecutionTaskMock,
+) {
+  return {
+    ...syncTaskDerivedState(state, task),
+  };
 }
 
 function findExecutionTask(state: LangBotApiMockState, taskId: number) {
@@ -1213,6 +1455,222 @@ function syncExecutionBatchCounts(state: LangBotApiMockState, batchId: number) {
   return batch;
 }
 
+function buildSendBatchSummary(
+  state: LangBotApiMockState,
+  batch: BroadcastExecutionBatchMock,
+) {
+  const tasks = state.broadcastExecutionTasks
+    .filter((item) => item.execution_batch_id === batch.id)
+    .sort((left, right) => left.sequence_no - right.sequence_no);
+  let sentCount = 0;
+  let failedCount = 0;
+  let unknownCount = 0;
+  let skippedCount = 0;
+  const seenTargets = new Set<string>();
+  let duplicateTargetCount = 0;
+  const items = tasks.map((task) => {
+    const target = String(task.target_conversation_snapshot || '').trim();
+    if (target) {
+      if (seenTargets.has(target)) {
+        duplicateTargetCount += 1;
+      } else {
+        seenTargets.add(target);
+      }
+    }
+    const derived = deriveSendTaskState(state, task);
+    const outcome = derived.send_outcome ?? 'failed';
+    if (outcome === 'sent') {
+      sentCount += 1;
+    } else if (outcome === 'failed') {
+      failedCount += 1;
+    } else if (outcome === 'unknown') {
+      unknownCount += 1;
+    } else {
+      skippedCount += 1;
+    }
+    return {
+      draft_id: task.draft_id,
+      outcome,
+      error_code: task.error_code,
+      error_message: task.error_message,
+      enter_dispatched: derived.enter_dispatched,
+      message_sent: derived.message_sent,
+      terminal_confirmed: derived.terminal_confirmed,
+      terminal_source: derived.terminal_source,
+      started_at: task.started_at,
+      completed_at: task.finished_at,
+    };
+  });
+  return {
+    total_count: tasks.length,
+    sent_count: sentCount,
+    failed_count: failedCount,
+    unknown_count: unknownCount,
+    skipped_count: skippedCount,
+    duplicate_target_count: duplicateTargetCount,
+    items,
+  };
+}
+
+function inferSendSimulationOutcome(
+  draft: BroadcastDraftMock,
+): 'sent' | 'failed' | 'unknown' {
+  const haystack = [
+    draft.group_value,
+    draft.target_conversation_name || '',
+    draft.draft_text,
+  ]
+    .join(' ')
+    .toLowerCase();
+  if (
+    haystack.includes('[send:unknown]') ||
+    haystack.includes('__send_unknown__')
+  ) {
+    return 'unknown';
+  }
+  if (
+    haystack.includes('[send:failed]') ||
+    haystack.includes('__send_failed__')
+  ) {
+    return 'failed';
+  }
+  return 'sent';
+}
+
+function simulateSendBatch(
+  state: LangBotApiMockState,
+  batch: BroadcastExecutionBatchMock,
+  tasks: BroadcastExecutionTaskMock[],
+  drafts: BroadcastDraftMock[],
+) {
+  batch.status = 'running';
+  batch.started_at = batch.started_at || now();
+  batch.paused_at = null;
+  const draftById = new Map(drafts.map((draft) => [draft.id, draft] as const));
+  for (const task of tasks) {
+    const draft = draftById.get(task.draft_id ?? -1);
+    if (!draft) {
+      createExecutionAttempt(state, task, {
+        status: 'failed',
+        action: 'send_message',
+        runtime_state: 'failed',
+        send_triggered: false,
+        evidence_summary: 'Draft not found during send simulation',
+        error_code: 'BROADCAST_DRAFT_NOT_FOUND',
+        error_message: 'Draft not found',
+        response_summary: {
+          id: `runtime-${task.id}`,
+          status: 'failed',
+          stage: 'draft_lookup_failed',
+          result: {
+            enterDispatched: false,
+            messageSent: false,
+            terminalConfirmed: true,
+            terminalSource: 'runtime',
+          },
+        },
+        technical_details: {
+          enter_dispatched: false,
+          message_sent: false,
+        },
+      });
+      continue;
+    }
+    const outcome = inferSendSimulationOutcome(draft);
+    if (outcome === 'failed') {
+      createExecutionAttempt(state, task, {
+        status: 'failed',
+        action: 'send_message',
+        runtime_state: 'failed',
+        send_triggered: false,
+        evidence_summary: 'Send failed before pressing Enter',
+        error_code: 'BROADCAST_PRE_SEND_VERIFICATION_FAILED',
+        error_message: 'Unable to verify the prepared message before sending',
+        response_summary: {
+          id: `runtime-${task.id}`,
+          status: 'failed',
+          stage: 'pre_send_verification_failed',
+          result: {
+            enterDispatched: false,
+            messageSent: false,
+            terminalConfirmed: true,
+            terminalSource: 'runtime',
+          },
+        },
+        technical_details: {
+          enter_dispatched: false,
+          message_sent: false,
+        },
+      });
+      draft.send_status = 'pending';
+      draft.sent_at = null;
+      draft.error_message =
+        'Unable to verify the prepared message before sending';
+      draft.updated_at = now();
+      continue;
+    }
+    if (outcome === 'unknown') {
+      createExecutionAttempt(state, task, {
+        status: 'interrupted',
+        action: 'send_message',
+        runtime_state: 'send_result_unknown',
+        send_triggered: true,
+        evidence_summary: 'Enter dispatched but send result requires review',
+        error_code: 'BROADCAST_SEND_RESULT_UNKNOWN',
+        error_message: '发送结果无法确认，请人工检查目标会话。',
+        response_summary: {
+          id: `runtime-${task.id}`,
+          status: 'unknown',
+          stage: 'terminal_state_unknown',
+          errorCode: 'BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN',
+          result: {
+            enterDispatched: null,
+            messageSent: null,
+            terminalConfirmed: false,
+            terminalSource: 'backend_synthetic_unknown',
+          },
+        },
+        technical_details: {
+          message_sent: true,
+          terminal_source: 'backend_synthetic_unknown',
+        },
+      });
+      draft.send_status = 'unknown';
+      draft.sent_at = null;
+      draft.error_message = '发送结果无法确认，请人工检查目标会话。';
+      draft.updated_at = now();
+      continue;
+    }
+    createExecutionAttempt(state, task, {
+      status: 'succeeded',
+      action: 'send_message',
+      runtime_state: 'send_verified',
+      send_triggered: true,
+      evidence_summary: 'Message sent',
+      response_summary: {
+        id: `runtime-${task.id}`,
+        status: 'succeeded',
+        stage: 'message_sent',
+        result: {
+          enterDispatched: true,
+          messageSent: true,
+          terminalConfirmed: true,
+          terminalSource: 'runtime',
+        },
+      },
+      technical_details: {
+        enter_dispatched: true,
+        message_sent: true,
+      },
+    });
+    draft.send_status = 'sent';
+    draft.sent_at = now();
+    draft.error_message = null;
+    draft.updated_at = now();
+  }
+  syncExecutionBatchCounts(state, batch.id);
+}
+
 function createExecutionAttempt(
   state: LangBotApiMockState,
   task: BroadcastExecutionTaskMock,
@@ -1224,6 +1682,8 @@ function createExecutionAttempt(
     evidence_summary: string;
     error_code?: string | null;
     error_message?: string | null;
+    response_summary?: JsonRecord | null;
+    technical_details?: JsonRecord | null;
   },
 ) {
   const timestamp = now();
@@ -1252,7 +1712,9 @@ function createExecutionAttempt(
     request_digest: task.request_digest,
     runtime_task_id: task.runtime_task_id,
     request_summary: JSON.stringify({ action: payload.action }),
-    response_summary: JSON.stringify({ status: payload.status }),
+    response_summary: JSON.stringify(
+      payload.response_summary ?? { status: payload.status },
+    ),
     status: payload.status,
     error_code: payload.error_code || null,
     error_message: payload.error_message || null,
@@ -1279,7 +1741,7 @@ function createExecutionAttempt(
             verification_method: 'windows_uia',
             verification_error_code: payload.error_code || null,
           }
-        : null,
+        : (payload.technical_details ?? null),
     created_at: timestamp,
   };
 
@@ -1293,6 +1755,7 @@ function createExecutionAttempt(
     ),
     evidence,
   ];
+  syncTaskDerivedState(state, task);
 }
 
 function seedBroadcastState(): Pick<
@@ -2860,7 +3323,16 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
           '????????????',
         );
       }
-      const mode = body.mode === 'send' ? 'send' : 'paste_only';
+      const modeValue = String(body.mode || '').trim();
+      if (!['paste_only', 'send'].includes(modeValue)) {
+        return fulfillError(
+          route,
+          400,
+          'BROADCAST_EXECUTION_MODE_INVALID',
+          'Invalid broadcast execution mode',
+        );
+      }
+      const mode = modeValue as 'paste_only' | 'send';
       const allowSentRewrite = Boolean(body.allow_sent_rewrite);
       if (mode === 'paste_only') {
         const sendStatuses = new Set(drafts.map((draft) => draft.send_status));
@@ -2910,6 +3382,47 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
             409,
             'DUPLICATE_TARGET_CONVERSATION',
             'Duplicate target conversations are not allowed in one batch',
+          );
+        }
+      }
+      if (mode === 'send') {
+        if (!state.broadcastSendEnabled) {
+          return fulfillError(
+            route,
+            409,
+            'EXECUTOR_SEND_UNSUPPORTED',
+            'Real send is not available for the current executor',
+          );
+        }
+        if (
+          drafts.some(
+            (draft) =>
+              draft.status === 'invalid' ||
+              !draft.target_conversation_name ||
+              !draft.draft_text.trim(),
+          )
+        ) {
+          return fulfillError(
+            route,
+            400,
+            'BROADCAST_DRAFT_NOT_SENDABLE',
+            'Draft is not ready for real send execution',
+          );
+        }
+        if (drafts.some((draft) => draft.send_status === 'sent')) {
+          return fulfillError(
+            route,
+            400,
+            'BROADCAST_DRAFT_ALREADY_SENT',
+            'Sent drafts cannot be sent again',
+          );
+        }
+        if (drafts.some((draft) => draft.send_status === 'unknown')) {
+          return fulfillError(
+            route,
+            400,
+            'BROADCAST_SEND_RESULT_UNKNOWN_REQUIRES_REVIEW',
+            'Draft send result is still pending manual review',
           );
         }
       }
@@ -2984,9 +3497,13 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
           (item) => !tasks.some((task) => task.id === item.id),
         ),
       ];
+      if (mode === 'send') {
+        simulateSendBatch(state, batch, tasks, drafts);
+      }
       return fulfillJson(route, {
         ...batch,
-        tasks,
+        ...(mode === 'send' ? buildSendBatchSummary(state, batch) : {}),
+        tasks: tasks.map((task) => serializeExecutionTask(state, task)),
       });
     }
   }
@@ -3023,7 +3540,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     );
     return fulfillJson(route, {
       ...batch,
-      tasks,
+      ...(batch.mode === 'send' ? buildSendBatchSummary(state, batch) : {}),
+      tasks: tasks.map((task) => serializeExecutionTask(state, task)),
     });
   }
 
@@ -3108,9 +3626,9 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
 
     return fulfillJson(route, {
       ...batch,
-      tasks: state.broadcastExecutionTasks.filter(
-        (item) => item.execution_batch_id === batchId,
-      ),
+      tasks: state.broadcastExecutionTasks
+        .filter((item) => item.execution_batch_id === batchId)
+        .map((task) => serializeExecutionTask(state, task)),
     });
   }
 
@@ -3141,7 +3659,7 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         '??????????????',
       );
     }
-    return fulfillJson(route, task);
+    return fulfillJson(route, serializeExecutionTask(state, task));
   }
 
   const executionTaskStartMatch = path.match(
@@ -3180,7 +3698,7 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
           : 'Draft written to input',
     });
     syncExecutionBatchCounts(state, batch.id);
-    return fulfillJson(route, task);
+    return fulfillJson(route, serializeExecutionTask(state, task));
   }
 
   const executionTaskRetryMatch = path.match(
@@ -3197,6 +3715,15 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         '??????????????',
       );
     }
+    const taskState = syncTaskDerivedState(state, task);
+    if (task.action === 'send_message' && taskState.retry_allowed !== true) {
+      return fulfillError(
+        route,
+        409,
+        'BROADCAST_RETRY_SEND_RESULT_UNKNOWN',
+        'Current send result cannot be confirmed; only failures confirmed before Enter can be retried',
+      );
+    }
     task.status = 'pending';
     task.error_code = null;
     task.error_message = null;
@@ -3211,135 +3738,13 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       batch.status = 'queued';
       syncExecutionBatchCounts(state, batch.id);
     }
-    return fulfillJson(route, task);
-  }
-
-  const executionTaskSendMatch = path.match(
-    /^\/api\/v1\/broadcast\/execution-tasks\/(\d+)\/send$/,
-  );
-  if (executionTaskSendMatch && method === 'POST') {
-    const taskId = Number(executionTaskSendMatch[1]);
-    const task = findExecutionTask(state, taskId);
-    if (!task) {
-      return fulfillError(
-        route,
-        404,
-        'BROADCAST_EXECUTION_TASK_NOT_FOUND',
-        '??????????????',
-      );
-    }
-    if (!state.broadcastSendEnabled) {
-      return fulfillError(
-        route,
-        409,
-        'BROADCAST_EXECUTION_SEND_DISABLED',
-        'Real send is disabled',
-      );
-    }
-    const body = parseJsonBody(route);
-    const token = String(body.confirmation_token || '');
-    const confirmation = state.broadcastSendConfirmations.find(
-      (item) => item.execution_task_id === taskId && item.token === token,
-    );
-    if (!confirmation) {
-      return fulfillError(
-        route,
-        409,
-        'BROADCAST_EXECUTION_CONFIRMATION_INVALID',
-        'Invalid confirmation token',
-      );
-    }
-    if (confirmation.used_at) {
-      return fulfillError(
-        route,
-        409,
-        'BROADCAST_EXECUTION_CONFIRMATION_INVALID',
-        'Confirmation token already used',
-      );
-    }
-    confirmation.used_at = now();
-    createExecutionAttempt(state, task, {
-      status: 'succeeded',
-      action: 'send_message',
-      runtime_state: 'send_verified',
-      send_triggered: true,
-      evidence_summary: 'Message sent',
-    });
-    syncExecutionBatchCounts(state, task.execution_batch_id);
-    return fulfillJson(route, task);
-  }
-
-  if (path === '/api/v1/broadcast/send-confirmations' && method === 'POST') {
-    const body = parseJsonBody(route);
-    const taskId = Number(body.execution_task_id || 0);
-    const task = findExecutionTask(state, taskId);
-    if (!task) {
-      return fulfillError(
-        route,
-        404,
-        'BROADCAST_EXECUTION_TASK_NOT_FOUND',
-        '??????????????',
-      );
-    }
-    if (!state.broadcastSendEnabled) {
-      return fulfillError(
-        route,
-        409,
-        'BROADCAST_EXECUTION_SEND_DISABLED',
-        'Real send is disabled',
-      );
-    }
-    const confirmationId = Number(
-      nextId(state, 'broadcast-send-confirmation').split('-').pop(),
-    );
-    const token = `confirm-${confirmationId}`;
-    const confirmation: BroadcastSendConfirmationMock = {
-      id: confirmationId,
-      execution_task_id: taskId,
-      token,
-      token_hash: hashToken(token),
-      expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-      used_at: null,
-    };
-    state.broadcastSendConfirmations = [
-      confirmation,
-      ...state.broadcastSendConfirmations.filter(
-        (item) => item.id !== confirmationId,
-      ),
-    ];
-    return fulfillJson(route, {
-      id: confirmation.id,
-      token: confirmation.token,
-      expires_at: confirmation.expires_at,
-      execution_task_id: confirmation.execution_task_id,
-    });
+    return fulfillJson(route, serializeExecutionTask(state, task));
   }
 
   if (path === '/api/v1/broadcast/executors/capabilities' && method === 'GET') {
-    return fulfillJson(route, {
-      channel: 'wxwork_database',
-      supports_paste: true,
-      supports_paste_verification: true,
-      requires_manual_conversation_open: true,
-      conversation_locator: 'keyboard_search',
-      content_verification: 'windows_uia',
-      supports_send: state.broadcastSendEnabled,
-      supports_cancel: true,
-      supports_status_query: true,
-      supports_clipboard_restore: true,
-      supports_evidence: true,
-      executor_version: 'fixture-phase7',
-      runtime_min_version: '1.0.0',
-    });
-  }
-
-  if (path === '/api/v1/broadcast/executors/health' && method === 'GET') {
-    return fulfillJson(route, {
-      channel: 'wxwork_database',
-      status: 'ready',
-      protocol_version: '1.0.0',
-      runtime_version: '1.0.0',
-      capability: {
+    return fulfillJson(
+      route,
+      state.broadcastExecutorCapability ?? {
         channel: 'wxwork_database',
         supports_paste: true,
         supports_paste_verification: true,
@@ -3354,23 +3759,56 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         executor_version: 'fixture-phase7',
         runtime_min_version: '1.0.0',
       },
-      runtime_status: {
-        pasteVerification: {
-          available: true,
-          reason: null,
-          method: 'windows_uia',
-          requiresManualConversationOpen: true,
-          supportedErrorCodes: [
-            'TARGET_WINDOW_CHANGED',
-            'CONVERSATION_MISMATCH',
-            'INPUT_NOT_LOCATED',
-            'PASTE_CONTENT_MISMATCH',
-            'PASTE_VERIFICATION_UNAVAILABLE',
-          ],
+    );
+  }
+
+  if (path === '/api/v1/broadcast/executors/health' && method === 'GET') {
+    if ((state.broadcastExecutorHealthDelayMs ?? 0) > 0) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, state.broadcastExecutorHealthDelayMs),
+      );
+    }
+    return fulfillJson(
+      route,
+      state.broadcastExecutorHealth ?? {
+        available: true,
+        channel: 'wxwork_database',
+        status: 'ready',
+        protocol_version: '1.0.0',
+        runtime_version: '1.0.0',
+        capability: {
+          channel: 'wxwork_database',
+          supports_paste: true,
+          supports_paste_verification: true,
+          requires_manual_conversation_open: true,
+          conversation_locator: 'keyboard_search',
+          content_verification: 'windows_uia',
+          supports_send: state.broadcastSendEnabled,
+          supports_cancel: true,
+          supports_status_query: true,
+          supports_clipboard_restore: true,
+          supports_evidence: true,
+          executor_version: 'fixture-phase7',
+          runtime_min_version: '1.0.0',
         },
-        runtimeAutoSendEnabled: state.broadcastSendEnabled,
+        runtime_status: {
+          pasteVerification: {
+            available: true,
+            reason: null,
+            method: 'windows_uia',
+            requiresManualConversationOpen: true,
+            supportedErrorCodes: [
+              'TARGET_WINDOW_CHANGED',
+              'CONVERSATION_MISMATCH',
+              'INPUT_NOT_LOCATED',
+              'PASTE_CONTENT_MISMATCH',
+              'PASTE_VERIFICATION_UNAVAILABLE',
+            ],
+          },
+          runtimeAutoSendEnabled: state.broadcastSendEnabled,
+        },
       },
-    });
+    );
   }
 
   const executionAttemptDetailMatch = path.match(
@@ -3497,7 +3935,11 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
         if (item.status === 'invalid') {
           return false;
         }
-      } else if (status === 'pending' || status === 'sent') {
+      } else if (
+        status === 'pending' ||
+        status === 'sent' ||
+        status === 'unknown'
+      ) {
         if (item.status === 'invalid' || item.send_status !== status) {
           return false;
         }
@@ -3575,11 +4017,15 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
           'Mixed send status selection is not allowed',
         );
       }
-      const expectedSource = status === 'sent' ? 'pending' : 'sent';
+      const expectedSources =
+        status === 'sent'
+          ? new Set(['pending', 'unknown'])
+          : new Set(['sent', 'unknown']);
       if (
         selectedDrafts.some(
           (draft) =>
-            draft.status === 'invalid' || draft.send_status !== expectedSource,
+            draft.status === 'invalid' ||
+            !expectedSources.has(draft.send_status),
         )
       ) {
         return fulfillError(
@@ -4089,6 +4535,9 @@ export async function installLangBotApiMocks(
     storage?: JsonRecord;
     bots?: InstallLangBotApiMockBot[];
     broadcastSendEnabled?: boolean;
+    broadcastExecutorCapability?: Record<string, unknown>;
+    broadcastExecutorHealth?: Record<string, unknown>;
+    broadcastExecutorHealthDelayMs?: number;
   } = {},
 ) {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
@@ -4097,6 +4546,9 @@ export async function installLangBotApiMocks(
     storage = {},
     bots = [],
     broadcastSendEnabled = false,
+    broadcastExecutorCapability,
+    broadcastExecutorHealth,
+    broadcastExecutorHealthDelayMs = 0,
   } = options;
   const broadcastSeed = seedBroadcastState();
   const state: LangBotApiMockState = {
@@ -4112,11 +4564,13 @@ export async function installLangBotApiMocks(
       adapter_runtime_values: bot.adapter_runtime_values || {},
       updated_at: bot.updated_at || now(),
     })),
+    broadcastExecutorCapability: broadcastExecutorCapability ?? null,
+    broadcastExecutorHealth: broadcastExecutorHealth ?? null,
+    broadcastExecutorHealthDelayMs,
     broadcastDrafts: [],
     broadcastExecutionAttempts: [],
     broadcastExecutionBatches: [],
     broadcastExecutionEvidence: [],
-    broadcastSendConfirmations: [],
     broadcastExecutionTasks: [],
     broadcastGroupAttachments: {},
     broadcastGroupTemplateAssignments: {},
@@ -4133,7 +4587,6 @@ export async function installLangBotApiMocks(
       'broadcast-execution-task': 0,
       'broadcast-execution-attempt': 0,
       'broadcast-execution-evidence': 0,
-      'broadcast-send-confirmation': 0,
       'broadcast-attachment': 0,
       'broadcast-attachment-asset': 0,
       'broadcast-template': broadcastSeed.broadcastTemplates.length,

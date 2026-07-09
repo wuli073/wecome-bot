@@ -1618,6 +1618,36 @@ class BroadcastRepository:
         )
         return self._first_model(result)
 
+    async def get_active_send_task_for_draft(
+        self,
+        draft_id: int,
+        *,
+        bot_uuid: str,
+        connector_id: str,
+        conn=None,
+    ):
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_broadcast.BroadcastExecutionTask)
+            .join(
+                persistence_broadcast.BroadcastExecutionBatch,
+                persistence_broadcast.BroadcastExecutionBatch.id
+                == persistence_broadcast.BroadcastExecutionTask.execution_batch_id,
+            )
+            .where(
+                persistence_broadcast.BroadcastExecutionTask.draft_id == draft_id,
+                persistence_broadcast.BroadcastExecutionTask.action == 'send_message',
+                persistence_broadcast.BroadcastExecutionTask.status.in_(('pending', 'running')),
+                persistence_broadcast.BroadcastExecutionBatch.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastExecutionBatch.connector_id == connector_id,
+            )
+            .order_by(
+                persistence_broadcast.BroadcastExecutionTask.id.desc(),
+            )
+            .limit(1),
+            conn=conn,
+        )
+        return self._first_model(result)
+
     async def update_execution_task(
         self,
         execution_task_id: int,
@@ -1898,43 +1928,76 @@ class BroadcastRepository:
             status = 'partially_failed'
 
         summary.pop('succeeded_with_warning_tasks', None)
+        has_active_tasks = summary['pending_tasks'] > 0 or summary['running_tasks'] > 0
+        finished_candidates = [
+            getattr(task, 'finished_at', None)
+            for task in tasks
+            if getattr(task, 'finished_at', None) is not None
+        ]
+        if has_active_tasks:
+            finished_at = None
+        elif batch is not None and getattr(batch, 'finished_at', None) is not None:
+            finished_at = getattr(batch, 'finished_at', None)
+        else:
+            finished_at = max(finished_candidates) if finished_candidates else sqlalchemy.func.now()
+
+        error_message = None
+        if not has_active_tasks:
+            interrupted_task = next(
+                (
+                    task
+                    for task in tasks
+                    if str(getattr(task, 'status', '') or '') == 'interrupted'
+                ),
+                None,
+            )
+            failed_task = next(
+                (
+                    task
+                    for task in tasks
+                    if str(getattr(task, 'status', '') or '') == 'failed'
+                ),
+                None,
+            )
+            cancelled_task = next(
+                (
+                    task
+                    for task in tasks
+                    if str(getattr(task, 'status', '') or '') == 'cancelled'
+                ),
+                None,
+            )
+            if interrupted_task is not None:
+                error_message = (
+                    str(getattr(interrupted_task, 'error_message', '') or '').strip()
+                    or str(getattr(interrupted_task, 'error_code', '') or '').strip()
+                    or 'Execution result requires manual review'
+                )
+            elif failed_task is not None:
+                error_message = (
+                    str(getattr(failed_task, 'error_message', '') or '').strip()
+                    or str(getattr(failed_task, 'error_code', '') or '').strip()
+                    or 'Execution failed'
+                )
+            elif cancelled_task is not None and status == 'cancelled':
+                error_message = (
+                    str(getattr(cancelled_task, 'error_message', '') or '').strip()
+                    or str(getattr(cancelled_task, 'error_code', '') or '').strip()
+                    or 'Execution cancelled'
+                )
 
         return await self.update_execution_batch(
             execution_batch_id,
             bot_uuid=bot_uuid,
             connector_id=connector_id,
-            updates={**summary, 'status': status},
+            updates={
+                **summary,
+                'status': status,
+                'finished_at': finished_at,
+                'error_message': error_message,
+            },
             conn=conn,
         )
-
-    async def create_send_confirmation(self, conn, payload: dict[str, Any]) -> int:
-        result = await self.persistence_mgr.execute_async(
-            sqlalchemy.insert(persistence_broadcast.BroadcastSendConfirmation).values(payload),
-            conn=conn,
-        )
-        return int(result.inserted_primary_key[0])
-
-    async def get_send_confirmation(self, confirmation_id: int, *, bot_uuid: str, connector_id: str, conn=None):
-        result = await self.persistence_mgr.execute_async(
-            sqlalchemy.select(persistence_broadcast.BroadcastSendConfirmation)
-            .join(
-                persistence_broadcast.BroadcastExecutionTask,
-                persistence_broadcast.BroadcastExecutionTask.id
-                == persistence_broadcast.BroadcastSendConfirmation.execution_task_id,
-            )
-            .join(
-                persistence_broadcast.BroadcastExecutionBatch,
-                persistence_broadcast.BroadcastExecutionBatch.id
-                == persistence_broadcast.BroadcastExecutionTask.execution_batch_id,
-            )
-            .where(
-                persistence_broadcast.BroadcastSendConfirmation.id == confirmation_id,
-                persistence_broadcast.BroadcastExecutionBatch.bot_uuid == bot_uuid,
-                persistence_broadcast.BroadcastExecutionBatch.connector_id == connector_id,
-            ),
-            conn=conn,
-        )
-        return self._first_model(result)
 
     async def get_execution_attempt_by_runtime_task_id(
         self,
@@ -1964,73 +2027,6 @@ class BroadcastRepository:
             conn=conn,
         )
         return self._first_model(result)
-
-    async def get_send_confirmation_by_hash(
-        self,
-        confirmation_token_hash: str,
-        *,
-        bot_uuid: str,
-        connector_id: str,
-        conn=None,
-    ):
-        result = await self.persistence_mgr.execute_async(
-            sqlalchemy.select(persistence_broadcast.BroadcastSendConfirmation)
-            .join(
-                persistence_broadcast.BroadcastExecutionTask,
-                persistence_broadcast.BroadcastExecutionTask.id
-                == persistence_broadcast.BroadcastSendConfirmation.execution_task_id,
-            )
-            .join(
-                persistence_broadcast.BroadcastExecutionBatch,
-                persistence_broadcast.BroadcastExecutionBatch.id
-                == persistence_broadcast.BroadcastExecutionTask.execution_batch_id,
-            )
-            .where(
-                persistence_broadcast.BroadcastSendConfirmation.confirmation_token_hash == confirmation_token_hash,
-                persistence_broadcast.BroadcastExecutionBatch.bot_uuid == bot_uuid,
-                persistence_broadcast.BroadcastExecutionBatch.connector_id == connector_id,
-            ),
-            conn=conn,
-        )
-        return self._first_model(result)
-
-    async def update_send_confirmation(
-        self,
-        confirmation_id: int,
-        *,
-        bot_uuid: str,
-        connector_id: str,
-        updates: dict[str, Any],
-        conn=None,
-    ):
-        result = await self.persistence_mgr.execute_async(
-            sqlalchemy.update(persistence_broadcast.BroadcastSendConfirmation)
-            .where(
-                persistence_broadcast.BroadcastSendConfirmation.id == confirmation_id,
-                persistence_broadcast.BroadcastSendConfirmation.execution_task_id.in_(
-                    sqlalchemy.select(persistence_broadcast.BroadcastExecutionTask.id)
-                    .join(
-                        persistence_broadcast.BroadcastExecutionBatch,
-                        persistence_broadcast.BroadcastExecutionBatch.id
-                        == persistence_broadcast.BroadcastExecutionTask.execution_batch_id,
-                    )
-                    .where(
-                        persistence_broadcast.BroadcastExecutionBatch.bot_uuid == bot_uuid,
-                        persistence_broadcast.BroadcastExecutionBatch.connector_id == connector_id,
-                    )
-                ),
-            )
-            .values(updates),
-            conn=conn,
-        )
-        if not result.rowcount:
-            return None
-        return await self.get_send_confirmation(
-            confirmation_id,
-            bot_uuid=bot_uuid,
-            connector_id=connector_id,
-            conn=conn,
-        )
 
     async def get_execution_task_scope(self, execution_task_id: int, *, conn=None) -> dict[str, Any] | None:
         result = await self.persistence_mgr.execute_async(

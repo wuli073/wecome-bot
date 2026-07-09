@@ -9,15 +9,17 @@ import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 import psutil
 
+from ..broadcast.send_gate import resolve_broadcast_send_gate
 from .client import DesktopRuntimeClient
 from .errors import (
     DesktopAutomationError,
     RPA_RUNTIME_NOT_AVAILABLE,
     RUNTIME_DISABLED,
+    RUNTIME_OWNERSHIP_CONFLICT,
     RUNTIME_PROTOCOL_MISMATCH,
     RUNTIME_START_FAILED,
     RUNTIME_UNAVAILABLE,
@@ -145,8 +147,17 @@ def apply_local_desktop_automation_defaults(config: dict[str, Any] | None) -> di
 
 
 class DesktopRuntimeProcessManager:
-    def __init__(self, *, config: dict[str, Any], runtime_root=None, spawn_runtime=None, client_factory=None) -> None:
+    def __init__(
+        self,
+        *,
+        config: dict[str, Any],
+        broadcast_config: dict[str, Any] | None = None,
+        runtime_root=None,
+        spawn_runtime=None,
+        client_factory=None,
+    ) -> None:
         self.config = apply_local_desktop_automation_defaults(config)
+        self.broadcast_config = dict(broadcast_config or {})
         self.runtime_root = Path(runtime_root or Path(__file__).resolve().parents[4])
         self.spawn_runtime = spawn_runtime or self._spawn_runtime
         self.client_factory = client_factory or self._build_client
@@ -188,12 +199,30 @@ class DesktopRuntimeProcessManager:
                 logger.info('Reusing desktop runtime: %s', str(target_runtime))
                 return dict(self.runtime_info)
 
+            conflict = self._find_unmanaged_runtime_conflict(target_runtime)
+            if conflict is not None:
+                raise DesktopAutomationError(
+                    RUNTIME_OWNERSHIP_CONFLICT,
+                    '检测到独立运行的 Desktop Runtime。请关闭该进程，或使用启动器的显式恢复参数后重试。',
+                    details=conflict,
+                )
+
             self._replace_stale_runtime_processes(target_runtime)
 
             logger.info('Selected desktop runtime: %s', str(target_runtime))
             token = secrets.token_urlsafe(48)
             env = dict(os.environ)
+            send_gate = self._resolve_send_gate(env=env)
+            env['LANGBOT_RPA_MANAGED'] = '1'
             env['LANGBOT_RPA_TOKEN'] = token
+            env.update(send_gate.to_runtime_environment())
+            env['LANGBOT_RPA_ALLOW_AUTO_SEND'] = '1' if send_gate.send_enabled else '0'
+            env['LANGBOT_RPA_FORCE_DISABLE_SEND'] = '0' if send_gate.send_enabled else '1'
+            logger.info(
+                'Desktop runtime broadcast send gate: broadcast_send_enabled=%s allowed_connector_count=%s',
+                send_gate.send_enabled,
+                send_gate.allowed_connector_count,
+            )
 
             try:
                 self.process = await self.spawn_runtime(target_runtime, env=env, cwd=target_runtime.parent)
@@ -260,6 +289,7 @@ class DesktopRuntimeProcessManager:
         return None
 
     async def get_status(self) -> dict[str, Any]:
+        send_gate = self._resolve_send_gate()
         if not bool(self.config.get('enabled')):
             return {
                 'status': 'disabled',
@@ -268,6 +298,8 @@ class DesktopRuntimeProcessManager:
                 'runtime_startable': False,
                 'runtime_reachable': False,
                 'send_enabled': False,
+                'allowed_connector_count': send_gate.allowed_connector_count,
+                'send_error_code': send_gate.error_code,
             }
 
         runtime_executable = resolve_runtime_executable_path(
@@ -282,6 +314,8 @@ class DesktopRuntimeProcessManager:
                 'runtime_startable': False,
                 'runtime_reachable': False,
                 'send_enabled': False,
+                'allowed_connector_count': send_gate.allowed_connector_count,
+                'send_error_code': send_gate.error_code,
             }
 
         if self.client is None or self.runtime_info is None:
@@ -295,6 +329,8 @@ class DesktopRuntimeProcessManager:
                     'runtime_startable': True,
                     'runtime_reachable': False,
                     'send_enabled': False,
+                    'allowed_connector_count': send_gate.allowed_connector_count,
+                    'send_error_code': send_gate.error_code,
                 }
             except Exception:
                 return {
@@ -304,6 +340,8 @@ class DesktopRuntimeProcessManager:
                     'runtime_startable': True,
                     'runtime_reachable': False,
                     'send_enabled': False,
+                    'allowed_connector_count': send_gate.allowed_connector_count,
+                    'send_error_code': send_gate.error_code,
                 }
 
         try:
@@ -317,6 +355,8 @@ class DesktopRuntimeProcessManager:
                 'runtime_startable': True,
                 'runtime_reachable': False,
                 'send_enabled': False,
+                'allowed_connector_count': send_gate.allowed_connector_count,
+                'send_error_code': send_gate.error_code,
             }
 
         return {
@@ -328,12 +368,22 @@ class DesktopRuntimeProcessManager:
             'runtime_configured': True,
             'runtime_startable': True,
             'runtime_reachable': True,
-            'send_enabled': False,
+            'send_enabled': bool(status_payload.get('sendEnabled', send_gate.send_enabled)),
+            'allowed_connector_count': int(
+                status_payload.get('allowedConnectorCount', send_gate.allowed_connector_count)
+            ),
+            'send_error_code': status_payload.get('sendErrorCode', send_gate.error_code),
             'windowingAvailable': status_payload.get('windowingAvailable'),
             'captureAvailable': status_payload.get('captureAvailable'),
             'inputAvailable': status_payload.get('inputAvailable'),
             'providerHubReady': status_payload.get('providerHubReady'),
         }
+
+    def _resolve_send_gate(self, *, env: Mapping[str, Any] | None = None):
+        return resolve_broadcast_send_gate(
+            broadcast_config=self.broadcast_config,
+            env=env or os.environ,
+        )
 
     def _build_client(self, runtime_info: dict[str, Any]) -> DesktopRuntimeClient:
         return DesktopRuntimeClient(
@@ -381,6 +431,26 @@ class DesktopRuntimeProcessManager:
             self._manager_session_id,
         )
 
+    def _find_unmanaged_runtime_conflict(self, target_runtime: Path) -> dict[str, Any] | None:
+        normalized_target = _normalize_path(target_runtime)
+        if normalized_target is None:
+            return None
+
+        owned_snapshot = self._build_owned_snapshot()
+        for process in self._iter_runtime_processes():
+            executable_path = self._get_process_executable_path(process)
+            if executable_path is None or not self._is_project_runtime_path(executable_path):
+                continue
+            if self._is_owned_runtime_process(process, executable_path, owned_snapshot):
+                continue
+            build_timestamp = executable_path.parent.parent.name
+            return {
+                'pid': int(getattr(process, 'pid')),
+                'executable_path': str(executable_path),
+                'build_timestamp': build_timestamp,
+            }
+        return None
+
     def _iter_runtime_processes(self):
         for process in psutil.process_iter():
             try:
@@ -424,6 +494,18 @@ class DesktopRuntimeProcessManager:
         if build_dir.parent != _official_runtime_root(self.runtime_root):
             return False
         return _OFFICIAL_RUNTIME_BUILD_DIR_PATTERN.match(build_dir.name) is not None
+
+    def _is_owned_runtime_process(self, process, executable_path: Path, snapshot: OwnedRuntimeSnapshot | None) -> bool:
+        if snapshot is None or snapshot.pid is None or snapshot.process_create_time is None:
+            return False
+        if int(getattr(process, 'pid', -1)) != int(snapshot.pid):
+            return False
+        if snapshot.selected_runtime_executable is not None and executable_path != snapshot.selected_runtime_executable:
+            return False
+        actual_create_time = self._safe_get_process_create_time(process)
+        if actual_create_time is None:
+            return False
+        return abs(actual_create_time - float(snapshot.process_create_time)) <= 2
 
     def _terminate_psutil_tree(self, process) -> None:
         try:

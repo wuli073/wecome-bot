@@ -224,6 +224,7 @@ class BuildAppStage(stage.BootingStage):
         desktop_automation_repository = DesktopAutomationRepository(ap.persistence_mgr)
         desktop_automation_runtime_process_manager = DesktopRuntimeProcessManager(
             config=desktop_automation_config,
+            broadcast_config=ap.instance_config.data.get('broadcast', {}),
         )
         ap.desktop_automation_service = DesktopAutomationService(
             ap,

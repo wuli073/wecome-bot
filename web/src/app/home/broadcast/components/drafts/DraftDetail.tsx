@@ -1,6 +1,16 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import {
   Card,
   CardContent,
@@ -22,6 +32,8 @@ interface DraftDetailProps {
   canPasteDraft?: boolean;
   pasteDisabledReason?: string | null;
   pasteHint?: string | null;
+  canSendDraft?: boolean;
+  sendDisabledReason?: string | null;
   onStartEdit: (draft: BroadcastDraft) => void;
   onDraftEditorTextChange: (value: string) => void;
   onSaveDraft: () => void;
@@ -29,6 +41,7 @@ interface DraftDetailProps {
   onMarkSent: () => void;
   onRestorePending: () => void;
   onPasteDraft: () => void;
+  onSendDraft: () => void;
   onUploadAttachments: (files: File[]) => void;
   onDeleteAttachment: (attachmentId: number) => void;
 }
@@ -41,6 +54,8 @@ export default function DraftDetail({
   canPasteDraft = true,
   pasteDisabledReason = null,
   pasteHint = null,
+  canSendDraft = false,
+  sendDisabledReason = null,
   onStartEdit,
   onDraftEditorTextChange,
   onSaveDraft,
@@ -48,11 +63,15 @@ export default function DraftDetail({
   onMarkSent,
   onRestorePending,
   onPasteDraft,
+  onSendDraft,
   onUploadAttachments,
   onDeleteAttachment,
 }: DraftDetailProps) {
   const { t } = useTranslation();
   const attachmentUploadRef = useRef<HTMLInputElement | null>(null);
+  const [sendDialogOpen, setSendDialogOpen] = useState(false);
+  const [restorePendingRiskDialogOpen, setRestorePendingRiskDialogOpen] =
+    useState(false);
 
   const isEditing = draft != null && editingDraftId === draft.id;
 
@@ -67,8 +86,14 @@ export default function DraftDetail({
   }
 
   const isSent = draft.status === 'sent';
+  const isUnknown = draft.status === 'unknown';
   const pasteDisabled =
     !canPasteDraft ||
+    !draft.conversationName.trim() ||
+    !draft.draftText.trim() ||
+    busy;
+  const sendDisabled =
+    !canSendDraft ||
     !draft.conversationName.trim() ||
     !draft.draftText.trim() ||
     busy;
@@ -84,7 +109,9 @@ export default function DraftDetail({
           <Badge variant="outline">
             {isSent
               ? t('broadcast.drafts.statusSent')
-              : t('broadcast.drafts.statusPending')}
+              : isUnknown
+                ? t('broadcast.drafts.statusUnknown')
+                : t('broadcast.drafts.statusPending')}
           </Badge>
         </div>
       </CardHeader>
@@ -161,6 +188,16 @@ export default function DraftDetail({
               : t('broadcast.drafts.pasteToInput')}
           </Button>
 
+          <Button
+            data-testid="broadcast-draft-send-button"
+            variant="destructive"
+            onClick={() => setSendDialogOpen(true)}
+            disabled={sendDisabled}
+            title={sendDisabled ? (sendDisabledReason ?? undefined) : undefined}
+          >
+            {t('broadcast.drafts.realSend')}
+          </Button>
+
           {isSent ? (
             <Button
               data-testid="broadcast-draft-restore-pending-button"
@@ -170,6 +207,25 @@ export default function DraftDetail({
             >
               {t('broadcast.drafts.restorePending')}
             </Button>
+          ) : isUnknown ? (
+            <>
+              <Button
+                data-testid="broadcast-draft-mark-sent-button"
+                variant="outline"
+                onClick={onMarkSent}
+                disabled={busy}
+              >
+                {t('broadcast.drafts.markSent')}
+              </Button>
+              <Button
+                data-testid="broadcast-draft-restore-pending-button"
+                variant="outline"
+                onClick={() => setRestorePendingRiskDialogOpen(true)}
+                disabled={busy}
+              >
+                {t('broadcast.drafts.restorePending')}
+              </Button>
+            </>
           ) : (
             <Button
               data-testid="broadcast-draft-mark-sent-button"
@@ -190,6 +246,11 @@ export default function DraftDetail({
 
         {pasteHint ? (
           <div className="text-sm text-muted-foreground">{pasteHint}</div>
+        ) : null}
+        {sendDisabled && sendDisabledReason ? (
+          <div className="text-sm text-muted-foreground">
+            {sendDisabledReason}
+          </div>
         ) : null}
 
         <div className="space-y-2">
@@ -269,6 +330,83 @@ export default function DraftDetail({
           </div>
         </div>
       </CardContent>
+      <AlertDialog open={sendDialogOpen} onOpenChange={setSendDialogOpen}>
+        <AlertDialogContent data-testid="broadcast-draft-send-confirm-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('broadcast.drafts.sendDialogTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('broadcast.drafts.sendDialogDescription')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid gap-2 rounded-lg border bg-muted/20 p-3 text-sm">
+            <div>
+              {t('broadcast.drafts.sendDialogCustomer', {
+                customer: draft.customerName,
+              })}
+            </div>
+            <div>
+              {t('broadcast.drafts.sendDialogConversation', {
+                conversation: draft.conversationName,
+              })}
+            </div>
+            <div>
+              {t('broadcast.drafts.sendDialogAttachmentCount', {
+                count: draft.attachments?.length ?? 0,
+              })}
+            </div>
+          </div>
+          <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+            {t('broadcast.drafts.sendWarning')}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="broadcast-draft-send-cancel-button">
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="broadcast-draft-send-confirm-button"
+              onClick={(event) => {
+                event.preventDefault();
+                onSendDraft();
+                setSendDialogOpen(false);
+              }}
+            >
+              {t('broadcast.drafts.confirmSendAction')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={restorePendingRiskDialogOpen}
+        onOpenChange={setRestorePendingRiskDialogOpen}
+      >
+        <AlertDialogContent data-testid="broadcast-draft-restore-pending-risk-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('broadcast.drafts.restorePendingRiskTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('broadcast.drafts.restorePendingRiskDescription')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="broadcast-draft-restore-pending-risk-cancel-button">
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="broadcast-draft-restore-pending-risk-confirm-button"
+              onClick={(event) => {
+                event.preventDefault();
+                onRestorePending();
+                setRestorePendingRiskDialogOpen(false);
+              }}
+            >
+              {t('broadcast.drafts.restorePending')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

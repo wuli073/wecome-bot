@@ -70,16 +70,22 @@ class BroadcastRuntimeGateway:
         message_text: str,
         idempotency_key: str,
         request_digest: str,
-        confirmation_token: str,
+        attachment_root: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         request = {
-            'action': 'send_message',
+            'action': 'send_draft',
             'conversationName': conversation_name,
-            'messageText': message_text,
+            'draftText': message_text,
             'idempotencyKey': idempotency_key,
             'requestDigest': request_digest,
-            'confirmationToken': confirmation_token,
+            'attachments': attachments or [],
+            'sendAuthorized': True,
+            'allowAutoSend': True,
+            'sendStrategy': 'enter',
         }
+        if attachment_root:
+            request['attachmentRoot'] = attachment_root
         if hasattr(self.runtime_provider, 'runtime_create_task'):
             return await self.runtime_provider.runtime_create_task(request)
         client = self._get_direct_client()

@@ -11,11 +11,13 @@ import pytest
 import sqlalchemy
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
+from langbot.pkg.desktop_automation.errors import DesktopAutomationError
 from langbot.pkg.entity.persistence import bot as persistence_bot
 from langbot.pkg.entity.persistence import broadcast as persistence_broadcast
 from langbot.pkg.entity.persistence import database_mode as persistence_database_mode
 from langbot.pkg.broadcast.errors import (
     BATCH_VALIDATION_FAILED,
+    BROADCAST_RETRY_SEND_RESULT_UNKNOWN,
     BROADCAST_GROUP_NAME_NOT_FOUND,
     BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED,
     BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID,
@@ -783,6 +785,721 @@ async def _prepare_ready_draft_for_execution(service) -> dict[str, object]:
     return await _prepare_ready_drafts_for_execution(service)
 
 
+async def _create_send_execution_record(
+    service,
+    persistence_mgr,
+    *,
+    task_status: str,
+    response_summary: dict[str, object] | None,
+    technical_details: dict[str, object] | None = None,
+    send_triggered: bool = False,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> tuple[int, int]:
+    repository = service.repository
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id = await repository.create_execution_batch(
+            conn,
+            {
+                **_scope(),
+                'channel': 'wxwork_database',
+                'mode': 'send',
+                'status': 'running',
+                'total_tasks': 1,
+                'pending_tasks': 0,
+                'running_tasks': 1,
+                'succeeded_tasks': 0,
+                'failed_tasks': 0,
+                'cancelled_tasks': 0,
+                'interrupted_tasks': 0,
+                'created_by': 'tester@example.com',
+                'last_action_by': 'tester@example.com',
+                'error_message': None,
+                'version': 1,
+            },
+        )
+        task_id = await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': batch_id,
+                'draft_id': None,
+                'draft_text_snapshot': 'Hello Acme',
+                'target_conversation_snapshot': 'Acme Group',
+                'channel': 'wxwork_database',
+                'action': 'send_message',
+                'status': task_status,
+                'sequence_no': 1,
+                'attempt_count': 1,
+                'max_attempts': 3,
+                'idempotency_key': f'broadcast:{batch_id}:1',
+                'request_digest': 'fixture-digest',
+                'runtime_task_id': 'runtime-fixture',
+                'error_code': error_code,
+                'error_message': error_message,
+                'operator_note': None,
+                'finished_at': sqlalchemy.func.now(),
+            },
+        )
+        attempt_id = await repository.create_execution_attempt(
+            conn,
+            {
+                'execution_task_id': task_id,
+                'attempt_no': 1,
+                'idempotency_key': f'broadcast:{task_id}:1',
+                'request_digest': 'fixture-digest',
+                'runtime_task_id': 'runtime-fixture',
+                'request_summary': json.dumps({'action': 'send_message'}, ensure_ascii=False),
+                'response_summary': json.dumps(response_summary, ensure_ascii=False)
+                if response_summary is not None
+                else None,
+                'status': task_status,
+                'error_code': error_code,
+                'error_message': error_message,
+                'finished_at': sqlalchemy.func.now(),
+            },
+        )
+        await repository.create_execution_evidence(
+            conn,
+            {
+                'execution_attempt_id': attempt_id,
+                'window_title': 'Enterprise WeChat',
+                'target_conversation': 'Acme Group',
+                'action': 'send_message',
+                'input_located': True,
+                'draft_written': True,
+                'send_triggered': send_triggered,
+                'clipboard_restored': True,
+                'runtime_state': str((response_summary or {}).get('status') or task_status),
+                'evidence_summary': 'fixture',
+                'technical_details': json.dumps(technical_details, ensure_ascii=False)
+                if technical_details is not None
+                else None,
+            },
+        )
+        await repository.recompute_execution_batch_counts(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+    return batch_id, task_id
+
+
+async def _create_paste_execution_record(
+    service,
+    persistence_mgr,
+) -> tuple[int, int]:
+    repository = service.repository
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id = await repository.create_execution_batch(
+            conn,
+            {
+                **_scope(),
+                'channel': 'wxwork_database',
+                'mode': 'paste_only',
+                'status': 'completed',
+                'total_tasks': 1,
+                'pending_tasks': 0,
+                'running_tasks': 0,
+                'succeeded_tasks': 1,
+                'failed_tasks': 0,
+                'cancelled_tasks': 0,
+                'interrupted_tasks': 0,
+                'created_by': 'tester@example.com',
+                'last_action_by': 'tester@example.com',
+                'error_message': None,
+                'version': 1,
+            },
+        )
+        task_id = await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': batch_id,
+                'draft_id': None,
+                'draft_text_snapshot': 'Hello Acme',
+                'target_conversation_snapshot': 'Acme Group',
+                'channel': 'wxwork_database',
+                'action': 'paste_draft',
+                'status': 'succeeded_with_warning',
+                'sequence_no': 1,
+                'attempt_count': 1,
+                'max_attempts': 1,
+                'idempotency_key': f'broadcast:{batch_id}:1',
+                'request_digest': 'fixture-paste-digest',
+                'runtime_task_id': 'runtime-paste-fixture',
+                'error_code': None,
+                'error_message': None,
+                'operator_note': None,
+                'finished_at': sqlalchemy.func.now(),
+            },
+        )
+        attempt_id = await repository.create_execution_attempt(
+            conn,
+            {
+                'execution_task_id': task_id,
+                'attempt_no': 1,
+                'idempotency_key': f'broadcast:{task_id}:1',
+                'request_digest': 'fixture-paste-digest',
+                'runtime_task_id': 'runtime-paste-fixture',
+                'request_summary': json.dumps({'action': 'paste_draft'}, ensure_ascii=False),
+                'response_summary': json.dumps(
+                    {
+                        'id': 'runtime-paste-fixture',
+                        'status': 'succeeded_with_warning',
+                        'stage': 'text_pasted_unverified',
+                        'result': {
+                            'messageSent': False,
+                            'sendTriggered': False,
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                'status': 'succeeded_with_warning',
+                'error_code': None,
+                'error_message': None,
+                'finished_at': sqlalchemy.func.now(),
+            },
+        )
+        await repository.create_execution_evidence(
+            conn,
+            {
+                'execution_attempt_id': attempt_id,
+                'window_title': 'Enterprise WeChat',
+                'target_conversation': 'Acme Group',
+                'action': 'paste_draft',
+                'input_located': True,
+                'draft_written': True,
+                'send_triggered': False,
+                'clipboard_restored': True,
+                'runtime_state': 'text_pasted_unverified',
+                'evidence_summary': '已粘贴，未发送',
+                'technical_details': json.dumps(
+                    {
+                        'warning': 'PASTE_RESULT_NOT_VERIFIED',
+                        'message_sent': False,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        )
+        await repository.recompute_execution_batch_counts(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+    return batch_id, task_id
+
+
+async def test_create_send_batch_executes_and_marks_draft_sent(service_fixture, monkeypatch):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ENABLED', '1')
+    monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS', 'wxwork-local')
+
+    class _SendRuntimeClient:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, object]] = []
+
+        async def health(self):
+            return {'status': 'ready', 'protocolVersion': '1'}
+
+        async def capabilities(self):
+            return {'supportsPaste': True, 'supportsSend': True}
+
+        async def create_task(self, *, request: dict[str, object]):
+            self.requests.append(request)
+            return {
+                'id': f"runtime-send-{len(self.requests)}",
+                'status': 'succeeded',
+                'stage': 'message_sent',
+                'result': {
+                    'messageSent': True,
+                    'clipboardRestoreFailed': False,
+                    'contentVerified': True,
+                    'draftWritten': True,
+                    'inputLocated': True,
+                    'sendKeyCount': 1,
+                },
+            }
+
+    runtime_client = _SendRuntimeClient()
+    service.ap.desktop_automation_service = SimpleNamespace(runtime_client=runtime_client)
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'send',
+            'operator': 'tester@example.com',
+        },
+    )
+
+    assert batch['mode'] == 'send'
+    assert batch['status'] == 'completed'
+    assert batch['sent_count'] == 1
+    assert batch['failed_count'] == 0
+    assert batch['unknown_count'] == 0
+    assert batch['duplicate_target_count'] == 0
+    assert batch['items'][0]['draft_id'] == draft['id']
+    assert batch['items'][0]['outcome'] == 'sent'
+    assert batch['items'][0]['enter_dispatched'] is True
+
+    refreshed = await service.get_draft_detail(draft['id'], _scope())
+    assert refreshed['send_status'] == 'sent'
+    assert runtime_client.requests == [
+        {
+            'action': 'send_draft',
+            'conversationName': draft['conversation_name'],
+            'draftText': draft['draft_text'],
+            'idempotencyKey': 'broadcast:1:1',
+            'requestDigest': hashlib.sha256(
+                f"send_message\0wxwork_database\0{draft['conversation_name']}\0{draft['draft_text']}".encode('utf-8')
+            ).hexdigest(),
+            'attachments': [],
+            'sendAuthorized': True,
+            'allowAutoSend': True,
+            'sendStrategy': 'enter',
+        }
+    ]
+
+
+async def test_create_send_batch_marks_unknown_after_enter_and_blocks_resend(service_fixture, monkeypatch):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ENABLED', '1')
+    monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS', 'wxwork-local')
+
+    class _UnknownSendRuntimeClient:
+        async def health(self):
+            return {'status': 'ready', 'protocolVersion': '1'}
+
+        async def capabilities(self):
+            return {'supportsPaste': True, 'supportsSend': True}
+
+        async def create_task(self, *, request: dict[str, object]):
+            return {
+                'id': 'runtime-send-unknown',
+                'status': 'failed',
+                'stage': 'post_send_verification_failed',
+                'errorCode': 'POST_SEND_VERIFICATION_FAILED',
+                'result': {
+                    'outcome': 'unknown',
+                    'messageSent': True,
+                    'postSendVerified': False,
+                    'verificationResult': 'not_confirmed',
+                    'clipboardRestoreFailed': False,
+                    'contentVerified': True,
+                    'draftWritten': True,
+                    'inputLocated': True,
+                    'sendKeyCount': 1,
+                },
+            }
+
+    service.ap.desktop_automation_service = SimpleNamespace(
+        runtime_client=_UnknownSendRuntimeClient()
+    )
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'send',
+            'operator': 'tester@example.com',
+        },
+    )
+
+    assert batch['unknown_count'] == 1
+    assert batch['items'][0]['outcome'] == 'unknown'
+    assert batch['items'][0]['enter_dispatched'] is True
+    assert batch['items'][0]['message_sent'] is None
+    assert batch['items'][0]['terminal_confirmed'] is False
+    assert batch['tasks'][0]['retry_allowed'] is False
+
+    refreshed = await service.get_draft_detail(draft['id'], _scope())
+    assert refreshed['send_status'] == 'unknown'
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.create_execution_batch(
+            _scope(),
+            {
+                'draft_ids': [draft['id']],
+                'mode': 'send',
+                'operator': 'tester@example.com',
+            },
+        )
+    assert exc_info.value.code == 'BROADCAST_SEND_RESULT_UNKNOWN_REQUIRES_REVIEW'
+    with pytest.raises(BroadcastError) as retry_error:
+        await service.retry_execution_task(
+            batch['tasks'][0]['id'],
+            _scope(),
+            {'operator': 'tester@example.com'},
+        )
+    assert retry_error.value.code == BROADCAST_RETRY_SEND_RESULT_UNKNOWN
+
+
+async def test_create_send_batch_waits_for_terminal_failed_task(service_fixture, monkeypatch):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ENABLED', '1')
+    monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS', 'wxwork-local')
+
+    class _TerminalFailedRuntimeClient:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, object]] = []
+            self.get_task_calls: list[str] = []
+
+        async def health(self):
+            return {'status': 'ready', 'protocolVersion': '1'}
+
+        async def capabilities(self):
+            return {'supportsPaste': True, 'supportsSend': True}
+
+        async def create_task(self, *, request: dict[str, object]):
+            self.requests.append(request)
+            return {
+                'id': 'runtime-send-terminal-failed',
+                'status': 'running',
+                'stage': 'body_paste',
+                'result': {
+                    'messageSent': False,
+                },
+            }
+
+        async def get_task(self, runtime_task_id: str):
+            self.get_task_calls.append(runtime_task_id)
+            return {
+                'id': runtime_task_id,
+                'status': 'failed',
+                'stage': 'input_focus',
+                'errorCode': 'INPUT_NOT_LOCATED',
+                'errorMessage': 'Message input box could not be located',
+                'result': {
+                    'messageSent': False,
+                    'enterDispatched': False,
+                    'draftWritten': False,
+                    'inputLocated': False,
+                    'windowTitle': 'Enterprise WeChat',
+                },
+            }
+
+        async def cancel_task(self, runtime_task_id: str):
+            raise AssertionError('send task should not be cancelled after a terminal poll result')
+
+    runtime_client = _TerminalFailedRuntimeClient()
+    service.ap.desktop_automation_service = SimpleNamespace(runtime_client=runtime_client)
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'send',
+            'operator': 'tester@example.com',
+        },
+    )
+
+    assert runtime_client.get_task_calls == ['runtime-send-terminal-failed']
+    assert batch['status'] == 'failed'
+    assert batch['finished_at'] is not None
+    assert batch['error_message'] == 'Message input box could not be located'
+    assert batch['items'][0]['outcome'] == 'failed'
+    assert batch['items'][0]['error_code'] == 'INPUT_NOT_LOCATED'
+    assert batch['items'][0]['enter_dispatched'] is False
+    assert batch['items'][0]['message_sent'] is False
+    assert batch['items'][0]['terminal_confirmed'] is True
+    assert batch['tasks'][0]['runtime_task_id'] == 'runtime-send-terminal-failed'
+    assert batch['tasks'][0]['error_code'] == 'INPUT_NOT_LOCATED'
+    assert batch['tasks'][0]['error_message'] == 'Message input box could not be located'
+    assert batch['tasks'][0]['retry_allowed'] is True
+
+    refreshed = await service.get_draft_detail(draft['id'], _scope())
+    assert refreshed['send_status'] == 'pending'
+    assert refreshed['error_message'] == 'Message input box could not be located'
+
+    attempts = await service.list_execution_attempts(batch['tasks'][0]['id'], _scope())
+    assert len(attempts) == 1
+    response_summary = json.loads(attempts[0]['response_summary'])
+    assert response_summary['status'] == 'failed'
+    assert response_summary['stage'] == 'input_focus'
+    assert response_summary['errorCode'] == 'INPUT_NOT_LOCATED'
+
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+    assert evidence['runtime_state'] == 'input_focus'
+    assert json.loads(evidence['technical_details'])['stage'] == 'input_focus'
+
+    retried = await service.retry_execution_task(
+        batch['tasks'][0]['id'],
+        _scope(),
+        {'operator': 'retrier@example.com'},
+    )
+    assert retried['status'] == 'pending'
+    batch_after_retry = await service.get_execution_batch_detail(batch['id'], _scope())
+    assert batch_after_retry['status'] == 'queued'
+    assert batch_after_retry['finished_at'] is None
+
+
+async def test_create_send_batch_waits_for_terminal_success_task(service_fixture, monkeypatch):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ENABLED', '1')
+    monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS', 'wxwork-local')
+
+    class _TerminalSucceededRuntimeClient:
+        def __init__(self) -> None:
+            self.get_task_calls: list[str] = []
+
+        async def health(self):
+            return {'status': 'ready', 'protocolVersion': '1'}
+
+        async def capabilities(self):
+            return {'supportsPaste': True, 'supportsSend': True}
+
+        async def create_task(self, *, request: dict[str, object]):
+            return {
+                'id': 'runtime-send-terminal-succeeded',
+                'status': 'running',
+                'stage': 'pre_send_verify',
+                'result': {
+                    'messageSent': False,
+                },
+            }
+
+        async def get_task(self, runtime_task_id: str):
+            self.get_task_calls.append(runtime_task_id)
+            return {
+                'id': runtime_task_id,
+                'status': 'succeeded',
+                'stage': 'message_sent',
+                'result': {
+                    'messageSent': True,
+                    'enterDispatched': True,
+                    'draftWritten': True,
+                    'inputLocated': True,
+                    'sendKeyCount': 1,
+                    'windowTitle': 'Enterprise WeChat',
+                },
+            }
+
+        async def cancel_task(self, runtime_task_id: str):
+            raise AssertionError('successful terminal task should not be cancelled')
+
+    runtime_client = _TerminalSucceededRuntimeClient()
+    service.ap.desktop_automation_service = SimpleNamespace(runtime_client=runtime_client)
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'send',
+            'operator': 'tester@example.com',
+        },
+    )
+
+    assert runtime_client.get_task_calls == ['runtime-send-terminal-succeeded']
+    assert batch['status'] == 'completed'
+    assert batch['sent_count'] == 1
+    assert batch['unknown_count'] == 0
+    assert batch['items'][0]['outcome'] == 'sent'
+    assert batch['items'][0]['enter_dispatched'] is True
+
+    refreshed = await service.get_draft_detail(draft['id'], _scope())
+    assert refreshed['send_status'] == 'sent'
+
+    attempts = await service.list_execution_attempts(batch['tasks'][0]['id'], _scope())
+    response_summary = json.loads(attempts[0]['response_summary'])
+    assert response_summary['status'] == 'succeeded'
+    assert response_summary['stage'] == 'message_sent'
+
+
+async def test_create_send_batch_marks_unknown_when_terminal_state_cannot_be_confirmed(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ENABLED', '1')
+    monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS', 'wxwork-local')
+
+    service.ap.instance_config.data.setdefault('desktop_automation', {})['task_timeout_seconds'] = 5
+
+    class _UnconfirmedTerminalRuntimeClient:
+        def __init__(self) -> None:
+            self.get_task_calls: list[str] = []
+            self.cancel_task_calls: list[str] = []
+
+        async def health(self):
+            return {'status': 'ready', 'protocolVersion': '1'}
+
+        async def capabilities(self):
+            return {'supportsPaste': True, 'supportsSend': True}
+
+        async def create_task(self, *, request: dict[str, object]):
+            return {
+                'id': 'runtime-send-terminal-unknown',
+                'status': 'running',
+                'stage': 'body_paste',
+                'result': {
+                    'messageSent': False,
+                },
+            }
+
+        async def get_task(self, runtime_task_id: str):
+            self.get_task_calls.append(runtime_task_id)
+            raise RuntimeError('runtime disconnected')
+
+        async def cancel_task(self, runtime_task_id: str):
+            self.cancel_task_calls.append(runtime_task_id)
+            raise RuntimeError('cancel unavailable')
+
+    runtime_client = _UnconfirmedTerminalRuntimeClient()
+    service.ap.desktop_automation_service = SimpleNamespace(runtime_client=runtime_client)
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'send',
+            'operator': 'tester@example.com',
+        },
+    )
+
+    assert runtime_client.get_task_calls == ['runtime-send-terminal-unknown']
+    assert runtime_client.cancel_task_calls == ['runtime-send-terminal-unknown']
+    assert batch['status'] == 'interrupted'
+    assert batch['unknown_count'] == 1
+    assert batch['failed_count'] == 0
+    assert batch['finished_at'] is not None
+    assert batch['error_message'] is not None
+    assert batch['items'][0]['outcome'] == 'unknown'
+    assert batch['items'][0]['error_code'] == 'BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN'
+    assert batch['items'][0]['enter_dispatched'] is None
+    assert batch['items'][0]['terminal_confirmed'] is False
+    assert batch['items'][0]['terminal_source'] == 'backend_synthetic_unknown'
+
+    refreshed = await service.get_draft_detail(draft['id'], _scope())
+    assert refreshed['send_status'] == 'unknown'
+
+    attempts = await service.list_execution_attempts(batch['tasks'][0]['id'], _scope())
+    response_summary = json.loads(attempts[0]['response_summary'])
+    assert response_summary['status'] == 'unknown'
+    assert response_summary['errorCode'] == 'BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN'
+    assert response_summary['result']['enterDispatched'] is None
+    assert response_summary['result']['messageSent'] is None
+    assert response_summary['result']['terminalConfirmed'] is False
+    assert response_summary['result']['terminalSource'] == 'backend_synthetic_unknown'
+
+
+async def test_retry_send_task_rejects_historical_running_snapshot(service_fixture):
+    service, persistence_mgr = service_fixture
+    batch_id, task_id = await _create_send_execution_record(
+        service,
+        persistence_mgr,
+        task_status='failed',
+        response_summary={
+            'id': 'runtime-historical',
+            'status': 'running',
+            'stage': 'post_send_verification',
+        },
+        technical_details={'send_triggered': False},
+        send_triggered=False,
+        error_code='BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN',
+        error_message='historical running snapshot',
+    )
+
+    detail = await service.get_execution_batch_detail(batch_id, _scope())
+    assert detail['items'][0]['outcome'] == 'unknown'
+    assert detail['items'][0]['enter_dispatched'] is None
+    assert detail['tasks'][0]['retry_allowed'] is False
+    assert detail['tasks'][0]['send_outcome'] == 'unknown'
+
+    with pytest.raises(BroadcastError) as retry_error:
+        await service.retry_execution_task(
+            task_id,
+            _scope(),
+            {'operator': 'tester@example.com'},
+        )
+    assert retry_error.value.code == BROADCAST_RETRY_SEND_RESULT_UNKNOWN
+
+
+async def test_paste_task_detail_reports_not_sent_terminal_flags(service_fixture):
+    service, persistence_mgr = service_fixture
+    batch_id, task_id = await _create_paste_execution_record(service, persistence_mgr)
+
+    detail = await service.get_execution_batch_detail(batch_id, _scope())
+    assert detail['tasks'][0]['id'] == task_id
+    assert detail['tasks'][0]['action'] == 'paste_draft'
+    assert detail['tasks'][0]['retry_allowed'] is False
+    assert detail['tasks'][0]['enter_dispatched'] is False
+    assert detail['tasks'][0]['message_sent'] is False
+    assert detail['tasks'][0]['terminal_confirmed'] is True
+    assert detail['tasks'][0]['terminal_source'] == 'runtime'
+
+
+async def test_create_send_batch_allows_duplicate_target_conversations_and_keeps_order(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ENABLED', '1')
+    monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS', 'wxwork-local')
+
+    class _OrderedSendRuntimeClient:
+        def __init__(self) -> None:
+            self.requests: list[str] = []
+
+        async def health(self):
+            return {'status': 'ready', 'protocolVersion': '1'}
+
+        async def capabilities(self):
+            return {'supportsPaste': True, 'supportsSend': True}
+
+        async def create_task(self, *, request: dict[str, object]):
+            self.requests.append(str(request['conversationName']))
+            return {
+                'id': f"runtime-send-{len(self.requests)}",
+                'status': 'succeeded',
+                'stage': 'message_sent',
+                'result': {
+                    'messageSent': True,
+                    'clipboardRestoreFailed': False,
+                    'contentVerified': True,
+                    'draftWritten': True,
+                    'inputLocated': True,
+                    'sendKeyCount': 1,
+                },
+            }
+
+    runtime_client = _OrderedSendRuntimeClient()
+    service.ap.desktop_automation_service = SimpleNamespace(runtime_client=runtime_client)
+    prepared = await _prepare_ready_drafts_for_execution(
+        service,
+        draft_specs=[('Acme', 'Shared Group'), ('Bravo', 'Shared Group')],
+    )
+    drafts = prepared['drafts']
+
+    batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [drafts[0]['id'], drafts[1]['id']],
+            'mode': 'send',
+            'operator': 'tester@example.com',
+        },
+    )
+
+    assert batch['total_count'] == 2
+    assert batch['sent_count'] == 2
+    assert batch['duplicate_target_count'] == 1
+    assert [item['draft_id'] for item in batch['items']] == [
+        drafts[0]['id'],
+        drafts[1]['id'],
+    ]
+    assert runtime_client.requests == ['Shared Group', 'Shared Group']
+
 async def test_render_template_requires_exactly_one_of_template_id_or_content(service_fixture):
     service, _ = service_fixture
 
@@ -894,6 +1611,35 @@ async def test_resolve_persisted_batch_group_field_raises_when_legacy_fallback_i
         )
 
     assert exc_info.value.code == BROADCAST_IMPORT_GROUP_FIELD_UNRESOLVABLE
+
+
+async def test_get_executor_health_preserves_runtime_error_code_and_message(service_fixture):
+    service, _ = service_fixture
+
+    class _FailingDesktopAutomationService:
+        runtime_client = None
+
+        async def runtime_health(self):
+            raise DesktopAutomationError(
+                'RUNTIME_OWNERSHIP_CONFLICT',
+                '检测到独立运行的 Desktop Runtime。',
+            )
+
+        async def runtime_capabilities(self):
+            raise AssertionError('runtime_capabilities should not be called when health fails')
+
+    service.ap.desktop_automation_service = _FailingDesktopAutomationService()
+
+    health = await service.get_executor_health({
+        'bot_uuid': 'bot-1',
+        'connector_id': 'wxwork-local',
+    })
+
+    assert health['available'] is False
+    assert health['status'] == 'unavailable'
+    assert health['error_code'] == 'RUNTIME_OWNERSHIP_CONFLICT'
+    assert health['error_message'] == '检测到独立运行的 Desktop Runtime。'
+    assert health['runtime_status'] is None
 
 
 async def test_resolve_upload_group_field_maps_confirmation_required_to_object_details_with_filename(

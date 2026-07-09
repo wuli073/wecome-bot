@@ -109,6 +109,137 @@ Describe 'start-local core helpers' {
         $command.Environment.PYTHONPATH | Should Be (Join-Path $repoRoot 'src')
         ($command.Environment.ContainsKey('LANGBOT_RPA_TOKEN')) | Should Be $false
     }
+
+    It 'recognizes only current repo official runtime executable paths for recovery' {
+        Test-Path -LiteralPath $scriptPath | Should Be $true
+        . $scriptPath
+
+        $validPath = Join-Path $repoRoot 'apps\desktop-rpa-runtime\dist-phase2-official\2026-07-08T00-00-00-000Z\win-unpacked\LangBot Desktop RPA Runtime.exe'
+        $outsidePath = 'D:\OtherRepo\apps\desktop-rpa-runtime\dist-phase2-official\2026-07-08T00-00-00-000Z\win-unpacked\LangBot Desktop RPA Runtime.exe'
+        $legacyPath = Join-Path $repoRoot 'apps\desktop-rpa-runtime\dist-phase2-official\win-unpacked\LangBot Desktop RPA Runtime.exe'
+        $wrongName = Join-Path $repoRoot 'apps\desktop-rpa-runtime\dist-phase2-official\2026-07-08T00-00-00-000Z\win-unpacked\Other.exe'
+
+        (Test-OfficialRuntimeExecutablePath -ExecutablePath $validPath -RepoRoot $repoRoot) | Should Be $true
+        (Test-OfficialRuntimeExecutablePath -ExecutablePath $outsidePath -RepoRoot $repoRoot) | Should Be $false
+        (Test-OfficialRuntimeExecutablePath -ExecutablePath $legacyPath -RepoRoot $repoRoot) | Should Be $false
+        (Test-OfficialRuntimeExecutablePath -ExecutablePath $wrongName -RepoRoot $repoRoot) | Should Be $false
+    }
+}
+
+Describe 'start-local broadcast send configuration' {
+    It 'keeps broadcast send disabled by default in backend launch command' {
+        Test-Path -LiteralPath $scriptPath | Should Be $true
+        . $scriptPath
+
+        $command = New-BackendCommand -RepoRoot $repoRoot -SessionId 'session-default-broadcast' -ShutdownRequestPath 'C:\tmp\shutdown.request.json'
+
+        $command.Environment.LANGBOT_BROADCAST_SEND_ENABLED | Should Be '0'
+        $command.Environment.LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS | Should Be ''
+        $command.BroadcastSend.enabled | Should Be $false
+        $command.BroadcastSend.allowedConnectorCount | Should Be 0
+    }
+
+    It 'enables broadcast send with an explicit connector allowlist' {
+        Test-Path -LiteralPath $scriptPath | Should Be $true
+        . $scriptPath
+
+        $script:EnableBroadcastSend = $true
+        $script:BroadcastSendAllowConnectors = @(' wxwork-local ', 'wechat-local', 'wxwork-local', '')
+
+        $command = New-BackendCommand -RepoRoot $repoRoot -SessionId 'session-enabled-broadcast' -ShutdownRequestPath 'C:\tmp\shutdown.request.json'
+
+        $command.Environment.LANGBOT_BROADCAST_SEND_ENABLED | Should Be '1'
+        $command.Environment.LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS | Should Be 'wxwork-local,wechat-local'
+        $command.BroadcastSend.enabled | Should Be $true
+        $command.BroadcastSend.allowedConnectorCount | Should Be 2
+    }
+
+    It 'fails when broadcast send is enabled without an allowlist' {
+        Test-Path -LiteralPath $scriptPath | Should Be $true
+        . $scriptPath
+
+        { Resolve-BroadcastSendConfiguration -Enabled $true -AllowConnectors @() } | Should Throw 'When enabling real send, specify at least one Connector ID via -BroadcastSendAllowConnectors.'
+    }
+
+    It 'normalizes connector allowlist by trimming removing empties and deduplicating' {
+        Test-Path -LiteralPath $scriptPath | Should Be $true
+        . $scriptPath
+
+        $config = Resolve-BroadcastSendConfiguration -Enabled $true -AllowConnectors @(' wxwork-local ', '', 'wechat-local', 'wxwork-local', '   ')
+
+        $config.Environment.LANGBOT_BROADCAST_SEND_ENABLED | Should Be '1'
+        $config.Environment.LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS | Should Be 'wxwork-local,wechat-local'
+        $config.Summary.enabled | Should Be $true
+        $config.Summary.allowedConnectorCount | Should Be 2
+    }
+
+    It 'rejects wildcard connector allowlist entries' {
+        Test-Path -LiteralPath $scriptPath | Should Be $true
+        . $scriptPath
+
+        { Resolve-BroadcastSendConfiguration -Enabled $true -AllowConnectors @('*') } | Should Throw 'Connector ID must not contain the wildcard *.'
+    }
+
+    It 'reports broadcast send summary in dry-run output' {
+        Test-Path -LiteralPath $scriptPath | Should Be $true
+        . $scriptPath
+
+        $script:DryRun = $true
+        $script:EnableBroadcastSend = $true
+        $script:BroadcastSendAllowConnectors = @('wxwork-local')
+        try {
+            $summary = New-StartDryRunSummary -WebModeValue 'Bundled'
+
+            $summary.broadcastSend.enabled | Should Be $true
+            $summary.broadcastSend.allowedConnectorCount | Should Be 1
+            $summary.backend.environment.LANGBOT_BROADCAST_SEND_ENABLED | Should Be '1'
+            $summary.backend.environment.LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS | Should Be 'wxwork-local'
+        }
+        finally {
+            $script:DryRun = $false
+            $script:EnableBroadcastSend = $false
+            $script:BroadcastSendAllowConnectors = @()
+        }
+    }
+
+    It 'status remains broadcast-send disabled by default when no launcher state exists' {
+        Test-Path -LiteralPath $scriptPath | Should Be $true
+        . $scriptPath
+
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('start-local-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tmpRoot | Out-Null
+        try {
+            $script:StackRoot = $tmpRoot
+            $script:ControlDir = Join-Path $script:StackRoot 'control'
+            $script:LogsDir = Join-Path $script:StackRoot 'logs'
+            $script:StatePath = Join-Path $script:StackRoot 'state.json'
+            $script:ShutdownRequestPath = Join-Path $script:ControlDir 'shutdown.request.json'
+
+            $status = Get-StackStatus -RequestedWebMode 'Bundled'
+
+            $status.broadcastSend.enabled | Should Be $false
+            $status.broadcastSend.allowedConnectorCount | Should Be 0
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'stop dry run does not enable broadcast send' {
+        Test-Path -LiteralPath $scriptPath | Should Be $true
+        . $scriptPath
+
+        $script:DryRun = $true
+        try {
+            $result = Stop-BackendStack -RequestedWebMode 'Bundled'
+
+            $result.broadcastSend.enabled | Should Be $false
+            $result.broadcastSend.allowedConnectorCount | Should Be 0
+        }
+        finally {
+            $script:DryRun = $false
+        }
+    }
 }
 
 Describe 'start-local lifecycle flows' {
@@ -259,6 +390,68 @@ Describe 'start-local lifecycle flows' {
 
         $content | Should Match '%\*'
         $content | Should Match 'start-local\.ps1'
+    }
+}
+
+Describe 'start-local runtime recovery guard' {
+    It 'default start refuses unmanaged runtime before backend spawn' {
+        Test-Path -LiteralPath $scriptPath | Should Be $true
+        . $scriptPath
+
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('start-local-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tmpRoot | Out-Null
+        try {
+            $script:StackRoot = $tmpRoot
+            $script:ControlDir = Join-Path $script:StackRoot 'control'
+            $script:LogsDir = Join-Path $script:StackRoot 'logs'
+            $script:StatePath = Join-Path $script:StackRoot 'state.json'
+            $script:ShutdownRequestPath = Join-Path $script:ControlDir 'shutdown.request.json'
+
+            Mock Assert-BundledFrontendReady { 'ok' }
+            Mock Resolve-ApiConfiguration { [pscustomobject]@{ Host='127.0.0.1'; Port=5302; BaseUrl='http://127.0.0.1:5302'; HealthUrl='http://127.0.0.1:5302/healthz'; ConfigPath='config.yaml' } }
+            Mock Get-StackStatus { [ordered]@{ status = 'stopped'; ownership = 'none' } }
+            Mock Read-JsonFile { $null }
+            Mock Assert-PortAvailableOrOwned { }
+            Mock Test-TcpPortListening { $false }
+            Mock Assert-NoUnmanagedOfficialRuntime { throw "RUNTIME_OWNERSHIP_CONFLICT`nPID: 6101`nPath: $repoRoot\apps\desktop-rpa-runtime\dist-phase2-official\2026-07-08T00-00-00-000Z\win-unpacked\LangBot Desktop RPA Runtime.exe" }
+            Mock Start-ManagedProcess { throw 'must not spawn backend' }
+
+            { Start-BackendStack -WebModeValue 'Bundled' } | Should Throw 'RUNTIME_OWNERSHIP_CONFLICT'
+            Assert-MockCalled Assert-NoUnmanagedOfficialRuntime -Times 1 -Exactly
+            Assert-MockCalled Start-ManagedProcess -Times 0 -Exactly
+        }
+        finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'recover mode stops unmanaged runtime tree before backend spawn' {
+        Test-Path -LiteralPath $scriptPath | Should Be $true
+        . $scriptPath
+
+        $validPath = Join-Path $repoRoot 'apps\desktop-rpa-runtime\dist-phase2-official\2026-07-08T00-00-00-000Z\win-unpacked\LangBot Desktop RPA Runtime.exe'
+        $script:stoppedRuntimePids = @()
+
+        Mock Get-RepoOfficialRuntimeProcesses {
+            @(
+                [pscustomobject]@{
+                    pid = 6101
+                    parentProcessId = 0
+                    executablePath = $validPath
+                    buildTimestamp = '2026-07-08T00-00-00-000Z'
+                }
+            )
+        }
+        Mock Stop-OfficialRuntimeProcessTree {
+            param($RuntimeProcess)
+            $script:stoppedRuntimePids += [int]$RuntimeProcess.pid
+            $true
+        }
+
+        Assert-NoUnmanagedOfficialRuntime -RepoRoot $repoRoot -Recover
+
+        $script:stoppedRuntimePids | Should Be @(6101)
+        Assert-MockCalled Stop-OfficialRuntimeProcessTree -Times 1 -Exactly
     }
 }
 
@@ -440,6 +633,7 @@ Describe 'start-local sequencing and rollback guards' {
             Mock Remove-StaleShutdownRequest { }
             Mock Write-LauncherDiagnostics { }
             Mock New-WebDevCommand { [pscustomobject]@{ FilePath='cmd.exe'; ArgumentList=@('/d','/s','/c','call "C:\pnpm.cmd" --dir "C:\repo\web" dev'); WorkingDirectory=$repoRoot; Environment=@{ VITE_API_BASE_URL='http://127.0.0.1:5302' }; WebPath=(Join-Path $repoRoot 'web'); PnpmCmdPath='C:\pnpm.cmd' } }
+            Mock Assert-NoUnmanagedOfficialRuntime { }
 
             $result = Start-BackendStack -WebModeValue 'Dev'
 

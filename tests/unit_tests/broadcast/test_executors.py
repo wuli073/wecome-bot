@@ -42,7 +42,7 @@ class _FakeGateway:
             'id': 'runtime-task-2',
             'status': 'succeeded',
             'stage': 'message_sent',
-            'action': 'send_message',
+            'action': 'send_draft',
             'result': {'messageSent': True, 'clipboardRestoreFailed': False},
         }
 
@@ -60,8 +60,10 @@ async def test_wecom_executor_exposes_capabilities_and_normalizes_paste_evidence
     capability = executor.validate_capability('paste_draft')
 
     assert capability['supports_paste'] is True
-    assert capability['supports_send'] is False
+    assert capability['supports_send'] is True
     assert capability['supports_paste_verification'] is False
+    assert capability['supports_attachment_send'] is True
+    assert capability['supports_post_send_verification'] is True
     assert capability['requires_manual_conversation_open'] is False
 
     result = await executor.paste_draft(
@@ -91,7 +93,15 @@ async def test_wecom_executor_supports_isolated_send_message_path():
         message_text='Hello Acme',
         idempotency_key='broadcast:1:2',
         request_digest='digest-2',
-        confirmation_token='confirm-123',
+        attachment_root='C:/runtime/broadcast_attachments',
+        attachments=[
+            {
+                'relativePath': 'bot-1/drafts/1/quote.pdf',
+                'filename': 'quote.pdf',
+                'size': 8,
+                'sha256': 'digest-quote',
+            }
+        ],
     )
     evidence = executor.normalize_evidence(result)
 
@@ -103,7 +113,15 @@ async def test_wecom_executor_supports_isolated_send_message_path():
                 'message_text': 'Hello Acme',
                 'idempotency_key': 'broadcast:1:2',
                 'request_digest': 'digest-2',
-                'confirmation_token': 'confirm-123',
+                'attachment_root': 'C:/runtime/broadcast_attachments',
+                'attachments': [
+                    {
+                        'relativePath': 'bot-1/drafts/1/quote.pdf',
+                        'filename': 'quote.pdf',
+                        'size': 8,
+                        'sha256': 'digest-quote',
+                    }
+                ],
             },
         )
     ]
