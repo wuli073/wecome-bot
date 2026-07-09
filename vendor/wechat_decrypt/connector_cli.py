@@ -8,10 +8,14 @@ import connector_errors as errors
 import connector_runtime
 
 
+SUPPORTED_CONNECTORS = ('wechat', 'wxwork')
+SUPPORTED_ACTIONS = ('detect', 'extract-key', 'decrypt')
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Non-interactive connector CLI")
-    parser.add_argument("connector", choices=["wechat", "wxwork"])
-    parser.add_argument("action", choices=["detect", "extract-key", "decrypt"])
+    parser.add_argument("connector", choices=SUPPORTED_CONNECTORS)
+    parser.add_argument("action", choices=SUPPORTED_ACTIONS)
     parser.add_argument("--runtime-dir")
     parser.add_argument("--json", action="store_true", dest="as_json")
     return parser
