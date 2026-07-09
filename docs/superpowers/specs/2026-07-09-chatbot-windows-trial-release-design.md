@@ -148,19 +148,29 @@ Responsibilities:
 2. Validate packaged installation completeness.
 3. Initialize user directories.
 4. Materialize runtime environment variables.
-5. Start the backend with hidden window and redirected logs.
-6. Wait for backend health.
-7. Start the packaged RPA runtime.
-8. Open the browser after backend readiness.
-9. Expose tray actions:
+5. Validate the packaged Desktop RPA Runtime path and pass it to the backend.
+6. Start the backend with hidden window and redirected logs.
+7. Wait for backend health.
+8. Observe Desktop RPA Runtime readiness through the backend runtime-status API instead of starting RPA directly.
+9. Open the browser after backend readiness.
+10. Expose tray actions:
    - open Chatbot
    - view status
    - restart
    - export diagnostics
    - exit
-10. Stop only launcher-owned processes.
-11. Write launcher state to `%LOCALAPPDATA%\\Chatbot\\runtime\\launcher-state.json`.
-12. Surface user-friendly errors while keeping stack traces in logs only.
+11. Request graceful backend shutdown and let the backend terminate its owned RPA runtime.
+12. After backend shutdown timeout, stop only launcher-owned backend process trees whose identity is confirmed.
+13. Write launcher state to `%LOCALAPPDATA%\\Chatbot\\runtime\\launcher-state.json`.
+14. Surface user-friendly errors while keeping stack traces in logs only.
+
+The launcher does not start the Desktop RPA Runtime directly, does not manage RPA sessions directly, does not inject send permissions into RPA, and does not terminate the RPA process independently of the backend lifecycle.
+
+Packaged shutdown order is:
+
+1. launcher requests graceful backend shutdown
+2. backend stops its owned Desktop RPA Runtime
+3. after timeout, launcher only handles identity-confirmed backend process trees
 
 ### 2. Backend runtime
 
@@ -202,7 +212,11 @@ The packaged runtime must not scan:
 
 ### 4. RPA runtime
 
-The Electron runtime must be assembled from a deterministic `win-unpacked` output copied wholesale into the release tree. The launcher starts it by a fixed executable path passed through environment/configuration.
+The Electron runtime must be assembled from a deterministic `win-unpacked` output copied wholesale into the release tree. The launcher validates the packaged runtime path and passes it to the backend through packaged startup configuration. The backend remains the sole lifecycle owner of the Desktop RPA Runtime in packaged mode.
+
+The launcher observes runtime readiness through:
+
+- `GET /api/v1/desktop-automation/runtime/status`
 
 ### 5. Installer
 
@@ -267,6 +281,47 @@ Approved port strategy:
 4. the launcher does not silently allocate random fallback ports
 5. on conflict, it shows a clear user-facing error and writes detailed diagnostics to logs/diagnostic bundle
 
+Recommended packaged `launcher.json` structure:
+
+```json
+{
+  "schemaVersion": 1,
+  "backend": {
+    "host": "127.0.0.1",
+    "port": 5302,
+    "healthPath": "/healthz",
+    "runtimeStatusPath": "/api/v1/desktop-automation/runtime/status",
+    "startupTimeoutSeconds": 60
+  }
+}
+```
+
+Packaged-mode port rules:
+
+1. the launcher reads and validates `launcher.json`
+2. the launcher passes backend host/port to the backend through explicit packaged startup arguments or environment variables
+3. the backend in packaged mode must not derive its listen host/port from `config.yaml` or other secondary configuration sources
+4. packaged backend listens only on `127.0.0.1`
+5. packaged backend must not listen on `0.0.0.0`
+6. browser URL, health-check URL, runtime-status URL, and backend listen port are all derived from the same packaged configuration
+
+## Packaged Safety Defaults
+
+Packaged startup must explicitly set:
+
+- `LANGBOT_BROADCAST_SEND_ENABLED=0`
+- `LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS=`
+- `LANGBOT_RPA_ALLOW_AUTO_SEND=0`
+- `LANGBOT_RPA_FORCE_DISABLE_SEND=1`
+
+Additional safety rules:
+
+1. the launcher must not restore real-send state from previous launcher/runtime state
+2. upgrade installs must preserve the default-disabled state
+3. user config, launcher state, and previous process state must not silently enable sending
+4. enabling sending must continue to use the product's explicit authorization flow
+5. the launcher must not construct Connector send allowlists on its own
+
 ## Dependency Installation Policy
 
 ### Packaged runtime
@@ -310,6 +365,12 @@ Desktop backup is used only to:
 1. compare missing files
 2. inspect changed implementations
 3. selectively sync reviewed files into `vendor`
+
+Formal release builds always assemble Connector content from:
+
+- `/C:/Users/33031/Desktop/bot/vendor/wechat_decrypt`
+
+Release assembly must not accept an alternate source directory as a normal build input. If an audit-only comparison path is supported, it must be modeled as a non-packaging parameter such as `-AuditWechatDecryptSource` and must never alter the final Setup or ZIP contents.
 
 ### Allowed content model
 
@@ -355,12 +416,15 @@ Primary build script:
 Required parameters:
 
 - `-Version`
-- `-WechatDecryptSource`
 - `-VcRedistPath`
 - `-OutputRoot`
 - `-SkipTests`
 - `-Offline`
 - `-KeepWorkDirectory`
+
+Optional audit-only parameter:
+
+- `-AuditWechatDecryptSource`
 
 Behavior:
 
@@ -385,11 +449,54 @@ A fixed runtime manifest file records:
 
 The build must refuse floating/latest runtime inputs.
 
+The implementation plan must select one pinned portable CPython distribution for each packaged Python runtime role and record its exact artifact URL and SHA-256 in `/C:/Users/33031/Desktop/bot/packaging/runtime-manifest.json`. Floating or `"latest"` artifacts are forbidden.
+
+The selected runtime definition must also specify:
+
+1. runtime provider
+2. exact version
+3. archive type
+4. Windows x64 artifact name
+5. extracted layout
+6. `site-packages` enablement approach
+7. whether `pip` is present in the upstream artifact
+8. license file source
+
+### Python dependency lock strategy
+
+`uv.lock` remains the repository dependency authority, but packaged runtime installation must use release-specific locked dependency exports so that packaged runtimes exclude development and build tooling.
+
+Required lock outputs:
+
+- `/C:/Users/33031/Desktop/bot/packaging/server/requirements.lock.txt`
+- `/C:/Users/33031/Desktop/bot/vendor/wechat_decrypt/requirements.lock.txt`
+
+These lock files must pin:
+
+1. Python version
+2. Windows x64 target platform
+3. direct dependencies
+4. transitive dependencies
+5. exact package versions
+6. hashes where supported by the export/install flow
+
+Packaged runtime installation must consume the locked release dependency files and must not re-resolve dependencies on the user machine.
+
+The release verification flow must assert that packaged runtimes do not include:
+
+1. `pytest`
+2. `ruff`
+3. `mypy`
+4. `pre-commit`
+5. `uv`
+
 ### Verification
 
 Release verification script:
 
 - `/C:/Users/33031/Desktop/bot/scripts/verify-trial-release.ps1`
+
+This script validates the assembled portable release directory structure and portable runtime behavior before installer-specific flow testing.
 
 It validates:
 
@@ -411,6 +518,18 @@ Optional clean-machine validation helper:
 
 - `/C:/Users/33031/Desktop/bot/packaging/sandbox/ChatbotTrial.wsb`
 
+### Installed-flow validation
+
+`/C:/Users/33031/Desktop/bot/scripts/test-trial-install.ps1` validates the installed Setup flow, including:
+
+1. interactive or silent Setup installation
+2. shortcut presence and usability
+3. first launch
+4. stop/restart behavior
+5. upgrade/overlay installation
+6. uninstall
+7. user-data retention behavior
+
 ## Sensitive Data and Integrity Design
 
 ### Sensitive scan
@@ -431,6 +550,8 @@ It must fail on:
 8. developer absolute paths
 9. desktop backup source paths
 
+Sensitive scanning must use allowlist-aware rules. Field names such as `token`, `cookie`, `password`, `secret`, or `Authorization` in source code do not count as leaks by themselves. The scan should target high-confidence secret formats, private-key headers, non-placeholder credential values, databases, runtime state, and absolute-path leakage in text artifacts. Binary files should not be rejected by naive keyword matching alone, and reports must not echo full secret values.
+
 ### Integrity outputs
 
 The build also emits:
@@ -440,6 +561,49 @@ The build also emits:
 3. `build-report.json`
 
 The launcher validates key files before startup; full per-file hashing remains available in the manifest for diagnostics and verification.
+
+## User Data Namespace Policy
+
+The packaged trial release uses the new namespace:
+
+- `%LOCALAPPDATA%\\Chatbot`
+
+It does not automatically migrate data from development-mode paths or legacy:
+
+- `%LOCALAPPDATA%\\WecomeBot`
+
+If legacy directories are detected, the packaged app may record this in diagnostics, but it must not automatically copy databases, keys, logs, or runtime state.
+
+## Resource Layout Policy
+
+Packaged shared resources use a single top-level physical location:
+
+- `resources/web/dist`
+- `resources/templates`
+- `resources/migrations`
+- `resources/defaults`
+
+The backend reads them via explicit packaged roots, for example:
+
+- `CHATBOT_WEB_ROOT`
+- `CHATBOT_TEMPLATE_ROOT`
+- `CHATBOT_MIGRATION_ROOT`
+- `CHATBOT_DEFAULTS_ROOT`
+
+The implementation plan must not duplicate the same packaged resource set under both top-level `resources/` and a second `server/app/resources` tree.
+
+## Deterministic Assembly Definition
+
+For this trial release, deterministic assembly means:
+
+1. fixed dependency versions
+2. fixed runtime artifacts
+3. fixed output paths
+4. fixed file selection
+5. no timestamp-directory discovery
+6. traceable component hashes
+
+Bit-for-bit reproducible installer or ZIP hashes across all rebuilds are not required as a trial-release goal.
 
 ## File/Module Impact
 
@@ -517,6 +681,14 @@ At least one Windows Sandbox or fresh VM validation is required for:
 4. uninstall
 
 If not completed in the current session, final reporting must explicitly mark it as **unverified**.
+
+### Installer privilege boundary
+
+The main Chatbot installation remains a user-level installation. VC++ Runtime handling is separate:
+
+1. only when VC++ Runtime is missing may Setup launch the prerequisite installer with elevation
+2. if the user cancels the UAC prompt for the VC++ prerequisite, Setup must stop with a clear error instead of leaving a knowingly non-runnable install behind
+3. the launcher must not request UAC on every start just to retry VC++ prerequisite installation
 
 ## Risks and Mitigations
 
