@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "portableDirectoryNameTemplate": "Chatbot-Trial-{version}-x64",
+  "serverAppCopies": [
+    {
+      "source": "main.py",
+      "target": "main.py",
+      "type": "file"
+    },
+    {
+      "source": "src",
+      "target": "src",
+      "type": "directory"
+    },
+    {
+      "source": "packaging/server",
+      "target": "packaging/server",
+      "type": "directory"
+    }
+  ],
+  "resourceCopies": [
+    {
+      "source": "src/langbot/templates",
+      "target": "resources/templates",
+      "required": true
+    },
+    {
+      "source": "src/langbot/pkg/persistence/alembic",
+      "target": "resources/migrations",
+      "required": true
+    },
+    {
+      "source": "",
+      "target": "resources/defaults",
+      "required": false,
+      "createIfMissing": true
+    }
+  ],
+  "licenseCopies": [
+    {
+      "source": "LICENSE",
+      "target": "licenses/LangBot-LICENSE.txt"
+    },
+    {
+      "source": "vendor/wechat_decrypt/VENDOR_SOURCE.json",
+      "target": "licenses/wechat-decrypt-VENDOR_SOURCE.json"
+    },
+    {
+      "source": "vendor/wechat_decrypt/README.release.md",
+      "target": "licenses/wechat-decrypt-README.release.md"
+    }
+  ],
+  "portableRequiredPaths": [
+    "ChatbotLauncher.exe",
+    "launcher.json",
+    "server/runtime",
+    "server/app",
+    "connectors/runtime",
+    "connectors/app/wechat-decrypt",
+    "resources/web/dist/index.html",
+    "resources/templates",
+    "resources/migrations",
+    "resources/defaults",
+    "runtime/desktop-rpa",
+    "prerequisites",
+    "licenses"
+  ],
+  "portableForbiddenPaths": [
+    "manifest.json",
+    "build-sensitive-scan.json",
+    "build-report.json"
+  ]
+}
