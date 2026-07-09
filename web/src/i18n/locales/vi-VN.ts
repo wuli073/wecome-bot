@@ -23,7 +23,7 @@ const viVN = {
     password: 'Mật khẩu',
     loginLoadError: 'Không thể kết nối đến máy chủ',
     loginLoadErrorDesc:
-      'Không thể kết nối đến máy chủ LangBot. Vui lòng đảm bảo dịch vụ đang chạy và thử lại.',
+      'Không thể kết nối đến máy chủ Chatbot. Vui lòng đảm bảo dịch vụ đang chạy và thử lại.',
     retry: 'Thử lại',
     enterEmail: 'Nhập địa chỉ email',
     enterPassword: 'Nhập mật khẩu',
@@ -91,7 +91,7 @@ const viVN = {
     spaceLoginProcessing: 'Đang đăng nhập với Space',
     spaceLoginProcessingDescription:
       'Vui lòng chờ trong khi chúng tôi hoàn tất đăng nhập...',
-    spaceLoginSuccessDescription: 'Đang chuyển hướng đến LangBot...',
+    spaceLoginSuccessDescription: 'Đang chuyển hướng đến Chatbot...',
     spaceLoginError: 'Đăng nhập thất bại',
     spaceLoginNoCode: 'Thiếu mã ủy quyền',
     backToHome: 'Quay lại trang chủ',
@@ -130,10 +130,10 @@ const viVN = {
     apiKeyCopied: 'Đã sao chép khóa API vào clipboard',
     noApiKeys: 'Chưa cấu hình khóa API nào',
     apiKeyHint:
-      'Khóa API cho phép các hệ thống bên ngoài truy cập API dịch vụ LangBot',
+      'Khóa API cho phép các hệ thống bên ngoài truy cập API dịch vụ Chatbot',
     mcpTab: 'MCP',
     mcpHint:
-      'LangBot exposes an MCP (Model Context Protocol) server so AI agents can manage this instance. It uses the same API keys as the Service API.',
+      'Chatbot exposes an MCP (Model Context Protocol) server so AI agents can manage this instance. It uses the same API keys as the Service API.',
     mcpEndpoint: 'MCP Endpoint',
     mcpAuthTitle: 'Authentication',
     mcpAuthDesc:
@@ -154,7 +154,7 @@ const viVN = {
     webhookUrlRequired: 'URL Webhook là bắt buộc',
     noWebhooks: 'Chưa cấu hình Webhook nào',
     webhookHint:
-      'Webhooks cho phép LangBot đẩy sự kiện tin nhắn cá nhân và nhóm đến các hệ thống bên ngoài',
+      'Webhooks cho phép Chatbot đẩy sự kiện tin nhắn cá nhân và nhóm đến các hệ thống bên ngoài',
     actions: 'Hành động',
     apiKeyCreatedMessage:
       'Vui lòng sao chép khóa API này, nếu nút không hoạt động, vui lòng sao chép thủ công.',
@@ -269,12 +269,12 @@ const viVN = {
     requester: 'Loại nhà cung cấp',
     selectRequester: 'Chọn loại nhà cung cấp',
     searchProviders: 'Tìm kiếm nhà cung cấp...',
-    langbotModelsDescription: 'Mô hình đám mây được cung cấp bởi LangBot Space',
+    langbotModelsDescription: 'Mô hình đám mây được cung cấp bởi Chatbot Space',
     credits: 'Tín dụng',
     loginWithSpace: 'Đăng nhập với Space',
     loginToUseModels: 'Đăng nhập với Space để sử dụng mô hình đám mây',
     noModels: 'Chưa cấu hình mô hình nào',
-    langbotModels: 'Mô hình LangBot',
+    langbotModels: 'Mô hình Chatbot',
     spaceTrialTooltip:
       'Có tín dụng dùng thử miễn phí! Đăng nhập với Space để truy cập mô hình đám mây không cần cấu hình.',
     unlockModels: 'Đăng nhập để sử dụng',
@@ -313,7 +313,7 @@ const viVN = {
   bots: {
     title: 'Bot',
     description:
-      'Tạo và quản lý Bot, là điểm kết nối của LangBot với các nền tảng khác nhau',
+      'Tạo và quản lý Bot, là điểm kết nối của Chatbot với các nền tảng khác nhau',
     createBot: 'Tạo Bot',
     selectFromSidebar: 'Chọn một Bot từ thanh bên',
     editBot: 'Chỉnh sửa Bot',
@@ -401,8 +401,8 @@ const viVN = {
     webhookUrlHintEither:
       'Sử dụng một trong hai URL trên trong cấu hình nền tảng của bạn',
     webhookSaasHint:
-      'Webhook yêu cầu một tên miền có thể truy cập công khai. LangBot Cloud cung cấp điểm cuối công khai sẵn sàng sử dụng cho Bot của bạn.',
-    webhookSaasLink: 'Tìm hiểu thêm về LangBot Cloud',
+      'Webhook yêu cầu một tên miền có thể truy cập công khai. Chatbot Cloud cung cấp điểm cuối công khai sẵn sàng sử dụng cho Bot của bạn.',
+    webhookSaasLink: 'Tìm hiểu thêm về Chatbot Cloud',
     adapterCategory: {
       popular: 'Phổ biến',
       china: 'Trung Quốc',
@@ -700,7 +700,7 @@ const viVN = {
     markAsReadFailed: 'Đánh dấu đã đọc thất bại',
     filterByComponent: 'Thành phần plugin',
     filterByComponentHint:
-      'Các loại năng lực mà plugin cung cấp — Công cụ (Tool), Lệnh (Command), Trình lắng nghe sự kiện (EventListener), v.v. — dùng để mở rộng các khả năng của LangBot. Lọc theo thành phần để chỉ xem những plugin cung cấp năng lực đó.',
+      'Các loại năng lực mà plugin cung cấp — Công cụ (Tool), Lệnh (Command), Trình lắng nghe sự kiện (EventListener), v.v. — dùng để mở rộng các khả năng của Chatbot. Lọc theo thành phần để chỉ xem những plugin cung cấp năng lực đó.',
     allComponents: 'Tất cả thành phần',
     componentName: {
       Tool: 'Công cụ',
@@ -1104,8 +1104,8 @@ const viVN = {
     },
   },
   register: {
-    title: 'Khởi tạo LangBot 👋',
-    description: 'Đây là lần đầu tiên bạn khởi động LangBot',
+    title: 'Khởi tạo Chatbot 👋',
+    description: 'Đây là lần đầu tiên bạn khởi động Chatbot',
     adminAccountNote:
       'Tài khoản bạn sử dụng ở đây sẽ được đặt làm tài khoản quản trị viên',
     register: 'Đăng ký',
@@ -1115,7 +1115,7 @@ const viVN = {
     spaceInfoTip1:
       'Space cung cấp dịch vụ xác thực tài khoản thống nhất mà không tải lên bất kỳ thông tin nhạy cảm nào của bạn.',
     spaceInfoTip2:
-      'Đăng nhập bằng tài khoản Space cho phép bạn truy cập Mô hình LangBot và các dịch vụ đám mây khác, bao gồm tín dụng gọi mô hình miễn phí để giúp bạn bắt đầu nhanh chóng.',
+      'Đăng nhập bằng tài khoản Space cho phép bạn truy cập Mô hình Chatbot và các dịch vụ đám mây khác, bao gồm tín dụng gọi mô hình miễn phí để giúp bạn bắt đầu nhanh chóng.',
     spaceInfoTip3:
       'Phương thức đăng nhập của bạn không ảnh hưởng đến các tính năng khác. Bạn có thể cấu hình và sử dụng mô hình từ các nguồn khác bất cứ lúc nào.',
     registerLocal: 'Đăng ký tài khoản cục bộ',
@@ -1500,7 +1500,7 @@ const viVN = {
     },
     spaceBanner: {
       message:
-        'Kết nối với LangBot Space để nhận tín dụng dùng thử mô hình miễn phí và thiết lập tức thì không cần cấu hình!',
+        'Kết nối với Chatbot Space để nhận tín dụng dùng thử mô hình miễn phí và thiết lập tức thì không cần cấu hình!',
       action: 'Ủy quyền với Space',
     },
     config: {

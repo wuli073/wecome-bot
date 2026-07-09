@@ -23,7 +23,7 @@ const esES = {
     password: 'Contraseña',
     loginLoadError: 'No se puede conectar al servidor',
     loginLoadErrorDesc:
-      'No se puede conectar al backend de LangBot. Asegúrate de que el servicio esté en ejecución e inténtalo de nuevo.',
+      'No se puede conectar al backend de Chatbot. Asegúrate de que el servicio esté en ejecución e inténtalo de nuevo.',
     retry: 'Reintentar',
     enterEmail: 'Introduce la dirección de correo electrónico',
     enterPassword: 'Introduce la contraseña',
@@ -93,7 +93,7 @@ const esES = {
     spaceLoginProcessing: 'Iniciando sesión con Space',
     spaceLoginProcessingDescription:
       'Por favor espera mientras completamos tu inicio de sesión...',
-    spaceLoginSuccessDescription: 'Redirigiendo a LangBot...',
+    spaceLoginSuccessDescription: 'Redirigiendo a Chatbot...',
     spaceLoginError: 'Error de inicio de sesión',
     spaceLoginNoCode: 'Falta el código de autorización',
     backToHome: 'Volver al inicio',
@@ -132,10 +132,10 @@ const esES = {
     apiKeyCopied: 'Clave API copiada al portapapeles',
     noApiKeys: 'No hay claves API configuradas',
     apiKeyHint:
-      'Las claves API permiten a sistemas externos acceder a las API del servicio LangBot',
+      'Las claves API permiten a sistemas externos acceder a las API del servicio Chatbot',
     mcpTab: 'MCP',
     mcpHint:
-      'LangBot exposes an MCP (Model Context Protocol) server so AI agents can manage this instance. It uses the same API keys as the Service API.',
+      'Chatbot exposes an MCP (Model Context Protocol) server so AI agents can manage this instance. It uses the same API keys as the Service API.',
     mcpEndpoint: 'MCP Endpoint',
     mcpAuthTitle: 'Authentication',
     mcpAuthDesc:
@@ -156,7 +156,7 @@ const esES = {
     webhookUrlRequired: 'La URL del Webhook es obligatoria',
     noWebhooks: 'No hay Webhooks configurados',
     webhookHint:
-      'Los Webhooks permiten a LangBot enviar eventos de mensajes personales y grupales a sistemas externos',
+      'Los Webhooks permiten a Chatbot enviar eventos de mensajes personales y grupales a sistemas externos',
     actions: 'Acciones',
     apiKeyCreatedMessage:
       'Por favor copia esta clave API, si el botón no funciona, cópiala manualmente.',
@@ -273,12 +273,12 @@ const esES = {
     requester: 'Tipo de proveedor',
     selectRequester: 'Seleccionar tipo de proveedor',
     searchProviders: 'Buscar proveedores...',
-    langbotModelsDescription: 'Modelos en la nube impulsados por LangBot Space',
+    langbotModelsDescription: 'Modelos en la nube impulsados por Chatbot Space',
     credits: 'Créditos',
     loginWithSpace: 'Iniciar sesión con Space',
     loginToUseModels: 'Inicia sesión con Space para usar modelos en la nube',
     noModels: 'No hay modelos configurados',
-    langbotModels: 'Modelos LangBot',
+    langbotModels: 'Modelos Chatbot',
     spaceTrialTooltip:
       '¡Créditos de prueba gratuitos disponibles! Inicia sesión con Space para acceder a modelos en la nube sin configuración.',
     unlockModels: 'Inicia sesión para usar',
@@ -317,7 +317,7 @@ const esES = {
   bots: {
     title: 'Bots',
     description:
-      'Crea y gestiona Bots, que son los puntos de entrada para que LangBot se conecte con diversas plataformas',
+      'Crea y gestiona Bots, que son los puntos de entrada para que Chatbot se conecte con diversas plataformas',
     createBot: 'Crear Bot',
     selectFromSidebar: 'Selecciona un Bot de la barra lateral',
     editBot: 'Editar Bot',
@@ -406,8 +406,8 @@ const esES = {
     webhookUrlHintEither:
       'Usa cualquiera de las dos URL anteriores en la configuración de tu plataforma',
     webhookSaasHint:
-      'Webhook requiere un dominio accesible públicamente. LangBot Cloud proporciona un punto de acceso público listo para usar para tu Bot.',
-    webhookSaasLink: 'Más información sobre LangBot Cloud',
+      'Webhook requiere un dominio accesible públicamente. Chatbot Cloud proporciona un punto de acceso público listo para usar para tu Bot.',
+    webhookSaasLink: 'Más información sobre Chatbot Cloud',
     adapterCategory: {
       popular: 'Popular',
       china: 'China',
@@ -707,7 +707,7 @@ const esES = {
     markAsReadFailed: 'Error al marcar como leído',
     filterByComponent: 'Componente del plugin',
     filterByComponentHint:
-      'Los tipos de capacidad que ofrece un plugin: herramienta (Tool), comando (Command), escucha de eventos (EventListener), etc., usados para ampliar las capacidades de LangBot. Filtra por componente para ver solo los plugins que ofrecen esa capacidad.',
+      'Los tipos de capacidad que ofrece un plugin: herramienta (Tool), comando (Command), escucha de eventos (EventListener), etc., usados para ampliar las capacidades de Chatbot. Filtra por componente para ver solo los plugins que ofrecen esa capacidad.',
     allComponents: 'Todos los componentes',
     componentName: {
       Tool: 'Herramienta',
@@ -1130,8 +1130,8 @@ const esES = {
     },
   },
   register: {
-    title: 'Inicializar LangBot 👋',
-    description: 'Es tu primera vez iniciando LangBot',
+    title: 'Inicializar Chatbot 👋',
+    description: 'Es tu primera vez iniciando Chatbot',
     adminAccountNote:
       'La cuenta que uses aquí se establecerá como cuenta de administrador',
     register: 'Registrarse',
@@ -1141,7 +1141,7 @@ const esES = {
     spaceInfoTip1:
       'Space proporciona servicios de autenticación unificada de cuentas sin subir ninguna de tu información sensible.',
     spaceInfoTip2:
-      'Iniciar sesión con una cuenta de Space te da acceso a los modelos de LangBot y otros servicios en la nube, incluyendo créditos gratuitos de llamadas a modelos para ayudarte a comenzar rápidamente.',
+      'Iniciar sesión con una cuenta de Space te da acceso a los modelos de Chatbot y otros servicios en la nube, incluyendo créditos gratuitos de llamadas a modelos para ayudarte a comenzar rápidamente.',
     spaceInfoTip3:
       'Tu método de inicio de sesión no afecta otras funciones. Puedes configurar y usar modelos de otras fuentes en cualquier momento.',
     registerLocal: 'Registrar cuenta local',
@@ -1536,7 +1536,7 @@ const esES = {
     },
     spaceBanner: {
       message:
-        '¡Conéctate a LangBot Space para obtener créditos de prueba gratuitos y configuración instantánea sin esfuerzo!',
+        '¡Conéctate a Chatbot Space para obtener créditos de prueba gratuitos y configuración instantánea sin esfuerzo!',
       action: 'Autorizar con Space',
     },
     config: {

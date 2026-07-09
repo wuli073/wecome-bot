@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { LoadingSpinner } from '@/components/ui/loading-spinner';
+import { APP_BRAND_NAME } from '@/app/config/brand';
 import langbotIcon from '@/app/assets/langbot-logo.webp';
 
 type SpaceOAuthLoginResult = {
@@ -205,7 +206,7 @@ function SpaceOAuthCallbackContent() {
         <CardHeader className="text-center">
           <img
             src={langbotIcon}
-            alt="LangBot"
+            alt={APP_BRAND_NAME}
             className="w-16 h-16 mb-4 mx-auto"
           />
           <CardTitle className="text-xl">

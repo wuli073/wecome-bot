@@ -22,7 +22,7 @@ const enUS = {
     password: 'Password',
     loginLoadError: 'Unable to connect to server',
     loginLoadErrorDesc:
-      'Unable to connect to the LangBot backend. Please make sure the service is running and try again.',
+      'Unable to connect to the Chatbot backend. Please make sure the service is running and try again.',
     retry: 'Retry',
     enterEmail: 'Enter email address',
     enterPassword: 'Enter password',
@@ -90,7 +90,7 @@ const enUS = {
     spaceLoginProcessing: 'Logging in with Space',
     spaceLoginProcessingDescription:
       'Please wait while we complete your login...',
-    spaceLoginSuccessDescription: 'Redirecting to LangBot...',
+    spaceLoginSuccessDescription: 'Redirecting to Chatbot...',
     spaceLoginError: 'Login Failed',
     spaceLoginNoCode: 'Missing authorization code',
     backToHome: 'Back to Home',
@@ -129,10 +129,10 @@ const enUS = {
     apiKeyCopied: 'API key copied to clipboard',
     noApiKeys: 'No API keys configured',
     apiKeyHint:
-      'API keys allow external systems to access LangBot Service APIs',
+      'API keys allow external systems to access Chatbot Service APIs',
     mcpTab: 'MCP',
     mcpHint:
-      'LangBot exposes an MCP (Model Context Protocol) server so AI agents can manage this instance. It uses the same API keys as the Service API.',
+      'Chatbot exposes an MCP (Model Context Protocol) server so AI agents can manage this instance. It uses the same API keys as the Service API.',
     mcpEndpoint: 'MCP Endpoint',
     mcpAuthTitle: 'Authentication',
     mcpAuthDesc:
@@ -153,7 +153,7 @@ const enUS = {
     webhookUrlRequired: 'Webhook URL is required',
     noWebhooks: 'No webhooks configured',
     webhookHint:
-      'Webhooks allow LangBot to push person and group message events to external systems',
+      'Webhooks allow Chatbot to push person and group message events to external systems',
     actions: 'Actions',
     apiKeyCreatedMessage:
       'Please copy this API key, if the button is invalid, please copy manually.',
@@ -264,12 +264,12 @@ const enUS = {
     requester: 'Provider Type',
     selectRequester: 'Select Provider Type',
     searchProviders: 'Search providers...',
-    langbotModelsDescription: 'Cloud models powered by LangBot Space',
+    langbotModelsDescription: 'Cloud models powered by Chatbot Space',
     credits: 'Credits',
     loginWithSpace: 'Login with Space',
     loginToUseModels: 'Login with Space to use cloud models',
     noModels: 'No models configured',
-    langbotModels: 'LangBot Models',
+    langbotModels: 'Chatbot Models',
     spaceTrialTooltip:
       'Free trial credits available! Login with Space to access cloud models with zero configuration.',
     unlockModels: 'Login to use',
@@ -307,7 +307,7 @@ const enUS = {
   bots: {
     title: 'Bots',
     description:
-      'Create and manage bots, which are the entry points for LangBot to connect with various platforms',
+      'Create and manage bots, which are the entry points for Chatbot to connect with various platforms',
     createBot: 'Create Bot',
     selectFromSidebar: 'Select a bot from the sidebar',
     editBot: 'Edit Bot',
@@ -395,8 +395,8 @@ const enUS = {
     webhookUrlHintEither:
       'Use either of the two URLs above in your platform configuration',
     webhookSaasHint:
-      'Webhook requires a publicly accessible domain. LangBot Cloud provides a ready-to-use public endpoint for your bot.',
-    webhookSaasLink: 'Learn more about LangBot Cloud',
+      'Webhook requires a publicly accessible domain. Chatbot Cloud provides a ready-to-use public endpoint for your bot.',
+    webhookSaasLink: 'Learn more about Chatbot Cloud',
     adapterCategory: {
       popular: 'Popular',
       china: 'China',
@@ -852,7 +852,7 @@ const enUS = {
     markAsReadFailed: 'Mark as read failed',
     filterByComponent: 'Plugin Component',
     filterByComponentHint:
-      'The capability types a plugin provides — Tool, Command, EventListener, etc. — used to extend LangBot in various ways. Filter by component to show only plugins offering that capability.',
+      'The capability types a plugin provides — Tool, Command, EventListener, etc. — used to extend Chatbot in various ways. Filter by component to show only plugins offering that capability.',
     allComponents: 'All Components',
     componentName: {
       Tool: 'Tool',
@@ -1001,9 +1001,9 @@ const enUS = {
       'Once deleted, this MCP server configuration cannot be recovered.',
     builtin: 'Built-in',
     builtinConnectorDescription:
-      'Windows-only local connector managed by LangBot. Name, URL, and mode are locked.',
+      'Windows-only local connector managed by Chatbot. Name, URL, and mode are locked.',
     builtinLockedHint:
-      'This built-in connector is managed by LangBot. You can enable or disable it, but its name, URL, mode, and deletion are locked.',
+      'This built-in connector is managed by Chatbot. You can enable or disable it, but its name, URL, mode, and deletion are locked.',
     detectClient: 'Detect Client',
     refreshDatabase: 'Refresh Database',
     oneClickSetup: 'One-Click Setup',
@@ -1309,8 +1309,8 @@ const enUS = {
     },
   },
   register: {
-    title: 'Initialize LangBot 👋',
-    description: 'This is your first time starting LangBot',
+    title: 'Initialize Chatbot 👋',
+    description: 'This is your first time starting Chatbot',
     adminAccountNote:
       'The account you use here will be set as the administrator account',
     register: 'Register',
@@ -1320,7 +1320,7 @@ const enUS = {
     spaceInfoTip1:
       'Space provides unified account authentication services without uploading any of your sensitive information.',
     spaceInfoTip2:
-      'Logging in with a Space account gives you access to LangBot Models and other cloud services, including free model call credits to help you get started quickly.',
+      'Logging in with a Space account gives you access to Chatbot Models and other cloud services, including free model call credits to help you get started quickly.',
     spaceInfoTip3:
       'Your login method does not affect other features. You can configure and use models from other sources at any time.',
     registerLocal: 'Register local account',
@@ -1798,7 +1798,7 @@ const enUS = {
     },
     spaceBanner: {
       message:
-        'Connect to LangBot Space for free trial model credits and zero-config instant setup!',
+        'Connect to Chatbot Space for free trial model credits and zero-config instant setup!',
       action: 'Authorize with Space',
     },
     config: {

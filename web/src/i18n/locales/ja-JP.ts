@@ -22,7 +22,7 @@ const jaJP = {
     password: 'パスワード',
     loginLoadError: 'サーバーに接続できません',
     loginLoadErrorDesc:
-      'LangBot バックエンドに接続できません。サービスが起動していることを確認してから再試行してください。',
+      'Chatbot バックエンドに接続できません。サービスが起動していることを確認してから再試行してください。',
     retry: '再試行',
     enterEmail: 'メールアドレスを入力',
     enterPassword: 'パスワードを入力',
@@ -91,7 +91,7 @@ const jaJP = {
     spaceLoginProcessing: 'Space でログイン中',
     spaceLoginProcessingDescription:
       'ログインを完了しています。しばらくお待ちください...',
-    spaceLoginSuccessDescription: 'LangBot にリダイレクト中...',
+    spaceLoginSuccessDescription: 'Chatbot にリダイレクト中...',
     spaceLoginError: 'ログインに失敗しました',
     spaceLoginNoCode: '認証コードがありません',
     backToHome: 'ホームに戻る',
@@ -130,10 +130,10 @@ const jaJP = {
     apiKeyCopied: 'API キーをクリップボードにコピーしました',
     noApiKeys: 'API キーが設定されていません',
     apiKeyHint:
-      'API キーを使用すると、外部システムが LangBot Service API にアクセスできます',
+      'API キーを使用すると、外部システムが Chatbot Service API にアクセスできます',
     mcpTab: 'MCP',
     mcpHint:
-      'LangBot は MCP（Model Context Protocol）サーバーを提供し、AI エージェントがこのインスタンスを管理できます。Service API と同じ API キーを使用します。',
+      'Chatbot は MCP（Model Context Protocol）サーバーを提供し、AI エージェントがこのインスタンスを管理できます。Service API と同じ API キーを使用します。',
     mcpEndpoint: 'MCP エンドポイント',
     mcpAuthTitle: '認証',
     mcpAuthDesc:
@@ -154,7 +154,7 @@ const jaJP = {
     webhookUrlRequired: 'Webhook URL は必須です',
     noWebhooks: 'Webhook が設定されていません',
     webhookHint:
-      'Webhook を使用すると、LangBot は個人メッセージとグループメッセージイベントを外部システムにプッシュできます',
+      'Webhook を使用すると、Chatbot は個人メッセージとグループメッセージイベントを外部システムにプッシュできます',
     actions: 'アクション',
     apiKeyCreatedMessage:
       'この API キーをコピーしてください。もしボタンが無効な場合は手動でコピーしてください。',
@@ -268,12 +268,12 @@ const jaJP = {
     requester: 'プロバイダータイプ',
     selectRequester: 'プロバイダータイプを選択',
     searchProviders: 'プロバイダーを検索...',
-    langbotModelsDescription: 'LangBot Space が提供するクラウドモデル',
+    langbotModelsDescription: 'Chatbot Space が提供するクラウドモデル',
     credits: 'クレジット',
     loginWithSpace: 'Space でログイン',
     loginToUseModels: 'Space でログインしてクラウドモデルを使用',
     noModels: 'モデルがありません',
-    langbotModels: 'LangBot モデル',
+    langbotModels: 'Chatbot モデル',
     spaceTrialTooltip:
       '無料トライアルクレジットが利用可能！Space でログインして、設定不要でクラウドモデルを使用できます。',
     unlockModels: 'ログインして使用',
@@ -312,7 +312,7 @@ const jaJP = {
   bots: {
     title: 'ボット',
     description:
-      'ボットの作成と管理を行います。LangBotと各プラットフォームを接続するためのエントリーポイントです',
+      'ボットの作成と管理を行います。Chatbotと各プラットフォームを接続するためのエントリーポイントです',
     createBot: 'ボットを作成',
     selectFromSidebar: 'サイドバーからボットを選択してください',
     editBot: 'ボットを編集',
@@ -400,8 +400,8 @@ const jaJP = {
     webhookUrlHintEither:
       '上記の2つのURLのいずれかをプラットフォーム設定に使用してください',
     webhookSaasHint:
-      'Webhook には公開アクセス可能なドメインが必要です。LangBot Cloud では、ボット用のパブリックエンドポイントをすぐにご利用いただけます。',
-    webhookSaasLink: 'LangBot Cloud の詳細はこちら',
+      'Webhook には公開アクセス可能なドメインが必要です。Chatbot Cloud では、ボット用のパブリックエンドポイントをすぐにご利用いただけます。',
+    webhookSaasLink: 'Chatbot Cloud の詳細はこちら',
     adapterCategory: {
       popular: '人気',
       china: '中国',
@@ -595,7 +595,7 @@ const jaJP = {
   plugins: {
     title: '拡張機能',
     description:
-      'LangBotの機能を拡張するプラグインをインストール・設定。流水線設定で使用します',
+      'Chatbotの機能を拡張するプラグインをインストール・設定。流水線設定で使用します',
     createPlugin: 'プラグインを作成',
     editPlugin: 'プラグインを編集',
     installed: 'インストール済み',
@@ -852,7 +852,7 @@ const jaJP = {
     markAsReadFailed: '既読に設定に失敗しました',
     filterByComponent: 'プラグインコンポーネント',
     filterByComponentHint:
-      'プラグインが提供する機能の種類です（ツール、コマンド、イベントリスナーなど）。LangBot のさまざまな機能を拡張するために使われます。コンポーネントで絞り込むと、その機能を提供するプラグインのみを表示できます。',
+      'プラグインが提供する機能の種類です（ツール、コマンド、イベントリスナーなど）。Chatbot のさまざまな機能を拡張するために使われます。コンポーネントで絞り込むと、その機能を提供するプラグインのみを表示できます。',
     allComponents: '全部コンポーネント',
     componentName: {
       Tool: 'ツール',
@@ -999,9 +999,9 @@ const jaJP = {
     deleteMCPHint: '削除すると、このMCPサーバーの設定は復元できません。',
     builtin: 'Built-in',
     builtinConnectorDescription:
-      'LangBot が管理するローカルコネクタです。現在は Windows 開発機のみ対応し、名前、URL、モードは固定です。',
+      'Chatbot が管理するローカルコネクタです。現在は Windows 開発機のみ対応し、名前、URL、モードは固定です。',
     builtinLockedHint:
-      'この内蔵コネクタは LangBot により管理されます。有効化と無効化はできますが、名前、URL、モードの変更や削除はできません。',
+      'この内蔵コネクタは Chatbot により管理されます。有効化と無効化はできますが、名前、URL、モードの変更や削除はできません。',
     detectClient: 'クライアント検出',
     refreshDatabase: 'データベース更新',
     oneClickSetup: 'ワンクリック設定',
@@ -1307,8 +1307,8 @@ const jaJP = {
     },
   },
   register: {
-    title: 'LangBot を初期化 👋',
-    description: 'これはLangBotの初回起動です',
+    title: 'Chatbot を初期化 👋',
+    description: 'これはChatbotの初回起動です',
     adminAccountNote:
       'ここで初期化されたアカウントは管理者アカウントとして使用されます',
     register: '登録',
@@ -1318,7 +1318,7 @@ const jaJP = {
     spaceInfoTip1:
       'Space は統一されたアカウント認証サービスを提供し、機密情報をアップロードすることはありません。',
     spaceInfoTip2:
-      'Space アカウントでログインすると、LangBot Models などのクラウドサービスを利用でき、無料のモデル呼び出しクレジットで迅速に開始できます。',
+      'Space アカウントでログインすると、Chatbot Models などのクラウドサービスを利用でき、無料のモデル呼び出しクレジットで迅速に開始できます。',
     spaceInfoTip3:
       'ログイン方法は他の機能に影響しません。いつでも他のソースからモデルを設定して使用できます。',
     registerLocal: 'ローカルアカウントを登録',
@@ -1707,7 +1707,7 @@ const jaJP = {
     },
     spaceBanner: {
       message:
-        'LangBot Spaceに接続して、無料トライアルモデルクレジットとゼロ設定の即時セットアップを入手！',
+        'Chatbot Spaceに接続して、無料トライアルモデルクレジットとゼロ設定の即時セットアップを入手！',
       action: 'Spaceで認証',
     },
     config: {

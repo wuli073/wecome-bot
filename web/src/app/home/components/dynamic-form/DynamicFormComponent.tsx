@@ -25,6 +25,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Copy, Check, Globe, Info, QrCode } from 'lucide-react';
 import { copyToClipboard } from '@/app/utils/clipboard';
+import { APP_BRAND_NAME } from '@/app/config/brand';
 import {
   Tooltip,
   TooltipContent,
@@ -704,7 +705,7 @@ export default function DynamicFormComponent({
               import.meta.env.VITE_API_BASE_URL || window.location.origin;
             const widgetTitle =
               ((systemContext?.adapter_config as Record<string, unknown>)
-                ?.title as string) || 'LangBot';
+                ?.title as string) || APP_BRAND_NAME;
             const safeTitle = widgetTitle
               .replace(/&/g, '&amp;')
               .replace(/"/g, '&quot;')

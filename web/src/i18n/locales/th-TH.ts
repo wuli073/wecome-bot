@@ -22,7 +22,7 @@ const thTH = {
     password: 'รหัสผ่าน',
     loginLoadError: 'ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์',
     loginLoadErrorDesc:
-      'ไม่สามารถเชื่อมต่อกับแบ็กเอนด์ LangBot ได้ กรุณาตรวจสอบว่าบริการกำลังทำงานอยู่แล้วลองใหม่อีกครั้ง',
+      'ไม่สามารถเชื่อมต่อกับแบ็กเอนด์ Chatbot ได้ กรุณาตรวจสอบว่าบริการกำลังทำงานอยู่แล้วลองใหม่อีกครั้ง',
     retry: 'ลองใหม่',
     enterEmail: 'กรอกที่อยู่อีเมล',
     enterPassword: 'กรอกรหัสผ่าน',
@@ -89,7 +89,7 @@ const thTH = {
     spaceLoginVisitLink: 'เข้าชมลิงก์',
     spaceLoginProcessing: 'กำลังเข้าสู่ระบบด้วย Space',
     spaceLoginProcessingDescription: 'กรุณารอสักครู่ขณะดำเนินการเข้าสู่ระบบ...',
-    spaceLoginSuccessDescription: 'กำลังเปลี่ยนเส้นทางไปยัง LangBot...',
+    spaceLoginSuccessDescription: 'กำลังเปลี่ยนเส้นทางไปยัง Chatbot...',
     spaceLoginError: 'เข้าสู่ระบบล้มเหลว',
     spaceLoginNoCode: 'ไม่พบรหัสยืนยันสิทธิ์',
     backToHome: 'กลับไปหน้าแรก',
@@ -127,10 +127,10 @@ const thTH = {
     apiKeyCopied: 'คัดลอกคีย์ API ไปยังคลิปบอร์ดแล้ว',
     noApiKeys: 'ยังไม่มีคีย์ API ที่กำหนดค่า',
     apiKeyHint:
-      'คีย์ API ช่วยให้ระบบภายนอกสามารถเข้าถึง API บริการของ LangBot ได้',
+      'คีย์ API ช่วยให้ระบบภายนอกสามารถเข้าถึง API บริการของ Chatbot ได้',
     mcpTab: 'MCP',
     mcpHint:
-      'LangBot exposes an MCP (Model Context Protocol) server so AI agents can manage this instance. It uses the same API keys as the Service API.',
+      'Chatbot exposes an MCP (Model Context Protocol) server so AI agents can manage this instance. It uses the same API keys as the Service API.',
     mcpEndpoint: 'MCP Endpoint',
     mcpAuthTitle: 'Authentication',
     mcpAuthDesc:
@@ -151,7 +151,7 @@ const thTH = {
     webhookUrlRequired: 'กรุณากรอก URL ของ Webhook',
     noWebhooks: 'ยังไม่มี Webhook ที่กำหนดค่า',
     webhookHint:
-      'Webhooks ช่วยให้ LangBot สามารถส่งเหตุการณ์ข้อความส่วนตัวและกลุ่มไปยังระบบภายนอกได้',
+      'Webhooks ช่วยให้ Chatbot สามารถส่งเหตุการณ์ข้อความส่วนตัวและกลุ่มไปยังระบบภายนอกได้',
     actions: 'การดำเนินการ',
     apiKeyCreatedMessage:
       'กรุณาคัดลอกคีย์ API นี้ หากปุ่มไม่ทำงาน กรุณาคัดลอกด้วยตนเอง',
@@ -261,12 +261,12 @@ const thTH = {
     requester: 'ประเภทผู้ให้บริการ',
     selectRequester: 'เลือกประเภทผู้ให้บริการ',
     searchProviders: 'ค้นหาผู้ให้บริการ...',
-    langbotModelsDescription: 'โมเดลคลาวด์ขับเคลื่อนโดย LangBot Space',
+    langbotModelsDescription: 'โมเดลคลาวด์ขับเคลื่อนโดย Chatbot Space',
     credits: 'เครดิต',
     loginWithSpace: 'เข้าสู่ระบบด้วย Space',
     loginToUseModels: 'เข้าสู่ระบบด้วย Space เพื่อใช้โมเดลคลาวด์',
     noModels: 'ยังไม่มีโมเดลที่กำหนดค่า',
-    langbotModels: 'โมเดล LangBot',
+    langbotModels: 'โมเดล Chatbot',
     spaceTrialTooltip:
       'มีเครดิตทดลองใช้งานฟรี! เข้าสู่ระบบด้วย Space เพื่อเข้าถึงโมเดลคลาวด์โดยไม่ต้องตั้งค่า',
     unlockModels: 'เข้าสู่ระบบเพื่อใช้งาน',
@@ -304,7 +304,7 @@ const thTH = {
   bots: {
     title: 'บอท',
     description:
-      'สร้างและจัดการ Bot ซึ่งเป็นจุดเชื่อมต่อของ LangBot กับแพลตฟอร์มต่างๆ',
+      'สร้างและจัดการ Bot ซึ่งเป็นจุดเชื่อมต่อของ Chatbot กับแพลตฟอร์มต่างๆ',
     createBot: 'สร้าง Bot',
     selectFromSidebar: 'เลือก Bot จากแถบด้านข้าง',
     editBot: 'แก้ไข Bot',
@@ -391,8 +391,8 @@ const thTH = {
     webhookUrlHintEither:
       'ใช้ URL ใดก็ได้จากสอง URL ด้านบนในการกำหนดค่าแพลตฟอร์มของคุณ',
     webhookSaasHint:
-      'Webhook ต้องใช้โดเมนที่เข้าถึงได้จากภายนอก LangBot Cloud มี endpoint สาธารณะพร้อมใช้งานสำหรับ Bot ของคุณ',
-    webhookSaasLink: 'เรียนรู้เพิ่มเติมเกี่ยวกับ LangBot Cloud',
+      'Webhook ต้องใช้โดเมนที่เข้าถึงได้จากภายนอก Chatbot Cloud มี endpoint สาธารณะพร้อมใช้งานสำหรับ Bot ของคุณ',
+    webhookSaasLink: 'เรียนรู้เพิ่มเติมเกี่ยวกับ Chatbot Cloud',
     adapterCategory: {
       popular: 'ยอดนิยม',
       china: 'จีน',
@@ -685,7 +685,7 @@ const thTH = {
     markAsReadFailed: 'ทำเครื่องหมายว่าอ่านแล้วล้มเหลว',
     filterByComponent: 'ส่วนประกอบปลั๊กอิน',
     filterByComponentHint:
-      'ประเภทความสามารถที่ปลั๊กอินมีให้ เช่น เครื่องมือ (Tool) คำสั่ง (Command) ตัวรับฟังเหตุการณ์ (EventListener) เป็นต้น ใช้เพื่อขยายความสามารถต่าง ๆ ของ LangBot กรองตามส่วนประกอบเพื่อแสดงเฉพาะปลั๊กอินที่มีความสามารถนั้น',
+      'ประเภทความสามารถที่ปลั๊กอินมีให้ เช่น เครื่องมือ (Tool) คำสั่ง (Command) ตัวรับฟังเหตุการณ์ (EventListener) เป็นต้น ใช้เพื่อขยายความสามารถต่าง ๆ ของ Chatbot กรองตามส่วนประกอบเพื่อแสดงเฉพาะปลั๊กอินที่มีความสามารถนั้น',
     allComponents: 'ส่วนประกอบทั้งหมด',
     componentName: {
       Tool: 'เครื่องมือ',
@@ -1087,8 +1087,8 @@ const thTH = {
     },
   },
   register: {
-    title: 'เริ่มต้น LangBot 👋',
-    description: 'นี่เป็นครั้งแรกที่คุณเริ่มใช้งาน LangBot',
+    title: 'เริ่มต้น Chatbot 👋',
+    description: 'นี่เป็นครั้งแรกที่คุณเริ่มใช้งาน Chatbot',
     adminAccountNote: 'บัญชีที่คุณใช้ที่นี่จะถูกตั้งเป็นบัญชีผู้ดูแลระบบ',
     register: 'ลงทะเบียน',
     initWithSpace: 'เริ่มต้นด้วย Space',
@@ -1097,7 +1097,7 @@ const thTH = {
     spaceInfoTip1:
       'Space ให้บริการยืนยันตัวตนแบบรวมโดยไม่อัปโหลดข้อมูลสำคัญใดๆ ของคุณ',
     spaceInfoTip2:
-      'การเข้าสู่ระบบด้วยบัญชี Space ช่วยให้คุณเข้าถึงโมเดล LangBot และบริการคลาวด์อื่นๆ รวมถึงเครดิตเรียกใช้โมเดลฟรีเพื่อช่วยให้คุณเริ่มต้นได้อย่างรวดเร็ว',
+      'การเข้าสู่ระบบด้วยบัญชี Space ช่วยให้คุณเข้าถึงโมเดล Chatbot และบริการคลาวด์อื่นๆ รวมถึงเครดิตเรียกใช้โมเดลฟรีเพื่อช่วยให้คุณเริ่มต้นได้อย่างรวดเร็ว',
     spaceInfoTip3:
       'วิธีการเข้าสู่ระบบของคุณไม่มีผลต่อฟีเจอร์อื่นๆ คุณสามารถกำหนดค่าและใช้โมเดลจากแหล่งอื่นได้ตลอดเวลา',
     registerLocal: 'ลงทะเบียนบัญชีท้องถิ่น',
@@ -1476,7 +1476,7 @@ const thTH = {
     },
     spaceBanner: {
       message:
-        'เชื่อมต่อกับ LangBot Space เพื่อรับเครดิตทดลองใช้โมเดลฟรีและตั้งค่าทันทีโดยไม่ต้องกำหนดค่า!',
+        'เชื่อมต่อกับ Chatbot Space เพื่อรับเครดิตทดลองใช้โมเดลฟรีและตั้งค่าทันทีโดยไม่ต้องกำหนดค่า!',
       action: 'ยืนยันสิทธิ์กับ Space',
     },
     config: {

@@ -21,7 +21,7 @@ const zhHant = {
     email: '電子郵件',
     password: '密碼',
     loginLoadError: '無法連線到伺服器',
-    loginLoadErrorDesc: '無法連線到 LangBot 後端服務，請確認服務已啟動後重試。',
+    loginLoadErrorDesc: '無法連線到 Chatbot 後端服務，請確認服務已啟動後重試。',
     retry: '重試',
     enterEmail: '輸入電子郵件地址',
     enterPassword: '輸入密碼',
@@ -86,7 +86,7 @@ const zhHant = {
     spaceLoginVisitLink: '訪問連結',
     spaceLoginProcessing: '正在透過 Space 登入',
     spaceLoginProcessingDescription: '請稍候，正在完成登入...',
-    spaceLoginSuccessDescription: '正在跳轉到 LangBot...',
+    spaceLoginSuccessDescription: '正在跳轉到 Chatbot...',
     spaceLoginError: '登入失敗',
     spaceLoginNoCode: '缺少授權碼',
     backToHome: '返回首頁',
@@ -121,10 +121,10 @@ const zhHant = {
     copyApiKey: '複製 API 金鑰',
     apiKeyCopied: 'API 金鑰已複製到剪貼簿',
     noApiKeys: '暫無 API 金鑰',
-    apiKeyHint: 'API 金鑰允許外部系統訪問 LangBot 的 Service API',
+    apiKeyHint: 'API 金鑰允許外部系統訪問 Chatbot 的 Service API',
     mcpTab: 'MCP',
     mcpHint:
-      'LangBot 提供 MCP（Model Context Protocol）服務，讓 AI Agent 管理本實例，複用與 Service API 相同的 API 金鑰。',
+      'Chatbot 提供 MCP（Model Context Protocol）服務，讓 AI Agent 管理本實例，複用與 Service API 相同的 API 金鑰。',
     mcpEndpoint: 'MCP 接入位址',
     mcpAuthTitle: '驗證方式',
     mcpAuthDesc: '使用「API 金鑰」標籤頁中的任意金鑰，透過請求標頭傳入：',
@@ -143,7 +143,7 @@ const zhHant = {
     webhookNameRequired: 'Webhook 名稱不能為空',
     webhookUrlRequired: 'Webhook URL 不能為空',
     noWebhooks: '暫無 Webhook',
-    webhookHint: 'Webhook 允許 LangBot 將個人訊息和群組訊息事件推送到外部系統',
+    webhookHint: 'Webhook 允許 Chatbot 將個人訊息和群組訊息事件推送到外部系統',
     actions: '操作',
     apiKeyCreatedMessage: '請複製此 API 金鑰，若按鈕無效，請手動複製。',
     none: '無',
@@ -251,12 +251,12 @@ const zhHant = {
     requester: '供應商類型',
     selectRequester: '選擇供應商類型',
     searchProviders: '搜尋供應商...',
-    langbotModelsDescription: '由 LangBot Space 提供的雲端模型',
+    langbotModelsDescription: '由 Chatbot Space 提供的雲端模型',
     credits: '積分',
     loginWithSpace: '使用 Space 登入',
     loginToUseModels: '使用 Space 登入以使用雲端模型',
     noModels: '暫無模型',
-    langbotModels: 'LangBot 模型',
+    langbotModels: 'Chatbot 模型',
     spaceTrialTooltip:
       '免費試用積分已就緒！使用 Space 登入即可零設定使用雲端模型。',
     unlockModels: '登入以使用',
@@ -293,7 +293,7 @@ const zhHant = {
   },
   bots: {
     title: '機器人',
-    description: '建立和管理機器人，這是 LangBot 與各個平台連接的入口',
+    description: '建立和管理機器人，這是 Chatbot 與各個平台連接的入口',
     createBot: '建立機器人',
     selectFromSidebar: '從側邊欄選擇一個機器人',
     editBot: '編輯機器人',
@@ -377,8 +377,8 @@ const zhHant = {
       '點擊輸入框自動全選，然後按 Ctrl+C (Mac: Cmd+C) 複製，或點擊右側按鈕',
     webhookUrlHintEither: '以上兩個地址任選其一填入平台配置即可',
     webhookSaasHint:
-      'Webhook 需要公網可存取的網域。LangBot Cloud 為你的機器人提供即開即用的公網位址。',
-    webhookSaasLink: '了解 LangBot Cloud',
+      'Webhook 需要公網可存取的網域。Chatbot Cloud 為你的機器人提供即開即用的公網位址。',
+    webhookSaasLink: '了解 Chatbot Cloud',
     adapterCategory: {
       popular: '熱門',
       china: '中國',
@@ -664,7 +664,7 @@ const zhHant = {
     markAsReadFailed: '標記為已讀失敗',
     filterByComponent: '插件組件',
     filterByComponentHint:
-      '插件提供的能力類型，如工具（Tool）、命令（Command）、事件監聽器（EventListener）等，用於擴展 LangBot 的各項能力。按組件篩選可只看提供對應能力的插件。',
+      '插件提供的能力類型，如工具（Tool）、命令（Command）、事件監聽器（EventListener）等，用於擴展 Chatbot 的各項能力。按組件篩選可只看提供對應能力的插件。',
     allComponents: '全部組件',
     componentName: {
       Tool: '工具',
@@ -1051,15 +1051,15 @@ const zhHant = {
     },
   },
   register: {
-    title: '初始化 LangBot 👋',
-    description: '這是您首次啟動 LangBot',
+    title: '初始化 Chatbot 👋',
+    description: '這是您首次啟動 Chatbot',
     adminAccountNote: '您在此處初始化使用的帳號將作為管理員帳號',
     register: '註冊',
     initWithSpace: '透過 Space 初始化',
     spaceRecommended: '推薦：使用官方提供的穩定模型 API 和雲服務',
     spaceInfoTip1: 'Space 提供統一的帳戶鑑權服務，不會上傳您的任何敏感資訊。',
     spaceInfoTip2:
-      '使用 Space 帳戶登入可使用 LangBot Models 等雲服務，您將會獲得一定的免費模型調用額度幫助您快速起步。',
+      '使用 Space 帳戶登入可使用 Chatbot Models 等雲服務，您將會獲得一定的免費模型調用額度幫助您快速起步。',
     spaceInfoTip3:
       '登入方式不會影響其他功能，您在任何情況下都可以配置使用其他來源的模型。',
     registerLocal: '註冊本地帳號',
@@ -1433,7 +1433,7 @@ const zhHant = {
       description: '選擇驅動機器人智慧的 AI 引擎。',
     },
     spaceBanner: {
-      message: '接入 LangBot Space，取得免費試用模型額度，零配置極速開箱！',
+      message: '接入 Chatbot Space，取得免費試用模型額度，零配置極速開箱！',
       action: '前往授權登入',
     },
     config: {

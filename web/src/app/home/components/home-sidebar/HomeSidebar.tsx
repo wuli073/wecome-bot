@@ -2,21 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { SidebarChildVO } from '@/app/home/components/home-sidebar/HomeSidebarChild';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { sidebarConfigList } from '@/app/home/components/home-sidebar/sidbarConfigList';
+import { APP_BRAND_NAME } from '@/app/config/brand';
 import langbotIcon from '@/app/assets/langbot-logo.webp';
 import { systemInfo, httpClient } from '@/app/infra/http/HttpClient';
 import { getCloudServiceClientSync } from '@/app/infra/http';
 import { useTranslation } from 'react-i18next';
 import {
-  Moon,
-  Sun,
-  Monitor,
-  ChevronsUpDown,
-  CircleHelp,
-  Lightbulb,
-  LogOut,
   KeyRound,
-  Settings,
-  Star,
   Ellipsis,
   ArrowUp,
   ExternalLink,
@@ -25,23 +17,17 @@ import {
   Upload,
   Store,
   Github,
-  Zap,
   FilePlus2,
   Sparkles,
-  HardDrive,
   Server,
   Puzzle,
   RefreshCcw,
 } from 'lucide-react';
-import { useTheme } from '@/components/providers/theme-provider';
 
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
@@ -53,17 +39,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { LanguageSelector } from '@/components/ui/language-selector';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import NewVersionDialog from '@/app/home/components/new-version-dialog/NewVersionDialog';
 import SettingsDialog, {
   SettingsSection,
   SETTINGS_ACTION_BY_SECTION,
   SETTINGS_SECTION_BY_ACTION,
 } from '@/app/home/components/settings-dialog/SettingsDialog';
-import { GitHubRelease } from '@/app/infra/http/CloudServiceClient';
 import { useAsyncTask, AsyncTaskStatus } from '@/hooks/useAsyncTask';
 import { toast } from 'sonner';
 import {
@@ -100,41 +82,6 @@ import {
 } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import { useSidebarData, SidebarEntityItem } from './SidebarDataContext';
-
-// Compare two version strings, returns true if v1 > v2
-function compareVersions(v1: string, v2: string): boolean {
-  const clean1 = v1.replace(/^v/, '');
-  const clean2 = v2.replace(/^v/, '');
-
-  const parts1 = clean1.split('.').map((p) => parseInt(p, 10) || 0);
-  const parts2 = clean2.split('.').map((p) => parseInt(p, 10) || 0);
-
-  const maxLen = Math.max(parts1.length, parts2.length);
-
-  for (let i = 0; i < maxLen; i++) {
-    const p1 = parts1[i] || 0;
-    const p2 = parts2[i] || 0;
-    if (p1 > p2) return true;
-    if (p1 < p2) return false;
-  }
-  return false;
-}
-
-// Discord brand glyph (lucide-react has no Discord icon).
-function DiscordIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      role="img"
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z" />
-    </svg>
-  );
-}
 
 // IDs of sidebar entries that have collapsible entity sub-items
 const ENTITY_CATEGORY_IDS = [
@@ -1542,7 +1489,6 @@ export default function HomeSidebar({
   const location = useLocation();
   const pathname = location.pathname;
   const [searchParams] = useSearchParams();
-  const { isMobile } = useSidebar();
 
   useEffect(() => {
     handleRouteChange(pathname);
@@ -1559,19 +1505,10 @@ export default function HomeSidebar({
   const [selectedChild, setSelectedChild] = useState<SidebarChildVO>();
   const [sectionOpenState, setSectionOpenState] =
     useState<Record<string, boolean>>(loadSectionState);
-  const { theme, setTheme } = useTheme();
   const { t } = useTranslation();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] =
     useState<SettingsSection>('models');
-  const [latestRelease, setLatestRelease] = useState<GitHubRelease | null>(
-    null,
-  );
-  const [hasNewVersion, setHasNewVersion] = useState(false);
-  const [versionDialogOpen, setVersionDialogOpen] = useState(false);
-  const [userEmail, setUserEmail] = useState<string>('');
-  const [starCount, setStarCount] = useState<number | null>(null);
-  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const navigationContentRef = useRef<HTMLDivElement | null>(null);
   const [showScrollHint, setShowScrollHint] = useState(false);
 
@@ -1626,54 +1563,6 @@ export default function HomeSidebar({
 
   useEffect(() => {
     initSelect();
-
-    const storedEmail = localStorage.getItem('userEmail');
-    if (storedEmail) {
-      setUserEmail(storedEmail);
-    } else {
-      httpClient
-        .getUserInfo()
-        .then((info) => {
-          setUserEmail(info.user);
-          localStorage.setItem('userEmail', info.user);
-        })
-        .catch(() => {});
-    }
-
-    // Cloud edition is updated centrally by the operator, so end users should
-    // not see a "new version available" prompt in the sidebar. Skip the GitHub
-    // release check entirely for edition=cloud.
-    if (systemInfo?.edition !== 'cloud') {
-      getCloudServiceClientSync()
-        .getLangBotReleases()
-        .then((releases) => {
-          if (releases && releases.length > 0) {
-            const latestStable = releases.find(
-              (r) => !r.prerelease && !r.draft,
-            );
-            const latest = latestStable || releases[0];
-            setLatestRelease(latest);
-
-            const currentVersion = systemInfo?.version;
-            if (currentVersion && latest.tag_name) {
-              const isNewer = compareVersions(latest.tag_name, currentVersion);
-              setHasNewVersion(isNewer);
-            }
-          }
-        })
-        .catch((error) => {
-          console.error('Failed to fetch releases:', error);
-        });
-    }
-
-    getCloudServiceClientSync()
-      .getGitHubRepoInfo()
-      .then((info) => {
-        if (info?.repo?.stargazers_count != null) {
-          setStarCount(info.repo.stargazers_count);
-        }
-      })
-      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -1763,15 +1652,6 @@ export default function HomeSidebar({
     }
   }
 
-  function handleLogout() {
-    localStorage.removeItem('token');
-    localStorage.removeItem('userEmail');
-    navigate('/home/monitoring', { replace: true });
-  }
-
-  // Get the initial letter for user avatar
-  const userInitial = userEmail ? userEmail.charAt(0).toUpperCase() : 'U';
-
   return (
     <>
       <Sidebar variant="inset" collapsible="icon">
@@ -1782,42 +1662,17 @@ export default function HomeSidebar({
               <SidebarMenuButton
                 size="lg"
                 className="cursor-default hover:bg-transparent active:bg-transparent"
-                tooltip="LangBot"
+                tooltip={APP_BRAND_NAME}
               >
                 <img
                   src={langbotIcon}
-                  alt="LangBot"
+                  alt={APP_BRAND_NAME}
                   className="size-8 rounded-lg"
                 />
                 <div className="grid flex-1 text-left text-sm leading-tight">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate font-semibold">LangBot</span>
-                    <Badge
-                      variant="secondary"
-                      className={`shrink-0 px-1 py-0 h-3.5 text-[0.55rem] font-medium ${
-                        systemInfo?.edition === 'cloud'
-                          ? 'border-transparent bg-blue-500 text-white'
-                          : ''
-                      }`}
-                    >
-                      {systemInfo?.edition === 'cloud'
-                        ? t('sidebar.editionCloud')
-                        : t('sidebar.editionCommunity')}
-                    </Badge>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-xs text-muted-foreground">
-                      {systemInfo?.version}
-                    </span>
-                    {hasNewVersion && (
-                      <Badge
-                        onClick={() => setVersionDialogOpen(true)}
-                        className="bg-red-500 hover:bg-red-600 text-white text-[0.55rem] px-1 py-0 h-3.5 cursor-pointer"
-                      >
-                        {t('plugins.new')}
-                      </Badge>
-                    )}
-                  </div>
+                  <span className="truncate font-semibold">
+                    {APP_BRAND_NAME}
+                  </span>
                 </div>
               </SidebarMenuButton>
             </SidebarMenuItem>
@@ -1904,191 +1759,6 @@ export default function HomeSidebar({
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>
-
-          {/* User menu using sidebar-07 nav-user DropdownMenu pattern */}
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <DropdownMenu open={userMenuOpen} onOpenChange={setUserMenuOpen}>
-                <DropdownMenuTrigger asChild>
-                  <SidebarMenuButton
-                    size="lg"
-                    className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
-                    tooltip={t('common.accountOptions')}
-                  >
-                    <Avatar className="h-8 w-8 rounded-lg">
-                      <AvatarFallback className="rounded-lg bg-primary text-primary-foreground text-xs">
-                        {userInitial}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="grid flex-1 text-left text-sm leading-tight">
-                      <span className="truncate font-medium">
-                        {userEmail || t('common.accountOptions')}
-                      </span>
-                    </div>
-                    <ChevronsUpDown className="ml-auto size-4" />
-                  </SidebarMenuButton>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-lg"
-                  side={isMobile ? 'bottom' : 'right'}
-                  align="end"
-                  sideOffset={4}
-                >
-                  {/* User info header */}
-                  <DropdownMenuLabel className="p-0 font-normal">
-                    <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-                      <Avatar className="h-8 w-8 rounded-lg">
-                        <AvatarFallback className="rounded-lg bg-primary text-primary-foreground text-xs">
-                          {userInitial}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="grid flex-1 text-left text-sm leading-tight">
-                        <span className="truncate font-medium">
-                          {userEmail || t('common.accountOptions')}
-                        </span>
-                      </div>
-                    </div>
-                  </DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-
-                  {/* Language & Theme row */}
-                  <div className="flex items-center gap-2 px-1 py-1">
-                    <LanguageSelector triggerClassName="flex-1" />
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      onClick={() =>
-                        setTheme(
-                          theme === 'light'
-                            ? 'dark'
-                            : theme === 'dark'
-                              ? 'system'
-                              : 'light',
-                        )
-                      }
-                      className="h-9 w-9 shrink-0"
-                    >
-                      {theme === 'light' && (
-                        <Sun className="h-[1.2rem] w-[1.2rem]" />
-                      )}
-                      {theme === 'dark' && (
-                        <Moon className="h-[1.2rem] w-[1.2rem]" />
-                      )}
-                      {theme === 'system' && (
-                        <Monitor className="h-[1.2rem] w-[1.2rem]" />
-                      )}
-                    </Button>
-                  </div>
-                  <DropdownMenuSeparator />
-
-                  {/* Account actions */}
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem
-                      onClick={() => {
-                        setUserMenuOpen(false);
-                        openSettings('account');
-                      }}
-                    >
-                      <Settings />
-                      {t('account.settings')}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => {
-                        setUserMenuOpen(false);
-                        openSettings('storageAnalysis');
-                      }}
-                    >
-                      <HardDrive />
-                      {t('storageAnalysis.title')}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => {
-                        setUserMenuOpen(false);
-                        navigate('/wizard');
-                      }}
-                    >
-                      <Zap className="text-blue-500" />
-                      {t('sidebar.quickStart')}
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                  <DropdownMenuSeparator />
-
-                  {/* External links */}
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem
-                      onClick={() => {
-                        const language =
-                          localStorage.getItem('langbot_language');
-                        if (language === 'zh-Hans' || language === 'zh-Hant') {
-                          window.open(
-                            'https://link.langbot.app/zh/docs/guide',
-                            '_blank',
-                          );
-                        } else {
-                          window.open(
-                            'https://link.langbot.app/en/docs/guide',
-                            '_blank',
-                          );
-                        }
-                      }}
-                    >
-                      <CircleHelp />
-                      {t('common.helpDocs')}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => {
-                        window.open(
-                          'https://github.com/langbot-app/LangBot/issues',
-                          '_blank',
-                        );
-                      }}
-                    >
-                      <Lightbulb />
-                      {t('common.featureRequest')}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => {
-                        window.open(
-                          'https://github.com/langbot-app/LangBot',
-                          '_blank',
-                        );
-                      }}
-                    >
-                      <Star
-                        className={cn(
-                          'text-yellow-500',
-                          userMenuOpen && 'animate-twinkle',
-                        )}
-                      />
-                      <span className="flex-1">{t('common.starOnGitHub')}</span>
-                      {starCount != null && (
-                        <Badge variant="secondary" className="ml-auto text-xs">
-                          {starCount >= 1000
-                            ? `${(starCount / 1000).toFixed(1)}k`
-                            : starCount}
-                        </Badge>
-                      )}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => {
-                        window.open('https://discord.gg/wdNEHETs87', '_blank');
-                      }}
-                    >
-                      <DiscordIcon className="text-[#5865F2]" />
-                      {t('common.joinDiscord')}
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                  <DropdownMenuSeparator />
-
-                  {/* Logout */}
-                  <DropdownMenuItem onClick={() => handleLogout()}>
-                    <LogOut />
-                    {t('common.logout')}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </SidebarMenuItem>
-          </SidebarMenu>
         </SidebarFooter>
       </Sidebar>
 
@@ -2097,11 +1767,6 @@ export default function HomeSidebar({
         onOpenChange={handleSettingsOpenChange}
         section={settingsSection}
         onSectionChange={handleSettingsSectionChange}
-      />
-      <NewVersionDialog
-        open={versionDialogOpen}
-        onOpenChange={setVersionDialogOpen}
-        release={latestRelease}
       />
     </>
   );
