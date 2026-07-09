@@ -1,4 +1,4 @@
-# Dependency lock notes
+﻿# Dependency lock notes
 
 ## Goal
 
@@ -10,7 +10,7 @@ The backend project currently keeps several developer-oriented tools in `[projec
 
 ```powershell
 uv export --frozen --format requirements.txt --no-dev --no-editable --no-emit-project --python 3.12 `
-  --prune ruff --prune uv --prune mypy --prune pre-commit `
+  --prune ruff --prune uv --prune mypy --prune pre-commit --prune pytest `
   -o packaging\serverequirements.lock.txt
 ```
 
@@ -42,3 +42,4 @@ Validation rules:
 - requirement names are parsed by normalized distribution name, not substring matching
 - the forbidden names are exactly: `pytest`, `ruff`, `mypy`, `pre-commit`, `uv`
 - `uvicorn` remains valid and must not be rejected as `uv`
+
