@@ -155,9 +155,7 @@ def detect_wechat_db_dir_from_ini(config_dir: str) -> str | None:
             except OSError:
                 content = None
                 break
-        if not content or any(char in content for char in '
-
-\x00') or not os.path.isdir(content):
+        if not content or any(char in content for char in '\n\r\x00') or not os.path.isdir(content):
             continue
 
         for match in glob.glob(os.path.join(content, 'xwechat_files', '*', 'db_storage')):
