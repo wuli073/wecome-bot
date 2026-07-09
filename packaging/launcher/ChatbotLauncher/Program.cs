@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Globalization;
 using System.Windows.Forms;
 
 namespace ChatbotLauncher;
@@ -11,6 +12,33 @@ internal static class Program
     private static void Main()
     {
         ApplicationConfiguration.Initialize();
+        try
+        {
+            using var singleInstance = LauncherSingleInstanceGuard.Acquire("ChatbotLauncher.Trial");
+            var installRoot = Path.GetFullPath(AppContext.BaseDirectory);
+            var config = LauncherConfig.LoadFromFile(Path.Combine(installRoot, "launcher.json"));
+            var layout = LauncherInstallationLayout.CreateDefault(installRoot);
+            var manager = LauncherProcessManager.CreateDefault(config, layout);
+            manager.StartAsync().GetAwaiter().GetResult();
+            var trayController = new TrayController(manager);
+            Application.Run(new LauncherApplicationContext(manager, trayController));
+        }
+        catch (LauncherUserFacingException ex)
+        {
+            MessageBox.Show(
+                ex.Message,
+                LauncherText.ErrorTitle(),
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                ex.Message,
+                LauncherText.ErrorTitle(),
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
     }
 }
 
@@ -279,3 +307,58 @@ public static class LauncherDiagnostics
 
 [JsonSerializable(typeof(LauncherConfig))]
 internal partial class LauncherJsonContext : JsonSerializerContext;
+
+public sealed class LauncherSingleInstanceGuard : IDisposable
+{
+    private readonly Mutex _mutex;
+
+    private LauncherSingleInstanceGuard(Mutex mutex)
+    {
+        _mutex = mutex;
+    }
+
+    public static LauncherSingleInstanceGuard Acquire(string name)
+    {
+        var mutex = new Mutex(initiallyOwned: true, $@"Local\{name}", out var createdNew);
+        if (!createdNew)
+        {
+            mutex.Dispose();
+            throw new LauncherUserFacingException(LauncherText.AlreadyRunning());
+        }
+
+        return new LauncherSingleInstanceGuard(mutex);
+    }
+
+    public void Dispose()
+    {
+        _mutex.ReleaseMutex();
+        _mutex.Dispose();
+    }
+}
+
+public static class LauncherText
+{
+    private static bool IsChinese =>
+        string.Equals(CultureInfo.CurrentUICulture.TwoLetterISOLanguageName, "zh", StringComparison.OrdinalIgnoreCase);
+
+    public static string ErrorTitle() => IsChinese ? "Chatbot 启动器" : "Chatbot Launcher";
+
+    public static string AlreadyRunning() =>
+        IsChinese ? "Chatbot 已在运行。请先关闭现有启动器实例。" : "Chatbot is already running.";
+
+    public static string ReadyStatus(bool sendEnabled) =>
+        IsChinese
+            ? $"后端已就绪；桌面运行时可用；真实发送{(sendEnabled ? "已启用" : "默认禁用")}。"
+            : $"Backend ready; desktop runtime reachable; real send {(sendEnabled ? "enabled" : "disabled by default")}.";
+
+    public static string PendingStatus(string status) =>
+        IsChinese ? $"桌面运行时状态：{status}" : $"Desktop runtime status: {status}";
+
+    public static string PortConflict(int port) =>
+        IsChinese
+            ? $"端口 {port} 已被占用。请关闭冲突进程或修改 launcher.json。"
+            : $"Port {port} is already in use. Close the conflicting process or update launcher.json.";
+
+    public static string DiagnosticsExported(string path) =>
+        IsChinese ? $"诊断包已导出：{path}" : $"Diagnostics exported: {path}";
+}
