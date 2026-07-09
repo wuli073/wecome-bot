@@ -3911,6 +3911,9 @@ class TestBroadcastApi:
         capability_payload = await capability_response.get_json()
         assert capability_response.status_code == 200
         assert capability_payload['data']['supports_paste_verification'] is False
+        assert capability_payload['data']['supports_post_send_verification'] is False
+        assert capability_payload['data']['content_verification'] == 'disabled'
+        assert capability_payload['data']['post_send_verification'] == 'unavailable'
         assert capability_payload['data']['requires_manual_conversation_open'] is False
         assert '"supports_paste_verification":false' in capability_raw
 
@@ -3961,7 +3964,7 @@ class TestBroadcastApi:
         assert payload['msg'] == 'BROADCAST_EXECUTION_EVIDENCE_NOT_AVAILABLE'
 
 
-    async def test_execution_task_start_route_preserves_succeeded_with_warning_status(
+    async def test_execution_task_start_route_maps_attachment_paste_warning_to_success(
         self,
         quart_test_client,
         fake_broadcast_app,
@@ -3977,11 +3980,15 @@ class TestBroadcastApi:
                     'stage': 'attachments_pasted_unverified',
                     'result': {
                         'messageSent': False,
+                        'message_sent': False,
                         'clipboardRestoreFailed': False,
                         'warning': 'PASTE_RESULT_NOT_VERIFIED',
                         'contentVerified': False,
                         'draftWritten': True,
                         'inputLocated': False,
+                        'enterDispatched': False,
+                        'terminalConfirmed': True,
+                        'retryAllowed': False,
                         'attachmentsPrepared': True,
                         'attachmentPasteRequested': True,
                         'attachmentsVerified': False,
@@ -4127,21 +4134,22 @@ class TestBroadcastApi:
         start_payload = await start_response.get_json()
 
         assert start_response.status_code == 200
-        assert start_payload['data']['status'] == 'succeeded_with_warning'
+        assert start_payload['data']['status'] == 'succeeded'
+        assert start_payload['data']['retry_allowed'] is False
 
         attempts_response = await quart_test_client.get(
             f'/api/v1/broadcast/execution-tasks/{task_id}/attempts?{_query_scope()}',
             headers=_auth_headers(),
         )
         attempts_payload = await attempts_response.get_json()
-        assert attempts_payload['data'][0]['status'] == 'succeeded_with_warning'
+        assert attempts_payload['data'][0]['status'] == 'succeeded'
 
         evidence_response = await quart_test_client.get(
             f"/api/v1/broadcast/execution-attempts/{attempts_payload['data'][0]['id']}/evidence?{_query_scope()}",
             headers=_auth_headers(),
         )
         evidence_payload = await evidence_response.get_json()
-        assert evidence_payload['data']['evidence_summary'] == '已写入，附件待人工确认'
+        assert evidence_payload['data']['evidence_summary'] == '已粘贴附件，未发送'
         technical_details = json.loads(evidence_payload['data']['technical_details'])
         assert technical_details['warning'] == 'PASTE_RESULT_NOT_VERIFIED'
         assert technical_details['attachment_count'] == 1
@@ -4746,10 +4754,13 @@ class TestBroadcastApi:
             [
                 {
                     'id': 'runtime-send-unknown',
-                    'status': 'running',
-                    'stage': 'sent_pending_confirmation',
+                    'status': 'succeeded_with_warning',
+                    'stage': 'sent_unconfirmed',
                     'result': {
-                        'messageSent': True,
+                        'messageSent': None,
+                        'enterDispatched': True,
+                        'terminalConfirmed': True,
+                        'retryAllowed': False,
                         'sendKeyCount': 1,
                     },
                 },
@@ -4788,6 +4799,8 @@ class TestBroadcastApi:
         assert payload['data']['unknown_count'] == 1
         assert payload['data']['sent_count'] == 1
         assert [item['outcome'] for item in payload['data']['items']] == ['unknown', 'sent']
+        assert payload['data']['items'][0]['enter_dispatched'] is True
+        assert payload['data']['items'][0]['message_sent'] is None
         assert len(runtime_client.requests) == 2
 
     @pytest.mark.asyncio
@@ -5312,7 +5325,7 @@ class TestBroadcastApi:
             },
             send_triggered=True,
             error_code='BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN',
-            error_message='发送结果无法确认，请人工检查目标会话',
+            error_message='已执行发送操作，请人工检查目标会话',
         )
 
         task_response = await quart_test_client.get(

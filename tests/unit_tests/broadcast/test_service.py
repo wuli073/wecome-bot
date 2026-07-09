@@ -1080,14 +1080,13 @@ async def test_create_send_batch_marks_unknown_after_enter_and_blocks_resend(ser
         async def create_task(self, *, request: dict[str, object]):
             return {
                 'id': 'runtime-send-unknown',
-                'status': 'failed',
-                'stage': 'post_send_verification_failed',
-                'errorCode': 'POST_SEND_VERIFICATION_FAILED',
+                'status': 'succeeded_with_warning',
+                'stage': 'sent_unconfirmed',
                 'result': {
-                    'outcome': 'unknown',
-                    'messageSent': True,
-                    'postSendVerified': False,
-                    'verificationResult': 'not_confirmed',
+                    'messageSent': None,
+                    'enterDispatched': True,
+                    'terminalConfirmed': True,
+                    'retryAllowed': False,
                     'clipboardRestoreFailed': False,
                     'contentVerified': True,
                     'draftWritten': True,
@@ -1115,11 +1114,12 @@ async def test_create_send_batch_marks_unknown_after_enter_and_blocks_resend(ser
     assert batch['items'][0]['outcome'] == 'unknown'
     assert batch['items'][0]['enter_dispatched'] is True
     assert batch['items'][0]['message_sent'] is None
-    assert batch['items'][0]['terminal_confirmed'] is False
+    assert batch['items'][0]['terminal_confirmed'] is True
     assert batch['tasks'][0]['retry_allowed'] is False
 
     refreshed = await service.get_draft_detail(draft['id'], _scope())
     assert refreshed['send_status'] == 'unknown'
+    assert refreshed['error_message'] == '已执行发送操作，请人工检查目标会话'
 
     with pytest.raises(BroadcastError) as exc_info:
         await service.create_execution_batch(
@@ -1138,6 +1138,85 @@ async def test_create_send_batch_marks_unknown_after_enter_and_blocks_resend(ser
             {'operator': 'tester@example.com'},
         )
     assert retry_error.value.code == BROADCAST_RETRY_SEND_RESULT_UNKNOWN
+
+
+async def test_create_paste_only_batch_accepts_unverified_terminal_success(
+    service_fixture,
+    monkeypatch,
+):
+    service, _ = service_fixture
+    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
+
+    class _PasteOnlyRuntimeClient:
+        async def health(self):
+            return {'status': 'ready', 'protocolVersion': '1'}
+
+        async def capabilities(self):
+            return {'supportsPaste': True, 'supportsSend': True}
+
+        async def create_task(self, *, request: dict[str, object]):
+            return {
+                'id': 'runtime-paste-only-success',
+                'status': 'succeeded',
+                'stage': 'text_pasted_unverified',
+                'result': {
+                    'messageSent': False,
+                    'clipboardRestoreFailed': False,
+                    'contentVerified': False,
+                    'draftWritten': True,
+                    'inputLocated': False,
+                    'observationAvailable': False,
+                    'terminalConfirmed': True,
+                    'enterDispatched': False,
+                    'retryAllowed': False,
+                },
+            }
+
+    service.ap.desktop_automation_service = SimpleNamespace(
+        runtime_client=_PasteOnlyRuntimeClient()
+    )
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+
+    created_batch = await service.create_execution_batch(
+        _scope(),
+        {
+            'draft_ids': [draft['id']],
+            'mode': 'paste_only',
+            'operator': 'tester@example.com',
+        },
+    )
+    task_id = created_batch['tasks'][0]['id']
+    task = await service.start_execution_task(
+        task_id,
+        _scope(),
+        {'operator': 'tester@example.com'},
+    )
+    batch = await service.get_execution_batch_detail(created_batch['id'], _scope())
+
+    assert batch['status'] == 'completed'
+    assert task['status'] == 'succeeded'
+    assert task['error_code'] != 'PASTE_VERIFICATION_FAILED'
+    assert task['retry_allowed'] is False
+    assert task['enter_dispatched'] is False
+    assert task['message_sent'] is False
+    assert task['terminal_confirmed'] is True
+
+    refreshed = await service.get_draft_detail(draft['id'], _scope())
+    assert refreshed['send_status'] == 'pending'
+
+    attempts = await service.list_execution_attempts(task_id, _scope())
+    assert len(attempts) == 1
+    assert attempts[0]['status'] == 'succeeded'
+
+    evidence = await service.get_execution_evidence(attempts[0]['id'], _scope())
+    assert evidence is not None
+    assert evidence['evidence_summary'] == '已粘贴，未发送'
+    assert evidence['input_located'] is False
+    assert evidence['draft_written'] is True
+    technical_details = json.loads(evidence['technical_details'])
+    assert technical_details['content_verified'] is False
+    assert technical_details['observation_available'] is False
 
 
 async def test_create_send_batch_waits_for_terminal_failed_task(service_fixture, monkeypatch):

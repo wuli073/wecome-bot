@@ -63,7 +63,8 @@ async def test_wecom_executor_exposes_capabilities_and_normalizes_paste_evidence
     assert capability['supports_send'] is True
     assert capability['supports_paste_verification'] is False
     assert capability['supports_attachment_send'] is True
-    assert capability['supports_post_send_verification'] is True
+    assert capability['supports_post_send_verification'] is False
+    assert capability['post_send_verification'] == 'unavailable'
     assert capability['requires_manual_conversation_open'] is False
 
     result = await executor.paste_draft(
@@ -77,6 +78,7 @@ async def test_wecom_executor_exposes_capabilities_and_normalizes_paste_evidence
     assert evidence['send_triggered'] is False
     assert evidence['draft_written'] is True
     assert evidence['content_verified'] is False
+    assert evidence['evidence_summary'] == '已粘贴，未发送'
     assert evidence['technical_details']['warning'] == 'PASTE_RESULT_NOT_VERIFIED'
     assert evidence['technical_details']['search_shortcut_count'] == 1
     assert evidence['technical_details']['conversation_confirm_enter_count'] == 1

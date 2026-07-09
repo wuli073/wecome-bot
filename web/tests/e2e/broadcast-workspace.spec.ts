@@ -701,7 +701,7 @@ test.describe('broadcast workflow', () => {
 
     await page.locator('[role="tab"]').nth(2).click();
     await expect(page.locator('body')).toContainText(
-      '发送结果无法确认，请人工检查目标会话。',
+      '已执行发送操作，请人工检查目标会话',
     );
     await expect(
       page.getByTestId('broadcast-batch-retry-failed-button'),

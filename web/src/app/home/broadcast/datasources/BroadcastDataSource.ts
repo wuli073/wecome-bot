@@ -540,6 +540,9 @@ function fromApiExecutorCapability(
     channel: String(payload.channel || 'wxwork_database'),
     supports_paste: Boolean(payload.supports_paste),
     supports_paste_verification: Boolean(payload.supports_paste_verification),
+    supports_post_send_verification: Boolean(
+      payload.supports_post_send_verification,
+    ),
     supports_send: Boolean(payload.supports_send),
     supports_cancel: Boolean(payload.supports_cancel),
     supports_status_query: Boolean(payload.supports_status_query),
@@ -561,6 +564,12 @@ function fromApiExecutorCapability(
       contentVerification === 'windows_uia'
         ? (contentVerification as 'disabled' | 'manual' | 'windows_uia')
         : 'unknown',
+    post_send_verification:
+      String(payload.post_send_verification || '').trim() === 'unavailable'
+        ? 'unavailable'
+        : String(payload.post_send_verification || '').trim() === 'available'
+          ? 'available'
+          : 'unknown',
   };
 }
 

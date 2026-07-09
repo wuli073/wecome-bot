@@ -18,7 +18,7 @@ class WeComDraftExecutor(ConversationDraftExecutor):
             'supports_paste_verification': False,
             'supports_send': True,
             'supports_attachment_send': True,
-            'supports_post_send_verification': True,
+            'supports_post_send_verification': False,
             'supports_cancel': True,
             'supports_status_query': True,
             'supports_clipboard_restore': True,
@@ -26,6 +26,7 @@ class WeComDraftExecutor(ConversationDraftExecutor):
             'requires_manual_conversation_open': False,
             'conversation_locator': 'keyboard_search',
             'content_verification': 'disabled',
+            'post_send_verification': 'unavailable',
             'executor_version': 'phase7',
             'runtime_min_version': '1',
         }
@@ -159,10 +160,12 @@ class WeComDraftExecutor(ConversationDraftExecutor):
         verification_failed = bool(payload.get('verificationFailed', False))
         warning = str(payload.get('warning') or '').strip() or None
         evidence_summary = stage
-        if status == 'succeeded_with_warning' and stage == 'attachments_pasted_unverified':
-            evidence_summary = '已写入，附件待人工确认'
-        elif status == 'succeeded_with_warning' and stage == 'text_pasted_unverified':
-            evidence_summary = '已写入正文，待人工确认'
+        if stage == 'attachments_pasted_unverified':
+            evidence_summary = '已粘贴附件，未发送'
+        elif stage == 'text_pasted_unverified':
+            evidence_summary = '已粘贴，未发送'
+        elif stage == 'sent_unconfirmed':
+            evidence_summary = '已执行发送操作，请人工检查目标会话'
         window_title = (
             payload.get('windowTitle')
             or (payload.get('selectedWindow') or {}).get('title')

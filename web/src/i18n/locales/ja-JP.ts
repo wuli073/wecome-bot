@@ -2314,6 +2314,7 @@ const jaJP = {
       statusDraftWritten: '貼り付け済み（未送信）',
       statusPasteVerified: '貼り付け済み（未送信）',
       statusWarning: '貼り付け済み（未送信）',
+      statusUnknown: '要手動確認',
       statusSendTriggered: 'Enter を 1 回送信済み',
       fields: {
         attachmentCount: '添付数',

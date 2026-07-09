@@ -475,6 +475,7 @@ export interface BroadcastExecutorCapability {
   channel: string;
   supports_paste: boolean;
   supports_paste_verification?: boolean;
+  supports_post_send_verification?: boolean;
   supports_send: boolean;
   supports_cancel: boolean;
   supports_status_query: boolean;
@@ -485,6 +486,7 @@ export interface BroadcastExecutorCapability {
   runtime_min_version: string;
   conversation_locator?: 'keyboard_search' | 'external_id' | 'unknown';
   content_verification?: 'disabled' | 'manual' | 'windows_uia' | 'unknown';
+  post_send_verification?: 'available' | 'unavailable' | 'unknown';
 }
 
 export interface BroadcastExecutorHealth {

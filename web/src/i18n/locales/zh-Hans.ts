@@ -2309,6 +2309,7 @@ const zhHans = {
       statusDraftWritten: '已粘贴，未发送',
       statusPasteVerified: '已粘贴，未发送',
       statusWarning: '已粘贴，未发送',
+      statusUnknown: '待人工确认',
       statusSendTriggered: '已按一次 Enter 发送',
       retryFailedTasks: '?????',
       retryFailedTasksConfirmTitle: '?????',

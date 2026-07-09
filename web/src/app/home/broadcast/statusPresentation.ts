@@ -112,11 +112,14 @@ export function getExecutionLogAdviceCode(log: BroadcastExecutionLog) {
 }
 
 export function getExecutionLogStatusKey(log: BroadcastExecutionLog) {
+  if (log.action === 'send_message' && log.sendTriggered) {
+    if (log.taskStatus === 'succeeded') {
+      return getExecutionTaskStatusKey(log.taskStatus);
+    }
+    return 'broadcast.logs.statusUnknown';
+  }
   if (log.taskStatus === 'succeeded_with_warning') {
     return 'broadcast.logs.statusWarning';
-  }
-  if (log.action === 'send_message' && log.sendTriggered) {
-    return 'broadcast.logs.statusSendTriggered';
   }
   if (log.contentVerified) {
     return 'broadcast.logs.statusPasteVerified';

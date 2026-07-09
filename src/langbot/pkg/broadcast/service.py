@@ -159,7 +159,7 @@ RUNTIME_TASK_TERMINAL_STATUSES = {
 }
 RUNTIME_TASK_POLL_INTERVAL_SECONDS = 0.05
 RUNTIME_TASK_CANCEL_GRACE_POLLS = 10
-SEND_TERMINAL_STATE_UNKNOWN_MESSAGE = '发送结果无法确认，请人工检查目标会话'
+SEND_TERMINAL_STATE_UNKNOWN_MESSAGE = '已执行发送操作，请人工检查目标会话'
 SEND_CANCELLED_BEFORE_DISPATCH_MESSAGE = '发送任务已在触发 Enter 前取消'
 
 DRAFT_GENERATION_MODIFIED_FIELDS = [
@@ -2449,6 +2449,7 @@ class BroadcastService:
             runtime_result = await executor.paste_draft(**paste_kwargs)
             decoded_runtime_result = decode_runtime_task(runtime_result)
             evidence = executor.normalize_evidence(runtime_result)
+            terminal_result = self._extract_send_terminal_result(runtime_result, evidence)
             runtime_error_code = (
                 str(decoded_runtime_result.get('error_code') or runtime_result.get('error_code') or '').strip()
                 or None
@@ -2461,6 +2462,14 @@ class BroadcastService:
                 task_status = 'failed'
                 error_code = BROADCAST_EXECUTION_SEND_TRIGGERED
                 error_message = '检测到发送动作，已按安全失败处理'
+            elif self._is_successful_paste_only_terminal_result(
+                str(decoded_runtime_result.get('status') or ''),
+                evidence,
+                terminal_result,
+            ):
+                task_status = 'succeeded'
+                error_code = None
+                error_message = None
             elif runtime_error_code in FAILED_RUNTIME_PASTE_ERROR_CODES:
                 task_status = 'failed'
                 error_code = runtime_error_code
@@ -4431,6 +4440,21 @@ class BroadcastService:
         if normalized in {'cancelled'}:
             return 'cancelled'
         return 'failed'
+
+    @staticmethod
+    def _is_successful_paste_only_terminal_result(
+        runtime_status: str,
+        evidence: dict[str, Any] | None,
+        terminal_result: dict[str, Any] | None,
+    ) -> bool:
+        normalized_status = str(runtime_status or '').strip().lower()
+        if normalized_status not in {'succeeded', 'succeeded_with_warning'}:
+            return False
+        if not bool((evidence or {}).get('draft_written', False)):
+            return False
+        if (terminal_result or {}).get('enter_dispatched') is not False:
+            return False
+        return bool((terminal_result or {}).get('terminal_confirmed'))
 
     @staticmethod
     def _map_pre_send_failure_code(runtime_error_code: str | None, evidence: dict[str, Any] | None) -> str:

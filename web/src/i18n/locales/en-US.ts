@@ -2415,6 +2415,7 @@ const enUS = {
       statusDraftWritten: 'Pasted, not sent',
       statusPasteVerified: 'Pasted, not sent',
       statusWarning: 'Pasted, not sent',
+      statusUnknown: 'Needs manual review',
       statusSendTriggered: 'Send triggered once',
       retryFailedTasks: 'Retry failed items',
       retryFailedTasksConfirmTitle: 'Retry failed items',

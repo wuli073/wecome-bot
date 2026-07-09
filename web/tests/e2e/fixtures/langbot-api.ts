@@ -1613,31 +1613,32 @@ function simulateSendBatch(
       createExecutionAttempt(state, task, {
         status: 'interrupted',
         action: 'send_message',
-        runtime_state: 'send_result_unknown',
+        runtime_state: 'sent_unconfirmed',
         send_triggered: true,
-        evidence_summary: 'Enter dispatched but send result requires review',
+        evidence_summary: '已执行发送操作，请人工检查目标会话',
         error_code: 'BROADCAST_SEND_RESULT_UNKNOWN',
-        error_message: '发送结果无法确认，请人工检查目标会话。',
+        error_message: '已执行发送操作，请人工检查目标会话',
         response_summary: {
           id: `runtime-${task.id}`,
-          status: 'unknown',
-          stage: 'terminal_state_unknown',
-          errorCode: 'BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN',
+          status: 'succeeded_with_warning',
+          stage: 'sent_unconfirmed',
           result: {
-            enterDispatched: null,
+            enterDispatched: true,
             messageSent: null,
-            terminalConfirmed: false,
-            terminalSource: 'backend_synthetic_unknown',
+            terminalConfirmed: true,
+            terminalSource: 'runtime',
+            retryAllowed: false,
           },
         },
         technical_details: {
-          message_sent: true,
-          terminal_source: 'backend_synthetic_unknown',
+          enter_dispatched: true,
+          message_sent: null,
+          terminal_source: 'runtime',
         },
       });
       draft.send_status = 'unknown';
       draft.sent_at = null;
-      draft.error_message = '发送结果无法确认，请人工检查目标会话。';
+      draft.error_message = '已执行发送操作，请人工检查目标会话';
       draft.updated_at = now();
       continue;
     }
