@@ -17,4 +17,6 @@ def test_inno_setup_script_covers_trial_requirements() -> None:
     assert "CloseApplications=yes" in content
     assert "vc_redist.x64.exe" in content
     assert "ChatbotLauncher.exe" in content
+    assert "UninstallSilent" in content
+    assert "if not UninstallSilent" in content
     assert "Remove user data" in content or "删除用户数据" in content

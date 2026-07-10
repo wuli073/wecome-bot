@@ -82,9 +82,12 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
   begin
-    if MsgBox(ExpandConstant('{cm:RemoveUserDataPrompt}'), mbConfirmation, MB_YESNO) = IDYES then
+    if not UninstallSilent then
     begin
-      DelTree(ExpandConstant('{localappdata}\Chatbot'), True, True, True);
+      if MsgBox(ExpandConstant('{cm:RemoveUserDataPrompt}'), mbConfirmation, MB_YESNO) = IDYES then
+      begin
+        DelTree(ExpandConstant('{localappdata}\Chatbot'), True, True, True);
+      end;
     end;
   end;
 end;

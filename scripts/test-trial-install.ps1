@@ -162,11 +162,11 @@ function Get-ProcessDetails {
         foreach ($id in $ProcessIds) { $queue.Enqueue([int]$id) }
         $seen = @{}
         while ($queue.Count -gt 0) {
-            $pid = [int]$queue.Dequeue()
-            if ($seen.ContainsKey($pid)) { continue }
-            $seen[$pid] = $true
-            foreach ($item in ($all | Where-Object { $_.ProcessId -eq $pid })) { $selected += $item }
-            foreach ($child in ($all | Where-Object { $_.ParentProcessId -eq $pid })) { $queue.Enqueue([int]$child.ProcessId) }
+            $processId = [int]$queue.Dequeue()
+            if ($seen.ContainsKey($processId)) { continue }
+            $seen[$processId] = $true
+            foreach ($item in ($all | Where-Object { $_.ProcessId -eq $processId })) { $selected += $item }
+            foreach ($child in ($all | Where-Object { $_.ParentProcessId -eq $processId })) { $queue.Enqueue([int]$child.ProcessId) }
         }
     }
     else {
@@ -229,20 +229,20 @@ function Find-UninstallExecutable {
 function Get-ShortcutEvidence {
     $desktop = [Environment]::GetFolderPath("DesktopDirectory")
     $startMenu = [Environment]::GetFolderPath("Programs")
-    $shortcuts = @(
-        (Join-Path $desktop "Chatbot Trial.lnk"),
-        (Join-Path $startMenu "Chatbot Trial.lnk")
-    )
-    $missing = @()
-    foreach ($shortcut in $shortcuts) {
-        if (-not (Test-Path -LiteralPath $shortcut -PathType Leaf)) { $missing += $shortcut }
+    $desktopShortcut = Join-Path $desktop "Chatbot Trial.lnk"
+    $startMenuShortcut = Join-Path $startMenu "Chatbot Trial.lnk"
+    if (-not (Test-Path -LiteralPath $startMenuShortcut -PathType Leaf)) {
+        throw "Missing Start Menu shortcut: $startMenuShortcut"
     }
-    if ($missing.Count -gt 0) { throw "Missing shortcuts: $($missing -join ', ')" }
+    $shortcuts = @($startMenuShortcut)
+    if (Test-Path -LiteralPath $desktopShortcut -PathType Leaf) {
+        $shortcuts += $desktopShortcut
+    }
     return $shortcuts
 }
 
 function Start-LauncherFromShortcut {
-    $shortcuts = Get-ShortcutEvidence
+    $shortcuts = @(Get-ShortcutEvidence)
     $shell = New-Object -ComObject WScript.Shell
     $link = $shell.CreateShortcut($shortcuts[0])
     $target = [string]$link.TargetPath
@@ -346,7 +346,7 @@ function Stop-LauncherGracefully {
             try { $script:LauncherProcess.Kill() } catch {}
         }
     }
-    $remaining = Wait-ForControlledProcessesExit -TimeoutSeconds 15
+    $remaining = @(Wait-ForControlledProcessesExit -TimeoutSeconds 15)
     if ($remaining.Count -gt 0) {
         foreach ($proc in $remaining) {
             try { Stop-Process -Id ([int]$proc.pid) -Force -ErrorAction SilentlyContinue } catch {}
@@ -439,7 +439,7 @@ function Stage-RpaStatusWait {
     $result = Wait-Until -TimeoutSeconds $StartupTimeoutSeconds -Condition {
         try {
             $status = Invoke-RestMethod -Uri $statusUri -TimeoutSec 5
-            if ($status | ConvertTo-Json -Compress -match '"send_enabled"\s*:\s*true') {
+            if (($status | ConvertTo-Json -Compress) -match '"send_enabled"\s*:\s*true') {
                 throw "real send is enabled"
             }
             return $status

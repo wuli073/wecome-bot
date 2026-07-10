@@ -533,14 +533,22 @@ def test_task17_scripts_cover_required_release_safety_terms() -> None:
     ]:
         assert classification in verify_script
     assert "finally" in verify_script and "verify-trial-release-result.json" in verify_script
-    for term in ["UpgradeSetupPath", "RPA_STATUS_WAIT", "VERIFY_NO_RESIDUE", "Shortcut", "KeepWorkDirectory", "SkipUpgrade", "SkipUninstall"]:
+    for term in ["UpgradeSetupPath", "RPA_STATUS_WAIT", "VERIFY_NO_RESIDUE", "Shortcut", "KeepWorkDirectory", "SkipUpgrade", "SkipUninstall", "Missing Start Menu shortcut", "@(Get-ShortcutEvidence", "@(Wait-ForControlledProcessesExit"]:
         assert term in install_script
 
 
 def test_verify_script_avoids_reserved_home_variable_assignment() -> None:
     verify_script = VERIFY_SCRIPT.read_text(encoding="utf-8-sig")
+    install_script = INSTALL_SCRIPT.read_text(encoding="utf-8-sig")
     assert "$home =" not in verify_script.lower()
     assert "$homeResponse =" in verify_script
+    assert "$pid =" not in install_script.lower()
+
+
+def test_install_script_checks_rpa_send_enabled_after_json_conversion() -> None:
+    install_script = INSTALL_SCRIPT.read_text(encoding="utf-8-sig")
+    assert 'if (($status | ConvertTo-Json -Compress) -match \'"send_enabled"\\s*:\\s*true\')' in install_script
+    assert "ConvertTo-Json -Compress -match" not in install_script
 
 
 def test_verify_script_validates_zip_sha256_sidecar() -> None:
