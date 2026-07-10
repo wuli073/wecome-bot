@@ -24,6 +24,28 @@ Set-StrictMode -Version Latest
 
 Import-Module (Join-Path $PSScriptRoot '..\packaging\build\BuildContext.psm1') -Force
 
+function Resolve-InnoCompilerPath {
+    param([hashtable]$Context)
+
+    $candidates = @()
+    if ($env:INNO_SETUP_COMPILER) {
+        $candidates += $env:INNO_SETUP_COMPILER
+    }
+
+    $candidates += @(
+        'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+        'C:\Program Files\Inno Setup 6\ISCC.exe'
+    )
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            return $candidate
+        }
+    }
+
+    throw 'Inno Setup compiler was not found. Set INNO_SETUP_COMPILER or install Inno Setup 6.'
+}
+
 function Invoke-GitCapture {
     param([hashtable]$Context)
 
@@ -51,6 +73,9 @@ function Invoke-EnvironmentCheck {
     Ensure-CommandAvailable -CommandName dotnet | Out-Null
     Ensure-CommandAvailable -CommandName tar | Out-Null
     Ensure-CommandAvailable -CommandName uv | Out-Null
+    if (-not $Context.PortableOnly) {
+        $Context.InnoCompilerPath = Resolve-InnoCompilerPath -Context $Context
+    }
 
     if ($Context.VcRedistPath) {
         $resolvedVcRedistPath = Resolve-BuildPath -BasePath $Context.RepoRoot -Path $Context.VcRedistPath
@@ -101,6 +126,10 @@ function New-RuntimeAssembly {
     Install-LockedPythonDependencies -Context $Context -Role $Role -RuntimeRoot $runtimeDestination -RequirementsPath $RequirementsPath
     $runtimeScriptsRoot = Join-Path $runtimeDestination 'python\Scripts'
     Reset-ManagedPath -Context $Context -Path $runtimeScriptsRoot -AllowedRoots @($roleWorkRoot)
+    if ($Role -eq 'server') {
+        $litellmBenchmarkRoot = Join-Path $runtimeDestination 'python\Lib\site-packages\litellm\proxy\guardrails\guardrail_hooks\litellm_content_filter\guardrail_benchmarks'
+        Reset-ManagedPath -Context $Context -Path $litellmBenchmarkRoot -AllowedRoots @($roleWorkRoot)
+    }
 
     return $roleWorkRoot
 }
@@ -417,6 +446,27 @@ function Invoke-PortableZipAssembly {
     $Context.PortableZipPath = $zipPath
 }
 
+function Invoke-InstallerAssembly {
+    param([hashtable]$Context)
+
+    $issPath = Join-Path $Context.RepoRoot 'packaging\installer\ChatbotTrial.iss'
+    $setupPath = Join-Path $Context.OutputRoot ("Chatbot-Setup-{0}-x64.exe" -f $Context.Version)
+    Reset-ManagedPath -Context $Context -Path $setupPath -AllowedRoots @($Context.OutputRoot)
+    Invoke-ExternalCommand -Context $Context -FilePath $Context.InnoCompilerPath -WorkingDirectory $Context.RepoRoot -ArgumentList @(
+        '/Qp',
+        "/DAppVersion=$($Context.Version)",
+        "/DSourcePortableRoot=$($Context.PortableRoot)",
+        "/DOutputRoot=$($Context.OutputRoot)",
+        $issPath
+    )
+
+    if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
+        throw "Installer output is missing: $setupPath"
+    }
+
+    $Context.SetupPath = $setupPath
+}
+
 function Invoke-PortableSanityCheck {
     param([hashtable]$Context)
 
@@ -439,6 +489,11 @@ function Invoke-PortableSanityCheck {
         if (Test-Path -LiteralPath $zipPath) {
             throw "PortableOnly mode must not generate Portable ZIP: $zipPath"
         }
+
+        $setupPath = Join-Path $Context.OutputRoot ("Chatbot-Setup-{0}-x64.exe" -f $Context.Version)
+        if (Test-Path -LiteralPath $setupPath) {
+            throw "PortableOnly mode must not generate installer package: $setupPath"
+        }
     }
     else {
         foreach ($requiredGeneratedFile in @('manifest.json', 'build-sensitive-scan.json', 'build-report.json', 'SHA256SUMS.txt')) {
@@ -451,11 +506,11 @@ function Invoke-PortableSanityCheck {
         if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
             throw "Full release build is missing Portable ZIP: $zipPath"
         }
-    }
 
-    $setupPath = Join-Path $Context.OutputRoot ("Chatbot-Setup-{0}-x64.exe" -f $Context.Version)
-    if (Test-Path -LiteralPath $setupPath) {
-        throw "Current build must not generate installer package: $setupPath"
+        $setupPath = Join-Path $Context.OutputRoot ("Chatbot-Setup-{0}-x64.exe" -f $Context.Version)
+        if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
+            throw "Full release build is missing installer package: $setupPath"
+        }
     }
 }
 
@@ -486,6 +541,7 @@ try {
         Invoke-BuildStage -Context $context -Name 'manifest generation' -Action { Invoke-ManifestGeneration -Context $context }
         Invoke-BuildStage -Context $context -Name 'build report generation' -Action { Invoke-BuildReportGeneration -Context $context }
         Invoke-BuildStage -Context $context -Name 'portable zip assembly' -Action { Invoke-PortableZipAssembly -Context $context }
+        Invoke-BuildStage -Context $context -Name 'installer assembly' -Action { Invoke-InstallerAssembly -Context $context }
     }
     Invoke-BuildStage -Context $context -Name 'minimal portable layout sanity check' -Action { Invoke-PortableSanityCheck -Context $context }
 
