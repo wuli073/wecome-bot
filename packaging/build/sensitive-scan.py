@@ -9,8 +9,6 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:\\[^\r\n\"']+")
-BUILD_MACHINE_HINT_RE = re.compile(r"\\Desktop\\bot\\", re.IGNORECASE)
-DESKTOP_BACKUP_HINT_RE = re.compile(r"\\WeChat Files\\", re.IGNORECASE)
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".log", ".key", ".pfx"}
 TEXT_SUFFIXES = {
     ".txt",
@@ -70,9 +68,18 @@ def _build_finding(finding_type: str, relative_path: str, detail: str) -> dict[s
     }
 
 
-def scan_release_tree(bundle_root: Path, allowlist_path: Path) -> dict[str, Any]:
+def _redact_literal_detail() -> str:
+    return "Blocked build-machine or developer path content detected and redacted."
+
+
+def scan_release_tree(
+    bundle_root: Path,
+    allowlist_path: Path,
+    blocked_literals: list[str] | None = None,
+) -> dict[str, Any]:
     bundle_root = bundle_root.resolve()
     allowlist = _load_allowlist(allowlist_path.resolve())
+    normalized_literals = [literal for literal in (blocked_literals or []) if literal]
     findings: list[dict[str, Any]] = []
     seen_findings: set[tuple[str, str, str]] = set()
     file_count = 0
@@ -100,13 +107,14 @@ def scan_release_tree(bundle_root: Path, allowlist_path: Path) -> dict[str, Any]
             continue
 
         text = file_path.read_text(encoding="utf-8", errors="ignore")
+        for literal in normalized_literals:
+            if literal in text and not _is_allowlisted_match(literal, allowlist):
+                add_finding("blocked_literal", relative_path, _redact_literal_detail())
         for match in WINDOWS_PATH_RE.findall(text):
             if _is_allowlisted_match(match, allowlist):
                 continue
-            if BUILD_MACHINE_HINT_RE.search(match):
-                add_finding("build_machine_path", relative_path, "Build-machine path content detected and redacted.")
-            elif DESKTOP_BACKUP_HINT_RE.search(match):
-                add_finding("desktop_backup_path", relative_path, "Desktop backup path content detected and redacted.")
+            if any(literal in match for literal in normalized_literals):
+                add_finding("blocked_literal", relative_path, _redact_literal_detail())
 
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -126,9 +134,14 @@ def main() -> int:
     parser.add_argument("--bundle-root", required=True)
     parser.add_argument("--allowlist", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--blocked-literal", action="append", default=[])
     args = parser.parse_args()
 
-    report = scan_release_tree(Path(args.bundle_root), Path(args.allowlist))
+    report = scan_release_tree(
+        Path(args.bundle_root),
+        Path(args.allowlist),
+        blocked_literals=args.blocked_literal,
+    )
     Path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return 1 if report["summary"]["blocked"] else 0
 

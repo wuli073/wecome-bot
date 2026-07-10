@@ -71,6 +71,8 @@ def build_manifest(bundle_root: Path, version: str, metadata: dict[str, Any] | N
 
     return {
         "schemaVersion": SCHEMA_VERSION,
+        "product": "Chatbot Trial",
+        "architecture": "x64",
         "version": version,
         "generatedAtUtc": _utc_now(),
         "nonCriticalValidation": "size",

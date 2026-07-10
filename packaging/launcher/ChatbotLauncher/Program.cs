@@ -9,41 +9,47 @@ namespace ChatbotLauncher;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static int Main()
     {
         ApplicationConfiguration.Initialize();
+        LauncherSingleInstanceGuard? singleInstance = null;
+        LauncherInstallationLayout? layout = null;
         try
         {
-            using var singleInstance = LauncherSingleInstanceGuard.Acquire("ChatbotLauncher.Trial");
             var installRoot = Path.GetFullPath(AppContext.BaseDirectory);
+            var verificationUserDataRoot = Environment.GetEnvironmentVariable("CHATBOT_USER_DATA_ROOT");
+            layout = LauncherInstallationLayout.CreateDefault(
+                installRoot,
+                userDataRoot: verificationUserDataRoot);
+            singleInstance = LauncherSingleInstanceGuard.Acquire("ChatbotLauncher.Trial");
             var config = LauncherConfig.LoadFromFile(Path.Combine(installRoot, "launcher.json"));
-            var layout = LauncherInstallationLayout.CreateDefault(installRoot);
             var vcRuntime = VcRuntimeLaunchPolicy.CreateDefault(new DefaultLauncherFileSystem(), new DefaultLauncherClock())
                 .EnsureAvailable(layout);
             if (vcRuntime.Status != VcRuntimeCheckStatus.Ready)
             {
-                throw new LauncherUserFacingException(vcRuntime.Message);
+                throw new LauncherUserFacingException(
+                    vcRuntime.Message,
+                    LauncherExitCodes.ConfigurationOrBundleError,
+                    vcRuntime.Status.ToString().ToUpperInvariant());
             }
             var manager = LauncherProcessManager.CreateDefault(config, layout);
             manager.StartAsync().GetAwaiter().GetResult();
             var trayController = new TrayController(manager);
             Application.Run(new LauncherApplicationContext(manager, trayController));
-        }
-        catch (LauncherUserFacingException ex)
-        {
-            MessageBox.Show(
-                ex.Message,
-                LauncherText.ErrorTitle(),
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            return 0;
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
-                ex.Message,
-                LauncherText.ErrorTitle(),
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            return LauncherFailurePresenter.Present(
+                ex,
+                LauncherEnvironment.IsNonInteractive(),
+                layout,
+                Console.Error,
+                new MessageBoxLauncherUiNotifier()).ExitCode;
+        }
+        finally
+        {
+            singleInstance?.Dispose();
         }
     }
 }
@@ -314,6 +320,19 @@ public static class LauncherDiagnostics
 [JsonSerializable(typeof(LauncherConfig))]
 internal partial class LauncherJsonContext : JsonSerializerContext;
 
+public static class LauncherEnvironment
+{
+    public const string NonInteractiveVariable = "CHATBOT_LAUNCHER_NONINTERACTIVE";
+
+    public static bool IsNonInteractive()
+    {
+        return string.Equals(
+            Environment.GetEnvironmentVariable(NonInteractiveVariable),
+            "1",
+            StringComparison.Ordinal);
+    }
+}
+
 public sealed class LauncherSingleInstanceGuard : IDisposable
 {
     private readonly Mutex _mutex;
@@ -329,7 +348,10 @@ public sealed class LauncherSingleInstanceGuard : IDisposable
         if (!createdNew)
         {
             mutex.Dispose();
-            throw new LauncherUserFacingException(LauncherText.AlreadyRunning());
+            throw new LauncherUserFacingException(
+                LauncherText.AlreadyRunning(),
+                LauncherExitCodes.AlreadyRunning,
+                "LAUNCHER_ALREADY_RUNNING");
         }
 
         return new LauncherSingleInstanceGuard(mutex);
@@ -339,6 +361,79 @@ public sealed class LauncherSingleInstanceGuard : IDisposable
     {
         _mutex.ReleaseMutex();
         _mutex.Dispose();
+    }
+}
+
+public interface ILauncherUiNotifier
+{
+    void ShowError(string message);
+}
+
+internal sealed class MessageBoxLauncherUiNotifier : ILauncherUiNotifier
+{
+    public void ShowError(string message)
+    {
+        MessageBox.Show(
+            message,
+            LauncherText.ErrorTitle(),
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Error);
+    }
+}
+
+public sealed record LauncherFailureResult(int ExitCode, string Message);
+
+public static class LauncherFailurePresenter
+{
+    public static LauncherFailureResult Present(
+        Exception exception,
+        bool nonInteractive,
+        LauncherInstallationLayout? layout,
+        TextWriter errorWriter,
+        ILauncherUiNotifier notifier)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        ArgumentNullException.ThrowIfNull(errorWriter);
+        ArgumentNullException.ThrowIfNull(notifier);
+
+        var failure = exception as LauncherUserFacingException
+            ?? new LauncherUserFacingException(
+                LauncherText.ConfigurationOrBundleError(exception.Message),
+                LauncherExitCodes.ConfigurationOrBundleError,
+                "CONFIGURATION_OR_BUNDLE_ERROR",
+                exception);
+        TryWriteFailureLog(layout, failure);
+        if (nonInteractive)
+        {
+            errorWriter.WriteLine($"[{failure.DiagnosticCode}] {failure.Message}");
+        }
+        else
+        {
+            notifier.ShowError(failure.Message);
+        }
+
+        return new LauncherFailureResult(failure.ExitCode, failure.Message);
+    }
+
+    private static void TryWriteFailureLog(LauncherInstallationLayout? layout, LauncherUserFacingException failure)
+    {
+        try
+        {
+            if (layout is null)
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(layout.LogRoot);
+            var logPath = Path.Combine(layout.LogRoot, "launcher.log");
+            File.AppendAllText(
+                logPath,
+                $"{DateTimeOffset.UtcNow:O} [{failure.DiagnosticCode}] {failure.Message}{Environment.NewLine}",
+                System.Text.Encoding.UTF8);
+        }
+        catch
+        {
+        }
     }
 }
 
@@ -360,10 +455,39 @@ public static class LauncherText
     public static string PendingStatus(string status) =>
         IsChinese ? $"桌面运行时状态：{status}" : $"Desktop runtime status: {status}";
 
-    public static string PortConflict(int port) =>
+    public static string PortConflict(int port, int? owningPid = null, string? owningExecutablePath = null)
+    {
+        var owner = owningPid is null
+            ? string.Empty
+            : IsChinese
+                ? $"{Environment.NewLine}占用进程 PID：{owningPid}; 路径：{owningExecutablePath}"
+                : $"{Environment.NewLine}Owning PID: {owningPid}; path: {owningExecutablePath}";
+        return IsChinese
+            ? $"端口 {port} 已被其他进程占用。请关闭冲突进程或修改 launcher.json。{owner}"
+            : $"Port {port} is already owned by another process. Close the conflicting process or update launcher.json.{owner}";
+    }
+
+    public static string BackendStartFailed(LauncherStartupFailureDetails details) =>
+        (IsChinese ? "打包后端进程启动失败。" : "Packaged backend process failed to start.")
+        + Environment.NewLine + Environment.NewLine
+        + FormatStartupFailureDetails(details);
+
+    public static string BackendExitedEarly(LauncherStartupFailureDetails details) =>
+        (IsChinese ? "打包后端在健康检查就绪前提前退出。" : "Packaged backend exited before health became ready.")
+        + Environment.NewLine + Environment.NewLine
+        + FormatStartupFailureDetails(details);
+
+    public static string BackendHealthTimeout(int timeoutSeconds, LauncherStartupFailureDetails details) =>
+        (IsChinese
+            ? $"打包后端在 {timeoutSeconds} 秒内未通过健康检查。"
+            : $"Packaged backend did not become healthy within {timeoutSeconds} seconds.")
+        + Environment.NewLine + Environment.NewLine
+        + FormatStartupFailureDetails(details);
+
+    public static string ConfigurationOrBundleError(string message) =>
         IsChinese
-            ? $"端口 {port} 已被占用。请关闭冲突进程或修改 launcher.json。"
-            : $"Port {port} is already in use. Close the conflicting process or update launcher.json.";
+            ? $"启动器配置或发行文件无效：{message}"
+            : $"Launcher configuration or bundle is invalid: {message}";
 
     public static string DiagnosticsExported(string path) =>
         IsChinese ? $"诊断包已导出：{path}" : $"Diagnostics exported: {path}";
@@ -405,4 +529,20 @@ public static class LauncherText
         IsChinese
             ? $"之前的便携版 VC++ 前置安装尝试状态为 {previousStatus}。启动器不会在每次启动时重复请求提升权限，请手动修复后重试。"
             : $"A previous Portable VC++ prerequisite attempt ended with {previousStatus}. The launcher will not request elevation again on every startup.";
+
+    private static string FormatStartupFailureDetails(LauncherStartupFailureDetails details)
+    {
+        return string.Join(
+            Environment.NewLine,
+            new[]
+            {
+                $"BackendPid: {details.BackendPid?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}",
+                $"ExitCode: {details.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}",
+                $"ExecutablePath: {details.ExecutablePath}",
+                $"CommandLine: {details.CommandLine}",
+                $"stdout: {details.StandardOutputPath}",
+                $"stderr: {details.StandardErrorPath}",
+                $"Summary: {details.LastErrorSummary}",
+            });
+    }
 }

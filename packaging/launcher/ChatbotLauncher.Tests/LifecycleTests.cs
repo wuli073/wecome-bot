@@ -7,6 +7,52 @@ namespace ChatbotLauncher.Tests;
 
 public sealed class LifecycleTests
 {
+    [Theory]
+    [InlineData(null, "\"\"")]
+    [InlineData("", "\"\"")]
+    [InlineData(@"C:\portable\python.exe", @"C:\portable\python.exe")]
+    [InlineData(@"C:\release path\python.exe", "\"C:\\release path\\python.exe\"")]
+    [InlineData(@"C:\中文 路径\python.exe", "\"C:\\中文 路径\\python.exe\"")]
+    [InlineData(@"C:\path with space\\", "\"C:\\path with space\\\\\\\\\"")]
+    [InlineData("{\"message\":\"hello world\"}", "\"{\\\"message\\\":\\\"hello world\\\"}\"")]
+    [InlineData("a\"b", "\"a\\\"b\"")]
+    public void QuoteCommandLineArgument_UsesWindowsEscapingRules(string? value, string expected)
+    {
+        Assert.Equal(expected, LauncherProcessManager.QuoteCommandLineArgument(value));
+    }
+
+    [Fact]
+    public void BuildCommandLineArguments_JoinsEscapedArgumentsForCreateProcess()
+    {
+        var commandLine = LauncherProcessManager.BuildCommandLineArguments(new[]
+        {
+            @"C:\release path\python.exe",
+            @"C:\release path\server\app\entrypoint.py",
+            "--user-data-root",
+            @"C:\verify session\UserData",
+            "--payload",
+            "{\"message\":\"hello world\"}",
+        });
+
+        Assert.Equal(
+            "\"C:\\release path\\python.exe\" \"C:\\release path\\server\\app\\entrypoint.py\" --user-data-root \"C:\\verify session\\UserData\" --payload \"{\\\"message\\\":\\\"hello world\\\"}\"",
+            commandLine);
+    }
+
+    [Fact]
+    public void CreateDefaultUsesExplicitUserDataRootWithoutAppendingProductDirectory()
+    {
+        var layout = LauncherInstallationLayout.CreateDefault(
+            @"C:\release\Chatbot",
+            @"C:\Users\Alice\AppData\Local",
+            @"C:\verify\session\UserData");
+
+        Assert.Equal(@"C:\verify\session\UserData", layout.UserDataRoot);
+        Assert.Equal(@"C:\verify\session\UserData\data", layout.DataRoot);
+        Assert.Equal(@"C:\verify\session\UserData\runtime", layout.RuntimeRoot);
+        Assert.Equal(@"C:\verify\session\UserData\logs", layout.LogRoot);
+    }
+
     [Fact]
     public void BuildPackagedEnvironment_UsesDefaultDisabledSendValues()
     {
@@ -18,6 +64,35 @@ public sealed class LifecycleTests
         Assert.Equal(string.Empty, environment["LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS"]);
         Assert.Equal("0", environment["LANGBOT_RPA_ALLOW_AUTO_SEND"]);
         Assert.Equal("1", environment["LANGBOT_RPA_FORCE_DISABLE_SEND"]);
+        Assert.Equal("1", environment["PYTHONDONTWRITEBYTECODE"]);
+        Assert.Equal("1", environment["PYTHONUTF8"]);
+        Assert.Equal("utf-8", environment["PYTHONIOENCODING"]);
+        Assert.Equal("true", environment["DESKTOP_AUTOMATION__ENABLED"]);
+        Assert.Equal(@"C:\Chatbot\runtime\desktop-rpa\LangBot Desktop RPA Runtime.exe", environment["DESKTOP_AUTOMATION__RUNTIME_EXECUTABLE"]);
+    }
+
+    [Fact]
+    public void FailurePresenter_WritesToStderrWithoutShowingUiInNonInteractiveMode()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "chatbot-launcher-tests", Guid.NewGuid().ToString("N"));
+        var layout = LauncherInstallationLayout.CreateDefault(
+            @"C:\release\Chatbot",
+            @"C:\Users\Alice\AppData\Local",
+            tempRoot);
+        var stderr = new StringWriter();
+        var notifier = new FakeUiNotifier();
+
+        var result = LauncherFailurePresenter.Present(
+            new LauncherUserFacingException("backend failed", LauncherExitCodes.BackendStartFailed, "BACKEND_START_FAILED"),
+            true,
+            layout,
+            stderr,
+            notifier);
+
+        Assert.Equal(LauncherExitCodes.BackendStartFailed, result.ExitCode);
+        Assert.Contains("BACKEND_START_FAILED", stderr.ToString());
+        Assert.False(notifier.ShowCalled);
+        Assert.True(File.Exists(Path.Combine(layout.LogRoot, "launcher.log")));
     }
 
     [Fact]
@@ -50,7 +125,7 @@ public sealed class LifecycleTests
     }
 
     [Fact]
-    public async Task StartAsync_ThrowsUserFacingPortConflictWhenBackendExitsBeforeHealthReady()
+    public async Task StartAsync_ThrowsBackendExitedEarlyWhenBackendExitsBeforeHealthReadyWithoutPortOwner()
     {
         var http = new FakeHttpProbeClient
         {
@@ -59,11 +134,76 @@ public sealed class LifecycleTests
         var process = new FakeProcess { HasExitedValue = true };
         var manager = CreateManager(
             http: http,
-            processLauncher: new FakeProcessLauncher(process));
+            processLauncher: new FakeProcessLauncher(process),
+            portOwnershipProbe: new FakePortOwnershipProbe());
 
         var error = await Assert.ThrowsAsync<LauncherUserFacingException>(() => manager.StartAsync());
 
-        Assert.Contains("5302", error.Message);
+        Assert.Equal(LauncherExitCodes.BackendExitedEarly, error.ExitCode);
+        Assert.Contains("BackendPid:", error.Message);
+    }
+
+    [Fact]
+    public async Task StartAsync_ThrowsPortConflictOnlyWhenOtherProcessOwnsConfiguredPort()
+    {
+        var http = new FakeHttpProbeClient();
+        http.HealthResponses.Enqueue(false);
+        var process = new FakeProcess { HasExitedValue = true };
+        var manager = CreateManager(
+            http: http,
+            processLauncher: new FakeProcessLauncher(process),
+            portOwnershipProbe: new FakePortOwnershipProbe
+            {
+                Report = new LauncherPortOwnershipReport(true, false, true, 9999, @"C:\conflict\python.exe"),
+            });
+
+        var error = await Assert.ThrowsAsync<LauncherUserFacingException>(() => manager.StartAsync());
+
+        Assert.Equal(LauncherExitCodes.PortOwnedByOtherProcess, error.ExitCode);
+        Assert.Contains("9999", error.Message);
+    }
+
+    [Fact]
+    public async Task StartAsync_ThrowsPortConflictBeforeBackendLaunchWhenConfiguredPortOwnedByOtherProcess()
+    {
+        var processLauncher = new FakeProcessLauncher(new FakeProcess());
+        var http = new FakeHttpProbeClient();
+        var manager = CreateManager(
+            http: http,
+            processLauncher: processLauncher,
+            portOwnershipProbe: new FakePortOwnershipProbe
+            {
+                Report = new LauncherPortOwnershipReport(true, false, true, 9999, @"C:\conflict\python.exe"),
+            });
+
+        var error = await Assert.ThrowsAsync<LauncherUserFacingException>(() => manager.StartAsync());
+
+        Assert.Equal(LauncherExitCodes.PortOwnedByOtherProcess, error.ExitCode);
+        Assert.Equal("PORT_OWNED_BY_OTHER_PROCESS", error.DiagnosticCode);
+        Assert.Contains("9999", error.Message);
+        Assert.Equal(0, processLauncher.StartCallCount);
+        Assert.Empty(http.HealthRequests);
+    }
+
+    [Fact]
+    public async Task StartAsync_ThrowsHealthTimeoutWhenBackendStaysAliveWithoutConflict()
+    {
+        var http = new FakeHttpProbeClient();
+        http.HealthResponses.Enqueue(false);
+        http.HealthResponses.Enqueue(false);
+        http.HealthResponses.Enqueue(false);
+        http.HealthResponses.Enqueue(false);
+        var process = new FakeProcess();
+        var manager = CreateManager(
+            backend: new LauncherBackendConfig("127.0.0.1", 5302, "/healthz", "/api/v1/desktop-automation/runtime/status", 1),
+            http: http,
+            processLauncher: new FakeProcessLauncher(process),
+            portOwnershipProbe: new FakePortOwnershipProbe());
+
+        var error = await Assert.ThrowsAsync<LauncherUserFacingException>(() => manager.StartAsync());
+
+        Assert.Equal(LauncherExitCodes.BackendHealthTimeout, error.ExitCode);
+        Assert.Contains("backend.stderr.log", error.Message);
     }
 
     [Fact]
@@ -113,7 +253,8 @@ public sealed class LifecycleTests
         LauncherBackendConfig? backend = null,
         FakeHttpProbeClient? http = null,
         FakeBrowserLauncher? browser = null,
-        FakeProcessLauncher? processLauncher = null)
+        FakeProcessLauncher? processLauncher = null,
+        FakePortOwnershipProbe? portOwnershipProbe = null)
     {
         var config = new LauncherConfig(
             LauncherContracts.SchemaVersion,
@@ -133,6 +274,7 @@ public sealed class LifecycleTests
             processLauncher ?? new FakeProcessLauncher(new FakeProcess()),
             http ?? ReadyHttpClient(),
             browser ?? new FakeBrowserLauncher(),
+            portOwnershipProbe ?? new FakePortOwnershipProbe(),
             fileSystem,
             new FakeClock());
     }
@@ -146,8 +288,11 @@ public sealed class LifecycleTests
             _process = process;
         }
 
+        public int StartCallCount { get; private set; }
+
         public ILauncherProcess Start(LauncherLaunchRequest request)
         {
+            StartCallCount++;
             _process.ExecutablePath = request.ExecutablePath;
             return _process;
         }
@@ -167,6 +312,8 @@ public sealed class LifecycleTests
 
         public bool HasExited => HasExitedValue;
 
+        public int? ExitCode => HasExitedValue ? 7 : null;
+
         public LauncherProcessSnapshot GetSnapshot()
         {
             return new LauncherProcessSnapshot(4242, ExecutablePath, CreateTimeUtc);
@@ -184,6 +331,17 @@ public sealed class LifecycleTests
 
         public void Dispose()
         {
+        }
+    }
+
+    private sealed class FakePortOwnershipProbe : ILauncherPortOwnershipProbe
+    {
+        public LauncherPortOwnershipReport Report { get; set; } =
+            new(false, false, false, null, string.Empty);
+
+        public LauncherPortOwnershipReport Inspect(int port, LauncherProcessSnapshot ownedSnapshot)
+        {
+            return Report;
         }
     }
 
@@ -219,6 +377,16 @@ public sealed class LifecycleTests
         public void Open(Uri uri)
         {
             OpenedUris.Add(uri);
+        }
+    }
+
+    private sealed class FakeUiNotifier : ILauncherUiNotifier
+    {
+        public bool ShowCalled { get; private set; }
+
+        public void ShowError(string message)
+        {
+            ShowCalled = true;
         }
     }
 

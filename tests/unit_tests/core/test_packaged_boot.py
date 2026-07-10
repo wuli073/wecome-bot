@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,6 +24,12 @@ def _load_module(module_name: str, relative_path: str):
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _repo_tmp_dir() -> Path:
+    root = Path(__file__).resolve().parents[3] / "build" / "pytest-temp" / "packaged-boot"
+    root.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(dir=root))
 
 
 def test_packaged_install_deps_raises_without_pip(monkeypatch):
@@ -58,12 +65,13 @@ def test_packaged_plugin_requirements_are_skipped(monkeypatch):
     install_requirements.assert_not_called()
 
 
-def test_packaged_backend_config_forces_loopback_and_packaged_roots(tmp_path):
+def test_packaged_backend_config_forces_loopback_and_packaged_roots():
     entrypoint = _load_module(
         'task7_packaged_entrypoint',
         'packaging/server/entrypoint.py',
     )
 
+    tmp_path = _repo_tmp_dir()
     install_root = tmp_path / 'Chatbot'
     local_app_data = tmp_path / 'Local App Data'
     config = entrypoint.build_packaged_backend_config(
@@ -84,7 +92,7 @@ def test_packaged_backend_config_forces_loopback_and_packaged_roots(tmp_path):
     assert config.rpa_runtime_path == install_root / 'runtime' / 'desktop-rpa' / 'LangBot Desktop RPA Runtime.exe'
 
 
-def test_packaged_environment_verifier_accepts_launcher_driven_roots(tmp_path):
+def test_packaged_environment_verifier_accepts_launcher_driven_roots():
     entrypoint = _load_module(
         'task7_packaged_entrypoint_verify',
         'packaging/server/entrypoint.py',
@@ -94,6 +102,7 @@ def test_packaged_environment_verifier_accepts_launcher_driven_roots(tmp_path):
         'packaging/server/verify_runtime.py',
     )
 
+    tmp_path = _repo_tmp_dir()
     config = entrypoint.build_packaged_backend_config(
         install_root=tmp_path / 'Chatbot',
         local_app_data=tmp_path / 'Users' / 'Alice' / 'AppData' / 'Local',
@@ -107,3 +116,36 @@ def test_packaged_environment_verifier_accepts_launcher_driven_roots(tmp_path):
     assert env['API__PORT'] == '5311'
     assert env['CHATBOT_BACKEND_HEALTH_PATH'] == '/healthz'
     assert env['CHATBOT_BACKEND_RUNTIME_STATUS_PATH'] == '/api/v1/desktop-automation/runtime/status'
+    assert env['PYTHONDONTWRITEBYTECODE'] == '1'
+    assert env['PYTHONUTF8'] == '1'
+    assert env['PYTHONIOENCODING'] == 'utf-8'
+    assert env['DESKTOP_AUTOMATION__ENABLED'] == 'true'
+    assert env['DESKTOP_AUTOMATION__RUNTIME_EXECUTABLE'] == str(config.rpa_runtime_path)
+
+
+def test_prepare_packaged_runtime_creates_user_data_dirs_and_switches_cwd(monkeypatch):
+    entrypoint = _load_module(
+        'task7_packaged_entrypoint_prepare_runtime',
+        'packaging/server/entrypoint.py',
+    )
+
+    tmp_path = _repo_tmp_dir()
+    config = entrypoint.build_packaged_backend_config(
+        install_root=tmp_path / 'Chatbot',
+        local_app_data=tmp_path / 'Users' / 'Alice' / 'AppData' / 'Local',
+        user_data_root=tmp_path / 'PortableUserData',
+    )
+
+    cwd_calls: list[str] = []
+    monkeypatch.setattr(entrypoint.os, 'chdir', lambda value: cwd_calls.append(str(value)))
+
+    entrypoint.prepare_packaged_runtime(config)
+
+    assert config.user_data_root.exists()
+    assert config.data_root.exists()
+    assert (config.data_root / 'logs').exists()
+    assert config.log_root.exists()
+    assert config.runtime_root.exists()
+    assert (config.data_root / 'labels').exists()
+    assert (config.data_root / 'metadata').exists()
+    assert cwd_calls == [str(config.user_data_root)]

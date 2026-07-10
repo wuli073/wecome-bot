@@ -83,6 +83,115 @@ def _is_user_data_retained_after_uninstall(user_data_root: Path, install_root: P
     return user_data_root.exists() and not (install_root / "ChatbotLauncher.exe").exists()
 
 
+def _quote_windows_process_argument(value: str | None) -> str:
+    """Mirror ConvertTo-ProcessArgument for focused, OS-independent test vectors."""
+    if value is None or value == "":
+        return '""'
+    if not re.search(r'[\s"]', value):
+        return value
+    return '"' + re.sub(r"(\\+)$", lambda match: match.group(1) * 2, re.sub(r'(\\*)"', lambda match: match.group(1) * 2 + r'\"', value)) + '"'
+
+
+def _classify_health_failure(
+    *, launcher_started: bool, launcher_exited: bool, backend_pid_known: bool,
+    backend_alive: bool, listening_pids: list[int], session_pids: list[int], http_status: int | None,
+) -> str:
+    if not launcher_started:
+        return "LAUNCHER_NOT_STARTED"
+    if launcher_exited:
+        return "LAUNCHER_EXITED_EARLY"
+    if not backend_pid_known:
+        return "BACKEND_NOT_CREATED"
+    if not backend_alive:
+        return "BACKEND_EXITED_EARLY"
+    if not listening_pids:
+        return "PORT_NOT_LISTENING"
+    if any(pid not in session_pids for pid in listening_pids):
+        return "PORT_OWNED_BY_OTHER_PROCESS"
+    if http_status is not None:
+        return "HEALTH_HTTP_ERROR"
+    return "BACKEND_HEALTH_TIMEOUT"
+
+
+def _parse_launcher_state_backend(state: dict[str, object]) -> tuple[int, str, str, str]:
+    backend = state.get("backend")
+    if not isinstance(backend, dict):
+        raise ValueError("LAUNCHER_STATE_SCHEMA_INVALID")
+    pid = backend.get("pid")
+    process_create_time_utc = backend.get("processCreateTimeUtc")
+    executable_path = backend.get("executablePath")
+    session_id = backend.get("sessionId")
+    if not isinstance(pid, int):
+        raise ValueError("LAUNCHER_STATE_SCHEMA_INVALID")
+    if not all(isinstance(value, str) and value for value in [process_create_time_utc, executable_path, session_id]):
+        raise ValueError("LAUNCHER_STATE_SCHEMA_INVALID")
+    return pid, process_create_time_utc, executable_path, session_id
+
+
+def _should_run_port_conflict(previous_stage_status: str) -> bool:
+    return previous_stage_status == "PASS"
+
+
+def _is_safe_residual_cleanup_candidate(
+    *,
+    executable_path: str | None,
+    command_line: str | None,
+    path_readable: bool,
+    creation_time_matches: bool,
+    launcher_state_matches: bool,
+) -> bool:
+    if not path_readable:
+        return False
+    text = f"{executable_path or ''}\n{command_line or ''}".lower()
+    if launcher_state_matches or creation_time_matches:
+        return True
+    return "chatbot-trial-0.1.1-x64" in text or "chatbottrialverify" in text
+
+
+def _select_runtime_ports(
+    requested_runtime_port: int,
+    requested_conflict_port: int,
+    unavailable_ports: set[int],
+) -> tuple[int, int]:
+    def pick(preferred: int, used: set[int]) -> int:
+        if preferred > 0:
+            if preferred in used:
+                raise ValueError("requested port already in use")
+            return preferred
+        for candidate in range(47000, 49000):
+            if candidate not in used:
+                return candidate
+        raise ValueError("no loopback port available")
+
+    used = set(unavailable_ports)
+    runtime_port = pick(requested_runtime_port, used)
+    used.add(runtime_port)
+    conflict_port = pick(requested_conflict_port, used)
+    return runtime_port, conflict_port
+
+
+def _rewrite_isolated_launcher_backend(original: dict[str, object], runtime_port: int) -> dict[str, object]:
+    rewritten = json.loads(json.dumps(original))
+    backend = rewritten["backend"]
+    assert isinstance(backend, dict)
+    backend["port"] = runtime_port
+    return rewritten
+
+
+def _rewrite_launcher_manifest_entry(manifest: dict[str, object], launcher_text: str) -> dict[str, object]:
+    rewritten = json.loads(json.dumps(manifest))
+    entries = rewritten["entries"]
+    assert isinstance(entries, list)
+    launcher_bytes = launcher_text.encode("utf-8")
+    launcher_hash = hashlib.sha256(launcher_bytes).hexdigest()
+    for entry in entries:
+        if entry["path"] == "launcher.json":
+            entry["size"] = len(launcher_bytes)
+            entry["sha256"] = launcher_hash
+            return rewritten
+    raise ValueError("launcher.json manifest entry is missing")
+
+
 def test_powershell_scripts_parse_without_syntax_errors() -> None:
     command = (
         "$ErrorActionPreference='Stop';"
@@ -185,6 +294,184 @@ def test_installer_root_and_user_data_retention_logic(repo_tmp_path: Path) -> No
     assert _is_user_data_retained_after_uninstall(user_data_root, install_root)
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, '""'),
+        ("", '""'),
+        (r"C:\portable\python.exe", r"C:\portable\python.exe"),
+        (r"C:\release path\python.exe", r'"C:\release path\python.exe"'),
+        (r"C:\中文 路径\python.exe", r'"C:\中文 路径\python.exe"'),
+        (r'C:\path with space\\', r'"C:\path with space\\\\"'),
+        ('{"message":"hello world"}', r'"{\"message\":\"hello world\"}"'),
+        ('a"b', r'"a\"b"'),
+    ],
+)
+def test_windows_process_argument_quoting_vectors(value: str | None, expected: str) -> None:
+    assert _quote_windows_process_argument(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"launcher_started": False, "launcher_exited": False, "backend_pid_known": False, "backend_alive": False, "listening_pids": [], "session_pids": [], "http_status": None}, "LAUNCHER_NOT_STARTED"),
+        ({"launcher_started": True, "launcher_exited": True, "backend_pid_known": False, "backend_alive": False, "listening_pids": [], "session_pids": [], "http_status": None}, "LAUNCHER_EXITED_EARLY"),
+        ({"launcher_started": True, "launcher_exited": False, "backend_pid_known": False, "backend_alive": False, "listening_pids": [], "session_pids": [], "http_status": None}, "BACKEND_NOT_CREATED"),
+        ({"launcher_started": True, "launcher_exited": False, "backend_pid_known": True, "backend_alive": False, "listening_pids": [], "session_pids": [], "http_status": None}, "BACKEND_EXITED_EARLY"),
+        ({"launcher_started": True, "launcher_exited": False, "backend_pid_known": True, "backend_alive": True, "listening_pids": [9], "session_pids": [4], "http_status": None}, "PORT_OWNED_BY_OTHER_PROCESS"),
+        ({"launcher_started": True, "launcher_exited": False, "backend_pid_known": True, "backend_alive": True, "listening_pids": [4], "session_pids": [4], "http_status": 503}, "HEALTH_HTTP_ERROR"),
+        ({"launcher_started": True, "launcher_exited": False, "backend_pid_known": True, "backend_alive": True, "listening_pids": [4], "session_pids": [4], "http_status": None}, "BACKEND_HEALTH_TIMEOUT"),
+    ],
+)
+def test_launcher_health_failure_classification(kwargs: dict[str, object], expected: str) -> None:
+    assert _classify_health_failure(**kwargs) == expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({
+            "executable_path": r"C:\Users\33031\Desktop\bot\build\release\Chatbot-Trial-0.1.1-x64\ChatbotLauncher.exe",
+            "command_line": r'"C:\Users\33031\Desktop\bot\build\release\Chatbot-Trial-0.1.1-x64\ChatbotLauncher.exe"',
+            "path_readable": True,
+            "creation_time_matches": False,
+            "launcher_state_matches": False,
+        }, True),
+        ({
+            "executable_path": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            "command_line": r'powershell -NoProfile -File C:\Users\33031\Desktop\bot\scripts\start-local.ps1',
+            "path_readable": True,
+            "creation_time_matches": False,
+            "launcher_state_matches": False,
+        }, False),
+        ({
+            "executable_path": None,
+            "command_line": r'python.exe C:\Users\33031\Desktop\bot\build\release\Chatbot-Trial-0.1.1-x64\server\app\packaging\server\entrypoint.py',
+            "path_readable": False,
+            "creation_time_matches": True,
+            "launcher_state_matches": False,
+        }, False),
+        ({
+            "executable_path": r"C:\Users\33031\Desktop\bot\build\release\Chatbot-Trial-0.1.1-x64\server\runtime\python\python.exe",
+            "command_line": r'python.exe entrypoint.py',
+            "path_readable": True,
+            "creation_time_matches": False,
+            "launcher_state_matches": True,
+        }, True),
+        ({
+            "executable_path": r"C:\Users\33031\AppData\Local\Programs\Python\Python311\python.exe",
+            "command_line": r'python.exe -m http.server',
+            "path_readable": True,
+            "creation_time_matches": False,
+            "launcher_state_matches": False,
+        }, False),
+    ],
+)
+def test_residual_cleanup_candidate_requires_identity_proof(kwargs: dict[str, object], expected: bool) -> None:
+    assert _is_safe_residual_cleanup_candidate(**kwargs) is expected  # type: ignore[arg-type]
+
+
+def test_launcher_state_backend_schema_requires_current_fields() -> None:
+    pid, created_at, executable_path, session_id = _parse_launcher_state_backend(
+        {
+            "backend": {
+                "pid": 4321,
+                "processCreateTimeUtc": "2026-07-10T00:00:00Z",
+                "executablePath": r"C:\release\server\runtime\python\python.exe",
+                "sessionId": "session-123",
+            }
+        }
+    )
+    assert pid == 4321
+    assert created_at == "2026-07-10T00:00:00Z"
+    assert executable_path.endswith("python.exe")
+    assert session_id == "session-123"
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {},
+        {"backend": None},
+        {"backend": {"pid": "4321"}},
+        {"backend": {"pid": 4321, "processCreateTimeUtc": "", "executablePath": "python.exe", "sessionId": "x"}},
+        {"backend": {"pid": 4321, "processCreateTimeUtc": "2026-07-10T00:00:00Z", "executablePath": "", "sessionId": "x"}},
+    ],
+)
+def test_launcher_state_backend_schema_rejects_legacy_or_partial_payloads(state: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="LAUNCHER_STATE_SCHEMA_INVALID"):
+        _parse_launcher_state_backend(state)
+
+
+@pytest.mark.parametrize(
+    ("previous_stage_status", "expected"),
+    [("PASS", True), ("FAIL", False), ("UNVERIFIED", False)],
+)
+def test_port_conflict_stage_only_runs_after_successful_launcher_runtime(previous_stage_status: str, expected: bool) -> None:
+    assert _should_run_port_conflict(previous_stage_status) is expected
+
+
+def test_runtime_verification_ports_are_distinct_and_loopback_only() -> None:
+    runtime_port, conflict_port = _select_runtime_ports(0, 0, {47000, 47001})
+    assert runtime_port != conflict_port
+    assert runtime_port not in {47000, 47001}
+    assert conflict_port not in {47000, 47001}
+    requested_runtime, requested_conflict = _select_runtime_ports(48081, 48082, set())
+    assert (requested_runtime, requested_conflict) == (48081, 48082)
+    with pytest.raises(ValueError):
+        _select_runtime_ports(48081, 48081, set())
+
+
+def test_isolated_launcher_config_only_overrides_backend_port() -> None:
+    original = {
+        "backend": {
+            "host": "127.0.0.1",
+            "port": 5302,
+            "healthPath": "/healthz",
+            "runtimeStatusPath": "/api/v1/desktop-automation/runtime/status",
+            "startupTimeoutSeconds": 90,
+        },
+        "ui": {"autoOpenBrowser": False},
+    }
+    rewritten = _rewrite_isolated_launcher_backend(original, runtime_port=48123)
+    assert original["backend"]["port"] == 5302
+    assert rewritten["backend"]["port"] == 48123
+    assert rewritten["backend"]["host"] == "127.0.0.1"
+    assert rewritten["backend"]["healthPath"] == original["backend"]["healthPath"]
+    assert rewritten["backend"]["runtimeStatusPath"] == original["backend"]["runtimeStatusPath"]
+    assert rewritten["ui"] == original["ui"]
+
+
+def test_isolated_manifest_rewrites_launcher_entry_size_and_hash_only() -> None:
+    original = {
+        "schemaVersion": 1,
+        "entries": [
+            {"path": "launcher.json", "size": 220, "sha256": "old", "critical": True},
+            {"path": "ChatbotLauncher.exe", "size": 100, "sha256": "keep", "critical": True},
+        ],
+    }
+    launcher_text = json.dumps(
+        {
+            "schemaVersion": 1,
+            "backend": {
+                "host": "127.0.0.1",
+                "port": 48123,
+                "healthPath": "/healthz",
+                "runtimeStatusPath": "/api/v1/desktop-automation/runtime/status",
+                "startupTimeoutSeconds": 60,
+            },
+        },
+        ensure_ascii=False,
+    )
+    rewritten = _rewrite_launcher_manifest_entry(original, launcher_text)
+    launcher_entry = next(entry for entry in rewritten["entries"] if entry["path"] == "launcher.json")
+    assert launcher_entry["size"] == len(launcher_text.encode("utf-8"))
+    assert launcher_entry["sha256"] == hashlib.sha256(launcher_text.encode("utf-8")).hexdigest()
+    other_entry = next(entry for entry in rewritten["entries"] if entry["path"] == "ChatbotLauncher.exe")
+    assert other_entry["sha256"] == "keep"
+    assert original["entries"][0]["size"] == 220
+
+
 def test_task17_scripts_cover_required_release_safety_terms() -> None:
     verify_script = VERIFY_SCRIPT.read_text(encoding="utf-8-sig")
     install_script = INSTALL_SCRIPT.read_text(encoding="utf-8-sig")
@@ -193,12 +480,71 @@ def test_task17_scripts_cover_required_release_safety_terms() -> None:
         "LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS",
         "LANGBOT_RPA_ALLOW_AUTO_SEND",
         "LANGBOT_RPA_FORCE_DISABLE_SEND",
+        "PYTHONDONTWRITEBYTECODE",
         "connectors\\runtime",
         "server\\runtime",
         "runtime\\desktop-rpa",
         "port-conflict",
         "no-residual-processes",
+        "release-immutable",
+        "ConvertTo-ProcessArgument",
+        "$psi.Arguments",
+        "CHATBOT_LAUNCHER_NONINTERACTIVE",
+        "connector-smoke.stdout.log",
+        "connector-smoke.stderr.log",
+        "process-snapshot-before",
+        "process-snapshot-failure",
+        "process-snapshot-cleanup-force",
+        "Stop-RemainingControlledProcesses",
+        "taskkill.exe /PID",
+        "Controlled processes remained after cleanup",
+        "port-snapshot.json",
+        "launcher-state-copy.json",
+        "launcher.stdout.log",
+        "launcher.stderr.log",
+        "backend.pid",
+        "backend.processCreateTimeUtc",
+        "backend.executablePath",
+        "backend.sessionId",
+        "LAUNCHER_STATE_SCHEMA_INVALID",
+        "BACKEND_HEALTH_TIMEOUT",
+        "HEALTH_RESPONSE_INVALID",
+        "Test-LauncherPortAvailability",
+        "ChatbotTrialVerify",
+        "RuntimeTestPort",
+        "PortConflictTestPort",
+        "SessionRoot",
+        "Get-FreeLoopbackPort",
+        "Update-IsolatedLauncherConfig",
+        "isolated-launcher.json",
+        "isolated-manifest.json",
+        "launcher.original.json",
+        "127.0.0.1",
+        "runtime test port",
+        "port-conflict test port",
+        "tar -tf",
     ]:
         assert term in verify_script
-    for term in ["UpgradeSetupPath", "uninstall-user-data-retention", "vc_redist", "Shortcut"]:
+    assert ".ArgumentList" not in verify_script
+    for classification in [
+        "LAUNCHER_NOT_STARTED", "LAUNCHER_EXITED_EARLY", "BACKEND_NOT_CREATED",
+        "BACKEND_EXITED_EARLY", "PORT_NOT_LISTENING", "PORT_OWNED_BY_OTHER_PROCESS",
+        "HEALTH_HTTP_ERROR", "HEALTH_RESPONSE_INVALID", "BACKEND_HEALTH_TIMEOUT",
+    ]:
+        assert classification in verify_script
+    assert "finally" in verify_script and "verify-trial-release-result.json" in verify_script
+    for term in ["UpgradeSetupPath", "RPA_STATUS_WAIT", "VERIFY_NO_RESIDUE", "Shortcut", "KeepWorkDirectory", "SkipUpgrade", "SkipUninstall"]:
         assert term in install_script
+
+
+def test_verify_script_avoids_reserved_home_variable_assignment() -> None:
+    verify_script = VERIFY_SCRIPT.read_text(encoding="utf-8-sig")
+    assert "$home =" not in verify_script.lower()
+    assert "$homeResponse =" in verify_script
+
+
+def test_verify_script_validates_zip_sha256_sidecar() -> None:
+    verify_script = VERIFY_SCRIPT.read_text(encoding="utf-8-sig")
+    assert "$zipSha256Path = $zipFull + '.sha256'" in verify_script
+    assert "ZIP checksum sidecar is missing" in verify_script
+    assert "ZIP checksum mismatch" in verify_script

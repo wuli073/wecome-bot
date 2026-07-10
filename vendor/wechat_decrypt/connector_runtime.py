@@ -285,6 +285,8 @@ def run_managed_script(script_name: str, app_dir: str, *args: str, timeout: int 
     env = os.environ.copy()
     env['WECHAT_DECRYPT_APP_DIR'] = app_dir
     env['WECHAT_DECRYPT_NONINTERACTIVE'] = '1'
+    env['PYTHONDONTWRITEBYTECODE'] = '1'
+    env['PYTHONUTF8'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
     proc = subprocess.run(
         [sys.executable, '-X', 'utf8', str(script_path), *args],

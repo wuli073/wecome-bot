@@ -253,6 +253,11 @@ internal sealed class MessageBoxVcRuntimePrompt : IVcRuntimePrompt
 {
     public bool ConfirmPortableFallback(string message)
     {
+        if (LauncherEnvironment.IsNonInteractive())
+        {
+            return false;
+        }
+
         return MessageBox.Show(
             message,
             LauncherText.ErrorTitle(),

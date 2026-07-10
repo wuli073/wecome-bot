@@ -46,6 +46,69 @@ function Resolve-InnoCompilerPath {
     throw 'Inno Setup compiler was not found. Set INNO_SETUP_COMPILER or install Inno Setup 6.'
 }
 
+function Get-AvailableSubstDriveRoot {
+    $usedRoots = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($drive in @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
+        if ($drive.Name) {
+            [void]$usedRoots.Add(($drive.Name.TrimEnd(':') + ':'))
+        }
+    }
+
+    foreach ($mapping in @(& subst 2>$null)) {
+        if ($mapping -match '^([A-Z]:)\\: => ') {
+            [void]$usedRoots.Add($matches[1])
+        }
+    }
+
+    foreach ($code in 90..80) {
+        $driveRoot = '{0}:' -f ([char]$code)
+        if (-not $usedRoots.Contains($driveRoot)) {
+            return $driveRoot
+        }
+    }
+
+    throw 'No available drive letter was found for temporary installer path aliasing.'
+}
+
+function New-SubstDriveAlias {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetPath
+    )
+
+    $normalizedTargetPath = Get-NormalizedPath -Path $TargetPath
+    $driveRoot = Get-AvailableSubstDriveRoot
+    $null = & subst $driveRoot $normalizedTargetPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to create subst alias $driveRoot for $normalizedTargetPath"
+    }
+
+    $aliasPath = $driveRoot + '\'
+    if (-not (Test-Path -LiteralPath $aliasPath -PathType Container)) {
+        & subst $driveRoot /d | Out-Null
+        throw "subst alias did not become available: $driveRoot -> $normalizedTargetPath"
+    }
+
+    return [pscustomobject]@{
+        DriveRoot = $driveRoot
+        TargetPath = $normalizedTargetPath
+        AliasPath = $aliasPath
+    }
+}
+
+function Remove-SubstDriveAlias {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DriveRoot
+    )
+
+    $null = & subst $DriveRoot /d
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to remove subst alias: $DriveRoot"
+    }
+}
+
 function Invoke-GitCapture {
     param([hashtable]$Context)
 
@@ -296,7 +359,7 @@ function Invoke-LauncherPublish {
 function Invoke-PortableDirectoryAssembly {
     param([hashtable]$Context)
 
-    Reset-ManagedPath -Context $Context -Path $Context.PortableRoot -AllowedRoots @($Context.OutputRoot)
+    Reset-ManagedPath -Context $Context -Path $Context.PortableRoot -AllowedRoots @($Context.WorkDirectory)
     Ensure-Directory -Path $Context.PortableRoot
 
     Invoke-Robocopy -Source $Context.LauncherPublishRoot -Destination $Context.PortableRoot
@@ -360,16 +423,46 @@ function Invoke-SensitiveScan {
 
     $scanReportPath = Join-Path $Context.PortableRoot 'build-sensitive-scan.json'
     $allowlistPath = Join-Path $Context.RepoRoot 'packaging\build\allowlist.json'
-    Invoke-ExternalCommand -Context $Context -FilePath 'uv' -WorkingDirectory $Context.RepoRoot -ArgumentList @(
+    $arguments = @(
         'run', '--no-sync', 'python',
         'packaging/build/sensitive-scan.py',
         '--bundle-root', $Context.PortableRoot,
         '--allowlist', $allowlistPath,
+        '--blocked-literal', $Context.RepoRoot,
+        '--blocked-literal', $env:USERPROFILE,
+        '--blocked-literal', (Join-Path $env:USERPROFILE 'Desktop\wechat-decrypt.backup'),
+        '--blocked-literal', 'C:\Users\runneradmin',
+        '--blocked-literal', 'file:///C:/actions-runner/',
+        '--blocked-literal', 'C:/actions-runner/',
         '--output', $scanReportPath
     )
+    Invoke-ExternalCommand -Context $Context -FilePath 'uv' -WorkingDirectory $Context.RepoRoot -ArgumentList $arguments
 
     $Context.SensitiveScanPath = $scanReportPath
     $Context.SensitiveScanReport = Read-JsonFile -Path $scanReportPath
+}
+
+function Invoke-PortableSanitization {
+    param([hashtable]$Context)
+
+    $reportPath = Join-Path $Context.WorkDirectory 'sanitize-bundle-report.json'
+    $arguments = @(
+        'run', '--no-sync', 'python',
+        'packaging/build/sanitize-bundle.py',
+        '--bundle-root', $Context.PortableRoot,
+        '--repo-root', $Context.RepoRoot,
+        '--user-profile', $env:USERPROFILE,
+        '--blocked-literal', 'C:\Users\runneradmin',
+        '--blocked-literal', 'file:///C:/actions-runner/',
+        '--blocked-literal', 'C:/actions-runner/',
+        '--output', $reportPath
+    )
+    Invoke-ExternalCommand -Context $Context -FilePath 'uv' -WorkingDirectory $Context.RepoRoot -ArgumentList $arguments
+    $report = Read-JsonFile -Path $reportPath
+    if (@($report.remainingBytecodeFiles).Count -gt 0 -or @($report.remainingPycacheDirectories).Count -gt 0) {
+        throw "Bundle sanitization left Python bytecode artifacts behind."
+    }
+    $Context.SanitizeReportPath = $reportPath
 }
 
 function Invoke-ManifestGeneration {
@@ -437,28 +530,70 @@ function Invoke-BuildReportGeneration {
 function Invoke-PortableZipAssembly {
     param([hashtable]$Context)
 
-    $zipPath = Join-Path $Context.OutputRoot ((Split-Path -Leaf $Context.PortableRoot) + '.zip')
-    Reset-ManagedPath -Context $Context -Path $zipPath -AllowedRoots @($Context.OutputRoot)
+    $zipPath = $Context.PortableZipStagingPath
+    $zipSha256Path = $Context.PortableZipSha256StagingPath
+    Reset-ManagedPath -Context $Context -Path $zipPath -AllowedRoots @($Context.WorkDirectory)
+    Reset-ManagedPath -Context $Context -Path $zipSha256Path -AllowedRoots @($Context.WorkDirectory)
+    Ensure-Directory -Path ([System.IO.Path]::GetDirectoryName($zipPath))
     $portableName = Split-Path -Leaf $Context.PortableRoot
-    Invoke-ExternalCommand -Context $Context -FilePath 'tar.exe' -WorkingDirectory $Context.OutputRoot -ArgumentList @(
-        '-a', '-cf', $zipPath, '-C', $Context.OutputRoot, $portableName
+    $portableParent = Split-Path -Parent $Context.PortableRoot
+    Invoke-ExternalCommand -Context $Context -FilePath 'tar.exe' -WorkingDirectory $portableParent -ArgumentList @(
+        '-a', '-cf', $zipPath, '-C', $portableParent, $portableName
     )
+    $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    Set-Content -LiteralPath $zipSha256Path -Value ("{0}  {1}" -f $zipHash, (Split-Path -Leaf $zipPath)) -Encoding ASCII
     $Context.PortableZipPath = $zipPath
+    $Context.PortableZipSha256Path = $zipSha256Path
 }
 
 function Invoke-InstallerAssembly {
     param([hashtable]$Context)
 
     $issPath = Join-Path $Context.RepoRoot 'packaging\installer\ChatbotTrial.iss'
-    $setupPath = Join-Path $Context.OutputRoot ("Chatbot-Setup-{0}-x64.exe" -f $Context.Version)
-    Reset-ManagedPath -Context $Context -Path $setupPath -AllowedRoots @($Context.OutputRoot)
-    Invoke-ExternalCommand -Context $Context -FilePath $Context.InnoCompilerPath -WorkingDirectory $Context.RepoRoot -ArgumentList @(
-        '/Qp',
-        "/DAppVersion=$($Context.Version)",
-        "/DSourcePortableRoot=$($Context.PortableRoot)",
-        "/DOutputRoot=$($Context.OutputRoot)",
-        $issPath
-    )
+    $installerOutputRoot = $Context.InstallerStageRoot
+    Reset-ManagedPath -Context $Context -Path $installerOutputRoot -AllowedRoots @($Context.WorkDirectory)
+    Ensure-Directory -Path $installerOutputRoot
+    $setupPath = Join-Path $installerOutputRoot ("Chatbot-Setup-{0}-x64.exe" -f $Context.Version)
+    $portableRootParent = Split-Path -Path $Context.PortableRoot -Parent
+    $installerRootParent = Split-Path -Path $installerOutputRoot -Parent
+    $portableAlias = $null
+    $installerAlias = $null
+
+    try {
+        $portableAlias = New-SubstDriveAlias -TargetPath $portableRootParent
+        $aliasedPortableRoot = Join-Path $portableAlias.AliasPath (Split-Path -Path $Context.PortableRoot -Leaf)
+
+        if ($installerRootParent.Equals($portableRootParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $installerAlias = $portableAlias
+        }
+        else {
+            $installerAlias = New-SubstDriveAlias -TargetPath $installerRootParent
+        }
+
+        $aliasedInstallerRoot = Join-Path $installerAlias.AliasPath (Split-Path -Path $installerOutputRoot -Leaf)
+
+        Write-BuildMessage -Context $Context -Message ("Installer source subst alias: {0} -> {1}" -f $portableAlias.DriveRoot, $portableAlias.TargetPath)
+        Write-BuildMessage -Context $Context -Message ("Installer output subst alias: {0} -> {1}" -f $installerAlias.DriveRoot, $installerAlias.TargetPath)
+        Write-BuildMessage -Context $Context -Message ("Installer source alias: {0}" -f $aliasedPortableRoot)
+        Write-BuildMessage -Context $Context -Message ("Installer output alias: {0}" -f $aliasedInstallerRoot)
+
+        Invoke-ExternalCommand -Context $Context -FilePath $Context.InnoCompilerPath -WorkingDirectory $Context.RepoRoot -ArgumentList @(
+            '/Qp',
+            "/DAppVersion=$($Context.Version)",
+            "/DSourcePortableRoot=$aliasedPortableRoot",
+            "/DOutputRoot=$aliasedInstallerRoot",
+            $issPath
+        )
+    }
+    finally {
+        if ($installerAlias -and ($installerAlias.DriveRoot -ne $portableAlias.DriveRoot)) {
+            Remove-SubstDriveAlias -DriveRoot $installerAlias.DriveRoot
+        }
+
+        if ($portableAlias) {
+            Remove-SubstDriveAlias -DriveRoot $portableAlias.DriveRoot
+        }
+    }
 
     if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
         throw "Installer output is missing: $setupPath"
@@ -485,14 +620,12 @@ function Invoke-PortableSanityCheck {
             }
         }
 
-        $zipPath = Join-Path $Context.OutputRoot ($Context.PortableLayout.portableDirectoryNameTemplate.Replace('{version}', $Context.Version) + '.zip')
-        if (Test-Path -LiteralPath $zipPath) {
-            throw "PortableOnly mode must not generate Portable ZIP: $zipPath"
+        if ($Context.PortableZipPath) {
+            throw "PortableOnly mode must not generate Portable ZIP: $($Context.PortableZipPath)"
         }
 
-        $setupPath = Join-Path $Context.OutputRoot ("Chatbot-Setup-{0}-x64.exe" -f $Context.Version)
-        if (Test-Path -LiteralPath $setupPath) {
-            throw "PortableOnly mode must not generate installer package: $setupPath"
+        if ($Context.SetupPath) {
+            throw "PortableOnly mode must not generate installer package: $($Context.SetupPath)"
         }
     }
     else {
@@ -502,15 +635,58 @@ function Invoke-PortableSanityCheck {
             }
         }
 
-        $zipPath = Join-Path $Context.OutputRoot ($Context.PortableLayout.portableDirectoryNameTemplate.Replace('{version}', $Context.Version) + '.zip')
+        $zipPath = $Context.PortableZipPath
         if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
             throw "Full release build is missing Portable ZIP: $zipPath"
         }
 
-        $setupPath = Join-Path $Context.OutputRoot ("Chatbot-Setup-{0}-x64.exe" -f $Context.Version)
-        if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
-            throw "Full release build is missing installer package: $setupPath"
+        $zipSha256Path = $Context.PortableZipSha256Path
+        if (-not (Test-Path -LiteralPath $zipSha256Path -PathType Leaf)) {
+            throw "Full release build is missing Portable ZIP checksum: $zipSha256Path"
         }
+    }
+}
+
+function Invoke-PortableArtifactPublish {
+    param([hashtable]$Context)
+
+    $publishTargets = @()
+    if (-not $Context.PortablePublished) {
+        $publishTargets += $Context.PortablePublishRoot
+    }
+    if ($Context.PortableZipPath -and ($Context.PortableZipPath -ne $Context.PortableZipPublishPath)) {
+        $publishTargets += $Context.PortableZipPublishPath
+    }
+    if ($Context.PortableZipSha256Path -and ($Context.PortableZipSha256Path -ne $Context.PortableZipSha256PublishPath)) {
+        $publishTargets += $Context.PortableZipSha256PublishPath
+    }
+    if ($Context.SetupPath -and ($Context.SetupPath -ne $Context.SetupPublishPath)) {
+        $publishTargets += $Context.SetupPublishPath
+    }
+
+    foreach ($target in $publishTargets) {
+        Assert-OutputPathNotInUse -Path $target
+    }
+
+    if ($Context.PortableZipPath -and ($Context.PortableZipPath -ne $Context.PortableZipPublishPath)) {
+        Publish-StagedFile -Context $Context -StagingPath $Context.PortableZipPath -DestinationPath $Context.PortableZipPublishPath
+        $Context.PortableZipPath = $Context.PortableZipPublishPath
+    }
+
+    if ($Context.PortableZipSha256Path -and ($Context.PortableZipSha256Path -ne $Context.PortableZipSha256PublishPath)) {
+        Publish-StagedFile -Context $Context -StagingPath $Context.PortableZipSha256Path -DestinationPath $Context.PortableZipSha256PublishPath
+        $Context.PortableZipSha256Path = $Context.PortableZipSha256PublishPath
+    }
+
+    if ($Context.SetupPath -and ($Context.SetupPath -ne $Context.SetupPublishPath)) {
+        Publish-StagedFile -Context $Context -StagingPath $Context.SetupPath -DestinationPath $Context.SetupPublishPath
+        $Context.SetupPath = $Context.SetupPublishPath
+    }
+
+    if (-not $Context.PortablePublished) {
+        Publish-StagedDirectory -Context $Context -StagingPath $Context.PortableRoot -DestinationPath $Context.PortablePublishRoot
+        $Context.PortableRoot = $Context.PortablePublishRoot
+        $Context.PortablePublished = $true
     }
 }
 
@@ -536,19 +712,25 @@ try {
     Invoke-BuildStage -Context $context -Name 'RPA runtime copy' -Action { Invoke-RpaRuntimeCopy -Context $context }
     Invoke-BuildStage -Context $context -Name 'launcher publish' -Action { Invoke-LauncherPublish -Context $context }
     Invoke-BuildStage -Context $context -Name 'portable directory assembly' -Action { Invoke-PortableDirectoryAssembly -Context $context }
+    Invoke-BuildStage -Context $context -Name 'portable sanitization' -Action { Invoke-PortableSanitization -Context $context }
     if (-not $context.PortableOnly) {
         Invoke-BuildStage -Context $context -Name 'sensitive scan' -Action { Invoke-SensitiveScan -Context $context }
         Invoke-BuildStage -Context $context -Name 'manifest generation' -Action { Invoke-ManifestGeneration -Context $context }
         Invoke-BuildStage -Context $context -Name 'build report generation' -Action { Invoke-BuildReportGeneration -Context $context }
         Invoke-BuildStage -Context $context -Name 'portable zip assembly' -Action { Invoke-PortableZipAssembly -Context $context }
+        Invoke-BuildStage -Context $context -Name 'minimal portable layout sanity check' -Action { Invoke-PortableSanityCheck -Context $context }
+        Invoke-BuildStage -Context $context -Name 'portable artifact publish' -Action { Invoke-PortableArtifactPublish -Context $context }
         Invoke-BuildStage -Context $context -Name 'installer assembly' -Action { Invoke-InstallerAssembly -Context $context }
     }
-    Invoke-BuildStage -Context $context -Name 'minimal portable layout sanity check' -Action { Invoke-PortableSanityCheck -Context $context }
+    else {
+        Invoke-BuildStage -Context $context -Name 'minimal portable layout sanity check' -Action { Invoke-PortableSanityCheck -Context $context }
+    }
 
     if ($context.PortableOnly) {
         Write-BuildMessage -Context $context -Message 'PortableOnly requested: Task 15/16 outputs intentionally deferred.'
     }
 
+    Invoke-BuildStage -Context $context -Name 'portable artifact publish' -Action { Invoke-PortableArtifactPublish -Context $context }
     Write-BuildMessage -Context $context -Message ("Portable release assembled at: {0}" -f $context.PortableRoot)
 }
 catch {

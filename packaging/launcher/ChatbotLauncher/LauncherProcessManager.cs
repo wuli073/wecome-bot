@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace ChatbotLauncher;
 
@@ -21,7 +22,10 @@ public sealed record LauncherInstallationLayout(
     string RpaRuntimeExecutable,
     string ShutdownRequestPath)
 {
-    public static LauncherInstallationLayout CreateDefault(string installRoot, string? localAppData = null)
+    public static LauncherInstallationLayout CreateDefault(
+        string installRoot,
+        string? localAppData = null,
+        string? userDataRoot = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(installRoot);
 
@@ -34,15 +38,17 @@ public sealed record LauncherInstallationLayout(
             throw new LauncherUserFacingException("LOCALAPPDATA is unavailable for the packaged launcher.");
         }
 
-        var userDataRoot = Path.Combine(resolvedLocalAppData, "Chatbot");
-        var runtimeRoot = Path.Combine(userDataRoot, "runtime");
-        var logRoot = Path.Combine(userDataRoot, "logs");
-        var dataRoot = Path.Combine(userDataRoot, "data");
+        var resolvedUserDataRoot = string.IsNullOrWhiteSpace(userDataRoot)
+            ? Path.Combine(resolvedLocalAppData, "Chatbot")
+            : Path.GetFullPath(userDataRoot);
+        var runtimeRoot = Path.Combine(resolvedUserDataRoot, "runtime");
+        var logRoot = Path.Combine(resolvedUserDataRoot, "logs");
+        var dataRoot = Path.Combine(resolvedUserDataRoot, "data");
         var resourcesRoot = Path.Combine(resolvedInstallRoot, "resources");
 
         return new LauncherInstallationLayout(
             InstallRoot: resolvedInstallRoot,
-            UserDataRoot: userDataRoot,
+            UserDataRoot: resolvedUserDataRoot,
             DataRoot: dataRoot,
             RuntimeRoot: runtimeRoot,
             LogRoot: logRoot,
@@ -86,7 +92,10 @@ public sealed record LauncherLaunchRequest(
     string ExecutablePath,
     string WorkingDirectory,
     IReadOnlyList<string> Arguments,
-    IReadOnlyDictionary<string, string> Environment);
+    IReadOnlyDictionary<string, string> Environment,
+    string CommandLine,
+    string StandardOutputPath,
+    string StandardErrorPath);
 
 public sealed record LauncherProcessSnapshot(int Pid, string ExecutablePath, DateTimeOffset CreateTimeUtc);
 
@@ -96,9 +105,20 @@ public sealed record LauncherRuntimeObservation(string Status, bool RuntimeReach
         RuntimeReachable || string.Equals(Status, "ready", StringComparison.OrdinalIgnoreCase);
 }
 
+public sealed record LauncherStartupFailureDetails(
+    int? BackendPid,
+    int? ExitCode,
+    string ExecutablePath,
+    string CommandLine,
+    string StandardOutputPath,
+    string StandardErrorPath,
+    string LastErrorSummary);
+
 public interface ILauncherProcess : IDisposable
 {
     bool HasExited { get; }
+
+    int? ExitCode { get; }
 
     LauncherProcessSnapshot GetSnapshot();
 
@@ -107,9 +127,21 @@ public interface ILauncherProcess : IDisposable
     void KillTree();
 }
 
+public sealed record LauncherPortOwnershipReport(
+    bool IsListening,
+    bool OwnedByCurrentProcess,
+    bool OwnedByOtherProcess,
+    int? OwningPid,
+    string OwningExecutablePath);
+
 public interface ILauncherProcessLauncher
 {
     ILauncherProcess Start(LauncherLaunchRequest request);
+}
+
+public interface ILauncherPortOwnershipProbe
+{
+    LauncherPortOwnershipReport Inspect(int port, LauncherProcessSnapshot ownedSnapshot);
 }
 
 public interface ILauncherHttpProbeClient
@@ -152,10 +184,30 @@ public interface ILauncherClock
 
 public sealed class LauncherUserFacingException : Exception
 {
-    public LauncherUserFacingException(string message)
-        : base(message)
+    public LauncherUserFacingException(
+        string message,
+        int exitCode = LauncherExitCodes.ConfigurationOrBundleError,
+        string diagnosticCode = "LAUNCHER_FAILURE",
+        Exception? innerException = null)
+        : base(message, innerException)
     {
+        ExitCode = exitCode;
+        DiagnosticCode = diagnosticCode;
     }
+
+    public int ExitCode { get; }
+
+    public string DiagnosticCode { get; }
+}
+
+public static class LauncherExitCodes
+{
+    public const int PortOwnedByOtherProcess = 20;
+    public const int BackendStartFailed = 21;
+    public const int BackendExitedEarly = 22;
+    public const int BackendHealthTimeout = 23;
+    public const int ConfigurationOrBundleError = 24;
+    public const int AlreadyRunning = 25;
 }
 
 public sealed class LauncherProcessManager
@@ -171,12 +223,14 @@ public sealed class LauncherProcessManager
     private readonly ILauncherProcessLauncher _processLauncher;
     private readonly ILauncherHttpProbeClient _httpProbeClient;
     private readonly ILauncherBrowserLauncher _browserLauncher;
+    private readonly ILauncherPortOwnershipProbe _portOwnershipProbe;
     private readonly ILauncherFileSystem _fileSystem;
     private readonly ILauncherClock _clock;
     private readonly object _sync = new();
 
     private ILauncherProcess? _ownedProcess;
     private LauncherProcessSnapshot? _ownedSnapshot;
+    private LauncherLaunchRequest? _ownedLaunchRequest;
     private LauncherRuntimeObservation? _lastObservation;
 
     public LauncherProcessManager(
@@ -185,6 +239,7 @@ public sealed class LauncherProcessManager
         ILauncherProcessLauncher processLauncher,
         ILauncherHttpProbeClient httpProbeClient,
         ILauncherBrowserLauncher browserLauncher,
+        ILauncherPortOwnershipProbe portOwnershipProbe,
         ILauncherFileSystem fileSystem,
         ILauncherClock clock)
     {
@@ -193,6 +248,7 @@ public sealed class LauncherProcessManager
         _processLauncher = processLauncher;
         _httpProbeClient = httpProbeClient;
         _browserLauncher = browserLauncher;
+        _portOwnershipProbe = portOwnershipProbe;
         _fileSystem = fileSystem;
         _clock = clock;
     }
@@ -209,8 +265,38 @@ public sealed class LauncherProcessManager
             new DefaultLauncherProcessLauncher(),
             new DefaultLauncherHttpProbeClient(),
             new DefaultLauncherBrowserLauncher(),
+            new DefaultLauncherPortOwnershipProbe(),
             new DefaultLauncherFileSystem(),
             new DefaultLauncherClock());
+    }
+
+    public static string QuoteCommandLineArgument(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return "\"\"";
+        }
+
+        if (!value.Any(static ch => char.IsWhiteSpace(ch) || ch == '"'))
+        {
+            return value;
+        }
+
+        var escaped = Regex.Replace(
+            value,
+            "(\\\\*)\"",
+            static match => match.Groups[1].Value + match.Groups[1].Value + "\\\"");
+        escaped = Regex.Replace(
+            escaped,
+            "(\\\\+)$",
+            static match => match.Groups[1].Value + match.Groups[1].Value);
+        return $"\"{escaped}\"";
+    }
+
+    public static string BuildCommandLineArguments(IEnumerable<string?> arguments)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        return string.Join(" ", arguments.Select(QuoteCommandLineArgument));
     }
 
     public IReadOnlyDictionary<string, string> BuildPackagedEnvironment()
@@ -233,6 +319,11 @@ public sealed class LauncherProcessManager
             ["CHATBOT_BACKEND_RUNTIME_STATUS_PATH"] = _config.Backend.RuntimeStatusPath,
             ["API__HOST"] = _config.Backend.Host,
             ["API__PORT"] = _config.Backend.Port.ToString(CultureInfo.InvariantCulture),
+            ["DESKTOP_AUTOMATION__ENABLED"] = "true",
+            ["DESKTOP_AUTOMATION__RUNTIME_EXECUTABLE"] = _layout.RpaRuntimeExecutable,
+            ["PYTHONDONTWRITEBYTECODE"] = "1",
+            ["PYTHONUTF8"] = "1",
+            ["PYTHONIOENCODING"] = "utf-8",
             ["LANGBOT_BROADCAST_SEND_ENABLED"] = "0",
             ["LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS"] = string.Empty,
             ["LANGBOT_RPA_ALLOW_AUTO_SEND"] = "0",
@@ -270,15 +361,33 @@ public sealed class LauncherProcessManager
             }
         }
 
+        ThrowIfConfiguredPortOwnedByOtherProcess();
+
         var request = BuildLaunchRequest();
-        AppendLauncherLog($"Starting packaged backend: {request.ExecutablePath} {string.Join(' ', request.Arguments)}");
-        var process = _processLauncher.Start(request);
+        AppendLauncherLog($"Starting packaged backend: {request.CommandLine}");
+        ILauncherProcess process;
+        try
+        {
+            process = _processLauncher.Start(request);
+        }
+        catch (LauncherUserFacingException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var startFailure = CreateBackendStartFailure(request, ex);
+            AppendLauncherLog(startFailure.Message);
+            throw startFailure;
+        }
+
         var snapshot = process.GetSnapshot();
 
         lock (_sync)
         {
             _ownedProcess = process;
             _ownedSnapshot = snapshot;
+            _ownedLaunchRequest = request;
             _lastObservation = null;
         }
 
@@ -338,6 +447,7 @@ public sealed class LauncherProcessManager
         {
             _ownedProcess = null;
             _ownedSnapshot = null;
+            _ownedLaunchRequest = null;
             _lastObservation = null;
         }
 
@@ -433,26 +543,31 @@ public sealed class LauncherProcessManager
 
     private LauncherLaunchRequest BuildLaunchRequest()
     {
+        var arguments = new[]
+        {
+            _layout.BackendEntrypointPath,
+            "--install-root",
+            _layout.InstallRoot,
+            "--user-data-root",
+            _layout.UserDataRoot,
+            "--host",
+            _config.Backend.Host,
+            "--port",
+            _config.Backend.Port.ToString(CultureInfo.InvariantCulture),
+            "--shutdown-request-path",
+            _layout.ShutdownRequestPath,
+            "--rpa-runtime-path",
+            _layout.RpaRuntimeExecutable,
+        };
+
         return new LauncherLaunchRequest(
             _layout.BackendPythonExecutable,
             _layout.InstallRoot,
-            new[]
-            {
-                _layout.BackendEntrypointPath,
-                "--install-root",
-                _layout.InstallRoot,
-                "--user-data-root",
-                _layout.UserDataRoot,
-                "--host",
-                _config.Backend.Host,
-                "--port",
-                _config.Backend.Port.ToString(CultureInfo.InvariantCulture),
-                "--shutdown-request-path",
-                _layout.ShutdownRequestPath,
-                "--rpa-runtime-path",
-                _layout.RpaRuntimeExecutable,
-            },
-            BuildPackagedEnvironment());
+            arguments,
+            BuildPackagedEnvironment(),
+            BuildCommandLineArguments(new[] { _layout.BackendPythonExecutable }.Concat(arguments)),
+            Path.Combine(_layout.LogRoot, "backend.stdout.log"),
+            Path.Combine(_layout.LogRoot, "backend.stderr.log"));
     }
 
     private async Task WaitForHealthAsync(ILauncherProcess process, CancellationToken cancellationToken)
@@ -468,14 +583,14 @@ public sealed class LauncherProcessManager
 
             if (process.HasExited)
             {
-                throw new LauncherUserFacingException(LauncherText.PortConflict(_config.Backend.Port));
+                await process.WaitForExitAsync(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+                throw CreateStartupFailure(process, backendStillRunning: false);
             }
 
             await _clock.Delay(PollInterval, cancellationToken).ConfigureAwait(false);
         }
 
-        throw new LauncherUserFacingException(
-            $"Backend did not become healthy within {_config.Backend.StartupTimeoutSeconds} seconds.");
+        throw CreateStartupFailure(process, backendStillRunning: !process.HasExited);
     }
 
     private async Task WaitForRuntimeReadyAsync(CancellationToken cancellationToken)
@@ -504,6 +619,106 @@ public sealed class LauncherProcessManager
             .ConfigureAwait(false);
         _lastObservation = observation;
         return observation;
+    }
+
+    private LauncherUserFacingException CreateStartupFailure(ILauncherProcess process, bool backendStillRunning)
+    {
+        var snapshot = _ownedSnapshot ?? process.GetSnapshot();
+        var request = _ownedLaunchRequest ?? BuildLaunchRequest();
+        var ownership = _portOwnershipProbe.Inspect(_config.Backend.Port, snapshot);
+        if (ownership.OwnedByOtherProcess)
+        {
+            return CreatePortConflictFailure(ownership);
+        }
+
+        var details = BuildStartupFailureDetails(process, request, snapshot, ownership);
+        var error = backendStillRunning
+            ? new LauncherUserFacingException(
+                LauncherText.BackendHealthTimeout(_config.Backend.StartupTimeoutSeconds, details),
+                LauncherExitCodes.BackendHealthTimeout,
+                "BACKEND_HEALTH_TIMEOUT")
+            : new LauncherUserFacingException(
+                LauncherText.BackendExitedEarly(details),
+                LauncherExitCodes.BackendExitedEarly,
+                "BACKEND_EXITED_EARLY");
+        AppendLauncherLog(error.Message);
+        return error;
+    }
+
+    private void ThrowIfConfiguredPortOwnedByOtherProcess()
+    {
+        var ownership = _portOwnershipProbe.Inspect(
+            _config.Backend.Port,
+            new LauncherProcessSnapshot(-1, string.Empty, DateTimeOffset.MinValue));
+        if (ownership.OwnedByOtherProcess
+            || (ownership.IsListening && !ownership.OwnedByCurrentProcess))
+        {
+            throw CreatePortConflictFailure(ownership);
+        }
+    }
+
+    private LauncherUserFacingException CreatePortConflictFailure(LauncherPortOwnershipReport ownership)
+    {
+        var portConflict = new LauncherUserFacingException(
+            LauncherText.PortConflict(_config.Backend.Port, ownership.OwningPid, ownership.OwningExecutablePath),
+            LauncherExitCodes.PortOwnedByOtherProcess,
+            "PORT_OWNED_BY_OTHER_PROCESS");
+        AppendLauncherLog(portConflict.Message);
+        return portConflict;
+    }
+
+    private LauncherUserFacingException CreateBackendStartFailure(LauncherLaunchRequest request, Exception ex)
+    {
+        var details = new LauncherStartupFailureDetails(
+            BackendPid: null,
+            ExitCode: null,
+            ExecutablePath: request.ExecutablePath,
+            CommandLine: request.CommandLine,
+            StandardOutputPath: request.StandardOutputPath,
+            StandardErrorPath: request.StandardErrorPath,
+            LastErrorSummary: ex.Message);
+        return new LauncherUserFacingException(
+            LauncherText.BackendStartFailed(details),
+            LauncherExitCodes.BackendStartFailed,
+            "BACKEND_START_FAILED",
+            ex);
+    }
+
+    private LauncherStartupFailureDetails BuildStartupFailureDetails(
+        ILauncherProcess process,
+        LauncherLaunchRequest request,
+        LauncherProcessSnapshot snapshot,
+        LauncherPortOwnershipReport ownership)
+    {
+        var stderrSummary = ReadLastSummaryLine(request.StandardErrorPath);
+        var stdoutSummary = ReadLastSummaryLine(request.StandardOutputPath);
+        var lastSummary = !string.IsNullOrWhiteSpace(stderrSummary)
+            ? stderrSummary
+            : !string.IsNullOrWhiteSpace(stdoutSummary)
+                ? stdoutSummary
+                : ownership.OwnedByOtherProcess
+                    ? $"Port {_config.Backend.Port} is owned by pid {ownership.OwningPid}."
+                    : "No backend stderr summary was captured.";
+        return new LauncherStartupFailureDetails(
+            BackendPid: snapshot.Pid,
+            ExitCode: process.ExitCode,
+            ExecutablePath: snapshot.ExecutablePath,
+            CommandLine: request.CommandLine,
+            StandardOutputPath: request.StandardOutputPath,
+            StandardErrorPath: request.StandardErrorPath,
+            LastErrorSummary: lastSummary);
+    }
+
+    private string ReadLastSummaryLine(string path)
+    {
+        if (!_fileSystem.FileExists(path))
+        {
+            return string.Empty;
+        }
+
+        var lines = _fileSystem.ReadAllText(path)
+            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+        return lines.LastOrDefault(static line => !string.IsNullOrWhiteSpace(line)) ?? string.Empty;
     }
 
     private void EnsureWorkingDirectories()
@@ -594,6 +809,8 @@ internal sealed class DefaultLauncherProcessLauncher : ILauncherProcessLauncher
             UseShellExecute = false,
             CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
         };
         foreach (var argument in request.Arguments)
         {
@@ -606,8 +823,12 @@ internal sealed class DefaultLauncherProcessLauncher : ILauncherProcessLauncher
         }
 
         var process = Process.Start(startInfo)
-            ?? throw new LauncherUserFacingException("Failed to start the packaged backend process.");
-        return new DefaultLauncherProcess(process, request.ExecutablePath);
+            ?? throw new InvalidOperationException("Process.Start returned null for the packaged backend.");
+        return new DefaultLauncherProcess(
+            process,
+            request.ExecutablePath,
+            request.StandardOutputPath,
+            request.StandardErrorPath);
     }
 }
 
@@ -615,14 +836,29 @@ internal sealed class DefaultLauncherProcess : ILauncherProcess
 {
     private readonly Process _process;
     private readonly string _expectedExecutablePath;
+    private readonly string _stdoutPath;
+    private readonly string _stderrPath;
+    private readonly Task<string> _stdoutTask;
+    private readonly Task<string> _stderrTask;
+    private int _outputFlushed;
 
-    public DefaultLauncherProcess(Process process, string expectedExecutablePath)
+    public DefaultLauncherProcess(
+        Process process,
+        string expectedExecutablePath,
+        string stdoutPath,
+        string stderrPath)
     {
         _process = process;
         _expectedExecutablePath = Path.GetFullPath(expectedExecutablePath);
+        _stdoutPath = stdoutPath;
+        _stderrPath = stderrPath;
+        _stdoutTask = _process.StandardOutput.ReadToEndAsync();
+        _stderrTask = _process.StandardError.ReadToEndAsync();
     }
 
     public bool HasExited => _process.HasExited;
+
+    public int? ExitCode => _process.HasExited ? _process.ExitCode : null;
 
     public LauncherProcessSnapshot GetSnapshot()
     {
@@ -639,10 +875,15 @@ internal sealed class DefaultLauncherProcess : ILauncherProcess
         try
         {
             await _process.WaitForExitAsync(linkedCts.Token).ConfigureAwait(false);
+            await FlushOutputAsync().ConfigureAwait(false);
             return true;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            if (_process.HasExited)
+            {
+                await FlushOutputAsync().ConfigureAwait(false);
+            }
             return _process.HasExited;
         }
     }
@@ -660,6 +901,111 @@ internal sealed class DefaultLauncherProcess : ILauncherProcess
     public void Dispose()
     {
         _process.Dispose();
+    }
+
+    private async Task FlushOutputAsync()
+    {
+        if (Interlocked.Exchange(ref _outputFlushed, 1) != 0)
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(_stdoutPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(_stderrPath)!);
+        await File.WriteAllTextAsync(_stdoutPath, await _stdoutTask.ConfigureAwait(false), Encoding.UTF8).ConfigureAwait(false);
+        await File.WriteAllTextAsync(_stderrPath, await _stderrTask.ConfigureAwait(false), Encoding.UTF8).ConfigureAwait(false);
+    }
+}
+
+internal sealed class DefaultLauncherPortOwnershipProbe : ILauncherPortOwnershipProbe
+{
+    public LauncherPortOwnershipReport Inspect(int port, LauncherProcessSnapshot ownedSnapshot)
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "netstat.exe",
+                Arguments = "-ano -p tcp",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            using var process = Process.Start(startInfo);
+            if (process is null)
+            {
+                return new LauncherPortOwnershipReport(false, false, false, null, string.Empty);
+            }
+
+            var output = process.StandardOutput.ReadToEnd();
+            process.WaitForExit();
+
+            var listeners = output
+                .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(ParseNetstatLine)
+                .Where(static entry => entry.HasValue)
+                .Select(static entry => entry!.Value)
+                .Where(entry => entry.Port == port)
+                .ToList();
+            if (listeners.Count == 0)
+            {
+                return new LauncherPortOwnershipReport(false, false, false, null, string.Empty);
+            }
+
+            var current = listeners.FirstOrDefault(entry => entry.Pid == ownedSnapshot.Pid);
+            if (current != default)
+            {
+                return new LauncherPortOwnershipReport(true, true, false, current.Pid, ResolveExecutablePath(current.Pid));
+            }
+
+            var other = listeners[0];
+            return new LauncherPortOwnershipReport(true, false, true, other.Pid, ResolveExecutablePath(other.Pid));
+        }
+        catch
+        {
+            return new LauncherPortOwnershipReport(false, false, false, null, string.Empty);
+        }
+    }
+
+    private static (int Port, int Pid)? ParseNetstatLine(string rawLine)
+    {
+        var line = rawLine.Trim();
+        if (!line.StartsWith("TCP", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var parts = line
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 5 || !string.Equals(parts[3], "LISTENING", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var local = parts[1];
+        var lastColon = local.LastIndexOf(':');
+        if (lastColon < 0
+            || !int.TryParse(local[(lastColon + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var port)
+            || !int.TryParse(parts[4], NumberStyles.Integer, CultureInfo.InvariantCulture, out var pid))
+        {
+            return null;
+        }
+
+        return (port, pid);
+    }
+
+    private static string ResolveExecutablePath(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return process.MainModule?.FileName ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 }
 

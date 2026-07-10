@@ -133,9 +133,25 @@ def build_packaged_environment(
             'CHATBOT_BACKEND_RUNTIME_STATUS_PATH': BACKEND_RUNTIME_STATUS_PATH,
             'API__HOST': PACKAGED_BIND_HOST,
             'API__PORT': str(config.port),
+            'DESKTOP_AUTOMATION__ENABLED': 'true',
+            'DESKTOP_AUTOMATION__RUNTIME_EXECUTABLE': str(config.rpa_runtime_path),
+            'PYTHONDONTWRITEBYTECODE': '1',
+            'PYTHONUTF8': '1',
+            'PYTHONIOENCODING': 'utf-8',
         }
     )
     return env
+
+
+def prepare_packaged_runtime(config: PackagedBackendConfig) -> None:
+    config.user_data_root.mkdir(parents=True, exist_ok=True)
+    config.data_root.mkdir(parents=True, exist_ok=True)
+    (config.data_root / 'logs').mkdir(parents=True, exist_ok=True)
+    (config.data_root / 'labels').mkdir(parents=True, exist_ok=True)
+    (config.data_root / 'metadata').mkdir(parents=True, exist_ok=True)
+    config.log_root.mkdir(parents=True, exist_ok=True)
+    config.runtime_root.mkdir(parents=True, exist_ok=True)
+    os.chdir(config.user_data_root)
 
 
 async def watch_shutdown_requests(*, app_inst, shutdown_request_path: Path) -> None:
@@ -211,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         shutdown_request_path=args.shutdown_request_path.strip() or None,
     )
 
+    prepare_packaged_runtime(config)
     os.environ.update(build_packaged_environment(config))
 
     loop = asyncio.new_event_loop()

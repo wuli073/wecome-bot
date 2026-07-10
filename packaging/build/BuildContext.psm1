@@ -96,7 +96,11 @@ function New-BuildContext {
     $normalizedOutputRoot = Resolve-BuildPath -BasePath $normalizedRepoRoot -Path $OutputRoot
     Ensure-Directory -Path $normalizedOutputRoot
 
-    $workDirectory = Join-Path $normalizedOutputRoot ("task14-work-" + [System.Guid]::NewGuid().ToString('N'))
+    $sessionId = [System.Guid]::NewGuid().ToString('N')
+    $trialWorkRoot = Join-Path $normalizedRepoRoot 'build\.trial-work'
+    Ensure-Directory -Path $trialWorkRoot
+
+    $workDirectory = Join-Path $trialWorkRoot ("{0}-{1}" -f $Version, $sessionId)
     Ensure-Directory -Path $workDirectory
 
     $runtimeManifestPath = Join-Path $normalizedRepoRoot 'packaging\runtime-manifest.json'
@@ -105,7 +109,15 @@ function New-BuildContext {
     $portableLayout = Read-JsonFile -Path $portableLayoutPath
 
     $portableDirectoryName = $portableLayout.portableDirectoryNameTemplate.Replace('{version}', $Version)
-    $portableRoot = Join-Path $normalizedOutputRoot $portableDirectoryName
+    $portableStageRoot = Join-Path $workDirectory 'portable'
+    $portableRoot = Join-Path $portableStageRoot $portableDirectoryName
+    $portablePublishRoot = Join-Path $normalizedOutputRoot $portableDirectoryName
+    $portableZipPublishPath = Join-Path $normalizedOutputRoot ($portableDirectoryName + '.zip')
+    $portableZipSha256PublishPath = $portableZipPublishPath + '.sha256'
+    $portableZipStagingPath = Join-Path (Join-Path $workDirectory 'artifacts') ($portableDirectoryName + '.zip.tmp-' + $sessionId)
+    $portableZipSha256StagingPath = $portableZipStagingPath + '.sha256'
+    $setupPublishPath = Join-Path $normalizedOutputRoot ("Chatbot-Setup-{0}-x64.exe" -f $Version)
+    $installerStageRoot = Join-Path $workDirectory 'installer'
     $logPath = Join-Path $workDirectory 'build-trial-release.log'
     $runtimeCacheRoot = Resolve-BuildPath -BasePath $normalizedRepoRoot -Path $runtimeManifest.cache.root
     Ensure-Directory -Path $runtimeCacheRoot
@@ -113,7 +125,19 @@ function New-BuildContext {
     $context = @{
         RepoRoot = $normalizedRepoRoot
         OutputRoot = $normalizedOutputRoot
+        SessionId = $sessionId
         PortableRoot = $portableRoot
+        PortableStageRoot = $portableStageRoot
+        PortablePublishRoot = $portablePublishRoot
+        PortableZipPublishPath = $portableZipPublishPath
+        PortableZipSha256PublishPath = $portableZipSha256PublishPath
+        PortableZipStagingPath = $portableZipStagingPath
+        PortableZipSha256StagingPath = $portableZipSha256StagingPath
+        PortableZipPath = $null
+        PortableZipSha256Path = $null
+        SetupPublishPath = $setupPublishPath
+        InstallerStageRoot = $installerStageRoot
+        SetupPath = $null
         WorkDirectory = $workDirectory
         LogPath = $logPath
         RuntimeManifest = $runtimeManifest
@@ -123,6 +147,7 @@ function New-BuildContext {
         SkipTests = $SkipTests
         KeepWorkDirectory = $KeepWorkDirectory
         PortableOnly = $PortableOnly
+        PortablePublished = $false
         Version = $Version
         VcRedistPath = $VcRedistPath
         AuditWechatDecryptSource = $AuditWechatDecryptSource
@@ -279,8 +304,161 @@ function Reset-ManagedPath {
             }
         }
         else {
-            Remove-Item -LiteralPath $normalizedPath -Force
+            Remove-Item -LiteralPath $normalizedPath -Force -ErrorAction Stop
         }
+    }
+}
+
+function Get-OutputPathConsumers {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $normalizedPath = Get-NormalizedPath -Path $Path
+    $isDirectory = Test-Path -LiteralPath $normalizedPath -PathType Container
+
+    $matches = foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+        if ([int]$process.ProcessId -eq $PID) {
+            continue
+        }
+        $executablePath = [string]$process.ExecutablePath
+        $commandLine = [string]$process.CommandLine
+        $referencesPath = $false
+
+        if ($executablePath) {
+            if ($isDirectory) {
+                $referencesPath = Test-PathUnderRoot -Path $executablePath -Root $normalizedPath
+            }
+            else {
+                $referencesPath = $executablePath.Equals($normalizedPath, [System.StringComparison]::OrdinalIgnoreCase)
+            }
+        }
+
+        if (-not $referencesPath -and $commandLine) {
+            $referencesPath = $commandLine.IndexOf($normalizedPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+        }
+
+        if (-not $referencesPath) {
+            continue
+        }
+
+        [pscustomobject]@{
+            ProcessId = [int]$process.ProcessId
+            ParentProcessId = [int]$process.ParentProcessId
+            Name = [string]$process.Name
+            ExecutablePath = $executablePath
+            CommandLine = $commandLine
+            CreationTime = [string]$process.CreationDate
+        }
+    }
+
+    return @($matches | Sort-Object ProcessId)
+}
+
+function Format-OutputConsumersSummary {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Consumers
+    )
+
+    return (($Consumers | ForEach-Object {
+        "PID=$($_.ProcessId), ParentPID=$($_.ParentProcessId), ExecutablePath=$($_.ExecutablePath), CommandLine=$($_.CommandLine), CreationTime=$($_.CreationTime)"
+    }) -join '; ')
+}
+
+function Assert-OutputPathNotInUse {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $consumers = @(Get-OutputPathConsumers -Path $Path)
+    if ($consumers.Count -gt 0) {
+        $summary = Format-OutputConsumersSummary -Consumers $consumers
+        throw "RELEASE_OUTPUT_IN_USE: $Path; $summary"
+    }
+}
+
+function Publish-StagedFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Context,
+
+        [Parameter(Mandatory = $true)]
+        [string]$StagingPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+
+    $normalizedStagingPath = Get-NormalizedPath -Path $StagingPath
+    $normalizedDestinationPath = Get-NormalizedPath -Path $DestinationPath
+    Assert-OutputPathNotInUse -Path $normalizedDestinationPath
+    Ensure-Directory -Path ([System.IO.Path]::GetDirectoryName($normalizedDestinationPath))
+
+    $previousPath = $normalizedDestinationPath + '.previous-' + $Context.SessionId
+    if (Test-Path -LiteralPath $previousPath) {
+        Reset-ManagedPath -Context $Context -Path $previousPath -AllowedRoots @($Context.OutputRoot)
+    }
+
+    try {
+        if (Test-Path -LiteralPath $normalizedDestinationPath -PathType Leaf) {
+            Move-Item -LiteralPath $normalizedDestinationPath -Destination $previousPath -Force -ErrorAction Stop
+        }
+
+        Move-Item -LiteralPath $normalizedStagingPath -Destination $normalizedDestinationPath -Force -ErrorAction Stop
+
+        if (Test-Path -LiteralPath $previousPath) {
+            Remove-Item -LiteralPath $previousPath -Force -ErrorAction Stop
+        }
+    }
+    catch {
+        if (-not (Test-Path -LiteralPath $normalizedDestinationPath) -and (Test-Path -LiteralPath $previousPath)) {
+            Move-Item -LiteralPath $previousPath -Destination $normalizedDestinationPath -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
+function Publish-StagedDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Context,
+
+        [Parameter(Mandatory = $true)]
+        [string]$StagingPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+
+    $normalizedStagingPath = Get-NormalizedPath -Path $StagingPath
+    $normalizedDestinationPath = Get-NormalizedPath -Path $DestinationPath
+    Assert-OutputPathNotInUse -Path $normalizedDestinationPath
+    Ensure-Directory -Path ([System.IO.Path]::GetDirectoryName($normalizedDestinationPath))
+
+    $previousPath = $normalizedDestinationPath + '.previous-' + $Context.SessionId
+    if (Test-Path -LiteralPath $previousPath) {
+        Reset-ManagedPath -Context $Context -Path $previousPath -AllowedRoots @($Context.OutputRoot)
+    }
+
+    try {
+        if (Test-Path -LiteralPath $normalizedDestinationPath -PathType Container) {
+            Move-Item -LiteralPath $normalizedDestinationPath -Destination $previousPath -Force -ErrorAction Stop
+        }
+
+        Move-Item -LiteralPath $normalizedStagingPath -Destination $normalizedDestinationPath -Force -ErrorAction Stop
+
+        if (Test-Path -LiteralPath $previousPath) {
+            Reset-ManagedPath -Context $Context -Path $previousPath -AllowedRoots @($Context.OutputRoot)
+        }
+    }
+    catch {
+        if (-not (Test-Path -LiteralPath $normalizedDestinationPath) -and (Test-Path -LiteralPath $previousPath)) {
+            Move-Item -LiteralPath $previousPath -Destination $normalizedDestinationPath -Force -ErrorAction SilentlyContinue
+        }
+        throw
     }
 }
 
@@ -469,6 +647,7 @@ function Install-LockedPythonDependencies {
     $arguments = @(
         'pip', 'install',
         '--python', $pythonExe,
+        '--no-compile',
         '--no-verify-hashes',
         '--link-mode', 'copy',
         '--no-python-downloads',
@@ -479,7 +658,11 @@ function Install-LockedPythonDependencies {
         $arguments += '--offline'
     }
 
-    Invoke-ExternalCommand -Context $Context -FilePath 'uv' -WorkingDirectory $Context.RepoRoot -ArgumentList $arguments
+    Invoke-ExternalCommand -Context $Context -FilePath 'uv' -WorkingDirectory $Context.RepoRoot -ArgumentList $arguments -Environment @{
+        PYTHONDONTWRITEBYTECODE = '1'
+        PYTHONUTF8 = '1'
+        PYTHONIOENCODING = 'utf-8'
+    }
 }
 
 function Remove-WorkDirectoryIfNeeded {
@@ -509,6 +692,7 @@ function Remove-WorkDirectoryIfNeeded {
 }
 
 Export-ModuleMember -Function @(
+    'Assert-OutputPathNotInUse',
     'Copy-FileWithParent',
     'Ensure-CommandAvailable',
     'Ensure-Directory',
@@ -516,7 +700,9 @@ Export-ModuleMember -Function @(
     'Ensure-RuntimeArchiveCached',
     'Ensure-Sha256Match',
     'Expand-TarGzArchive',
+    'Format-OutputConsumersSummary',
     'Get-NormalizedPath',
+    'Get-OutputPathConsumers',
     'Get-RelativePathCompat',
     'Get-RuntimeRoleManifest',
     'Install-LockedPythonDependencies',
@@ -524,6 +710,8 @@ Export-ModuleMember -Function @(
     'Invoke-ExternalCommand',
     'Invoke-Robocopy',
     'New-BuildContext',
+    'Publish-StagedDirectory',
+    'Publish-StagedFile',
     'Read-JsonFile',
     'Remove-WorkDirectoryIfNeeded',
     'Reset-ManagedPath',

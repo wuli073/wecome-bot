@@ -20,6 +20,11 @@ REQUIRED_KEYS = (
     'CHATBOT_RPA_RUNTIME_PATH',
     'API__HOST',
     'API__PORT',
+    'DESKTOP_AUTOMATION__ENABLED',
+    'DESKTOP_AUTOMATION__RUNTIME_EXECUTABLE',
+    'PYTHONDONTWRITEBYTECODE',
+    'PYTHONUTF8',
+    'PYTHONIOENCODING',
 )
 
 
@@ -67,6 +72,19 @@ def verify_runtime_environment(env: Mapping[str, str] | None = None) -> None:
         raise SystemExit(
             f'CHATBOT_BACKEND_RUNTIME_STATUS_PATH must equal {BACKEND_RUNTIME_STATUS_PATH}'
         )
+    if str(current_env['DESKTOP_AUTOMATION__ENABLED']).strip().lower() != 'true':
+        raise SystemExit('DESKTOP_AUTOMATION__ENABLED must equal true')
+    if (
+        Path(current_env['DESKTOP_AUTOMATION__RUNTIME_EXECUTABLE']).resolve(strict=False)
+        != rpa_runtime_path
+    ):
+        raise SystemExit('DESKTOP_AUTOMATION__RUNTIME_EXECUTABLE must match CHATBOT_RPA_RUNTIME_PATH')
+    if str(current_env['PYTHONDONTWRITEBYTECODE']).strip() != '1':
+        raise SystemExit('PYTHONDONTWRITEBYTECODE must equal 1')
+    if str(current_env['PYTHONUTF8']).strip() != '1':
+        raise SystemExit('PYTHONUTF8 must equal 1')
+    if str(current_env['PYTHONIOENCODING']).strip().lower() != 'utf-8':
+        raise SystemExit('PYTHONIOENCODING must equal utf-8')
 
 
 def main() -> None:
