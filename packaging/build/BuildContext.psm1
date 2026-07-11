@@ -40,6 +40,36 @@ function Test-PathUnderRoot {
     return ($normalizedPath -eq $normalizedRoot) -or $normalizedPath.StartsWith($normalizedRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Assert-NoReparsePointInPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $normalizedPath = (Get-NormalizedPath -Path $Path).TrimEnd('\')
+    $normalizedRoot = (Get-NormalizedPath -Path $Root).TrimEnd('\')
+    $pathsToInspect = @($normalizedRoot)
+    if ($normalizedPath.Length -gt $normalizedRoot.Length) {
+        $relativeSegments = $normalizedPath.Substring($normalizedRoot.Length + 1).Split('\')
+        $currentPath = $normalizedRoot
+        foreach ($segment in $relativeSegments) {
+            $currentPath = Join-Path $currentPath $segment
+            $pathsToInspect += $currentPath
+        }
+    }
+
+    foreach ($candidate in $pathsToInspect) {
+        if (-not (Test-Path -LiteralPath $candidate)) { continue }
+        $item = Get-Item -LiteralPath $candidate -Force -ErrorAction Stop
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing to remove path through reparse point: $candidate"
+        }
+    }
+}
+
 function Ensure-Directory {
     param(
         [Parameter(Mandatory = $true)]
@@ -294,6 +324,13 @@ function Reset-ManagedPath {
 
     if (-not $allowed) {
         throw "Refusing to remove unmanaged path: $normalizedPath"
+    }
+
+    foreach ($root in $AllowedRoots) {
+        if (Test-PathUnderRoot -Path $normalizedPath -Root $root) {
+            Assert-NoReparsePointInPath -Path $normalizedPath -Root $root
+            break
+        }
     }
 
     if (Test-Path -LiteralPath $normalizedPath) {

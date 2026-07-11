@@ -359,7 +359,7 @@ function Invoke-LauncherPublish {
 function Invoke-PortableDirectoryAssembly {
     param([hashtable]$Context)
 
-    Reset-ManagedPath -Context $Context -Path $Context.PortableRoot -AllowedRoots @($Context.WorkDirectory)
+    Reset-ManagedPath -Context $Context -Path $Context.PortableRoot -AllowedRoots @($Context.SessionReleaseRoot)
     Ensure-Directory -Path $Context.PortableRoot
 
     Invoke-Robocopy -Source $Context.LauncherPublishRoot -Destination $Context.PortableRoot
