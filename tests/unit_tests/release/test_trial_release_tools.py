@@ -7,6 +7,14 @@ import tempfile
 from pathlib import Path
 
 
+def test_release_script_enforces_final_windows_path_budget() -> None:
+    script = (Path(__file__).resolve().parents[3] / "scripts" / "build-trial-release.ps1").read_text(encoding="utf-8")
+    assert "function Assert-PortablePathBudget" in script
+    assert "WINDOWS_PATH_LENGTH_EXCEEDED" in script
+    assert "$length -ge 260" in script
+    assert "final internal portable" in script
+
+
 def _load_script_module(module_name: str, script_name: str):
     repo_root = Path(__file__).resolve().parents[3]
     script_path = repo_root / "packaging" / "build" / script_name
@@ -133,7 +141,7 @@ def test_sanitize_bundle_removes_bytecode_and_redacts_blocked_literals() -> None
         assert report["remainingPycacheDirectories"] == []
 
 
-def test_build_context_uses_trial_work_staging_root() -> None:
+def test_build_context_uses_short_output_session_root() -> None:
     repo_root = Path(__file__).resolve().parents[3]
     module_path = repo_root / "packaging" / "build" / "BuildContext.psm1"
     output_root = repo_root / "build" / "release-test-out"
@@ -147,11 +155,13 @@ def test_build_context_uses_trial_work_staging_root() -> None:
     result = _run_powershell(command)
     payload = json.loads(result.stdout)
 
-    assert Path(payload["WorkDirectory"]).parts[-3:] == ("build", ".trial-work", Path(payload["WorkDirectory"]).name)
-    assert Path(payload["PortableRoot"]).parts[-5:-1] == ("build", ".trial-work", Path(payload["WorkDirectory"]).name, "portable")
-    assert Path(payload["PortablePublishRoot"]).parent == output_root.resolve()
-    assert Path(payload["PortableZipStagingPath"]).name.endswith(payload["SessionId"])
-    assert Path(payload["PortableZipPublishPath"]).parent == output_root.resolve()
+    session_root = Path(payload["WorkDirectory"]).parent
+    assert session_root.parent.name == ".s"
+    assert session_root.name == payload["SessionShortId"]
+    assert Path(payload["SessionReleaseRoot"]).parent == session_root
+    assert Path(payload["SessionReleaseRoot"]).name == "r"
+    assert Path(payload["PortableRoot"]).name == "portable"
+    assert Path(payload["ReleasePublishRoot"]) == output_root.resolve() / "release-0.1.1"
 
 
 def test_publish_staged_directory_swaps_previous_release_atomically() -> None:
@@ -185,49 +195,14 @@ def test_publish_staged_directory_swaps_previous_release_atomically() -> None:
         assert not any(name.startswith("Chatbot-Trial-0.1.1-x64.previous-") for name in entries)
 
 
-def test_portable_artifact_publish_allows_late_setup_publish_after_portable_publish() -> None:
+def test_release_flow_uses_atomic_publish_after_installer_verification() -> None:
     repo_root = Path(__file__).resolve().parents[3]
     module_path = repo_root / "packaging" / "build" / "BuildContext.psm1"
-    build_script = _load_build_script_without_entrypoint().replace(
-        "Import-Module (Join-Path $PSScriptRoot '..\\packaging\\build\\BuildContext.psm1') -Force",
-        f"Import-Module '{module_path}' -Force -WarningAction SilentlyContinue",
-    )
-
-    with _temp_root() as temp_root:
-        tmp_path = Path(temp_root)
-        output_root = tmp_path / "release"
-        output_root.mkdir()
-        helper_script = tmp_path / "build-functions.ps1"
-        helper_script.write_text(build_script, encoding="utf-8")
-        result_path = tmp_path / "publish-result.json"
-
-        command = (
-            f". '{helper_script}' -Version '0.1.1'; "
-            f"$ctx = New-BuildContext -RepoRoot '{repo_root}' -OutputRoot '{output_root}' -Version '0.1.1' "
-            "-Offline:$false -SkipTests:$true -KeepWorkDirectory:$true -PortableOnly:$false -VcRedistPath '' -AuditWechatDecryptSource ''; "
-            "New-Item -ItemType Directory -Path $ctx.PortableRoot -Force | Out-Null; "
-            "Set-Content -LiteralPath (Join-Path $ctx.PortableRoot 'portable.txt') -Value 'portable' -Encoding UTF8; "
-            "Invoke-PortableArtifactPublish -Context $ctx; "
-            "$ctx.SetupPath = Join-Path $ctx.InstallerStageRoot 'Chatbot-Setup-0.1.1-x64.exe'; "
-            "Ensure-Directory -Path $ctx.InstallerStageRoot; "
-            "Set-Content -LiteralPath $ctx.SetupPath -Value 'setup' -Encoding UTF8; "
-            "Invoke-PortableArtifactPublish -Context $ctx; "
-            "$publishedSetupContent = [string](Get-Content -LiteralPath $ctx.SetupPath -Raw); "
-            "[ordered]@{ "
-            "PortableRoot = $ctx.PortableRoot; "
-            "SetupPath = $ctx.SetupPath; "
-            "PublishedSetupContent = $publishedSetupContent; "
-            "PublishedSetupExists = Test-Path -LiteralPath $ctx.SetupPath -PathType Leaf; "
-            f"}} | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath '{result_path}' -Encoding UTF8"
-        )
-
-        _run_powershell(command)
-        payload = json.loads(result_path.read_text(encoding="utf-8-sig"))
-
-        assert Path(payload["PortableRoot"]) == (output_root / "Chatbot-Trial-0.1.1-x64").resolve()
-        assert Path(payload["SetupPath"]) == (output_root / "Chatbot-Setup-0.1.1-x64.exe").resolve()
-        assert payload["PublishedSetupExists"] is True
-        assert payload["PublishedSetupContent"].strip() == "setup"
+    build_script = (repo_root / "scripts" / "build-trial-release.ps1").read_text(encoding="utf-8")
+    assert "installer verification" in build_script
+    assert "atomic release publish" in build_script
+    assert build_script.index("installer verification") < build_script.index("atomic release publish")
+    assert "Publish-SessionReleaseDirectory" in module_path.read_text(encoding="utf-8")
 
 
 def test_portable_zip_assembly_writes_sha256_sidecar() -> None:

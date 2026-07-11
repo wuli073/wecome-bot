@@ -24,6 +24,7 @@ BACKEND_RUNTIME_STATUS_PATH = '/api/v1/desktop-automation/runtime/status'
 PACKAGED_BIND_HOST = '127.0.0.1'
 DEFAULT_BACKEND_PORT = 5302
 DEFAULT_SHUTDOWN_FILENAME = 'backend-shutdown.json'
+DEFAULT_SHUTDOWN_ACK_FILENAME = 'backend-shutdown.ack.json'
 DEFAULT_RPA_RUNTIME_RELATIVE_PATH = Path('runtime') / 'desktop-rpa' / 'LangBot Desktop RPA Runtime.exe'
 
 
@@ -115,6 +116,8 @@ def build_packaged_environment(
     base_env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     env = dict(base_env or os.environ)
+    session_id = env.get('CHATBOT_LAUNCH_SESSION_ID', '').strip()
+    session_log_root = env.get('CHATBOT_LOG_ROOT', '').strip() if session_id else ''
     env.update(
         {
             'CHATBOT_PACKAGED': '1',
@@ -126,7 +129,7 @@ def build_packaged_environment(
             'CHATBOT_TEMPLATE_ROOT': str(config.resources_root / 'templates'),
             'CHATBOT_MIGRATION_ROOT': str(config.resources_root / 'migrations'),
             'CHATBOT_DEFAULTS_ROOT': str(config.resources_root / 'defaults'),
-            'CHATBOT_LOG_ROOT': str(config.log_root),
+            'CHATBOT_LOG_ROOT': session_log_root or str(config.log_root),
             'CHATBOT_RUNTIME_ROOT': str(config.runtime_root),
             'CHATBOT_RPA_RUNTIME_PATH': str(config.rpa_runtime_path),
             'CHATBOT_BACKEND_HEALTH_PATH': BACKEND_HEALTH_PATH,
@@ -155,6 +158,8 @@ def prepare_packaged_runtime(config: PackagedBackendConfig) -> None:
 
 
 async def watch_shutdown_requests(*, app_inst, shutdown_request_path: Path) -> None:
+    acknowledgement_path = shutdown_request_path.with_name(DEFAULT_SHUTDOWN_ACK_FILENAME)
+    expected_session_id = os.environ.get('CHATBOT_LAUNCH_SESSION_ID', '').strip()
     while not app_inst.shutdown_requested_event.is_set():
         if shutdown_request_path.exists():
             try:
@@ -163,6 +168,21 @@ async def watch_shutdown_requests(*, app_inst, shutdown_request_path: Path) -> N
                 payload = {}
             shutdown_request_path.unlink(missing_ok=True)
             if payload.get('action') == 'shutdown':
+                request_id = str(payload.get('requestId') or '')
+                request_session_id = str(payload.get('sessionId') or '')
+                backend_pid = payload.get('backendPid')
+                if not request_id or (expected_session_id and request_session_id != expected_session_id) or (expected_session_id and backend_pid != os.getpid()):
+                    continue
+                acknowledgement = {
+                    'accepted': True,
+                    'action': 'shutdown',
+                    'requestId': request_id,
+                    'sessionId': expected_session_id,
+                    'backendPid': os.getpid(),
+                }
+                temporary_acknowledgement_path = acknowledgement_path.with_name(f'{acknowledgement_path.name}.tmp-{request_id}')
+                temporary_acknowledgement_path.write_text(json.dumps(acknowledgement), encoding='utf-8')
+                temporary_acknowledgement_path.replace(acknowledgement_path)
                 reason = str(payload.get('reason') or 'packaged-control-file')
                 app_inst.request_shutdown(f'packaged-control-file:{reason}')
                 await app_inst.shutdown()

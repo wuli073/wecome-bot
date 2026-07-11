@@ -9,6 +9,10 @@ export const NATIVE_REBUILD_PREREQUISITES = [
   'active-win',
   'node-window-manager',
 ]
+// Windows Defender and Explorer can briefly hold the freshly generated executable
+// while electron-builder is adding the ASAR integrity resource.  Keep the final
+// output deterministic, but give those transient readers a realistic backoff.
+export const TRANSIENT_PACKAGING_ATTEMPTS = 8
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(scriptDir, '..')
@@ -182,14 +186,14 @@ export function packageWindowsRuntime(mode = 'release') {
       CSC_IDENTITY_AUTO_DISCOVERY: 'false',
     },
   }
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= TRANSIENT_PACKAGING_ATTEMPTS; attempt += 1) {
     try {
       run(electronBuilderCommand, builderArgs, builderOptions)
       return
     } catch (error) {
-      if (attempt === 3) throw error
+      if (attempt === TRANSIENT_PACKAGING_ATTEMPTS) throw error
       console.warn(`[package-win] electron-builder attempt ${attempt} failed; retrying deterministic output after a short delay.`)
-      sleep(2000 * attempt)
+      sleep(Math.min(15000, 3000 * attempt))
       ensureOutputDirReady(outputDir, packagedExePath)
     }
   }

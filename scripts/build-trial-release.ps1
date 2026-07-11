@@ -465,6 +465,21 @@ function Invoke-PortableSanitization {
     $Context.SanitizeReportPath = $reportPath
 }
 
+function Assert-PortablePathBudget {
+    param([hashtable]$Context)
+    $finalPortableRoot = Join-Path $Context.ReleasePublishRoot 'internal\portable'
+    $longest = 0
+    foreach ($file in @(Get-ChildItem -LiteralPath $Context.PortableRoot -File -Recurse)) {
+        $relative = Get-RelativePathCompat -BasePath $Context.PortableRoot -TargetPath $file.FullName
+        $length = (Join-Path $finalPortableRoot $relative).Length
+        $longest = [Math]::Max($longest, $length)
+        if ($length -ge 260) {
+            throw "WINDOWS_PATH_LENGTH_EXCEEDED: length=$length; relative path=$relative; finalRoot=$finalPortableRoot"
+        }
+    }
+    $Context.PathBudget = [pscustomobject]@{ label = 'final internal portable'; longestPathLength = $longest; limit = 259 }
+}
+
 function Invoke-ManifestGeneration {
     param([hashtable]$Context)
 
@@ -532,8 +547,8 @@ function Invoke-PortableZipAssembly {
 
     $zipPath = $Context.PortableZipStagingPath
     $zipSha256Path = $Context.PortableZipSha256StagingPath
-    Reset-ManagedPath -Context $Context -Path $zipPath -AllowedRoots @($Context.WorkDirectory)
-    Reset-ManagedPath -Context $Context -Path $zipSha256Path -AllowedRoots @($Context.WorkDirectory)
+    Reset-ManagedPath -Context $Context -Path $zipPath -AllowedRoots @($Context.SessionReleaseRoot)
+    Reset-ManagedPath -Context $Context -Path $zipSha256Path -AllowedRoots @($Context.SessionReleaseRoot)
     Ensure-Directory -Path ([System.IO.Path]::GetDirectoryName($zipPath))
     $portableName = Split-Path -Leaf $Context.PortableRoot
     $portableParent = Split-Path -Parent $Context.PortableRoot
@@ -546,22 +561,61 @@ function Invoke-PortableZipAssembly {
     $Context.PortableZipSha256Path = $zipSha256Path
 }
 
+function Get-PortableFileSnapshot {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $root = Get-NormalizedPath -Path $Root
+    $result = @{}
+    foreach ($file in @(Get-ChildItem -LiteralPath $root -File -Recurse | Sort-Object FullName)) {
+        $relative = (Get-RelativePathCompat -BasePath $root -TargetPath $file.FullName).Replace('\', '/')
+        $result[$relative] = [pscustomobject]@{ size = [Int64]$file.Length; sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+    }
+    return $result
+}
+
+function Assert-InstallerInputManifestMatchesPortable {
+    param([hashtable]$Context)
+    if (-not $Context.VerifiedPortableSnapshot) { throw 'PORTABLE_VERIFIER_GATE_REQUIRED: verified Portable snapshot is required.' }
+    $actual = Get-PortableFileSnapshot -Root $Context.InstallerInputRoot
+    $expected = $Context.VerifiedPortableSnapshot
+    $missing = @($expected.Keys | Where-Object { -not $actual.ContainsKey($_) })
+    $extra = @($actual.Keys | Where-Object { -not $expected.ContainsKey($_) })
+    $changed = @($expected.Keys | Where-Object { $actual.ContainsKey($_) -and ($actual[$_].size -ne $expected[$_].size -or $actual[$_].sha256 -cne $expected[$_].sha256) })
+    if ($missing.Count -or $extra.Count -or $changed.Count) { throw "INSTALLER_INPUT_MANIFEST_MISMATCH: missing=$($missing -join ','); extra=$($extra -join ','); changed=$($changed -join ',')" }
+    $Context.InstallerInputVerified = $true
+}
+
+function Invoke-PortableVerifier {
+    param([hashtable]$Context)
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Context.RepoRoot 'scripts\verify-trial-release.ps1') -ReleasePath $Context.PortableRoot -ZipPath $Context.PortableZipPath -MinimizedPath
+    if ($LASTEXITCODE -ne 0) { throw "PORTABLE_VERIFIER_GATE_BLOCKED: exitCode=$LASTEXITCODE" }
+    $Context.VerifiedPortableSnapshot = Get-PortableFileSnapshot -Root $Context.PortableRoot
+}
+
+function Invoke-InstallerInputStaging {
+    param([hashtable]$Context)
+    if (-not $Context.VerifiedPortableSnapshot) { throw 'PORTABLE_VERIFIER_GATE_REQUIRED: Installer staging requires verified Portable.' }
+    Reset-ManagedPath -Context $Context -Path $Context.InstallerStageRoot -AllowedRoots @($Context.WorkDirectory)
+    Invoke-Robocopy -Source $Context.PortableRoot -Destination $Context.InstallerInputRoot
+}
+
 function Invoke-InstallerAssembly {
     param([hashtable]$Context)
 
+    if (-not $Context.InstallerInputVerified) { throw 'INSTALLER_INPUT_MANIFEST_MISMATCH: Inno Setup requires verified installer input.' }
+
     $issPath = Join-Path $Context.RepoRoot 'packaging\installer\ChatbotTrial.iss'
-    $installerOutputRoot = $Context.InstallerStageRoot
-    Reset-ManagedPath -Context $Context -Path $installerOutputRoot -AllowedRoots @($Context.WorkDirectory)
+    $installerOutputRoot = $Context.PublicRoot
+    Reset-ManagedPath -Context $Context -Path $installerOutputRoot -AllowedRoots @($Context.SessionReleaseRoot)
     Ensure-Directory -Path $installerOutputRoot
     $setupPath = Join-Path $installerOutputRoot ("Chatbot-Setup-{0}-x64.exe" -f $Context.Version)
-    $portableRootParent = Split-Path -Path $Context.PortableRoot -Parent
+    $portableRootParent = Split-Path -Path $Context.InstallerInputRoot -Parent
     $installerRootParent = Split-Path -Path $installerOutputRoot -Parent
     $portableAlias = $null
     $installerAlias = $null
 
     try {
         $portableAlias = New-SubstDriveAlias -TargetPath $portableRootParent
-        $aliasedPortableRoot = Join-Path $portableAlias.AliasPath (Split-Path -Path $Context.PortableRoot -Leaf)
+        $aliasedPortableRoot = Join-Path $portableAlias.AliasPath (Split-Path -Path $Context.InstallerInputRoot -Leaf)
 
         if ($installerRootParent.Equals($portableRootParent, [System.StringComparison]::OrdinalIgnoreCase)) {
             $installerAlias = $portableAlias
@@ -647,47 +701,22 @@ function Invoke-PortableSanityCheck {
     }
 }
 
+function Invoke-SetupChecksumGeneration {
+    param([hashtable]$Context)
+    if (-not (Test-Path -LiteralPath $Context.SetupPath -PathType Leaf)) { throw "Installer output is missing: $($Context.SetupPath)" }
+    $hash = (Get-FileHash -LiteralPath $Context.SetupPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    Set-Content -LiteralPath ($Context.SetupPath + '.sha256') -Value ("{0}  {1}" -f $hash, (Split-Path -Leaf $Context.SetupPath)) -Encoding ASCII
+}
+
+function Invoke-InstallerVerification {
+    param([hashtable]$Context)
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Context.RepoRoot 'scripts\test-trial-install.ps1') -SetupPath $Context.SetupPath
+    if ($LASTEXITCODE -ne 0) { throw "INSTALLER_VERIFICATION_GATE_BLOCKED: exitCode=$LASTEXITCODE" }
+}
+
 function Invoke-PortableArtifactPublish {
     param([hashtable]$Context)
-
-    $publishTargets = @()
-    if (-not $Context.PortablePublished) {
-        $publishTargets += $Context.PortablePublishRoot
-    }
-    if ($Context.PortableZipPath -and ($Context.PortableZipPath -ne $Context.PortableZipPublishPath)) {
-        $publishTargets += $Context.PortableZipPublishPath
-    }
-    if ($Context.PortableZipSha256Path -and ($Context.PortableZipSha256Path -ne $Context.PortableZipSha256PublishPath)) {
-        $publishTargets += $Context.PortableZipSha256PublishPath
-    }
-    if ($Context.SetupPath -and ($Context.SetupPath -ne $Context.SetupPublishPath)) {
-        $publishTargets += $Context.SetupPublishPath
-    }
-
-    foreach ($target in $publishTargets) {
-        Assert-OutputPathNotInUse -Path $target
-    }
-
-    if ($Context.PortableZipPath -and ($Context.PortableZipPath -ne $Context.PortableZipPublishPath)) {
-        Publish-StagedFile -Context $Context -StagingPath $Context.PortableZipPath -DestinationPath $Context.PortableZipPublishPath
-        $Context.PortableZipPath = $Context.PortableZipPublishPath
-    }
-
-    if ($Context.PortableZipSha256Path -and ($Context.PortableZipSha256Path -ne $Context.PortableZipSha256PublishPath)) {
-        Publish-StagedFile -Context $Context -StagingPath $Context.PortableZipSha256Path -DestinationPath $Context.PortableZipSha256PublishPath
-        $Context.PortableZipSha256Path = $Context.PortableZipSha256PublishPath
-    }
-
-    if ($Context.SetupPath -and ($Context.SetupPath -ne $Context.SetupPublishPath)) {
-        Publish-StagedFile -Context $Context -StagingPath $Context.SetupPath -DestinationPath $Context.SetupPublishPath
-        $Context.SetupPath = $Context.SetupPublishPath
-    }
-
-    if (-not $Context.PortablePublished) {
-        Publish-StagedDirectory -Context $Context -StagingPath $Context.PortableRoot -DestinationPath $Context.PortablePublishRoot
-        $Context.PortableRoot = $Context.PortablePublishRoot
-        $Context.PortablePublished = $true
-    }
+    Publish-SessionReleaseDirectory -Context $Context
 }
 
 $repoRoot = Resolve-BuildPath -BasePath $PSScriptRoot -Path '..'
@@ -712,6 +741,7 @@ try {
     Invoke-BuildStage -Context $context -Name 'RPA runtime copy' -Action { Invoke-RpaRuntimeCopy -Context $context }
     Invoke-BuildStage -Context $context -Name 'launcher publish' -Action { Invoke-LauncherPublish -Context $context }
     Invoke-BuildStage -Context $context -Name 'portable directory assembly' -Action { Invoke-PortableDirectoryAssembly -Context $context }
+    Invoke-BuildStage -Context $context -Name 'Windows path budget' -Action { Assert-PortablePathBudget -Context $context }
     Invoke-BuildStage -Context $context -Name 'portable sanitization' -Action { Invoke-PortableSanitization -Context $context }
     if (-not $context.PortableOnly) {
         Invoke-BuildStage -Context $context -Name 'sensitive scan' -Action { Invoke-SensitiveScan -Context $context }
@@ -721,8 +751,12 @@ try {
     if (-not $context.PortableOnly) {
         Invoke-BuildStage -Context $context -Name 'portable zip assembly' -Action { Invoke-PortableZipAssembly -Context $context }
         Invoke-BuildStage -Context $context -Name 'minimal portable layout sanity check' -Action { Invoke-PortableSanityCheck -Context $context }
-        Invoke-BuildStage -Context $context -Name 'portable artifact publish' -Action { Invoke-PortableArtifactPublish -Context $context }
+        Invoke-BuildStage -Context $context -Name 'portable verifier gate' -Action { Invoke-PortableVerifier -Context $context }
+        Invoke-BuildStage -Context $context -Name 'installer input staging' -Action { Invoke-InstallerInputStaging -Context $context }
+        Invoke-BuildStage -Context $context -Name 'installer input manifest gate' -Action { Assert-InstallerInputManifestMatchesPortable -Context $context }
         Invoke-BuildStage -Context $context -Name 'installer assembly' -Action { Invoke-InstallerAssembly -Context $context }
+        Invoke-BuildStage -Context $context -Name 'setup checksum generation' -Action { Invoke-SetupChecksumGeneration -Context $context }
+        Invoke-BuildStage -Context $context -Name 'installer verification' -Action { Invoke-InstallerVerification -Context $context }
     }
     else {
         Invoke-BuildStage -Context $context -Name 'minimal portable layout sanity check' -Action { Invoke-PortableSanityCheck -Context $context }
@@ -732,8 +766,10 @@ try {
         Write-BuildMessage -Context $context -Message 'PortableOnly requested: Task 15/16 outputs intentionally deferred.'
     }
 
-    Invoke-BuildStage -Context $context -Name 'portable artifact publish' -Action { Invoke-PortableArtifactPublish -Context $context }
-    Write-BuildMessage -Context $context -Message ("Portable release assembled at: {0}" -f $context.PortableRoot)
+    if (-not $context.PortableOnly) {
+        Invoke-BuildStage -Context $context -Name 'atomic release publish' -Action { Invoke-PortableArtifactPublish -Context $context }
+        Write-BuildMessage -Context $context -Message ("Release published atomically at: {0}" -f $context.ReleasePublishRoot)
+    }
 }
 catch {
     Write-BuildMessage -Context $context -Message ("Build failed at stage: {0}" -f $context.FailedStage)

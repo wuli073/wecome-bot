@@ -457,6 +457,13 @@ public sealed class LifecycleTests
             _contents.Remove(path);
         }
 
+        public void MoveFile(string sourcePath, string destinationPath)
+        {
+            var value = ReadAllText(sourcePath);
+            DeleteFile(sourcePath);
+            WriteAllText(destinationPath, value);
+        }
+
         public void WriteAllText(string path, string contents)
         {
             _files.Add(path);

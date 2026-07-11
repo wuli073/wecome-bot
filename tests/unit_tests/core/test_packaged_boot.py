@@ -92,7 +92,7 @@ def test_packaged_backend_config_forces_loopback_and_packaged_roots():
     assert config.rpa_runtime_path == install_root / 'runtime' / 'desktop-rpa' / 'LangBot Desktop RPA Runtime.exe'
 
 
-def test_packaged_environment_verifier_accepts_launcher_driven_roots():
+def test_packaged_environment_verifier_accepts_launcher_driven_roots(monkeypatch):
     entrypoint = _load_module(
         'task7_packaged_entrypoint_verify',
         'packaging/server/entrypoint.py',
@@ -124,7 +124,12 @@ def test_packaged_environment_verifier_accepts_launcher_driven_roots():
 
     async def verify_shutdown_control() -> None:
         shutdown_path = _repo_tmp_dir() / 'backend-shutdown.json'
-        shutdown_path.write_text('{"action":"shutdown"}', encoding='utf-8')
+        session_id = 'launcher-session'
+        monkeypatch.setenv('CHATBOT_LAUNCH_SESSION_ID', session_id)
+        shutdown_path.write_text(
+            '{"action":"shutdown","requestId":"request-1","sessionId":"launcher-session","backendPid":%s}' % __import__('os').getpid(),
+            encoding='utf-8',
+        )
         shutdown_calls: list[str] = []
 
         class Application:
@@ -142,6 +147,14 @@ def test_packaged_environment_verifier_accepts_launcher_driven_roots():
             shutdown_request_path=shutdown_path,
         )
         assert shutdown_calls == ['packaged-control-file:packaged-control-file', 'shutdown']
+        acknowledgement = __import__('json').loads(shutdown_path.with_name('backend-shutdown.ack.json').read_text(encoding='utf-8'))
+        assert acknowledgement == {
+            'accepted': True,
+            'action': 'shutdown',
+            'requestId': 'request-1',
+            'sessionId': session_id,
+            'backendPid': __import__('os').getpid(),
+        }
 
     asyncio.run(verify_shutdown_control())
 

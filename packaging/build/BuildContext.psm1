@@ -127,10 +127,10 @@ function New-BuildContext {
     Ensure-Directory -Path $normalizedOutputRoot
 
     $sessionId = [System.Guid]::NewGuid().ToString('N')
-    $trialWorkRoot = Join-Path $normalizedRepoRoot 'build\.trial-work'
-    Ensure-Directory -Path $trialWorkRoot
-
-    $workDirectory = Join-Path $trialWorkRoot ("{0}-{1}" -f $Version, $sessionId)
+    $sessionShortId = $sessionId.Substring(0, 12)
+    $sessionRoot = Join-Path (Join-Path $normalizedOutputRoot '.s') $sessionShortId
+    Ensure-Directory -Path $sessionRoot
+    $workDirectory = Join-Path $sessionRoot 'work'
     Ensure-Directory -Path $workDirectory
 
     $runtimeManifestPath = Join-Path $normalizedRepoRoot 'packaging\runtime-manifest.json'
@@ -138,16 +138,17 @@ function New-BuildContext {
     $runtimeManifest = Read-JsonFile -Path $runtimeManifestPath
     $portableLayout = Read-JsonFile -Path $portableLayoutPath
 
-    $portableDirectoryName = $portableLayout.portableDirectoryNameTemplate.Replace('{version}', $Version)
-    $portableStageRoot = Join-Path $workDirectory 'portable'
-    $portableRoot = Join-Path $portableStageRoot $portableDirectoryName
-    $portablePublishRoot = Join-Path $normalizedOutputRoot $portableDirectoryName
-    $portableZipPublishPath = Join-Path $normalizedOutputRoot ($portableDirectoryName + '.zip')
-    $portableZipSha256PublishPath = $portableZipPublishPath + '.sha256'
-    $portableZipStagingPath = Join-Path (Join-Path $workDirectory 'artifacts') ($portableDirectoryName + '.zip.tmp-' + $sessionId)
+    $portableDirectoryName = 'portable'
+    $sessionReleaseRoot = Join-Path $sessionRoot 'r'
+    $releasePublishRoot = Join-Path $normalizedOutputRoot ("release-{0}" -f $Version)
+    $internalRoot = Join-Path $sessionReleaseRoot 'internal'
+    $publicRoot = Join-Path $sessionReleaseRoot 'public'
+    $portableRoot = Join-Path $internalRoot $portableDirectoryName
+    $portableZipStagingPath = Join-Path $internalRoot ("Chatbot-Trial-{0}-x64.zip" -f $Version)
     $portableZipSha256StagingPath = $portableZipStagingPath + '.sha256'
-    $setupPublishPath = Join-Path $normalizedOutputRoot ("Chatbot-Setup-{0}-x64.exe" -f $Version)
-    $installerStageRoot = Join-Path $workDirectory 'installer'
+    $setupPublishPath = Join-Path $publicRoot ("Chatbot-Setup-{0}-x64.exe" -f $Version)
+    $installerStageRoot = Join-Path $workDirectory 'installer-input'
+    $installerInputRoot = Join-Path $installerStageRoot $portableDirectoryName
     $logPath = Join-Path $workDirectory 'build-trial-release.log'
     $runtimeCacheRoot = Resolve-BuildPath -BasePath $normalizedRepoRoot -Path $runtimeManifest.cache.root
     Ensure-Directory -Path $runtimeCacheRoot
@@ -156,17 +157,19 @@ function New-BuildContext {
         RepoRoot = $normalizedRepoRoot
         OutputRoot = $normalizedOutputRoot
         SessionId = $sessionId
+        SessionShortId = $sessionShortId
+        SessionReleaseRoot = $sessionReleaseRoot
+        ReleasePublishRoot = $releasePublishRoot
+        InternalRoot = $internalRoot
+        PublicRoot = $publicRoot
         PortableRoot = $portableRoot
-        PortableStageRoot = $portableStageRoot
-        PortablePublishRoot = $portablePublishRoot
-        PortableZipPublishPath = $portableZipPublishPath
-        PortableZipSha256PublishPath = $portableZipSha256PublishPath
         PortableZipStagingPath = $portableZipStagingPath
         PortableZipSha256StagingPath = $portableZipSha256StagingPath
         PortableZipPath = $null
         PortableZipSha256Path = $null
         SetupPublishPath = $setupPublishPath
         InstallerStageRoot = $installerStageRoot
+        InstallerInputRoot = $installerInputRoot
         SetupPath = $null
         WorkDirectory = $workDirectory
         LogPath = $logPath
@@ -177,7 +180,7 @@ function New-BuildContext {
         SkipTests = $SkipTests
         KeepWorkDirectory = $KeepWorkDirectory
         PortableOnly = $PortableOnly
-        PortablePublished = $false
+        ReleasePublished = $false
         Version = $Version
         VcRedistPath = $VcRedistPath
         AuditWechatDecryptSource = $AuditWechatDecryptSource
@@ -499,6 +502,23 @@ function Publish-StagedDirectory {
     }
 }
 
+function Publish-SessionReleaseDirectory {
+    param([Parameter(Mandatory = $true)][hashtable]$Context)
+
+    $stagingPath = Get-NormalizedPath -Path $Context.SessionReleaseRoot
+    $destinationPath = Get-NormalizedPath -Path $Context.ReleasePublishRoot
+    if (-not (Test-Path -LiteralPath $stagingPath -PathType Container)) {
+        throw "RELEASE_STAGING_MISSING: $stagingPath"
+    }
+    if (Test-Path -LiteralPath $destinationPath) {
+        throw "RELEASE_OUTPUT_ALREADY_EXISTS: $destinationPath"
+    }
+    Assert-OutputPathNotInUse -Path $destinationPath
+    Move-Item -LiteralPath $stagingPath -Destination $destinationPath -ErrorAction Stop
+    $Context.ReleasePublished = $true
+    $Context.ReleasePublishRoot = $destinationPath
+}
+
 function Invoke-Robocopy {
     param(
         [Parameter(Mandatory = $true)]
@@ -748,6 +768,7 @@ Export-ModuleMember -Function @(
     'Invoke-Robocopy',
     'New-BuildContext',
     'Publish-StagedDirectory',
+    'Publish-SessionReleaseDirectory',
     'Publish-StagedFile',
     'Read-JsonFile',
     'Remove-WorkDirectoryIfNeeded',

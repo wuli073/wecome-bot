@@ -166,6 +166,8 @@ public interface ILauncherFileSystem
 
     void DeleteFile(string path);
 
+    void MoveFile(string sourcePath, string destinationPath);
+
     void WriteAllText(string path, string contents);
 
     string ReadAllText(string path);
@@ -213,6 +215,8 @@ public static class LauncherExitCodes
 public sealed class LauncherProcessManager
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(10);
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -232,6 +236,7 @@ public sealed class LauncherProcessManager
     private LauncherProcessSnapshot? _ownedSnapshot;
     private LauncherLaunchRequest? _ownedLaunchRequest;
     private LauncherRuntimeObservation? _lastObservation;
+    private string? _sessionId;
 
     public LauncherProcessManager(
         LauncherConfig config,
@@ -256,6 +261,8 @@ public sealed class LauncherProcessManager
     public Uri BrowserUri => _config.Backend.BackendBaseUri;
 
     public LauncherRuntimeObservation? LastObservation => _lastObservation;
+
+    public string? SessionId => _sessionId;
 
     public static LauncherProcessManager CreateDefault(LauncherConfig config, LauncherInstallationLayout layout)
     {
@@ -301,6 +308,7 @@ public sealed class LauncherProcessManager
 
     public IReadOnlyDictionary<string, string> BuildPackagedEnvironment()
     {
+        var sessionId = _sessionId ?? "unscoped";
         return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["CHATBOT_PACKAGED"] = "1",
@@ -312,8 +320,9 @@ public sealed class LauncherProcessManager
             ["CHATBOT_TEMPLATE_ROOT"] = Path.Combine(_layout.ResourcesRoot, "templates"),
             ["CHATBOT_MIGRATION_ROOT"] = Path.Combine(_layout.ResourcesRoot, "migrations"),
             ["CHATBOT_DEFAULTS_ROOT"] = Path.Combine(_layout.ResourcesRoot, "defaults"),
-            ["CHATBOT_LOG_ROOT"] = _layout.LogRoot,
+            ["CHATBOT_LOG_ROOT"] = GetSessionLogRoot(sessionId),
             ["CHATBOT_RUNTIME_ROOT"] = _layout.RuntimeRoot,
+            ["CHATBOT_LAUNCH_SESSION_ID"] = sessionId,
             ["CHATBOT_RPA_RUNTIME_PATH"] = _layout.RpaRuntimeExecutable,
             ["CHATBOT_BACKEND_HEALTH_PATH"] = _config.Backend.HealthPath,
             ["CHATBOT_BACKEND_RUNTIME_STATUS_PATH"] = _config.Backend.RuntimeStatusPath,
@@ -361,6 +370,9 @@ public sealed class LauncherProcessManager
             }
         }
 
+        _sessionId = Guid.NewGuid().ToString("N");
+        _fileSystem.CreateDirectory(GetSessionLogRoot(_sessionId));
+        ArchiveStaleControlFiles(_sessionId);
         ThrowIfConfiguredPortOwnedByOtherProcess();
 
         var request = BuildLaunchRequest();
@@ -427,8 +439,18 @@ public sealed class LauncherProcessManager
             return;
         }
 
-        WriteShutdownRequest(reason);
-        if (!await process.WaitForExitAsync(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false))
+        var exited = process.HasExited;
+        if (!exited)
+        {
+            var requestId = WriteShutdownRequest(reason);
+            var exitTask = process.WaitForExitAsync(ShutdownTimeout, cancellationToken);
+            var acknowledgementTask = WaitForShutdownAcknowledgementAsync(requestId, snapshot.Pid, cancellationToken);
+            await Task.WhenAll(exitTask, acknowledgementTask).ConfigureAwait(false);
+            exited = await exitTask.ConfigureAwait(false);
+            if (!await acknowledgementTask.ConfigureAwait(false))
+                AppendLauncherLog($"Shutdown acknowledgement was not matched: requestId={requestId} sessionId={_sessionId} backendPid={snapshot.Pid}");
+        }
+        if (!exited)
         {
             if (IsOwnedProcess(process, snapshot))
             {
@@ -566,8 +588,8 @@ public sealed class LauncherProcessManager
             arguments,
             BuildPackagedEnvironment(),
             BuildCommandLineArguments(new[] { _layout.BackendPythonExecutable }.Concat(arguments)),
-            Path.Combine(_layout.LogRoot, "backend.stdout.log"),
-            Path.Combine(_layout.LogRoot, "backend.stderr.log"));
+            Path.Combine(GetSessionLogRoot(_sessionId ?? throw new InvalidOperationException("Missing launcher session.")), "backend.stdout.log"),
+            Path.Combine(GetSessionLogRoot(_sessionId ?? throw new InvalidOperationException("Missing launcher session.")), "backend.stderr.log"));
     }
 
     private async Task WaitForHealthAsync(ILauncherProcess process, CancellationToken cancellationToken)
@@ -729,17 +751,25 @@ public sealed class LauncherProcessManager
         _fileSystem.CreateDirectory(_layout.LogRoot);
     }
 
-    private void WriteShutdownRequest(string reason)
+    private string WriteShutdownRequest(string reason)
     {
+        var requestId = Guid.NewGuid().ToString("N");
         var payload = JsonSerializer.Serialize(
             new
             {
                 action = "shutdown",
                 reason,
+                requestId,
                 requestedAtUtc = _clock.UtcNow,
+                sessionId = _sessionId ?? throw new InvalidOperationException("Missing launcher session."),
+                backendPid = _ownedSnapshot?.Pid,
             },
             JsonOptions);
-        _fileSystem.WriteAllText(_layout.ShutdownRequestPath, payload);
+        _fileSystem.DeleteFile(GetShutdownAcknowledgementPath());
+        var temporaryPath = $"{_layout.ShutdownRequestPath}.tmp-{requestId}";
+        _fileSystem.WriteAllText(temporaryPath, payload);
+        _fileSystem.MoveFile(temporaryPath, _layout.ShutdownRequestPath);
+        return requestId;
     }
 
     private void PersistLauncherState(LauncherProcessSnapshot? snapshot)
@@ -754,7 +784,7 @@ public sealed class LauncherProcessManager
                     snapshot.Pid,
                     snapshot.CreateTimeUtc.ToString("O", CultureInfo.InvariantCulture),
                     snapshot.ExecutablePath,
-                    Guid.NewGuid().ToString("N")),
+                    _sessionId ?? Guid.NewGuid().ToString("N")),
             new LauncherStateUrls(
                 _config.Backend.BackendBaseUri.ToString(),
                 _config.Backend.HealthUri.ToString(),
@@ -765,7 +795,9 @@ public sealed class LauncherProcessManager
 
     private void AppendLauncherLog(string message)
     {
-        var logPath = Path.Combine(_layout.LogRoot, "launcher.log");
+        var logRoot = _sessionId is null ? _layout.LogRoot : GetSessionLogRoot(_sessionId);
+        _fileSystem.CreateDirectory(logRoot);
+        var logPath = Path.Combine(logRoot, "launcher.log");
         var line = $"{_clock.UtcNow:O} {message}{Environment.NewLine}";
         if (_fileSystem.FileExists(logPath))
         {
@@ -774,6 +806,49 @@ public sealed class LauncherProcessManager
         }
 
         _fileSystem.WriteAllText(logPath, line);
+    }
+
+    private string GetSessionLogRoot(string sessionId) => Path.Combine(_layout.LogRoot, "sessions", sessionId);
+
+    private string GetShutdownAcknowledgementPath() => Path.Combine(_layout.RuntimeRoot, "backend-shutdown.ack.json");
+
+    private void ArchiveStaleControlFiles(string sessionId)
+    {
+        var archiveRoot = Path.Combine(_layout.RuntimeRoot, "archive");
+        _fileSystem.CreateDirectory(archiveRoot);
+        foreach (var fileName in new[] { "backend-shutdown.json", "backend-shutdown.ack.json" })
+        {
+            var source = Path.Combine(_layout.RuntimeRoot, fileName);
+            if (_fileSystem.FileExists(source))
+                _fileSystem.MoveFile(source, Path.Combine(archiveRoot, $"{Path.GetFileNameWithoutExtension(fileName)}.before-{sessionId}{Path.GetExtension(fileName)}"));
+        }
+    }
+
+    private async Task<bool> WaitForShutdownAcknowledgementAsync(string requestId, int backendPid, CancellationToken cancellationToken)
+    {
+        var deadline = _clock.UtcNow.Add(ShutdownTimeout);
+        var path = GetShutdownAcknowledgementPath();
+        while (_clock.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_fileSystem.FileExists(path))
+            {
+                try
+                {
+                    using var acknowledgement = JsonDocument.Parse(_fileSystem.ReadAllText(path));
+                    var root = acknowledgement.RootElement;
+                    if (root.TryGetProperty("accepted", out var accepted) && accepted.ValueKind == JsonValueKind.True
+                        && root.TryGetProperty("action", out var action) && action.GetString() == "shutdown"
+                        && root.TryGetProperty("requestId", out var id) && id.GetString() == requestId
+                        && root.TryGetProperty("sessionId", out var session) && session.GetString() == _sessionId
+                        && root.TryGetProperty("backendPid", out var pid) && pid.TryGetInt32(out var parsedPid) && parsedPid == backendPid)
+                        return true;
+                }
+                catch (JsonException) { }
+            }
+            await _clock.Delay(PollInterval, cancellationToken).ConfigureAwait(false);
+        }
+        return false;
     }
 
     private bool ResolveLegacyPathExists(string pathPattern)
@@ -1069,7 +1144,13 @@ internal sealed class DefaultLauncherFileSystem : ILauncherFileSystem
         }
     }
 
-    public void WriteAllText(string path, string contents) => File.WriteAllText(path, contents, Encoding.UTF8);
+    public void MoveFile(string sourcePath, string destinationPath)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+        File.Move(sourcePath, destinationPath, overwrite: true);
+    }
+
+    public void WriteAllText(string path, string contents) => File.WriteAllText(path, contents, Utf8NoBom);
 
     public string ReadAllText(string path) => File.ReadAllText(path, Encoding.UTF8);
 

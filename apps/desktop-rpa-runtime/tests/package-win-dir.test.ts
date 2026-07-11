@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   PACKAGED_EXE_NAME,
+  TRANSIENT_PACKAGING_ATTEMPTS,
   getDeterministicDirOutputDir,
   getDeterministicPackagedExePath,
   getElectronBuilderArgs,
@@ -13,6 +14,10 @@ test('getDeterministicDirOutputDir returns a fixed win-dir output root', () => {
     getDeterministicDirOutputDir(projectRoot),
     'C:\\repo\\bot\\apps\\desktop-rpa-runtime\\dist-phase2-official\\win-dir',
   )
+})
+
+test('Windows packaging gives transient executable readers a bounded retry budget', () => {
+  assert.equal(TRANSIENT_PACKAGING_ATTEMPTS, 8)
 })
 
 test('getDeterministicPackagedExePath returns the stable win-unpacked executable path', () => {

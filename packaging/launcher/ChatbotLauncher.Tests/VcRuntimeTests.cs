@@ -172,6 +172,12 @@ public sealed class VcRuntimeTests
             _files.Remove(path);
         }
 
+        public void MoveFile(string sourcePath, string destinationPath)
+        {
+            _files[destinationPath] = _files[sourcePath];
+            _files.Remove(sourcePath);
+        }
+
         public void WriteAllText(string path, string contents)
         {
             _files[path] = contents;
