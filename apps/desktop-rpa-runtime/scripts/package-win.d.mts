@@ -1,5 +1,6 @@
 export const PACKAGED_EXE_NAME: string
 export const NATIVE_REBUILD_PREREQUISITES: string[]
+export const TRANSIENT_PACKAGING_ATTEMPTS: number
 
 export function getDeterministicDirOutputDir(root?: string): string
 export function getDeterministicWinUnpackedDir(root?: string): string
