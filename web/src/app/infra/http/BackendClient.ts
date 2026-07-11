@@ -1,4 +1,5 @@
-import { BaseHttpClient } from './BaseHttpClient';
+import { BaseHttpClient, RequestConfig } from './BaseHttpClient';
+import axios from 'axios';
 import {
   ApiRespProviderRequesters,
   ApiRespProviderRequester,
@@ -19,7 +20,6 @@ import {
   AsyncTaskCreatedResp,
   ApiRespSystemInfo,
   ApiRespAsyncTasks,
-  ApiRespUserToken,
   GetPipelineResponseData,
   GetPipelineMetadataResponseData,
   AsyncTask,
@@ -41,6 +41,10 @@ import {
   ApiRespMCPServers,
   ApiRespMCPServer,
   MCPServer,
+  ApiRespLocalConnectors,
+  ApiRespLocalConnector,
+  ApiRespLocalConnectorJob,
+  ApiRespLocalConnectorMonitor,
   ApiRespModelProviders,
   ApiRespModelProvider,
   ApiRespScannedProviderModels,
@@ -53,6 +57,34 @@ import {
   Skill,
   ApiRespSkills,
   ApiRespSkill,
+  ApiRespDatabaseModeConversation,
+  ApiRespDatabaseModeConversations,
+  ApiRespDatabaseModeMessage,
+  ApiRespDatabaseModeMessages,
+  ApiBroadcastGroupMatchResult,
+  ApiBroadcastGroupName,
+  ApiBroadcastGroupNamesResponse,
+  ApiBroadcastGroupNameSyncResult,
+  ApiBroadcastGroupRule,
+  ApiBroadcastDraft,
+  ApiBroadcastDraftStatus,
+  ApiBroadcastDraftStatusUpdateResult,
+  ApiBroadcastExecutionAttempt,
+  ApiBroadcastExecutionBatch,
+  ApiBroadcastExecutionEvidence,
+  ApiBroadcastExecutionTask,
+  ApiBroadcastBulkAssignResult,
+  ApiBroadcastImportGroupRowsResponse,
+  ApiBroadcastImportGroupsResponse,
+  ApiBroadcastImportGroupRuleCandidatesResponse,
+  ApiBroadcastImportBatch,
+  ApiBroadcastImportDetail,
+  ApiBroadcastImportDraftGenerationResult,
+  ApiBroadcastImportGroupTemplateAssignment,
+  ApiBroadcastScope,
+  ApiBroadcastTemplate,
+  ApiBroadcastTemplateRenderResult,
+  ApiBroadcastVariableProfile,
 } from '@/app/infra/entities/api';
 import { Plugin } from '@/app/infra/entities/plugin';
 import type { PluginLogEntry } from '@/app/infra/entities/plugin';
@@ -67,6 +99,70 @@ import { GetBotLogsResponse } from '@/app/infra/http/requestParam/bots/GetBotLog
 export class BackendClient extends BaseHttpClient {
   constructor(baseURL: string) {
     super(baseURL, false);
+  }
+
+  private toSearchParams(
+    params: Record<string, string | number | boolean | null | undefined>,
+  ): string {
+    const searchParams = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value === undefined || value === null) {
+        return;
+      }
+      searchParams.set(key, String(value));
+    });
+    return searchParams.toString();
+  }
+
+  private async requestBroadcast<T>(config: RequestConfig): Promise<T> {
+    const token =
+      typeof window !== 'undefined' && !this.disableToken
+        ? this.getSessionSync()
+        : null;
+    const headers = {
+      ...this.instance.defaults.headers.common,
+      ...(config.headers ?? {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+
+    try {
+      const response = await axios.request<{
+        code: number;
+        message: string;
+        data: T;
+        timestamp: number;
+      }>({
+        baseURL: this.instance.defaults.baseURL,
+        timeout: this.instance.defaults.timeout,
+        ...config,
+        headers,
+      });
+      return response.data.data;
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response) {
+        const responseData = error.response.data as
+          | {
+              code?: unknown;
+              msg?: unknown;
+              message?: unknown;
+              details?: unknown;
+            }
+          | undefined;
+        throw {
+          code: responseData?.code ?? error.response.status,
+          msg: String(responseData?.msg ?? error.message),
+          data: {
+            message:
+              typeof responseData?.message === 'string' &&
+              responseData.message.trim()
+                ? responseData.message
+                : String(responseData?.msg ?? error.message),
+            details: responseData?.details ?? [],
+          },
+        };
+      }
+      throw error;
+    }
   }
 
   // ============ Provider API ============
@@ -905,6 +1001,189 @@ export class BackendClient extends BaseHttpClient {
     return this.post('/api/v1/mcp/servers', { source });
   }
 
+  // ============ Local Connector API ============
+  public getLocalConnectors(): Promise<ApiRespLocalConnectors> {
+    return this.get('/api/v1/local-connectors');
+  }
+
+  public getLocalConnectorStatus(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.get(`/api/v1/local-connectors/${connectorId}/status`);
+  }
+
+  public detectLocalConnector(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/detect`);
+  }
+
+  public setupLocalConnector(
+    connectorId: string,
+  ): Promise<{ job_id: string; status: string; stage: string }> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/setup`);
+  }
+
+  public refreshLocalConnector(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/refresh`);
+  }
+
+  public startLocalConnectorWorker(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/start`);
+  }
+
+  public stopLocalConnectorWorker(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/stop`);
+  }
+
+  public restartLocalConnectorWorker(
+    connectorId: string,
+  ): Promise<ApiRespLocalConnector> {
+    return this.post(`/api/v1/local-connectors/${connectorId}/restart`);
+  }
+
+  public getLocalConnectorLogs(
+    connectorId: string,
+  ): Promise<{ connector_id: string; logs: string }> {
+    return this.get(`/api/v1/local-connectors/${connectorId}/logs`);
+  }
+
+  public getLocalConnectorJob(
+    jobId: string,
+  ): Promise<ApiRespLocalConnectorJob> {
+    return this.get(`/api/v1/local-connectors/jobs/${jobId}`);
+  }
+
+  public getLocalConnectorMonitorStatus(): Promise<ApiRespLocalConnectorMonitor> {
+    return this.get('/api/v1/local-connectors/wxwork-local/monitor/status');
+  }
+
+  public startLocalConnectorMonitor(): Promise<ApiRespLocalConnector> {
+    return this.post('/api/v1/local-connectors/wxwork-local/monitor/start');
+  }
+
+  public stopLocalConnectorMonitor(): Promise<ApiRespLocalConnector> {
+    return this.post('/api/v1/local-connectors/wxwork-local/monitor/stop');
+  }
+
+  public restartLocalConnectorMonitor(): Promise<ApiRespLocalConnector> {
+    return this.post('/api/v1/local-connectors/wxwork-local/monitor/restart');
+  }
+
+  // ============ Database Mode API ============
+  public getDatabaseModeConversations(params?: {
+    status?: string;
+    keyword?: string;
+    page?: number;
+    page_size?: number;
+  }): Promise<ApiRespDatabaseModeConversations> {
+    return this.get('/api/v1/database-mode/conversations', params);
+  }
+
+  public getDatabaseModeConversation(
+    conversationId: number,
+  ): Promise<ApiRespDatabaseModeConversation> {
+    return this.get(`/api/v1/database-mode/conversations/${conversationId}`);
+  }
+
+  public getDatabaseModeMessages(
+    conversationId: number,
+    params?: {
+      status?: string;
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<ApiRespDatabaseModeMessages> {
+    return this.get(
+      `/api/v1/database-mode/conversations/${conversationId}/messages`,
+      params,
+    );
+  }
+
+  public generateDatabaseModeDraft(
+    messageId: number,
+  ): Promise<ApiRespDatabaseModeMessage> {
+    return this.post(
+      `/api/v1/database-mode/messages/${messageId}/generate-draft`,
+    );
+  }
+
+  public updateDatabaseModeDraft(
+    messageId: number,
+    payload: {
+      draft_text: string;
+      draft_source?: string;
+    },
+  ): Promise<ApiRespDatabaseModeMessage> {
+    return this.put(
+      `/api/v1/database-mode/messages/${messageId}/draft`,
+      payload,
+    );
+  }
+
+  public deleteDatabaseModeDraft(
+    messageId: number,
+  ): Promise<ApiRespDatabaseModeMessage> {
+    return this.delete(`/api/v1/database-mode/messages/${messageId}/draft`);
+  }
+
+  public processDatabaseModeMessage(
+    messageId: number,
+  ): Promise<ApiRespDatabaseModeMessage> {
+    return this.post(`/api/v1/database-mode/messages/${messageId}/process`);
+  }
+
+  public skipDatabaseModeMessage(
+    messageId: number,
+  ): Promise<ApiRespDatabaseModeMessage> {
+    return this.post(`/api/v1/database-mode/messages/${messageId}/skip`);
+  }
+
+  public deleteDatabaseModeMessage(messageId: number): Promise<void> {
+    return this.delete(`/api/v1/database-mode/messages/${messageId}`);
+  }
+
+  public batchProcessDatabaseModeMessages(
+    message_ids: number[],
+  ): Promise<{ messages: unknown[] }> {
+    return this.post('/api/v1/database-mode/messages/batch-process', {
+      message_ids,
+    });
+  }
+
+  public batchSkipDatabaseModeMessages(
+    message_ids: number[],
+  ): Promise<{ messages: unknown[] }> {
+    return this.post('/api/v1/database-mode/messages/batch-skip', {
+      message_ids,
+    });
+  }
+
+  public batchDeleteDatabaseModeMessages(
+    message_ids: number[],
+  ): Promise<{ deleted_ids: number[] }> {
+    return this.post('/api/v1/database-mode/messages/batch-delete', {
+      message_ids,
+    });
+  }
+
+  public async createDatabaseModeEventSession(
+    config?: RequestConfig,
+  ): Promise<void> {
+    await this.instance.request({
+      method: 'post',
+      url: '/api/v1/database-mode/events/session',
+      withCredentials: true,
+      ...config,
+    });
+  }
+
   // ============ System API ============
   public getSystemInfo(): Promise<ApiRespSystemInfo> {
     return this.get('/api/v1/system/info');
@@ -984,14 +1263,6 @@ export class BackendClient extends BaseHttpClient {
     return this.post('/api/v1/user/init', { user, password });
   }
 
-  public authUser(user: string, password: string): Promise<ApiRespUserToken> {
-    return this.post('/api/v1/user/auth', { user, password });
-  }
-
-  public checkUserToken(): Promise<ApiRespUserToken> {
-    return this.get('/api/v1/user/check-token');
-  }
-
   public resetPassword(
     user: string,
     recoveryKey: string,
@@ -1024,14 +1295,6 @@ export class BackendClient extends BaseHttpClient {
 
   public getSpaceCredits(): Promise<{ credits: number | null }> {
     return this.get('/api/v1/user/space-credits');
-  }
-
-  public getAccountInfo(): Promise<{
-    initialized: boolean;
-    account_type?: 'local' | 'space';
-    has_password?: boolean;
-  }> {
-    return this.get('/api/v1/user/account-info');
   }
 
   public setPassword(
@@ -1422,6 +1685,914 @@ export class BackendClient extends BaseHttpClient {
     return this.put(`/api/v1/skills/${skillName}/files/${filePath}`, {
       content,
     });
+  }
+
+  // ============ Bot-scoped Database Mode API ============
+
+  /**
+   * List conversations for a specific bot
+   */
+  public listBotConversations(
+    botId: string,
+    params?: {
+      status?: string;
+      keyword?: string;
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<import('@/app/infra/entities/api').ApiRespBotConversations> {
+    const query: Record<string, string> = {};
+    if (params?.status) query.status = params.status;
+    if (params?.keyword) query.keyword = params.keyword;
+    if (params?.page) query.page = params.page.toString();
+    if (params?.page_size) query.page_size = params.page_size.toString();
+
+    return this.get(`/api/v1/bots/${botId}/conversations`, query);
+  }
+
+  /**
+   * Get a specific conversation for a bot
+   */
+  public getBotConversation(
+    botId: string,
+    conversationId: string,
+  ): Promise<import('@/app/infra/entities/api').ApiRespBotConversation> {
+    return this.get(`/api/v1/bots/${botId}/conversations/${conversationId}`);
+  }
+
+  /**
+   * List messages in a bot conversation
+   */
+  public listBotMessages(
+    botId: string,
+    conversationId: string,
+    params?: {
+      status?: string;
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<import('@/app/infra/entities/api').ApiRespBotMessages> {
+    const query: Record<string, string> = {};
+    if (params?.status) query.status = params.status;
+    if (params?.page) query.page = params.page.toString();
+    if (params?.page_size) query.page_size = params.page_size.toString();
+
+    return this.get(
+      `/api/v1/bots/${botId}/conversations/${conversationId}/messages`,
+      query,
+    );
+  }
+
+  /**
+   * Generate a draft reply for a message
+   */
+  public generateBotDraft(
+    botId: string,
+    messageId: string,
+  ): Promise<import('@/app/infra/entities/api').ApiRespGenerateDraft> {
+    return this.post(
+      `/api/v1/bots/${botId}/messages/${messageId}/generate-draft`,
+      {},
+    );
+  }
+
+  /**
+   * Update a draft reply
+   */
+  public updateBotDraft(
+    botId: string,
+    draftId: string,
+    content: string,
+  ): Promise<import('@/app/infra/entities/api').ApiRespUpdateDraft> {
+    return this.put(`/api/v1/bots/${botId}/drafts/${draftId}`, { content });
+  }
+
+  /**
+   * Delete a persisted draft reply
+   */
+  public deleteBotDraft(
+    botId: string,
+    draftId: string,
+  ): Promise<import('@/app/infra/entities/api').ApiRespUpdateDraft> {
+    return this.delete(`/api/v1/bots/${botId}/drafts/${draftId}`);
+  }
+
+  /**
+   * Paste the current persisted draft into the verified WeCom input box.
+   */
+  public pasteBotDraft(
+    botId: string,
+    messageId: string,
+    draftId: string,
+    idempotencyKey: string,
+  ): Promise<import('@/app/infra/entities/api').DesktopAutomationRun> {
+    return this.post(
+      `/api/v1/bots/${botId}/messages/${messageId}/paste-draft`,
+      { draft_id: Number(draftId) },
+      { headers: { 'Idempotency-Key': idempotencyKey } },
+    );
+  }
+
+  /**
+   * Explicitly send a persisted draft through the desktop runtime. Disabled unless the backend/runtime gates allow it.
+   */
+  public sendBotDraft(
+    botId: string,
+    messageId: string,
+    draftId: string,
+    sendStrategy: 'enter' | 'ctrl_enter' | 'click_send_button',
+    idempotencyKey?: string,
+  ): Promise<import('@/app/infra/entities/api').DesktopAutomationRun> {
+    return this.post(`/api/v1/bots/${botId}/messages/${messageId}/send-draft`, {
+      draft_id: Number(draftId),
+      explicit_send_action: true,
+      python_authorized: true,
+      send_strategy: sendStrategy,
+      ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+    });
+  }
+
+  /**
+   * Get a bot-scoped desktop automation run.
+   */
+  public getBotDesktopAutomationRun(
+    botId: string,
+    runId: string,
+  ): Promise<import('@/app/infra/entities/api').DesktopAutomationRun> {
+    return this.get(`/api/v1/bots/${botId}/desktop-automation/runs/${runId}`);
+  }
+
+  /**
+   * Cancel a bot-scoped desktop automation run.
+   */
+  public cancelBotDesktopAutomationRun(
+    botId: string,
+    runId: string,
+  ): Promise<import('@/app/infra/entities/api').DesktopAutomationRun> {
+    return this.post(
+      `/api/v1/bots/${botId}/desktop-automation/runs/${runId}/cancel`,
+      {},
+    );
+  }
+
+  /**
+   * Get the desktop runtime status without starting the runtime.
+   */
+  public getDesktopAutomationRuntimeStatus(): Promise<
+    import('@/app/infra/entities/api').DesktopRuntimeStatus
+  > {
+    return this.get('/api/v1/desktop-automation/runtime/status');
+  }
+
+  /**
+   * Mark a message as processed
+   */
+  public processBotMessage(botId: string, messageId: string): Promise<void> {
+    return this.post(`/api/v1/bots/${botId}/messages/${messageId}/process`, {});
+  }
+
+  /**
+   * Skip a message
+   */
+  public skipBotMessage(botId: string, messageId: string): Promise<void> {
+    return this.post(`/api/v1/bots/${botId}/messages/${messageId}/skip`, {});
+  }
+
+  /**
+   * Delete a message
+   */
+  public deleteBotMessage(botId: string, messageId: string): Promise<void> {
+    return this.delete(`/api/v1/bots/${botId}/messages/${messageId}`);
+  }
+
+  /**
+   * Batch process messages
+   */
+  public batchProcessBotMessages(
+    botId: string,
+    messageIds: string[],
+  ): Promise<import('@/app/infra/entities/api').ApiRespBatchOperation> {
+    return this.post(`/api/v1/bots/${botId}/messages/batch-process`, {
+      message_ids: messageIds,
+    });
+  }
+
+  /**
+   * Batch skip messages
+   */
+  public batchSkipBotMessages(
+    botId: string,
+    messageIds: string[],
+  ): Promise<import('@/app/infra/entities/api').ApiRespBatchOperation> {
+    return this.post(`/api/v1/bots/${botId}/messages/batch-skip`, {
+      message_ids: messageIds,
+    });
+  }
+
+  /**
+   * Batch delete messages
+   */
+  public batchDeleteBotMessages(
+    botId: string,
+    messageIds: string[],
+  ): Promise<import('@/app/infra/entities/api').ApiRespBatchOperation> {
+    return this.post(`/api/v1/bots/${botId}/messages/batch-delete`, {
+      message_ids: messageIds,
+    });
+  }
+
+  // ============ Broadcast API ============
+  public getBroadcastTemplates(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastTemplate[]> {
+    return this.get('/api/v1/broadcast/templates', scope);
+  }
+
+  public createBroadcastTemplate(
+    scope: ApiBroadcastScope,
+    payload: {
+      name: string;
+      content: string;
+      enabled: boolean;
+    },
+  ): Promise<ApiBroadcastTemplate> {
+    return this.requestBroadcast<ApiBroadcastTemplate>({
+      method: 'post',
+      url: '/api/v1/broadcast/templates',
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public updateBroadcastTemplate(
+    scope: ApiBroadcastScope,
+    templateId: number,
+    payload: {
+      name: string;
+      content: string;
+      enabled: boolean;
+    },
+  ): Promise<ApiBroadcastTemplate> {
+    return this.requestBroadcast<ApiBroadcastTemplate>({
+      method: 'put',
+      url: `/api/v1/broadcast/templates/${templateId}`,
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public deleteBroadcastTemplate(
+    scope: ApiBroadcastScope,
+    templateId: number,
+  ): Promise<{ deleted: boolean }> {
+    return this.delete(
+      `/api/v1/broadcast/templates/${templateId}?${this.toSearchParams({
+        bot_uuid: scope.bot_uuid,
+        connector_id: scope.connector_id,
+      })}`,
+    );
+  }
+
+  public renderBroadcastTemplate(
+    scope: ApiBroadcastScope,
+    payload:
+      | {
+          templateId: number;
+          variables: Record<string, string>;
+        }
+      | {
+          content: string;
+          variables: Record<string, string>;
+        },
+  ): Promise<ApiBroadcastTemplateRenderResult> {
+    const body =
+      'templateId' in payload
+        ? {
+            ...scope,
+            template_id: payload.templateId,
+            variables: payload.variables,
+          }
+        : {
+            ...scope,
+            content: payload.content,
+            variables: payload.variables,
+          };
+    return this.requestBroadcast<ApiBroadcastTemplateRenderResult>({
+      method: 'post',
+      url: '/api/v1/broadcast/templates/render',
+      data: body,
+    });
+  }
+
+  public getBroadcastVariableProfile(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastVariableProfile> {
+    return this.get('/api/v1/broadcast/variable-profile', scope);
+  }
+
+  public saveBroadcastVariableProfile(
+    scope: ApiBroadcastScope,
+    payload: ApiBroadcastVariableProfile,
+  ): Promise<ApiBroadcastVariableProfile> {
+    return this.requestBroadcast<ApiBroadcastVariableProfile>({
+      method: 'put',
+      url: '/api/v1/broadcast/variable-profile',
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public getBroadcastGroupRules(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastGroupRule[]> {
+    return this.get('/api/v1/broadcast/group-rules', scope);
+  }
+
+  public createBroadcastGroupRule(
+    scope: ApiBroadcastScope,
+    payload: {
+      source_value: string;
+      match_type: 'exact' | 'contains' | 'regex';
+      match_expression: string;
+      target_conversation_id?: string;
+      target_conversation_name: string;
+      priority: number;
+      enabled: boolean;
+    },
+  ): Promise<ApiBroadcastGroupRule> {
+    return this.requestBroadcast<ApiBroadcastGroupRule>({
+      method: 'post',
+      url: '/api/v1/broadcast/group-rules',
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public updateBroadcastGroupRule(
+    scope: ApiBroadcastScope,
+    ruleId: number,
+    payload: {
+      source_value: string;
+      match_type: 'exact' | 'contains' | 'regex';
+      match_expression: string;
+      target_conversation_id?: string;
+      target_conversation_name: string;
+      priority: number;
+      enabled: boolean;
+    },
+  ): Promise<ApiBroadcastGroupRule> {
+    return this.requestBroadcast<ApiBroadcastGroupRule>({
+      method: 'put',
+      url: `/api/v1/broadcast/group-rules/${ruleId}`,
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public deleteBroadcastGroupRule(
+    scope: ApiBroadcastScope,
+    ruleId: number,
+  ): Promise<{ deleted: boolean }> {
+    return this.delete(
+      `/api/v1/broadcast/group-rules/${ruleId}?${this.toSearchParams({
+        bot_uuid: scope.bot_uuid,
+        connector_id: scope.connector_id,
+      })}`,
+    );
+  }
+
+  public matchBroadcastGroupRule(
+    scope: ApiBroadcastScope,
+    sourceValue: string,
+  ): Promise<ApiBroadcastGroupMatchResult> {
+    return this.requestBroadcast<ApiBroadcastGroupMatchResult>({
+      method: 'post',
+      url: '/api/v1/broadcast/group-rules/match',
+      data: {
+        ...scope,
+        source_value: sourceValue,
+      },
+    });
+  }
+
+  public getBroadcastGroupNames(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastGroupName[]> {
+    return this.get('/api/v1/broadcast/group-names', scope);
+  }
+
+  public createBroadcastGroupNames(
+    scope: ApiBroadcastScope,
+    names: string[],
+  ): Promise<ApiBroadcastGroupNamesResponse> {
+    return this.requestBroadcast<ApiBroadcastGroupNamesResponse>({
+      method: 'post',
+      url: '/api/v1/broadcast/group-names',
+      data: {
+        ...scope,
+        names,
+      },
+    });
+  }
+
+  public syncBroadcastGroupNames(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastGroupNameSyncResult> {
+    return this.requestBroadcast<ApiBroadcastGroupNameSyncResult>({
+      method: 'post',
+      url: `/api/v1/broadcast/group-names/sync?${this.toSearchParams({
+        bot_uuid: scope.bot_uuid,
+        connector_id: scope.connector_id,
+      })}`,
+    });
+  }
+
+  public deleteBroadcastGroupName(
+    scope: ApiBroadcastScope,
+    groupNameId: number,
+  ): Promise<{ deleted: boolean }> {
+    return this.delete(
+      `/api/v1/broadcast/group-names/${groupNameId}?${this.toSearchParams({
+        bot_uuid: scope.bot_uuid,
+        connector_id: scope.connector_id,
+      })}`,
+    );
+  }
+
+  public uploadBroadcastImport(
+    scope: ApiBroadcastScope,
+    file: File,
+    options?: {
+      group_field_override?: string;
+    },
+  ): Promise<ApiBroadcastImportBatch> {
+    const formData = new FormData();
+    formData.append('bot_uuid', scope.bot_uuid);
+    formData.append('connector_id', scope.connector_id);
+    formData.append('file', file);
+    if (options?.group_field_override) {
+      formData.append('group_field_override', options.group_field_override);
+    }
+    return this.requestBroadcast<ApiBroadcastImportBatch>({
+      method: 'post',
+      url: '/api/v1/broadcast/imports',
+      data: formData,
+    });
+  }
+
+  public getBroadcastImportGroupRuleCandidates(
+    scope: ApiBroadcastScope,
+    importId: number,
+    filters?: {
+      status?:
+        | 'new'
+        | 'configured'
+        | 'needs_repair'
+        | 'conflict'
+        | 'invalid'
+        | 'all';
+      keyword?: string;
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<ApiBroadcastImportGroupRuleCandidatesResponse> {
+    return this.requestBroadcast<ApiBroadcastImportGroupRuleCandidatesResponse>(
+      {
+        method: 'get',
+        url: `/api/v1/broadcast/imports/${importId}/group-rule-candidates?${this.toSearchParams(
+          {
+            bot_uuid: scope.bot_uuid,
+            connector_id: scope.connector_id,
+            status: filters?.status,
+            keyword: filters?.keyword,
+            page: filters?.page,
+            page_size: filters?.page_size,
+          },
+        )}`,
+      },
+    );
+  }
+
+  public getBroadcastImportBatches(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastImportBatch[]> {
+    return this.get('/api/v1/broadcast/imports', scope);
+  }
+
+  public getBroadcastImportDetail(
+    scope: ApiBroadcastScope,
+    importId: number,
+    filters?: {
+      match_status?: 'matched' | 'unmatched' | 'invalid';
+      keyword?: string;
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<ApiBroadcastImportDetail> {
+    return this.get(`/api/v1/broadcast/imports/${importId}`, {
+      ...scope,
+      ...filters,
+    });
+  }
+
+  public getBroadcastImportGroups(
+    scope: ApiBroadcastScope,
+    importId: number,
+    filters?: {
+      match_status?: 'matched' | 'unmatched' | 'invalid' | 'conflict';
+      keyword?: string;
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<ApiBroadcastImportGroupsResponse> {
+    return this.get(`/api/v1/broadcast/imports/${importId}/groups`, {
+      ...scope,
+      ...filters,
+    });
+  }
+
+  public getBroadcastImportGroupRows(
+    scope: ApiBroadcastScope,
+    importId: number,
+    groupKey: string,
+    filters?: {
+      page?: number;
+      page_size?: number;
+    },
+  ): Promise<ApiBroadcastImportGroupRowsResponse> {
+    return this.get(
+      `/api/v1/broadcast/imports/${importId}/groups/${groupKey}/rows`,
+      {
+        ...scope,
+        ...filters,
+      },
+    );
+  }
+
+  public updateBroadcastImportGroupTemplateAssignments(
+    scope: ApiBroadcastScope,
+    importId: number,
+    items: ApiBroadcastImportGroupTemplateAssignment[],
+  ): Promise<{ items: ApiBroadcastImportGroupTemplateAssignment[] }> {
+    return this.requestBroadcast({
+      method: 'put',
+      url: `/api/v1/broadcast/imports/${importId}/group-template-assignments`,
+      data: {
+        ...scope,
+        items,
+      },
+    });
+  }
+
+  public uploadBroadcastImportGroupAttachments(
+    scope: ApiBroadcastScope,
+    importId: number,
+    groupKey: string,
+    files: File[],
+  ): Promise<ApiBroadcastDraft['attachments']> {
+    const formData = new FormData();
+    formData.append('bot_uuid', scope.bot_uuid);
+    formData.append('connector_id', scope.connector_id);
+    files.forEach((file) => formData.append('files', file));
+    return this.requestBroadcast<ApiBroadcastDraft['attachments']>({
+      method: 'post',
+      url: `/api/v1/broadcast/imports/${importId}/groups/${groupKey}/attachments`,
+      data: formData,
+    });
+  }
+
+  public deleteBroadcastImportGroupAttachment(
+    scope: ApiBroadcastScope,
+    importId: number,
+    groupKey: string,
+    attachmentId: number,
+  ): Promise<ApiBroadcastDraft['attachments']> {
+    return this.delete(
+      `/api/v1/broadcast/imports/${importId}/groups/${groupKey}/attachments/${attachmentId}?${this.toSearchParams(
+        {
+          bot_uuid: scope.bot_uuid,
+          connector_id: scope.connector_id,
+        },
+      )}`,
+    );
+  }
+
+  public deleteBroadcastImport(
+    scope: ApiBroadcastScope,
+    importId: number,
+  ): Promise<{ deleted: boolean }> {
+    return this.delete(
+      `/api/v1/broadcast/imports/${importId}?${this.toSearchParams({
+        bot_uuid: scope.bot_uuid,
+        connector_id: scope.connector_id,
+      })}`,
+    );
+  }
+
+  public rematchBroadcastImport(
+    scope: ApiBroadcastScope,
+    importId: number,
+  ): Promise<ApiBroadcastImportDetail> {
+    return this.requestBroadcast<ApiBroadcastImportDetail>({
+      method: 'post',
+      url: `/api/v1/broadcast/imports/${importId}/rematch`,
+      data: scope,
+    });
+  }
+
+  public bulkAssignBroadcastImportGroupRules(
+    scope: ApiBroadcastScope,
+    importId: number,
+    items: Array<{ group_key: string; target_conversation_id: string }>,
+  ): Promise<ApiBroadcastBulkAssignResult> {
+    return this.requestBroadcast<ApiBroadcastBulkAssignResult>({
+      method: 'post',
+      url: `/api/v1/broadcast/imports/${importId}/group-rules/bulk-assign`,
+      data: {
+        ...scope,
+        items,
+      },
+    });
+  }
+
+  public generateBroadcastImportDrafts(
+    scope: ApiBroadcastScope,
+    importId: number,
+    payload: {
+      template_id?: number;
+      group_keys?: string[];
+      overwrite_existing?: boolean;
+    },
+  ): Promise<ApiBroadcastImportDraftGenerationResult> {
+    return this.requestBroadcast<ApiBroadcastImportDraftGenerationResult>({
+      method: 'post',
+      url: `/api/v1/broadcast/imports/${importId}/generate-drafts`,
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public getBroadcastDrafts(
+    scope: ApiBroadcastScope,
+    filters?: {
+      import_batch_id?: number;
+      status?: ApiBroadcastDraftStatus;
+      keyword?: string;
+    },
+  ): Promise<ApiBroadcastDraft[]> {
+    return this.get('/api/v1/broadcast/drafts', {
+      ...scope,
+      ...filters,
+    });
+  }
+
+  public getBroadcastDraftDetail(
+    scope: ApiBroadcastScope,
+    draftId: number,
+  ): Promise<ApiBroadcastDraft> {
+    return this.get(`/api/v1/broadcast/drafts/${draftId}`, scope);
+  }
+
+  public uploadBroadcastDraftAttachments(
+    scope: ApiBroadcastScope,
+    draftId: number,
+    files: File[],
+  ): Promise<ApiBroadcastDraft> {
+    const formData = new FormData();
+    formData.append('bot_uuid', scope.bot_uuid);
+    formData.append('connector_id', scope.connector_id);
+    files.forEach((file) => formData.append('files', file));
+    return this.requestBroadcast<ApiBroadcastDraft>({
+      method: 'post',
+      url: `/api/v1/broadcast/drafts/${draftId}/attachments`,
+      data: formData,
+    });
+  }
+
+  public deleteBroadcastDraftAttachment(
+    scope: ApiBroadcastScope,
+    draftId: number,
+    attachmentId: number,
+  ): Promise<ApiBroadcastDraft> {
+    return this.delete(
+      `/api/v1/broadcast/drafts/${draftId}/attachments/${attachmentId}?${this.toSearchParams(
+        {
+          bot_uuid: scope.bot_uuid,
+          connector_id: scope.connector_id,
+        },
+      )}`,
+    );
+  }
+
+  public updateBroadcastDraftText(
+    scope: ApiBroadcastScope,
+    draftId: number,
+    draftText: string,
+  ): Promise<ApiBroadcastDraft> {
+    return this.requestBroadcast<ApiBroadcastDraft>({
+      method: 'put',
+      url: `/api/v1/broadcast/drafts/${draftId}`,
+      data: {
+        ...scope,
+        draft_text: draftText,
+      },
+    });
+  }
+
+  public updateBroadcastDraftStatuses(
+    scope: ApiBroadcastScope,
+    draftIds: number[],
+    status: ApiBroadcastDraftStatus,
+  ): Promise<ApiBroadcastDraftStatusUpdateResult> {
+    return this.requestBroadcast<ApiBroadcastDraftStatusUpdateResult>({
+      method: 'post',
+      url: '/api/v1/broadcast/drafts/batch-status',
+      data: {
+        ...scope,
+        draft_ids: draftIds,
+        status,
+      },
+    });
+  }
+
+  public createBroadcastExecutionBatch(
+    scope: ApiBroadcastScope,
+    payload: {
+      draft_ids: number[];
+      mode: 'paste_only' | 'send';
+      operator: string;
+      allow_sent_rewrite?: boolean;
+    },
+  ): Promise<ApiBroadcastExecutionBatch> {
+    return this.requestBroadcast<ApiBroadcastExecutionBatch>({
+      method: 'post',
+      url: '/api/v1/broadcast/executions',
+      data: {
+        ...scope,
+        ...payload,
+      },
+    });
+  }
+
+  public getBroadcastExecutionBatches(
+    scope: ApiBroadcastScope,
+  ): Promise<ApiBroadcastExecutionBatch[]> {
+    return this.get('/api/v1/broadcast/executions', scope);
+  }
+
+  public getBroadcastExecutionBatchDetail(
+    scope: ApiBroadcastScope,
+    batchId: number,
+  ): Promise<ApiBroadcastExecutionBatch> {
+    return this.get(`/api/v1/broadcast/executions/${batchId}`, scope);
+  }
+
+  public getBroadcastExecutionTaskDetail(
+    scope: ApiBroadcastScope,
+    taskId: number,
+  ): Promise<ApiBroadcastExecutionTask> {
+    return this.get(`/api/v1/broadcast/execution-tasks/${taskId}`, scope);
+  }
+
+  public startBroadcastExecutionBatch(
+    scope: ApiBroadcastScope,
+    batchId: number,
+    operator: string,
+  ): Promise<ApiBroadcastExecutionBatch> {
+    return this.requestBroadcast<ApiBroadcastExecutionBatch>({
+      method: 'post',
+      url: `/api/v1/broadcast/executions/${batchId}/start`,
+      data: {
+        ...scope,
+        operator,
+      },
+    });
+  }
+
+  public pauseBroadcastExecutionBatch(
+    scope: ApiBroadcastScope,
+    batchId: number,
+    operator: string,
+  ): Promise<ApiBroadcastExecutionBatch> {
+    return this.requestBroadcast<ApiBroadcastExecutionBatch>({
+      method: 'post',
+      url: `/api/v1/broadcast/executions/${batchId}/pause`,
+      data: {
+        ...scope,
+        operator,
+      },
+    });
+  }
+
+  public resumeBroadcastExecutionBatch(
+    scope: ApiBroadcastScope,
+    batchId: number,
+    operator: string,
+  ): Promise<ApiBroadcastExecutionBatch> {
+    return this.requestBroadcast<ApiBroadcastExecutionBatch>({
+      method: 'post',
+      url: `/api/v1/broadcast/executions/${batchId}/resume`,
+      data: {
+        ...scope,
+        operator,
+      },
+    });
+  }
+
+  public cancelBroadcastExecutionBatch(
+    scope: ApiBroadcastScope,
+    batchId: number,
+    operator: string,
+  ): Promise<ApiBroadcastExecutionBatch> {
+    return this.requestBroadcast<ApiBroadcastExecutionBatch>({
+      method: 'post',
+      url: `/api/v1/broadcast/executions/${batchId}/cancel`,
+      data: {
+        ...scope,
+        operator,
+      },
+    });
+  }
+
+  public startBroadcastExecutionTask(
+    scope: ApiBroadcastScope,
+    taskId: number,
+    operator: string,
+  ): Promise<ApiBroadcastExecutionTask> {
+    return this.requestBroadcast<ApiBroadcastExecutionTask>({
+      method: 'post',
+      url: `/api/v1/broadcast/execution-tasks/${taskId}/start`,
+      data: {
+        ...scope,
+        operator,
+      },
+    });
+  }
+
+  public retryBroadcastExecutionTask(
+    scope: ApiBroadcastScope,
+    taskId: number,
+    operator: string,
+  ): Promise<ApiBroadcastExecutionTask> {
+    return this.requestBroadcast<ApiBroadcastExecutionTask>({
+      method: 'post',
+      url: `/api/v1/broadcast/execution-tasks/${taskId}/retry`,
+      data: {
+        ...scope,
+        operator,
+      },
+    });
+  }
+
+  public getBroadcastExecutionAttempts(
+    scope: ApiBroadcastScope,
+    taskId: number,
+  ): Promise<ApiBroadcastExecutionAttempt[]> {
+    return this.get(
+      `/api/v1/broadcast/execution-tasks/${taskId}/attempts`,
+      scope,
+    );
+  }
+
+  public getBroadcastExecutionAttemptDetail(
+    scope: ApiBroadcastScope,
+    attemptId: number,
+  ): Promise<ApiBroadcastExecutionAttempt> {
+    return this.get(`/api/v1/broadcast/execution-attempts/${attemptId}`, scope);
+  }
+
+  public getBroadcastExecutionEvidence(
+    scope: ApiBroadcastScope,
+    attemptId: number,
+  ): Promise<ApiBroadcastExecutionEvidence> {
+    return this.get(
+      `/api/v1/broadcast/execution-attempts/${attemptId}/evidence`,
+      scope,
+    );
+  }
+
+  public getBroadcastExecutorCapabilities(
+    scope: ApiBroadcastScope,
+  ): Promise<Record<string, unknown>> {
+    return this.get('/api/v1/broadcast/executors/capabilities', scope);
+  }
+
+  public getBroadcastExecutorHealth(
+    scope: ApiBroadcastScope,
+  ): Promise<Record<string, unknown>> {
+    return this.get('/api/v1/broadcast/executors/health', scope);
   }
 }
 

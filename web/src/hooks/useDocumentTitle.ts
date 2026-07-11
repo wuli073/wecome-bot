@@ -1,8 +1,9 @@
 import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { APP_BRAND_NAME } from '@/app/config/brand';
 
-const APP_NAME = 'LangBot';
+const APP_NAME = APP_BRAND_NAME;
 
 // Map a route path to the i18n key used for its (type-level) document title.
 // Reuses existing translation keys so titles stay in sync with the sidebar and
@@ -11,7 +12,6 @@ const APP_NAME = 'LangBot';
 // to the currently-selected sub-entity name (detailEntityName) via context and
 // renders "<entity> · <type> · LangBot".
 const ROUTE_TITLE_KEYS: { match: (path: string) => boolean; key: string }[] = [
-  { match: (p) => p === '/login', key: 'common.login' },
   { match: (p) => p === '/register', key: 'register.title' },
   { match: (p) => p === '/reset-password', key: 'resetPassword.title' },
   { match: (p) => p === '/wizard', key: 'sidebar.quickStart' },

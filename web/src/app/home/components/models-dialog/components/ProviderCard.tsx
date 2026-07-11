@@ -24,6 +24,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useTranslation } from 'react-i18next';
+import { APP_BRAND_NAME } from '@/app/config/brand';
 import langbotIcon from '@/app/assets/langbot-logo.webp';
 import {
   ExtraArg,
@@ -157,7 +158,7 @@ export default function ProviderCard({
                 <div className="w-9 h-9 rounded-lg overflow-hidden flex-shrink-0">
                   <img
                     src={langbotIcon}
-                    alt="LangBot"
+                    alt={APP_BRAND_NAME}
                     className="w-full h-full object-cover"
                   />
                 </div>

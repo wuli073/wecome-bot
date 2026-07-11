@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "sourceOfTruth": "vendor/wechat_decrypt",
+  "task1BaselineReference": "docs/release/trial-baseline-investigation.md",
+  "releaseScope": {
+    "includedRuntimeEntrypoints": [
+      "connector_cli.py",
+      "connector_runtime.py",
+      "mcp_server.py",
+      "mcp_wxwork_server.py",
+      "wxwork_message_monitor.py",
+      "find_all_keys_windows.py",
+      "find_wxwork_keys.py",
+      "decrypt_db.py",
+      "decrypt_wxwork_db.py"
+    ],
+    "includedSupportFiles": [
+      "config.py",
+      "connector_errors.py",
+      "key_scan_common.py",
+      "key_utils.py",
+      "decode_image.py",
+      "wxwork_crypto.py",
+      "wxwork_query.py",
+      "requirements.txt",
+      "README.release.md",
+      "source-manifest.json",
+      "VENDOR_SOURCE.json"
+    ],
+    "excludedByDefault": [
+      "mcp_http_server.py",
+      "mcp_wxwork_http_server.py",
+      "export_wxwork_messages.py",
+      "find_all_keys.py",
+      "find_all_keys_linux.py",
+      "build.bat",
+      "WeChatDecrypt.spec",
+      "main.py",
+      "monitor_web.py"
+    ]
+  },
+  "confirmedProductEntrypointsFromTask1": {
+    "wechatMcp": "mcp_server.py",
+    "wxworkMcp": "mcp_wxwork_server.py",
+    "wxworkMonitor": "wxwork_message_monitor.py",
+    "keyExtraction": [
+      "find_all_keys_windows.py",
+      "find_wxwork_keys.py"
+    ],
+    "decrypt": [
+      "decrypt_db.py",
+      "decrypt_wxwork_db.py"
+    ],
+    "cli": "connector_cli.py"
+  },
+  "dynamicImports": [
+    {
+      "file": "connector_runtime.py",
+      "detail": "Imports find_wxwork_keys.auto_detect_wxwork_db_dir only for wxwork detection."
+    },
+    {
+      "file": "mcp_server.py",
+      "detail": "Optional runtime imports include pysilk, whisper, openai, and glob aliasing for optional toolbox flows."
+    },
+    {
+      "file": "decrypt_wxwork_db.py",
+      "detail": "Imports find_wxwork_keys.auto_detect_wxwork_db_dir when database path is not provided."
+    }
+  ],
+  "subprocesses": [
+    {
+      "file": "connector_runtime.py",
+      "detail": "Runs tasklist and launches managed Python scripts via subprocess.run."
+    },
+    {
+      "file": "find_all_keys_windows.py",
+      "detail": "Runs tasklist to locate Weixin.exe."
+    },
+    {
+      "file": "find_wxwork_keys.py",
+      "detail": "Runs tasklist / process probes to locate WXWork.exe and databases."
+    },
+    {
+      "file": "mcp_server.py",
+      "detail": "Optional ffmpeg / helper subprocess calls exist for media decoding and must stay outside minimal release unless required."
+    }
+  ],
+  "runtimeAssumptions": [
+    "Windows-only key extraction and client detection rely on tasklist, ctypes, and running Weixin.exe / WXWork.exe.",
+    "Runtime data must live in an external absolute runtime-dir, not under the vendor source tree.",
+    "No desktop-backup source files are releasable inputs; backup material is audit-only."
+  ]
+}

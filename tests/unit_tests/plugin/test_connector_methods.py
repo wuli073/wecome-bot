@@ -9,6 +9,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import asyncio
 import pytest
 from unittest.mock import Mock, AsyncMock
 from importlib import import_module
@@ -75,6 +76,26 @@ class TestListPlugins:
 
         connector.handler.list_plugins.assert_called_once()
         assert result == [{'manifest': {'manifest': {'metadata': {'author': 'test', 'name': 'plugin'}}}}]
+        assert connector.runtime_status == 'connected'
+        assert connector.last_runtime_error is None
+
+    @pytest.mark.asyncio
+    async def test_list_plugins_timeout_marks_runtime_degraded(self):
+        """Test list_plugins timeout records a clear degraded runtime state."""
+        connector = create_mock_connector()
+        connector.LIST_PLUGINS_TIMEOUT_SECONDS = 0.01
+
+        async def never_returns():
+            await asyncio.Event().wait()
+
+        connector.handler = AsyncMock()
+        connector.handler.list_plugins = never_returns
+
+        with pytest.raises(TimeoutError, match='list_plugins timed out after 0.01s'):
+            await connector.list_plugins()
+
+        assert connector.runtime_status == 'degraded'
+        assert connector.last_runtime_error == 'list_plugins timed out after 0.01s'
 
     @pytest.mark.asyncio
     async def test_filters_by_component_kinds(self):
@@ -130,6 +151,19 @@ class TestListPlugins:
 
         # Debug plugin should be first
         assert result[0]['debug'] is True
+
+    @pytest.mark.asyncio
+    async def test_empty_plugin_list_returns_immediately(self):
+        """Test plugin count of zero returns an empty list without waiting for DB sorting."""
+        connector = create_mock_connector()
+        connector.handler = AsyncMock()
+        connector.handler.list_plugins = AsyncMock(return_value=[])
+
+        result = await connector.list_plugins()
+
+        assert result == []
+        connector.handler.list_plugins.assert_awaited_once()
+        connector.ap.persistence_mgr.execute_async.assert_not_awaited()
 
 
 class TestListKnowledgeEngines:

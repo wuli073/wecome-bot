@@ -1,0 +1,10 @@
+{
+  "pathContains": [
+    "licenses/"
+  ],
+  "contentContains": [
+    "https://github.com/",
+    "http://127.0.0.1:",
+    "https://docs.langbot.app/"
+  ]
+}

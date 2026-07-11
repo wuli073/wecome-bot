@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "cache": {
+    "root": "build/runtime-cache",
+    "archivesDir": "archives",
+    "extractedDir": "expanded",
+    "archivePathTemplate": "archives/{artifactName}",
+    "extractionPathTemplate": "expanded/{role}/{version}",
+    "offlineRequiresCacheHit": true,
+    "onlineDownloadPolicy": "download-if-missing-verify-sha256-before-use",
+    "offlinePolicy": "no-network-fail-on-missing-or-sha-mismatch"
+  },
+  "server": {
+    "provider": "python-build-standalone",
+    "version": "3.11.15+20260623",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.11.15%2B20260623-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+    "sha256": "6589ca6d63f520bec4096d62b3ab91da3d0a80b16b594c99a6b677e335814683",
+    "archiveType": "tar.gz",
+    "artifactName": "cpython-3.11.15+20260623-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+    "extractedLayout": {
+      "rootDir": "python",
+      "pythonExe": "python/python.exe",
+      "pythonwExe": "python/pythonw.exe",
+      "licenseFile": "python/LICENSE.txt"
+    },
+    "pipIncludedUpstream": true,
+    "pipInvocation": "python/python.exe -m pip",
+    "sitePackages": {
+      "relativePath": "python/Lib/site-packages",
+      "activation": "upstream install_only_stripped layout already places python/Lib/site-packages on sys.path",
+      "installCommand": "python/python.exe -m pip install --require-hashes -r packaging/server/requirements.lock.txt"
+    },
+    "licenseFileSource": "upstream archive path python/LICENSE.txt"
+  },
+  "connector": {
+    "provider": "python-build-standalone",
+    "version": "3.11.15+20260623",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.11.15%2B20260623-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+    "sha256": "6589ca6d63f520bec4096d62b3ab91da3d0a80b16b594c99a6b677e335814683",
+    "archiveType": "tar.gz",
+    "artifactName": "cpython-3.11.15+20260623-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+    "extractedLayout": {
+      "rootDir": "python",
+      "pythonExe": "python/python.exe",
+      "pythonwExe": "python/pythonw.exe",
+      "licenseFile": "python/LICENSE.txt"
+    },
+    "pipIncludedUpstream": true,
+    "pipInvocation": "python/python.exe -m pip",
+    "sitePackages": {
+      "relativePath": "python/Lib/site-packages",
+      "activation": "upstream install_only_stripped layout already places python/Lib/site-packages on sys.path",
+      "installCommand": "python/python.exe -m pip install --require-hashes -r vendor/wechat_decrypt/requirements.lock.txt"
+    },
+    "licenseFileSource": "upstream archive path python/LICENSE.txt"
+  }
+}

@@ -42,6 +42,7 @@ class QueryPool:
         adapter: abstract_platform_adapter.AbstractMessagePlatformAdapter,
         pipeline_uuid: typing.Optional[str] = None,
         routed_by_rule: bool = False,
+        reserved_for_immediate_processing: bool = False,
     ) -> pipeline_query.Query:
         async with self.condition:
             query_id = self.query_id_counter
@@ -53,7 +54,10 @@ class QueryPool:
                 sender_id=sender_id,
                 message_event=message_event,
                 message_chain=message_chain,
-                variables={'_routed_by_rule': routed_by_rule},
+                variables={
+                    '_routed_by_rule': routed_by_rule,
+                    '_reserved_for_immediate_processing': reserved_for_immediate_processing,
+                },
                 resp_messages=[],
                 resp_message_chain=[],
                 adapter=adapter,

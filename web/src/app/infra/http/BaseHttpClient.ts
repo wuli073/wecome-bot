@@ -97,12 +97,7 @@ export abstract class BaseHttpClient {
 
           switch (status) {
             case 401:
-              if (typeof window !== 'undefined') {
-                localStorage.removeItem('token');
-                if (!error.request.responseURL.includes('/check-token')) {
-                  window.location.href = '/login';
-                }
-              }
+              console.error('Unauthorized:', errMsg);
               break;
             case 403:
               console.error('Permission denied:', errMsg);

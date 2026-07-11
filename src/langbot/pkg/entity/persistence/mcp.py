@@ -11,6 +11,10 @@ class MCPServer(Base):
     enable = sqlalchemy.Column(sqlalchemy.Boolean, nullable=False, default=False)
     mode = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)  # stdio, remote (legacy: sse, http)
     extra_args = sqlalchemy.Column(sqlalchemy.JSON, nullable=False, default={})
+    builtin = sqlalchemy.Column(sqlalchemy.Boolean, nullable=False, server_default=sqlalchemy.false(), default=False)
+    locked = sqlalchemy.Column(sqlalchemy.Boolean, nullable=False, server_default=sqlalchemy.false(), default=False)
+    managed_by = sqlalchemy.Column(sqlalchemy.String(255), nullable=True)
+    connector_id = sqlalchemy.Column(sqlalchemy.String(255), nullable=True, unique=True)
     # Markdown documentation captured from LangBot Space at install time so the
     # detail page can show docs even when the server is offline / has no tools.
     # Empty string for manually-created servers that have no marketplace README.

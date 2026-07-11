@@ -28,14 +28,53 @@ export let userInfo: {
   has_password: boolean;
 } | null = null;
 
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+
+function normalizeConfiguredBaseURL(baseURL: string): string {
+  return baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
+}
+
+function shouldUseCurrentOrigin(configuredBaseURL: string): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    const configured = new URL(configuredBaseURL, window.location.origin);
+    const current = new URL(window.location.origin);
+    if (configured.origin === current.origin) {
+      return true;
+    }
+
+    const configuredIsLoopback = LOOPBACK_HOSTS.has(configured.hostname);
+    const currentIsLoopback = LOOPBACK_HOSTS.has(current.hostname);
+    return configured.protocol === current.protocol && configuredIsLoopback && currentIsLoopback;
+  } catch {
+    return false;
+  }
+}
+
+export function resolveBackendBaseURL(configuredBaseURL?: string): string {
+  if (typeof window === 'undefined') {
+    return configuredBaseURL ? normalizeConfiguredBaseURL(configuredBaseURL) : '/';
+  }
+
+  if (!configuredBaseURL) {
+    return '/';
+  }
+
+  if (shouldUseCurrentOrigin(configuredBaseURL)) {
+    return '/';
+  }
+
+  return normalizeConfiguredBaseURL(configuredBaseURL);
+}
+
 /**
  * 获取基础 URL
  */
 const getBaseURL = (): string => {
-  if (typeof window !== 'undefined' && import.meta.env.VITE_API_BASE_URL) {
-    return import.meta.env.VITE_API_BASE_URL;
-  }
-  return '/';
+  return resolveBackendBaseURL(import.meta.env.VITE_API_BASE_URL);
 };
 
 // 创建后端客户端实例

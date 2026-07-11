@@ -14,20 +14,15 @@ const enUS = {
     editionCloud: 'Cloud',
   },
   common: {
-    login: 'Login',
     logout: 'Logout',
     accountOptions: 'Settings',
     account: 'Account',
     integration: 'Integration',
     email: 'Email',
     password: 'Password',
-    welcome: 'Welcome back to LangBot 👋',
-    continueToLogin: 'Login to continue',
-    loginSuccess: 'Login successful',
-    loginFailed: 'Login failed, please check your email and password',
     loginLoadError: 'Unable to connect to server',
     loginLoadErrorDesc:
-      'Unable to connect to the LangBot backend. Please make sure the service is running and try again.',
+      'Unable to connect to the Chatbot backend. Please make sure the service is running and try again.',
     retry: 'Retry',
     enterEmail: 'Enter email address',
     enterPassword: 'Enter password',
@@ -70,7 +65,6 @@ const enUS = {
     copySuccess: 'Copy Successfully',
     copyFailed: 'Copy Failed',
     test: 'Test',
-    forgotPassword: 'Forgot Password?',
     agreementNotice: 'By continuing, you agree to our',
     termsOfService: 'Terms of Service',
     privacyPolicy: 'Privacy Policy',
@@ -80,11 +74,8 @@ const enUS = {
     loading: 'Loading...',
     fieldRequired: 'This field is required',
     or: 'or',
-    loginWithSpace: 'Login with Space',
     spaceLoginRecommended:
       'Recommended: Use official stable model APIs and cloud services',
-    loginLocal: 'Login with local account',
-    loginWithPassword: 'Login with password',
     spaceLoginTitle: 'Login with Space',
     spaceLoginDescription:
       'Scan the QR code or visit the link below to authorize',
@@ -99,10 +90,9 @@ const enUS = {
     spaceLoginProcessing: 'Logging in with Space',
     spaceLoginProcessingDescription:
       'Please wait while we complete your login...',
-    spaceLoginSuccessDescription: 'Redirecting to LangBot...',
+    spaceLoginSuccessDescription: 'Redirecting to Chatbot...',
     spaceLoginError: 'Login Failed',
     spaceLoginNoCode: 'Missing authorization code',
-    backToLogin: 'Back to Login',
     backToHome: 'Back to Home',
     spaceAccountCannotChangePassword:
       'Space accounts cannot change password here',
@@ -139,10 +129,10 @@ const enUS = {
     apiKeyCopied: 'API key copied to clipboard',
     noApiKeys: 'No API keys configured',
     apiKeyHint:
-      'API keys allow external systems to access LangBot Service APIs',
+      'API keys allow external systems to access Chatbot Service APIs',
     mcpTab: 'MCP',
     mcpHint:
-      'LangBot exposes an MCP (Model Context Protocol) server so AI agents can manage this instance. It uses the same API keys as the Service API.',
+      'Chatbot exposes an MCP (Model Context Protocol) server so AI agents can manage this instance. It uses the same API keys as the Service API.',
     mcpEndpoint: 'MCP Endpoint',
     mcpAuthTitle: 'Authentication',
     mcpAuthDesc:
@@ -163,7 +153,7 @@ const enUS = {
     webhookUrlRequired: 'Webhook URL is required',
     noWebhooks: 'No webhooks configured',
     webhookHint:
-      'Webhooks allow LangBot to push person and group message events to external systems',
+      'Webhooks allow Chatbot to push person and group message events to external systems',
     actions: 'Actions',
     apiKeyCreatedMessage:
       'Please copy this API key, if the button is invalid, please copy manually.',
@@ -274,12 +264,12 @@ const enUS = {
     requester: 'Provider Type',
     selectRequester: 'Select Provider Type',
     searchProviders: 'Search providers...',
-    langbotModelsDescription: 'Cloud models powered by LangBot Space',
+    langbotModelsDescription: 'Cloud models powered by Chatbot Space',
     credits: 'Credits',
     loginWithSpace: 'Login with Space',
     loginToUseModels: 'Login with Space to use cloud models',
     noModels: 'No models configured',
-    langbotModels: 'LangBot Models',
+    langbotModels: 'Chatbot Models',
     spaceTrialTooltip:
       'Free trial credits available! Login with Space to access cloud models with zero configuration.',
     unlockModels: 'Login to use',
@@ -317,7 +307,7 @@ const enUS = {
   bots: {
     title: 'Bots',
     description:
-      'Create and manage bots, which are the entry points for LangBot to connect with various platforms',
+      'Create and manage bots, which are the entry points for Chatbot to connect with various platforms',
     createBot: 'Create Bot',
     selectFromSidebar: 'Select a bot from the sidebar',
     editBot: 'Edit Bot',
@@ -405,8 +395,8 @@ const enUS = {
     webhookUrlHintEither:
       'Use either of the two URLs above in your platform configuration',
     webhookSaasHint:
-      'Webhook requires a publicly accessible domain. LangBot Cloud provides a ready-to-use public endpoint for your bot.',
-    webhookSaasLink: 'Learn more about LangBot Cloud',
+      'Webhook requires a publicly accessible domain. Chatbot Cloud provides a ready-to-use public endpoint for your bot.',
+    webhookSaasLink: 'Learn more about Chatbot Cloud',
     adapterCategory: {
       popular: 'Popular',
       china: 'China',
@@ -443,6 +433,163 @@ const enUS = {
       discarded: 'Discarded',
       userMessage: 'User',
       botMessage: 'Assistant',
+      databaseComposer: {
+        ariaLabel: 'Composer draft',
+        attachmentUnavailable: 'Attachment support is not available yet',
+        clearedUnsaved: 'Cleared, not saved yet',
+        clear: 'Clear',
+        confirmDeleteDescription:
+          'Delete the current persisted draft permanently? This cannot be undone.',
+        confirmDeleteTitle: 'Confirm delete draft',
+        copy: 'Copy',
+        deleteDraft: 'Delete draft',
+        deleteError: 'Failed to delete draft',
+        deleteSuccess: 'Draft deleted',
+        emptySaveError: 'Draft content cannot be empty',
+        generating: 'Draft generating...',
+        meta: 'Draft v{{version}} · {{source}} · {{updatedAt}}',
+        moreActions: 'More draft actions',
+        noDraftToDelete: 'There is no draft to delete',
+        noDraftToSave: 'There is no draft to save',
+        placeholder: 'Enter a reply or generate a smart draft',
+        regenerate: 'Regenerate',
+        save: 'Save',
+        saveError: 'Failed to save draft',
+        saveSuccess: 'Draft saved',
+        send: 'Send',
+        sending: 'Sending',
+        sendUnavailable: 'Send is not available yet',
+        sendRealDisabled:
+          'Real send is not available yet. Use "桌面验证（Dry Run）".',
+        paste: {
+          button: 'Paste to WeCom input box',
+          success: 'Draft pasted into the WeCom input box; it was not sent.',
+        },
+        status: {
+          running: 'Sending...',
+          succeeded: 'Draft pasted into the WeCom input box; it was not sent.',
+          blocked: 'Blocked by a safety check',
+          failed: 'Send failed',
+          timed_out: 'Send timed out',
+          cancelled: 'Cancelled',
+        },
+        stage: {
+          validating_process: 'Verifying WeCom',
+          binding_window: 'Binding the WeCom window',
+          activating_window: 'Activating the WeCom window',
+          waiting_stability: 'Waiting for the window to stabilize',
+          verifying_foreground: 'Verifying the foreground window',
+          verifying_conversation: 'Confirming the current conversation',
+          inspecting_session: 'Checking the confirmed conversation context',
+          locating_input: 'Locating the input box',
+          checking_input: 'Checking the input box',
+          reading_input: 'Recording unreadable input state',
+          revalidating_context: 'Revalidating the window context',
+          pasting_draft: 'Pasting the draft',
+          pasted_to_input: 'Draft pasted into the WeCom input box',
+          verifying_paste: 'Verifying the pasted draft',
+          committing_send: 'Submitting the send action',
+          ready_to_send: 'Dry-run reached ready_to_send',
+        },
+        sendDisabled: {
+          botDisabled: 'Enable the bot before sending',
+          noPersistedDraft: 'Current draft target is unavailable',
+          emptyDraft: 'Draft content cannot be empty',
+          unsavedChanges: 'There are unsaved changes',
+          busy: 'Wait for the current draft action to finish',
+          activeRun: 'A desktop send is already in progress',
+          alreadySent: 'This draft has already been sent',
+          runtimeChecking: 'Checking desktop runtime status',
+          runtimeDisabled: 'Desktop automation is disabled',
+          runtimeNotConfigured: 'Desktop runtime is not configured',
+          runtimeUnsupported:
+            'Desktop automation is not supported in this environment',
+          runtimeFailed: 'Desktop runtime is currently unavailable',
+          runtimeNotAvailable:
+            'RPA_RUNTIME_NOT_AVAILABLE: Runtime failed to start. Check the packaged runtime and backend logs.',
+        },
+        confirmation: {
+          trigger: 'Confirm current conversation',
+          ready: 'One-time confirmation is ready',
+          dialogTitle: 'Confirm current conversation',
+          description:
+            'Confirm the expected conversation before pasting the draft into WeCom. The draft will not be sent.',
+          loading: 'Preparing confirmation',
+          draftUnavailable: 'The current draft is missing a persisted reply id',
+          expectedLabel: 'Expected conversation',
+          approve: 'Confirm and paste',
+          prepareError: 'Failed to prepare the paste confirmation',
+          confirmError: 'Failed to submit the paste confirmation',
+          success: 'Conversation confirmed and draft pasted',
+        },
+        dryRun: {
+          trigger: '桌面验证（Dry Run）',
+          realSendUnavailable:
+            'Real send is not available yet. Use "桌面验证（Dry Run）".',
+          confirmationRequired: 'Confirm the current conversation first',
+          confirmationExpired:
+            'The one-time conversation confirmation expired. Confirm it again.',
+          consumedNotice:
+            'This conversation confirmation has been used for desktop dry-run. Confirm the current conversation again before another verification.',
+          resultTitle: 'Dry Run Result',
+          resultSummary:
+            'This step only completed desktop verification. No message was sent.',
+          fieldStatus: 'status',
+          fieldStage: 'stage',
+          fieldInspectionBackend: 'inspectionBackend',
+          fieldConversationVerification: 'conversationVerification',
+          fieldInputTargetSource: 'inputTargetSource',
+          fieldInputContentVerification: 'inputContentVerification',
+          fieldHumanConfirmed: 'humanConfirmed',
+          fieldVisualContextStable: 'visualContextStable',
+          fieldSendAuthorized: 'sendAuthorized',
+          fieldNextAllowedOperation: 'nextAllowedOperation',
+          fieldErrorCode: 'errorCode',
+        },
+        error: {
+          CONVERSATION_MISMATCH:
+            'The current WeCom conversation does not match',
+          CONVERSATION_UNVERIFIABLE:
+            'The current WeCom conversation cannot be verified',
+          INPUT_NOT_EMPTY:
+            'The WeCom input box already contains a different message',
+          INPUT_CONTENT_UNVERIFIABLE: 'The WeCom input box cannot be verified',
+          PASTE_VERIFICATION_FAILED: 'The pasted draft could not be verified',
+          WINDOW_NOT_FOREGROUND:
+            'The WeCom window is no longer in the foreground',
+          WINDOW_IDENTITY_CHANGED:
+            'The WeCom window changed during verification',
+          WECOM_PROCESS_NOT_FOUND: 'WeCom is not running',
+          SEND_FAILED: 'The send action failed',
+          TASK_CONFLICT: 'Another desktop send is already in progress',
+          DRAFT_ALREADY_SENT: 'This draft has already been sent',
+          TASK_TIMEOUT: 'The send action timed out',
+          REGION_PROFILE_MISSING: 'Calibrate the WeCom regions first',
+          REGION_PROFILE_INVALID: 'The saved WeCom region profile is invalid',
+          REGION_PROFILE_STALE:
+            'The WeCom window layout changed. Recalibrate the regions.',
+          HUMAN_CONFIRMATION_REQUIRED:
+            'Confirm the current conversation before continuing',
+          HUMAN_CONFIRMATION_EXPIRED:
+            'The conversation confirmation expired. Confirm it again.',
+          HUMAN_CONFIRMATION_TASK_MISMATCH:
+            'The conversation confirmation does not match this draft',
+          WINDOW_CONTEXT_CHANGED:
+            'The WeCom window context changed. Confirm it again.',
+          CONVERSATION_VISUAL_CHANGED:
+            'The conversation title region changed. Confirm it again.',
+          INPUT_SAFE_POINT_UNAVAILABLE:
+            'A safe point cannot be derived inside the current input region',
+        },
+        source: {
+          pipeline: 'Smart draft',
+          manual: 'Manual edit',
+        },
+        undoEdit: 'Undo editing',
+        unsaved: 'Unsaved edit',
+        updatedAt: 'Updated {{time}}',
+        updatedAtUnknown: 'Updated time unknown',
+      },
     },
   },
   plugins: {
@@ -705,7 +852,7 @@ const enUS = {
     markAsReadFailed: 'Mark as read failed',
     filterByComponent: 'Plugin Component',
     filterByComponentHint:
-      'The capability types a plugin provides — Tool, Command, EventListener, etc. — used to extend LangBot in various ways. Filter by component to show only plugins offering that capability.',
+      'The capability types a plugin provides — Tool, Command, EventListener, etc. — used to extend Chatbot in various ways. Filter by component to show only plugins offering that capability.',
     allComponents: 'All Components',
     componentName: {
       Tool: 'Tool',
@@ -852,6 +999,55 @@ const enUS = {
     deleteMCPAction: 'Delete this MCP server',
     deleteMCPHint:
       'Once deleted, this MCP server configuration cannot be recovered.',
+    builtin: 'Built-in',
+    builtinConnectorDescription:
+      'Windows-only local connector managed by Chatbot. Name, URL, and mode are locked.',
+    builtinLockedHint:
+      'This built-in connector is managed by Chatbot. You can enable or disable it, but its name, URL, mode, and deletion are locked.',
+    detectClient: 'Detect Client',
+    refreshDatabase: 'Refresh Database',
+    oneClickSetup: 'One-Click Setup',
+    reconfigure: 'Reconfigure',
+    connectorStatusTitle: 'Connector Status',
+    localConnector: 'Local connector status and MCP runtime state',
+    unsupportedPlatform: 'Unsupported Platform',
+    unsupportedPlatformHint:
+      'This built-in connector currently supports only Windows development machines.',
+    notConfigured: 'Not Configured',
+    clientNotRunning: 'Client Not Running',
+    dataPathNotFound: 'Data Path Not Found',
+    permissionRequired: 'Permission Required',
+    portInUse: 'Port In Use',
+    decryptFailed: 'Decrypt Failed',
+    startFailed: 'Worker Start Failed',
+    runtimeError: 'Runtime Error',
+    workerStopped: 'Worker Stopped',
+    stageDetecting: 'Detecting',
+    stageExtractingKey: 'Extracting Key',
+    stageDecrypting: 'Decrypting',
+    stageStartingMcp: 'Starting MCP',
+    stageTestingMcp: 'Testing MCP',
+    stageEnablingMcp: 'Enabling MCP',
+    jobPending: 'Pending',
+    jobRunning: 'Running',
+    jobSucceeded: 'Succeeded',
+    jobFailed: 'Failed',
+    jobCancelled: 'Cancelled',
+    jobStatus: 'Job Status',
+    jobStage: 'Stage',
+    jobProgress: 'Progress: {{progress}}%',
+    worker: 'Worker',
+    workerControl: 'Worker Control',
+    startWorker: 'Start Worker',
+    stopWorker: 'Stop Worker',
+    viewLogs: 'View Logs',
+    hideLogs: 'Hide Logs',
+    localData: 'Local Data',
+    detectedDatabase: 'Detected Database',
+    keyFile: 'Key File',
+    decryptedDirectory: 'Decrypted Directory',
+    logs: 'Logs',
+    noLogs: 'No logs yet.',
   },
   pipelines: {
     title: 'Pipelines',
@@ -1113,8 +1309,8 @@ const enUS = {
     },
   },
   register: {
-    title: 'Initialize LangBot 👋',
-    description: 'This is your first time starting LangBot',
+    title: 'Initialize Chatbot 👋',
+    description: 'This is your first time starting Chatbot',
     adminAccountNote:
       'The account you use here will be set as the administrator account',
     register: 'Register',
@@ -1124,7 +1320,7 @@ const enUS = {
     spaceInfoTip1:
       'Space provides unified account authentication services without uploading any of your sensitive information.',
     spaceInfoTip2:
-      'Logging in with a Space account gives you access to LangBot Models and other cloud services, including free model call credits to help you get started quickly.',
+      'Logging in with a Space account gives you access to Chatbot Models and other cloud services, including free model call credits to help you get started quickly.',
     spaceInfoTip3:
       'Your login method does not affect other features. You can configure and use models from other sources at any time.',
     registerLocal: 'Register local account',
@@ -1149,7 +1345,6 @@ const enUS = {
     resetSuccess: 'Password reset successfully, please login',
     resetFailed:
       'Password reset failed, please check your email and recovery key',
-    backToLogin: 'Back to Login',
   },
   embedding: {
     description: 'Manage Embedding models for text vectorization',
@@ -1603,7 +1798,7 @@ const enUS = {
     },
     spaceBanner: {
       message:
-        'Connect to LangBot Space for free trial model credits and zero-config instant setup!',
+        'Connect to Chatbot Space for free trial model credits and zero-config instant setup!',
       action: 'Authorize with Space',
     },
     config: {
@@ -1661,7 +1856,6 @@ const enUS = {
     backendUnavailableStatus: 'Backend unavailable',
     goBack: 'Go Back',
     backToHome: 'Back to Home',
-    backToLogin: 'Back to Login',
     retrying: 'Retrying',
     retryFailed:
       'Still cannot connect to the backend. Start the service and try again.',
@@ -1711,10 +1905,943 @@ const enUS = {
     robotNameNote:
       'Robot Name cannot be obtained automatically. Please fill it in manually.',
   },
+  databaseMode: {
+    title: 'Database Mode',
+    description: 'Review incoming database messages by conversation',
+    workspaceDescription:
+      'A review workspace for near-real-time WeCom database messages.',
+    conversations: 'Conversations',
+    searchPlaceholder: 'Search conversations, customers, or message summaries',
+    latestCustomer: 'Latest customer',
+    totalMessages: 'Total messages',
+    noCustomer: 'No customer',
+    noMessages: 'No messages yet',
+    loading: 'Loading database mode...',
+    loadFailed: 'Failed to load database mode data',
+    operationFailed: 'Operation failed',
+    emptyTitle: 'No new messages',
+    emptyDescription: 'No database messages are waiting in the current view.',
+    selectConversationTitle: 'Select a conversation',
+    selectConversationDescription:
+      'Choose a conversation from the left to review its messages.',
+    notConfiguredTitle: 'WeCom connector is not configured',
+    notConfiguredDescription:
+      'Complete the WeCom local connector setup before using Database Mode.',
+    goToConnector: 'Go to WeCom Connector',
+    monitorStoppedTitle: 'Monitor is not running',
+    monitorStoppedDescription:
+      'Start the WeCom monitor to import near-real-time database messages.',
+    monitorErrorTitle: 'Monitor needs attention',
+    monitorErrorDescription:
+      'The WeCom monitor reported an error. Open the connector page for details.',
+    warmupTitle: 'Warmup in progress',
+    warmupDescription:
+      'The monitor is indexing recent messages. Historical messages will not be imported.',
+    warmupCompleted: 'Completed',
+    warmupPending: 'In progress',
+    startMonitor: 'Start Monitor',
+    stopMonitor: 'Stop Monitor',
+    restartMonitor: 'Restart Monitor',
+    monitorPanelTitle: 'Message Monitor',
+    monitorRunning: 'Running',
+    monitorStopped: 'Stopped',
+    monitorErrorShort: 'Error',
+    monitorPollSeconds: 'Poll interval (s)',
+    monitorOutboxPending: 'Pending outbox',
+    monitorLastScan: 'Last scan',
+    monitorLastChange: 'Last change',
+    monitorLastEvent: 'Last event',
+    monitorErrorLabel: 'Recent error',
+    selectAllCurrentConversation: 'Select current conversation',
+    batchProcess: 'Batch mark processed',
+    batchSkip: 'Batch skip',
+    batchDelete: 'Batch delete',
+    confirmBatchDelete:
+      'Delete the selected messages? This only removes them from the workspace.',
+    generateDraft: 'Generate AI draft',
+    regenerateDraft: 'Regenerate draft',
+    saveDraft: 'Save draft',
+    markProcessed: 'Mark processed',
+    skip: 'Skip',
+    delete: 'Delete',
+    confirmDelete: 'Delete this message from the workspace?',
+    viewDetails: 'View details',
+    customerMessage: 'Customer message',
+    currentDraft: 'Current draft',
+    aiSuggestedReply: 'AI suggested reply',
+    noDraftYet: 'No draft yet',
+    messageDetails: 'Message details',
+    sender: 'Sender',
+    receivedAt: 'Received at',
+    messageType: 'Message type',
+    statusLabel: 'Status',
+    failedShort: 'Failed',
+    statusPending: 'Pending',
+    statusDraftReady: 'Draft ready',
+    statusFailed: 'Failed',
+    statusProcessed: 'Processed',
+    statusSkipped: 'Skipped',
+    filter: {
+      all: 'All',
+      pending: 'Pending',
+      draft_ready: 'Draft ready',
+      failed: 'Failed',
+      processed: 'Processed',
+      skipped: 'Skipped',
+    },
+    status: {
+      pending: 'Pending',
+      draft_ready: 'Draft ready',
+      failed: 'Failed',
+      processed: 'Processed',
+      processing: 'Processing',
+      skipped: 'Skipped',
+    },
+  },
+  broadcast: {
+    title: 'Broadcast',
+    description: 'Configure and review paste-only broadcast drafts',
+    workspaceTitle: 'Broadcast Workspace',
+    phaseBadge: 'Phase 2 Rules API',
+    workspaceDescription:
+      'A broadcast workspace with persistent Rules configuration backed by HTTP APIs. Import Matching, Review & Paste, and Execution Logs remain on mock data in this phase.',
+    scope: {
+      bot: 'Bot',
+      connector: 'Connector',
+      selectBot: 'Select a bot',
+      selectConnector: 'Select a connector',
+    },
+    topTabs: {
+      rules: 'Rules',
+      import: 'Import Matching',
+      drafts: 'Review & Paste',
+      logs: 'Execution Logs',
+    },
+    rulesTabs: {
+      variables: 'Variable Mapping',
+      templates: 'Message Templates',
+      groups: 'Group Matching',
+    },
+    summary: {
+      templates: 'Templates',
+      variableMappings: 'Mappings',
+      reviewQueue: 'Drafts',
+      logs: 'Logs',
+      groupRules: 'Group Rules',
+    },
+    common: {
+      required: 'Required',
+      optional: 'Optional',
+    },
+    status: {
+      pending: 'Pending',
+      pasted: 'Pasted, not sent',
+      failed: 'Failed',
+      completed: 'Completed',
+    },
+    fields: {
+      sourceField: 'Source Field',
+      variableKey: 'Variable Key',
+      variable: 'Variable',
+      mergeMode: 'Merge Mode',
+      order: 'Order',
+      enabled: 'Enabled',
+      templateName: 'Template Name',
+      templateBody: 'Template Body',
+      groupField: 'Group Field',
+      sourceValue: 'Source Value',
+      matchType: 'Match Type',
+      matchExpression: 'Match Expression',
+      targetConversationName: 'Target Conversation Name',
+      priority: 'Priority',
+      groupNames: 'Group Names',
+      required: 'Required',
+      customer: 'Customer',
+      conversation: 'Conversation',
+      template: 'Template',
+      variables: 'Variables',
+      matchingRule: 'Matching Rule',
+      status: 'Status',
+      operator: 'Operator',
+      timestamp: 'Timestamp',
+      action: 'Action',
+      message: 'Message',
+    },
+    placeholders: {
+      templateName: 'Enter a template name',
+      groupField: 'e.g. Customer Name',
+      matchSourceValue: 'Enter a source value to preview rule matching',
+      groupNames: 'One group name per line',
+    },
+    labels: {
+      enabled: 'Enabled',
+      disabled: 'Disabled',
+      missing: 'Missing',
+      configured: 'Configured',
+      noSampleValue: 'No sample value yet',
+      noValidValue: 'No valid value',
+      ready: 'Ready',
+      noMatch: 'No matching rule',
+    },
+    hints: {
+      templateEnabled:
+        'Disabled templates stay saved but are not used by later matching flows.',
+    },
+    actions: {
+      newTemplate: 'New template',
+      editTemplate: 'Edit template',
+      saveTemplate: 'Save template',
+      createTemplate: 'Create template',
+      deleteTemplate: 'Delete template',
+      confirmDeleteTemplate: 'Confirm delete template',
+      addMappingRule: 'Add mapping rule',
+      saveVariableProfile: 'Save variable profile',
+      newGroupRule: 'New group rule',
+      editGroupRule: 'Edit group rule',
+      saveGroupRule: 'Save group rule',
+      createGroupRule: 'Create group rule',
+      deleteGroupRule: 'Delete group rule',
+      matchPreview: 'Match preview',
+      runMatchPreview: 'Run match preview',
+      addGroupNames: 'Add group names',
+      refreshGroupNames: 'Refresh groups',
+    },
+    rules: {
+      variablePool: 'Variable Token Pool',
+      variablePoolDescription:
+        'Reference tokens stay editable in templates and import matching flows.',
+      preview: 'Sample Message Preview',
+      previewDescription:
+        'Preview how the first template renders with the current mapping samples.',
+      templatePreview: 'Live Preview Placeholder',
+      templatePreviewHint:
+        'Phase 1 keeps template editing mocked. The preview area reserves space for later rich editing.',
+      availableVariables: 'Available Variables',
+      availableVariablesDescription:
+        'Template tokens available for future insertion and validation.',
+      insertVariableAria: 'Insert variable {{name}}',
+      ruleCoverage: 'Rule Coverage',
+      ruleCoverageDescription:
+        'Quick overview of how many customer-group rules are currently enabled.',
+      enabledRules: 'Enabled Rules',
+      groupBuckets: 'Status Groups',
+      groupBucketsDescription:
+        'Status grouping mirrors the future operator workflow and queue triage.',
+      variableMapping: {
+        title: 'Variable Mapping',
+        description:
+          'Maintain field-to-variable relationships before generating import previews and drafts.',
+      },
+      templates: {
+        title: 'Message Templates',
+        description:
+          'Review saved templates, variable tokens, and preview structure in a split workspace.',
+        deleteConfirmTitle: 'Delete template',
+        deleteConfirmDescription:
+          'Delete "{{name}}" from future draft generation. Existing snapshot drafts are not changed, but new drafts can no longer use this template.',
+      },
+      groupMatching: {
+        title: 'Group Matching',
+        description:
+          'Keep customer-to-conversation rules in a dedicated review area without triggering runtime actions.',
+      },
+    },
+    import: {
+      title: 'Import Matching',
+      description:
+        'Review imported rows, matched conversations, and template readiness using mock preview data.',
+      uploadButton: 'Upload CSV / XLSX',
+      batchSummary: '{{totalRows}} rows total / {{matchedRows}} matched',
+      emptyBatches: 'No import batches yet',
+      detailTitle: 'Import Details',
+      detailHint:
+        'Show real matching results immediately after upload without requiring a rematch first.',
+      worksheetName: 'Worksheet: {{name}}',
+      rematchButton: 'Rematch',
+      rematchConfirmTitle: 'Rematch current batch',
+      rematchConfirmDescription:
+        'This will recalculate matching results for the current batch using the latest rules. If ready drafts block rematch on the backend, the original backend error will still be shown.',
+      deleteBatchButton: 'Delete Batch',
+      deleteBatchConfirmTitle: 'Delete import batch',
+      deleteBatchConfirmDescription:
+        'Delete {{fileName}}? This batch currently contains {{totalRows}} row(s), {{groupCount}} group(s), and {{draftCount}} related draft(s). The current backend deletion semantics will be used as-is.',
+      templatePlaceholder: 'Select a message template',
+      bulkTemplatePlaceholder: 'Set template for selected groups',
+      applyTemplateButton: 'Apply to selected',
+      applyTemplateToUnassignedButton: 'Apply to unassigned only',
+      clearTemplatesButton: 'Clear selected templates',
+      clearRowTemplateButton: 'Clear template',
+      generateDraftsButton: 'Generate selected drafts',
+      generateDraftsConfirmTitle: 'Generate selected drafts',
+      generateDraftsConfirmDescription:
+        'Generate drafts for {{selectedCount}} selected group(s). {{templatedCount}} group(s) already have templates configured, and {{blockedCount}} group(s) are currently not generatable.',
+      draftsStale: 'Drafts are stale. Please regenerate them.',
+      emptyRows: 'No import rows yet',
+      selectedGroupCount: '{{count}} group(s) selected',
+      clearSelection: 'Clear selection',
+      templateDisabledLabel: 'Disabled',
+      selectGroupAria: 'Select group {{name}}',
+      rawRowCountInline: '{{count}} raw row(s)',
+      tableHeaders: {
+        selection: 'Select',
+        sourceRowNumber: 'Row',
+        groupValue: 'Customer / Group',
+        orderCount: 'Orders',
+        messageTemplate: 'Message Template',
+        matchedConversationName: 'Matched Conversation',
+        matchStatus: 'Result',
+        attachments: 'Attachments',
+        errorMessage: 'Reason',
+        actions: 'Actions',
+        rowPreview: 'Row Preview',
+      },
+      selectionDisabled: {
+        unmatched: 'This group is not matched to a conversation yet.',
+        invalid: 'This group is invalid and cannot be generated.',
+        conflict: 'This group points to multiple target conversations.',
+        missingConversation: 'Matched conversation is empty.',
+      },
+      applyTemplateDisabled: {
+        noBatch: 'Select an import batch first.',
+        noSelection: 'Select at least one eligible group first.',
+        noTemplate: 'Select a message template to apply.',
+        noProcessableSelection:
+          'The selected groups already use the current template.',
+        noUnassignedSelection:
+          'The selected groups do not contain any unassigned template slots.',
+      },
+      clearTemplateDisabled: {
+        noBatch: 'Select an import batch first.',
+        noSelection: 'Select at least one group first.',
+        noAssignedSelection:
+          'The selected groups do not contain any assigned templates.',
+      },
+      generateDisabled: {
+        noBatch: 'Select an import batch first.',
+        noSelection: 'Select at least one eligible group first.',
+        matchUnavailable:
+          '{{count}} selected group(s) are not matched to a usable conversation yet.',
+        templateMissing:
+          '{{count}} selected group(s) do not have a message template.',
+        templateDisabled:
+          '{{count}} selected group(s) use a disabled template.',
+        duplicateConversation:
+          '{{count}} selected group(s) conflict on duplicate target conversations.',
+      },
+      statusLabels: {
+        matched: 'Matched',
+        unmatched: 'Unmatched',
+        invalid: 'Invalid',
+        conflict: 'Conflict',
+      },
+      stats: {
+        totalRows: 'Total Rows',
+        totalGroups: 'Groups',
+        matchedGroups: 'Matched Groups',
+        unmatchedGroups: 'Unmatched Groups',
+        invalidGroups: 'Invalid / Conflict',
+      },
+      expandGroup: 'Expand',
+      collapseGroup: 'Collapse',
+      groupAttachments: 'Group Attachments',
+      uploadAttachment: 'Upload Attachment',
+      deleteAttachment: 'Delete',
+      clearTemplatesConfirmTitle: 'Clear group templates',
+      clearTemplatesConfirmDescription:
+        'This will clear templates from {{count}} selected group(s). Groups without templates will be skipped.',
+      clearTemplatesConfirmButton: 'Clear templates',
+      emptyAttachments: 'No attachments yet',
+      groupRowsTitle: 'Raw Rows',
+      groupRowsTotal: '{{total}} row(s)',
+      inlineMatch: {
+        selectConversationButton: 'Select target conversation',
+        dialogTitle: 'Select target conversation',
+        dialogDescription:
+          'Choose a target conversation for “{{groupValue}}”, then save an exact-match rule and rematch the current batch.',
+        dialogDescriptionFallback:
+          'Choose a target conversation and save an exact-match rule.',
+        currentGroupLabel: 'Current customer / group',
+        searchLabel: 'Search target conversations',
+        searchPlaceholder: 'Enter a conversation name',
+        missingStableId:
+          'Missing a stable external_conversation_id and cannot be selected yet.',
+        emptySearch: 'No conversations match this search.',
+        selectionRequired: 'Select an available target conversation first.',
+        conflictRuleDetected:
+          'Multiple conflicting exact rules already exist for this group. Resolve them in the Group Matching tab first.',
+        saveButton: 'Save and rematch',
+      },
+      pagination: {
+        totalItems: '{{total}} items total',
+        previous: 'Previous',
+        next: 'Next',
+        pageStatus: 'Page {{page}} / {{totalPages}}',
+      },
+      summary: {
+        rows: 'Preview Rows',
+        ready: 'Ready',
+        pending: 'Pending Review',
+        attention: 'Needs Attention',
+      },
+    },
+    drafts: {
+      title: 'Review & Paste',
+      description:
+        'Use the left queue for grouped drafts and the right detail pane for mock editing and contract preview.',
+      batchFilter: 'Import batch',
+      allBatches: 'All batches',
+      search: 'Search drafts',
+      searchPlaceholder: 'Search drafts, conversations, templates',
+      statusFilter: 'Status filter',
+      allStatuses: 'All statuses',
+      batchToolbar: 'Batch toolbar',
+      selectAllEligible: 'Select all eligible drafts',
+      batchRunning: 'Mock batch running',
+      batchCompleted: 'Mock batch completed',
+      selectedCount: '{{count}} draft(s) selected',
+      batchConfirm: 'Confirm selected',
+      createExecutionBatch: 'Create execution batch',
+      batchWriteSelected: 'Paste to send box only',
+      batchWriteConfirmTitle: 'Write selected drafts to the input box',
+      batchWriteConfirmDescription:
+        'This will submit {{draftCount}} draft(s) for {{conversationCount}} target conversation(s), including {{attachmentCount}} attachment(s). Duplicate targets: {{duplicateTargetCount}}. During execution, do not switch windows or use the mouse and keyboard.',
+      mockPasteSelected: 'Mock paste selected',
+      editDraft: 'Edit draft',
+      saveDraft: 'Save draft',
+      cancelEdit: 'Cancel edit',
+      confirmDraft: 'Confirm draft',
+      revokeConfirm: 'Revoke confirmation',
+      markSent: 'Mark sent',
+      restorePending: 'Restore pending',
+      pasteToInput: 'Paste to send box only',
+      rewriteToInput: 'Paste to send box only',
+      pasteLoading: 'Writing...',
+      messageBody: 'Draft content',
+      templateLabel: 'Template',
+      conversationLabel: 'Target conversation',
+      messagePreviewLabel: 'Draft preview',
+      statusPending: 'Pending',
+      statusSent: 'Sent',
+      statusPendingReview: 'Pending review',
+      statusReady: 'Confirmed',
+      statusInvalid: 'Invalid',
+      selectDraft: 'Select draft {{id}}',
+      staleBadge: 'stale',
+      attachmentsStaleBadge: 'attachments changed',
+      staleWarning: 'Draft is stale. Please regenerate it.',
+      attachmentsStaleWarning:
+        'Group attachments changed. Please review this draft again before writing.',
+      attachmentsTitle: 'Attachments',
+      uploadAttachment: 'Upload Attachment',
+      deleteAttachment: 'Delete',
+      emptyAttachments: 'No attachments yet',
+      pasteUnavailable: 'This executor cannot write to the input box.',
+      pasteMissingConversation: 'Target conversation is required.',
+      pasteMissingBody: 'Draft content cannot be empty.',
+      noDraftSelectedReason: 'Select a draft first.',
+      batchWriteNoSelection: 'Select at least one draft first.',
+      pasteHint:
+        'The system will search for and open the target conversation, then paste the text and attachments into the input box. It will not send automatically; confirm manually before sending.',
+      pasteDialogTitle: 'Confirm writing to input box',
+      pasteDialogDescription:
+        'Please confirm the target conversation and draft content again. This action only writes to the input box and will not send.',
+      realSend: 'Send now',
+      sendLoading: 'Sending...',
+      sendDialogTitle: 'Confirm real send',
+      sendDialogDescription:
+        'Review the details below again. After the final confirmation, the system will press Enter to send for real.',
+      sendDialogCustomer: 'Customer: {{customer}}',
+      sendDialogConversation: 'Target conversation: {{conversation}}',
+      sendDialogAttachmentCount: 'Attachments: {{count}}',
+      sendWarning:
+        'This action will press Enter to send for real and cannot be automatically undone.',
+      sendCountdown:
+        'Please wait {{count}} second(s) before the final confirmation.',
+      sendAcknowledge:
+        'I have verified the conversation and content, and I understand this will send a real message.',
+      cancelAction: 'Cancel',
+      confirmPasteAction: 'Confirm write',
+      confirmSendAction: 'Confirm send',
+      restorePendingRiskTitle: 'Confirm restore to pending',
+      restorePendingRiskDescription:
+        'The previous send may already have succeeded. Restoring it and sending again may create a duplicate message.',
+      editor: 'Draft editor',
+      emptyDetail: 'Select a draft from the queue to review the details.',
+    },
+    logs: {
+      title: 'Execution Logs',
+      description:
+        'A mock execution log list reserved for future API and Runtime integration.',
+      executorCapabilitiesTitle: 'Executor capabilities',
+      executorHealthTitle: 'Executor health',
+      capabilityPaste: 'Paste',
+      capabilityPasteVerification: 'Content verification',
+      capabilityConversationLocator: 'Conversation location',
+      conversationLocatorKeyboardSearch: 'Keyboard search',
+      conversationLocatorExternalId: 'External conversation ID',
+      conversationLocatorUnknown: 'Unknown',
+      capabilityBooleanYes: 'Yes',
+      capabilityBooleanNo: 'No',
+      capabilitySend: 'Real send',
+      capabilityCancel: 'Cancel',
+      capabilityStatusQuery: 'Status query',
+      manualConversationOpenRequired: 'Conversation location: keyboard search',
+      pasteVerificationMethod: 'Verification method',
+      pasteVerificationMethodWindowsUia: 'Windows UI Automation',
+      pasteVerificationMethodManual: 'Manual confirmation',
+      pasteVerificationMethodDisabled: 'Disabled',
+      pasteVerificationMethodUnknown: 'Unknown',
+      pasteVerificationStatus: 'Verification status',
+      pasteVerificationAvailable: 'Available',
+      pasteVerificationUnavailable: 'Disabled',
+      pasteVerificationUnavailableHint: 'Content verification: disabled',
+      executorVersion: 'Executor version',
+      runtimeMinVersion: 'Min runtime version',
+      runtimeVersion: 'Runtime version',
+      protocolVersion: 'Protocol version',
+      latestBatchTitle: 'Latest batch #{{id}}',
+      batchSummary:
+        'Status {{status}} · Mode {{mode}} · Pending {{pending}} · Running {{running}} · Succeeded {{succeeded}} · Failed {{failed}} · Cancelled {{cancelled}} · Interrupted {{interrupted}}',
+      startBatch: 'Start',
+      pauseBatch: 'Pause',
+      resumeBatch: 'Resume',
+      cancelBatch: 'Cancel remaining',
+      taskId: 'Task',
+      attemptCount: 'Attempts',
+      taskActions: 'Actions',
+      retryTask: 'Retry',
+      booleanYes: 'Yes',
+      booleanNo: 'No',
+      statusDraftWritten: 'Pasted, not sent',
+      statusPasteVerified: 'Pasted, not sent',
+      statusWarning: 'Pasted, not sent',
+      statusUnknown: 'Needs manual review',
+      statusSendTriggered: 'Send triggered once',
+      retryFailedTasks: 'Retry failed items',
+      retryFailedTasksConfirmTitle: 'Retry failed items',
+      retryFailedTasksConfirmDescription:
+        'Retry {{count}} confirmed pre-send failure task(s) in the latest batch. Tasks with unknown send results will not be retried.',
+      batchStatuses: {
+        created: 'Waiting to start',
+        queued: 'Queued',
+        running: 'Running',
+        paused: 'Paused',
+        completed: 'Completed',
+        partially_failed: 'Partially failed',
+        failed: 'Failed',
+        cancelled: 'Cancelled',
+        interrupted: 'Interrupted',
+        unknown: 'Unknown',
+      },
+      taskStatuses: {
+        pending: 'Waiting to run',
+        queued: 'Queued',
+        running: 'Writing',
+        succeeded: 'Written successfully',
+        succeeded_with_warning: 'Written, confirm manually before sending',
+        blocked: 'Not executed',
+        failed: 'Write failed',
+        cancelled: 'Cancelled',
+        timed_out: 'Timed out',
+        interrupted: 'Interrupted',
+        unknown: 'Unknown',
+      },
+      fields: {
+        attachmentCount: 'attachmentCount',
+        attachmentNames: 'attachmentNames',
+        textContentVerified: 'textContentVerified',
+        attachmentsPrepared: 'attachmentsPrepared',
+        attachmentPasteRequested: 'attachmentPasteRequested',
+        attachmentsVerified: 'attachmentsVerified',
+        warning: 'warning',
+        errorCode: 'errorCode',
+        stage: 'stage',
+        batchStatus: 'batchStatus',
+        taskStatus: 'taskStatus',
+        attemptStatus: 'attemptStatus',
+        runtimeState: 'runtimeState',
+        recoveryAdvice: 'recoveryAdvice',
+      },
+      warningCodes: {
+        ATTACHMENTS_REQUIRE_MANUAL_CONFIRMATION:
+          'Written, confirm attachments manually before sending',
+        PASTE_RESULT_NOT_VERIFIED: 'Written, content was not verified',
+        ATTACHMENT_PATH_OUTSIDE_ROOT:
+          'Attachment file is outside the configured attachment root',
+      },
+
+      errorSuggestions: {
+        TARGET_WINDOW_NOT_FOUND: 'Open the WeCom main window and retry.',
+        TARGET_WINDOW_AMBIGUOUS: 'Close extra WeCom windows and retry.',
+        WINDOW_ACTIVATION_FAILED:
+          'Do not switch windows or use the mouse and keyboard during execution, then retry.',
+        SEARCH_ACTIVATION_FAILED:
+          'Do not switch windows or use the mouse and keyboard during execution, then retry.',
+        TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE:
+          'Do not switch windows or use the mouse and keyboard during execution, then retry.',
+        CONVERSATION_NAME_PASTE_FAILED:
+          'Check the target conversation name and matching rules.',
+        SEARCH_RESULT_CONFIRM_FAILED:
+          'Check the target conversation name and matching rules.',
+        ATTACHMENT_FILE_MISSING:
+          'Go back to draft review and upload the attachment again.',
+        ATTACHMENT_HASH_MISMATCH:
+          'Go back to draft review and upload the attachment again.',
+        ATTACHMENT_PATH_OUTSIDE_ROOT:
+          'Go back to draft review and upload the attachment again.',
+        FILE_CLIPBOARD_HELPER_FAILED: 'Check the Runtime status and retry.',
+        FILE_CLIPBOARD_HELPER_TIMEOUT: 'Check the Runtime status and retry.',
+        CLIPBOARD_RESTORE_MISMATCH:
+          'The write may already be finished, but clipboard restore failed. Check manually.',
+        PASTE_RESULT_NOT_VERIFIED:
+          'The content was written, but the system could not verify it automatically. Please check the input box manually.',
+        __default:
+          'Check the raw error code and technical details, then retry if appropriate.',
+      },
+      errorCodes: {
+        FILE_CLIPBOARD_HELPER_SPAWN_FAILED:
+          'Unable to start the attachment clipboard helper.',
+        FILE_CLIPBOARD_HELPER_TIMEOUT:
+          'Timed out while preparing the attachment clipboard.',
+        FILE_CLIPBOARD_HELPER_FAILED:
+          'Unable to prepare the attachment clipboard.',
+        FILE_CLIPBOARD_OUTPUT_INVALID:
+          'The attachment clipboard helper returned an invalid result.',
+        FILE_CLIPBOARD_COUNT_MISMATCH:
+          'The attachment clipboard file count does not match the task.',
+        FILE_CLIPBOARD_PATH_MISMATCH:
+          'The attachment clipboard files do not match the task.',
+        TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE:
+          'The WeCom window lost focus before attachment paste.',
+        ATTACHMENT_PASTE_FAILED: 'Failed to paste attachments.',
+        BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN:
+          'The send result could not be confirmed. Please check the target conversation manually.',
+        BROADCAST_SEND_RESULT_UNKNOWN:
+          'The send result could not be confirmed. Please check the target conversation manually.',
+        BROADCAST_RETRY_SEND_RESULT_UNKNOWN:
+          'Only failures confirmed before Enter can be retried automatically.',
+      },
+      missingSendTask: 'Missing execution task for send mode',
+      empty: 'No execution logs yet.',
+    },
+    contract: {
+      title: 'RPA Contract Preview',
+      request: 'Broadcast request',
+      runtimePayload: 'Translated Runtime payload',
+    },
+    safety: {
+      pasteOnly: 'Paste Only',
+      sendKeyCount: 'sendKeyCount = 0',
+      messageSent: 'messageSent = false',
+      noRuntimeCall: 'No real backend or Runtime call is made in this phase.',
+    },
+    toasts: {
+      draftSaved: 'Draft updated in mock workspace',
+      batchCompleted: 'Mock batch paste progress completed',
+      noDraftSelected: 'Select at least one draft first',
+      batchWritePendingOnly:
+        'Bulk write only supports pending drafts that are ready to write.',
+      batchMarkSentPendingOnly:
+        'Mark sent only supports drafts in pending status.',
+      batchRestorePendingSentOnly:
+        'Restore pending only supports drafts in sent status.',
+      executionBatchCreated: 'Execution batch created',
+      executionBatchStarted: 'Execution batch started',
+      executionBatchPaused: 'Execution batch paused',
+      executionBatchResumed: 'Execution batch resumed',
+      executionBatchCancelled: 'Remaining tasks cancelled',
+      executionTaskRetried: 'Execution task re-queued',
+      executionFailedTasksRetried:
+        'Submitted retry for {{successCount}} confirmed pre-send failure task(s); {{failedCount}} submission(s) failed.',
+      executionFailedTasksRetryNoop:
+        'There are no confirmed pre-send failure tasks available to retry.',
+      pasteSubmitted: 'Write-to-input task submitted',
+      sendSubmitted: 'Real send request submitted',
+      draftsConfirmed: 'Draft confirmed',
+      draftConfirmationRevoked: 'Draft confirmation revoked',
+      draftsMarkedSent: 'Draft marked as sent',
+      draftsRestoredPending: 'Draft restored to pending',
+      importUploaded: 'Imported {{fileName}}',
+      importDeleted: 'Import batch deleted',
+      importRematched: 'Import batch rematched',
+      draftsGenerated:
+        'Processed {{count}} group(s): {{createdCount}} created, {{updatedCount}} updated',
+      groupTemplateAssignmentsApplied:
+        'Updated templates for {{count}} group(s), including {{replacedCount}} replacement(s).',
+      groupTemplateAssignmentsAppliedToUnassigned:
+        'Applied templates to {{count}} unassigned group(s).',
+      groupTemplateAssignmentsCleared:
+        'Cleared templates from {{count}} group(s).',
+      importInlineMatchSaved:
+        'Saved the exact-match rule and rematched the current batch.',
+      groupTemplateAssignmentsSaved:
+        'Message templates updated for selected groups',
+      attachmentUploaded: 'Attachment uploaded',
+      attachmentDeleted: 'Attachment deleted',
+      rulesSaved: 'Variable mapping rules saved',
+      templateSaved: 'Template saved',
+      templateDeleted: 'Template deleted',
+      groupRuleSaved: 'Group rule saved',
+      groupRuleDeleted: 'Group rule deleted',
+      groupNamesSaved: 'Group names saved',
+      groupNamesSynced:
+        'Group list refreshed: scanned {{scanned}}, inserted {{inserted}}, updated {{updated}}, unchanged {{unchanged}}',
+      groupNameDeleted: 'Group name deleted',
+    },
+  },
   pluginPages: {
     selectFromSidebar: 'Select a plugin page from the sidebar',
     invalidPage: 'Invalid plugin page',
   },
 };
+
+const enUsBroadcastImportLocale = enUS.broadcast.import as Record<
+  string,
+  unknown
+>;
+enUsBroadcastImportLocale.groupFieldDetected =
+  'Detected customer field for this batch: {{field}}';
+enUsBroadcastImportLocale.groupFieldDialog = {
+  title: 'Confirm customer field',
+  description:
+    'The customer grouping field could not be determined uniquely. Select one for {{fileName}} to continue importing.',
+  configuredField: 'Configured field: {{field}}',
+  selectLabel: 'Customer field used for this import',
+  headersLabel: 'File headers',
+  confirmButton: 'Continue import',
+};
+enUsBroadcastImportLocale.bulkAssign = {
+  openButton: 'Bulk assign new customers ({{count}})',
+  dialogTitle: 'Bulk assign new customers',
+  dialogDescription:
+    'Choose target conversations for {{count}} new customers and create exact rules in one step.',
+  applyConversationLabel: 'Choose a conversation to apply in bulk',
+  searchPlaceholder: 'Search conversation name or stable conversation ID',
+  emptySearch: 'No matching conversations',
+  applyConversationButton: 'Apply to selected customers ({{count}})',
+  selectionRequired: 'Select an available conversation first.',
+  noSelection: 'Select at least one customer.',
+  missingAssignments:
+    '{{count}} selected customer(s) still need a target conversation.',
+  emptyCandidates: 'There are no new customers available for bulk assignment.',
+  targetConversationPlaceholder: 'Select target conversation',
+  submitButton: 'Create rules and rematch ({{count}})',
+  tableHeaders: {
+    selection: 'Select',
+    customerName: 'Customer',
+    rawRowCount: 'Raw rows',
+    targetConversation: 'Target conversation',
+  },
+};
+const enUsBroadcastToastLocale = enUS.broadcast.toasts as Record<
+  string,
+  unknown
+>;
+enUsBroadcastToastLocale.importBulkAssignCompleted =
+  'Created exact rules for {{count}} customer(s) and rematched the current batch.';
+
+const enUsBroadcastLocale = enUS.broadcast as Record<string, unknown>;
+enUsBroadcastLocale.groupRule = {
+  customerName: 'Customer name',
+  preview: {
+    empty: 'Run the preview to inspect the backend-selected rule.',
+    matchedBadge: 'Matched',
+    conflictBadge: 'Conflict',
+    noMatchBadge: 'No match',
+    currentRule: 'Current matched rule',
+    noMatch: 'No rule matches the current customer value.',
+    conflict:
+      'Multiple rules match. The backend will use the first rule in formal order.',
+    candidateRules: 'Candidate rules',
+  },
+};
+
+function deepMergeLocale(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+) {
+  for (const [key, value] of Object.entries(source)) {
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      target[key] &&
+      typeof target[key] === 'object' &&
+      !Array.isArray(target[key])
+    ) {
+      deepMergeLocale(
+        target[key] as Record<string, unknown>,
+        value as Record<string, unknown>,
+      );
+      continue;
+    }
+    target[key] = value;
+  }
+}
+
+deepMergeLocale(enUS.broadcast as Record<string, unknown>, {
+  contract: {
+    toggle: 'View technical details',
+  },
+  scope: {
+    selectBot: 'Select Bot',
+    selectConnector: 'Select Connector',
+  },
+  groupRule: {
+    customerName: 'Customer name',
+    invalidLegacy: 'Invalid legacy rule. It is excluded from matching.',
+    matchTypeOptions: {
+      exact: 'Exact match',
+      contains: 'Contains keyword',
+      regex: 'Regex match',
+    },
+    targetConversationSearchPlaceholder: 'Search target conversation name',
+    targetConversationSelectPlaceholder:
+      'Select a target conversation with a stable ID',
+    targetConversationSelectionRequired:
+      'Select a target conversation from the candidate list first.',
+    targetConversationLegacyReselect:
+      'This legacy rule is missing a stable target conversation ID. Please reselect it.',
+    targetConversationMissingStableId:
+      'This conversation is missing a stable externalConversationId and cannot be selected yet.',
+    preview: {
+      empty: 'Enter a customer name and run the match preview.',
+      matchedBadge: 'Matched',
+      conflictBadge: 'Conflict',
+      noMatchBadge: 'No match',
+      currentRule: 'Current matched rule',
+      noMatch: 'No rule matches the current customer value.',
+      conflict:
+        'Multiple rules match the current customer value. Review the rule order and priority.',
+      candidateRules: 'Candidate rules',
+    },
+  },
+  groupRuleCandidates: {
+    title: 'Customers pending configuration',
+    description:
+      'Select an import batch, review new-customer stats, and finish conversation assignment in the Group Matching tab.',
+    selectBatch: 'Import batch',
+    selectBatchPlaceholder: 'Select an import batch',
+    fileName: 'Current batch file',
+    detectedField: 'Detected customer field',
+    rawRowCount: 'Raw rows',
+    uniqueCustomerCount: 'Unique customers',
+    newCount: 'New customers',
+    configuredCount: 'Configured',
+    needsRepairCount: 'Needs repair',
+    conflictCount: 'Conflicts',
+    noBatches: 'There are no import batches yet.',
+    noBatchSelected: 'Select an import batch first.',
+    bulkAssignButton: 'Bulk assign conversations ({{count}})',
+  },
+  bulkGroupAssignment: {
+    title: 'Bulk assign conversations',
+    description:
+      'Choose target conversations for {{count}} new customers and create exact rules in one step.',
+    customerName: 'Customer name',
+    rawRowCount: 'Raw rows',
+    status: 'Status',
+    targetConversation: 'Target conversation',
+    searchConversation: 'Search target conversation name',
+    searchPlaceholder: 'Search target conversation name or stable ID',
+    applyToSelected: 'Apply to selected customers ({{count}})',
+    clearSelected: 'Clear selected conversations',
+    selectedCount: '{{count}} customer(s) selected',
+    submit: 'Create rules and rematch ({{count}})',
+    submitting: 'Submitting?',
+    noCandidates: 'There are no new customers available for bulk assignment.',
+    missingStableId: 'Missing stable ID, unavailable',
+    confirmTitle: 'Confirm bulk exact-rule creation',
+    confirmDescription:
+      'Create exact rules for {{count}} customer(s) and rematch the current import batch.',
+    validationError:
+      'Assign a target conversation for every selected customer first.',
+    validationErrorWithCount:
+      '{{count}} selected customer(s) are still missing a target conversation.',
+    targetConversationSelectPlaceholder: 'Select target conversation',
+    statusValues: {
+      new: 'New',
+      configured: 'Configured',
+      needs_repair: 'Needs repair',
+      conflict: 'Conflict',
+      invalid: 'Invalid',
+    },
+  },
+  import: {
+    goToGroupMatching: 'Go to group matching',
+    generateWarnings: {
+      duplicateConversation:
+        'The selected groups contain duplicate target conversations. Review them before generating drafts.',
+    },
+    rematchConfirmTitle: 'Rematch current batch',
+    rematchConfirmDescription:
+      'Recalculate the current import batch with the latest group-matching rules.',
+    deleteBatchConfirmTitle: 'Delete import batch',
+    deleteBatchConfirmDescription:
+      'Delete {{fileName}}? The current batch includes {{totalRows}} rows, {{groupCount}} groups, and {{draftCount}} related drafts.',
+    generateDraftsConfirmTitle: 'Generate selected drafts',
+    generateDraftsConfirmDescription:
+      'Generate drafts for {{selectedCount}} selected group(s). {{templatedCount}} already have templates and {{blockedCount}} are currently blocked.',
+  },
+  drafts: {
+    batchWriteConfirmTitle: 'Write selected drafts to the input box',
+    batchWriteConfirmDescription:
+      'This will submit {{draftCount}} draft(s) for {{conversationCount}} target conversation(s), including {{attachmentCount}} attachment(s). Duplicate targets: {{duplicateTargetCount}}. During execution, do not switch windows or use the mouse and keyboard.',
+    batchWriteNoSelection: 'Select at least one draft first.',
+    noDraftSelectedReason: 'Select a draft first.',
+    pasteMissingBody: 'Draft content cannot be empty.',
+  },
+  rules: {
+    groupMatching: {
+      editorDescription:
+        'Maintain exact / contains / regex rules here and preview how the current value is matched.',
+    },
+    templates: {
+      editorDescription:
+        'Edit the broadcast template content and enabled state here.',
+    },
+    variablePoolEmpty: 'There are no available variables yet.',
+  },
+  toasts: {
+    importBulkAssignCompleted:
+      'Created exact rules for {{count}} customer(s) and rematched the current batch.',
+  },
+});
+
+deepMergeLocale(enUS.broadcast as Record<string, unknown>, {
+  executor: {
+    runtimeOwnershipConflict:
+      'Detected a standalone Desktop Runtime. Close it and try again.',
+    runtimeUnavailable: 'The current executor is not connected.',
+    sendUnsupported: 'The current executor does not support real send yet.',
+    realSendReady: 'Real send is available.',
+    recheck: 'Recheck',
+  },
+  drafts: {
+    statusUnknown: 'Needs manual review',
+    batchSendSelected: 'Send now',
+    batchSendConfirmTitle: 'Confirm batch send',
+    batchSendConfirmDescription:
+      'This will serially send {{draftCount}} draft(s) to {{conversationCount}} target conversation(s), including {{attachmentCount}} attachment(s). Duplicate targets: {{duplicateTargetCount}} (warning only, not blocked). If one item fails or remains unknown, the system will still continue with the later drafts.',
+    batchSendNoSelection: 'Select at least one draft first.',
+    sendUnavailable: 'Real send is not available for the current executor.',
+    sendRequiresReview:
+      'The last send result is still unresolved. Mark it sent or restore it to pending first.',
+    sendAlreadySent: 'This draft is already marked as sent.',
+  },
+  toasts: {
+    batchSendPendingOnly:
+      'Real send only supports pending drafts that are ready to send.',
+    batchMarkSentResolvableOnly:
+      'Mark sent only supports drafts that are all pending or all awaiting manual review.',
+    batchRestorePendingResolvableOnly:
+      'Restore pending only supports drafts that are all sent or all awaiting manual review.',
+    realSendCompleted: 'Real send completed: {{sentCount}} sent.',
+    realSendCompletedWithFailures:
+      'Real send completed with failures: {{sentCount}} sent, {{failedCount}} failed.',
+    realSendCompletedWithUnknown:
+      'Real send needs manual review: {{sentCount}} sent, {{failedCount}} failed, {{unknownCount}} uncertain.',
+  },
+});
 
 export default enUS;

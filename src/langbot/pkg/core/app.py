@@ -45,10 +45,24 @@ from ..vector import mgr as vectordb_mgr
 from ..telemetry import telemetry as telemetry_module
 from ..survey import manager as survey_module
 from ..skill import manager as skill_mgr
+from ..local_connectors import service as local_connectors_service
+from ..database_mode.events import DatabaseModeEventBus
+from ..database_mode import service as database_mode_service
+from ..database_mode import processing_service as database_mode_processing_service
+from ..desktop_automation import service as desktop_automation_service
+from ..broadcast import service as broadcast_service
+from .local_shutdown_control import LocalShutdownControlWatcher
 
 
 class Application:
     """Runtime application object and context"""
+
+    LONG_LIVED_CRITICAL_TASK_NAMES = frozenset(
+        {
+            'query-controller',
+            'http-api-controller',
+        }
+    )
 
     event_loop: asyncio.AbstractEventLoop = None
 
@@ -148,6 +162,7 @@ class Application:
     knowledge_service: knowledge_service.KnowledgeService = None
 
     mcp_service: mcp_service.MCPService = None
+    local_connectors_service: local_connectors_service.LocalConnectorsService = None
 
     apikey_service: apikey_service.ApiKeyService = None
 
@@ -159,47 +174,85 @@ class Application:
 
     monitoring_service: monitoring_service.MonitoringService = None
 
+    database_mode_service: database_mode_service.DatabaseModeService = None
+    database_mode_processing_service: database_mode_processing_service.DatabaseModeProcessingService = None
+    database_mode_event_bus: DatabaseModeEventBus | None = None
+    desktop_automation_service: desktop_automation_service.DesktopAutomationService | None = None
+    broadcast_service: broadcast_service.BroadcastService | None = None
+    broadcast_execution_worker = None
+
     skill_service: skill_service.SkillService = None
 
     skill_mgr: skill_mgr.SkillManager = None
 
     maintenance_service: maintenance_service.MaintenanceService = None
+    local_shutdown_control_watcher: LocalShutdownControlWatcher | None = None
 
     def __init__(self):
-        pass
+        self.shutdown_requested_event = asyncio.Event()
+        self._shutdown_lock = asyncio.Lock()
+        self._shutdown_task: asyncio.Task[None] | None = None
+        self._critical_failure: BaseException | None = None
+        self._shutdown_reason: str | None = None
 
     async def initialize(self):
-        pass
+        if self.desktop_automation_service is None:
+            return
 
-    async def run(self):
+        desktop_automation_cfg = self.instance_config.data.get('desktop_automation', {})
+        if not desktop_automation_cfg.get('enabled', False):
+            if self.logger is not None:
+                self.logger.info('Desktop runtime disabled.')
+            return
+
+        async def prewarm_runtime():
+            try:
+                await self.desktop_automation_service.ensure_runtime_client()
+                if self.logger is not None:
+                    self.logger.info('Desktop runtime ready (prewarm).')
+            except Exception as exc:
+                if self.logger is not None:
+                    self.logger.warning(f'Desktop runtime prewarm degraded: {exc}')
+
+        self.task_mgr.create_task(
+            prewarm_runtime(),
+            name='desktop-runtime-prewarm',
+            scopes=[core_entities.LifecycleControlScope.APPLICATION],
+        )
+
+    def request_shutdown(self, reason: str | None = None) -> None:
+        if reason is not None and self._shutdown_reason is None:
+            self._shutdown_reason = reason
+        self.shutdown_requested_event.set()
+
+    async def run(self) -> int:
         try:
             await self.plugin_connector.initialize_plugins()
 
-            # 后续可能会允许动态重启其他任务
-            # 故为了防止程序在非 Ctrl-C 情况下退出，这里创建一个不会结束的协程
-            async def never_ending():
-                while True:
-                    await asyncio.sleep(1)
+            try:
+                await self.platform_mgr.run()
+            except Exception as exc:
+                self._critical_failure = exc
+                self.request_shutdown('critical-task:platform-manager')
+                await self.shutdown()
+                return 1
 
-            self.task_mgr.create_task(
-                self.platform_mgr.run(),
-                name='platform-manager',
-                scopes=[
-                    core_entities.LifecycleControlScope.APPLICATION,
-                    core_entities.LifecycleControlScope.PLATFORM,
-                ],
-            )
-            self.task_mgr.create_task(
+            if self.shutdown_requested_event.is_set():
+                await self.shutdown()
+                return 0
+
+            critical_task_wrappers: dict[str, taskmgr.TaskWrapper] = {}
+
+            critical_task_wrappers['query-controller'] = self.task_mgr.create_task(
                 self.ctrl.run(),
                 name='query-controller',
                 scopes=[core_entities.LifecycleControlScope.APPLICATION],
             )
-            self.task_mgr.create_task(
+            critical_task_wrappers['http-api-controller'] = self.task_mgr.create_task(
                 self.http_ctrl.run(),
                 name='http-api-controller',
                 scopes=[core_entities.LifecycleControlScope.APPLICATION],
             )
-
             # Telemetry instance heartbeat (startup + daily); respects
             # space.disable_telemetry via TelemetryManager.send().
             if self.telemetry is not None:
@@ -211,7 +264,6 @@ class Application:
                     scopes=[core_entities.LifecycleControlScope.APPLICATION],
                 )
 
-            # Start monitoring data cleanup task if enabled
             monitoring_cfg = self.instance_config.data.get('monitoring', {})
             auto_cleanup_cfg = monitoring_cfg.get('auto_cleanup', {})
             if auto_cleanup_cfg.get('enabled', True):
@@ -255,7 +307,6 @@ class Application:
                     scopes=[core_entities.LifecycleControlScope.APPLICATION],
                 )
 
-            # Start storage/log maintenance task if enabled
             storage_cleanup_cfg = self.instance_config.data.get('storage', {}).get('cleanup', {})
             if storage_cleanup_cfg.get('enabled', True) and self.maintenance_service is not None:
                 check_interval_hours = self._get_positive_float_config(
@@ -282,19 +333,147 @@ class Application:
                     scopes=[core_entities.LifecycleControlScope.APPLICATION],
                 )
 
-            self.task_mgr.create_task(
-                never_ending(),
-                name='never-ending-task',
-                scopes=[core_entities.LifecycleControlScope.APPLICATION],
-            )
-
             await self.print_web_access_info()
-            await self.task_mgr.wait_all()
+            shutdown_waiter = asyncio.create_task(
+                self.shutdown_requested_event.wait(),
+                name='shutdown-requested-waiter',
+            )
+            try:
+                while True:
+                    critical_wrappers = self._get_critical_task_wrappers(critical_task_wrappers)
+                    if self._handle_completed_critical_tasks(critical_wrappers):
+                        break
+
+                    wait_targets = [shutdown_waiter, *(wrapper.task for wrapper in critical_wrappers.values())]
+                    if len(wait_targets) == 1:
+                        await shutdown_waiter
+                        break
+
+                    done, _ = await asyncio.wait(
+                        wait_targets,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if self._handle_completed_critical_tasks(critical_wrappers, done):
+                        break
+
+                    if shutdown_waiter in done:
+                        break
+            finally:
+                shutdown_waiter.cancel()
+                await asyncio.gather(shutdown_waiter, return_exceptions=True)
+
+            await self.shutdown()
+            return 1 if self._critical_failure is not None else 0
         except asyncio.CancelledError:
-            pass
+            await self.shutdown()
+            return 0
         except Exception as e:
             self.logger.error(f'Application runtime fatal exception: {e}')
             self.logger.debug(f'Traceback: {traceback.format_exc()}')
+            await self.shutdown()
+            return 1
+
+    def _get_critical_task_wrappers(
+        self,
+        wrappers: dict[str, taskmgr.TaskWrapper] | None = None,
+    ) -> dict[str, taskmgr.TaskWrapper]:
+        critical_wrappers: dict[str, taskmgr.TaskWrapper] = {}
+        wrapper_iterable = wrappers.values() if wrappers is not None else list(self.task_mgr.tasks)
+        for wrapper in wrapper_iterable:
+            if wrapper.name not in self.LONG_LIVED_CRITICAL_TASK_NAMES:
+                continue
+            critical_wrappers[wrapper.name or f'task-{wrapper.id}'] = wrapper
+        return critical_wrappers
+
+    def _handle_completed_critical_tasks(
+        self,
+        critical_wrappers: dict[str, taskmgr.TaskWrapper],
+        done_tasks: set[asyncio.Task] | None = None,
+    ) -> bool:
+        shutdown_requested = self.shutdown_requested_event.is_set()
+        for name, wrapper in critical_wrappers.items():
+            task = wrapper.task
+            if done_tasks is not None and task not in done_tasks and not task.done():
+                continue
+
+            failure = self._get_critical_task_failure(
+                name,
+                task,
+                shutdown_requested=shutdown_requested,
+            )
+            if failure is None:
+                continue
+
+            if self._critical_failure is None:
+                self._critical_failure = failure
+            self.request_shutdown(f'critical-task:{name}')
+            return True
+
+        return False
+
+    def _get_critical_task_failure(
+        self,
+        name: str,
+        task: asyncio.Task,
+        *,
+        shutdown_requested: bool,
+    ) -> BaseException | None:
+        if not task.done():
+            return None
+        if shutdown_requested and task.cancelled():
+            return None
+        if task.cancelled():
+            return asyncio.CancelledError()
+
+        task_exception = task.exception()
+        if task_exception is not None:
+            return task_exception
+
+        return RuntimeError(f'{name} exited unexpectedly')
+
+    async def shutdown(self) -> None:
+        async with self._shutdown_lock:
+            if self._shutdown_task is None:
+                self._shutdown_task = self.event_loop.create_task(
+                    self._shutdown_impl(),
+                    name='application-shutdown',
+                )
+            shutdown_task = self._shutdown_task
+        await shutdown_task
+
+    async def _shutdown_impl(self) -> None:
+        if self.http_ctrl is not None and hasattr(self.http_ctrl, 'request_shutdown'):
+            try:
+                self.http_ctrl.request_shutdown()
+            except Exception as exc:
+                if self.logger is not None:
+                    self.logger.warning(f'HTTP shutdown request failed: {exc}')
+
+        if self.broadcast_execution_worker is not None:
+            try:
+                await self.broadcast_execution_worker.stop()
+            except Exception as exc:
+                if self.logger is not None:
+                    self.logger.warning(f'Broadcast worker stop failed: {exc}')
+
+        if self.desktop_automation_service is not None:
+            try:
+                await self.desktop_automation_service.shutdown()
+            except Exception as exc:
+                if self.logger is not None:
+                    self.logger.warning(f'Desktop automation shutdown failed: {exc}')
+
+        if self.task_mgr is not None:
+            try:
+                await self.task_mgr.cancel_and_wait_by_scope(
+                    core_entities.LifecycleControlScope.APPLICATION,
+                    timeout=10,
+                )
+            except Exception as exc:
+                if self.logger is not None:
+                    self.logger.warning(f'Application task cancellation failed: {exc}')
+
+        self.dispose()
 
     def _get_positive_int_config(self, value, default: int, name: str) -> int:
         try:
@@ -319,6 +498,16 @@ class Application:
         return parsed
 
     def dispose(self):
+        if self.database_mode_event_bus is not None:
+            self.logger.info(
+                f'database_mode_event_bus_closed event_bus_instance_id={self.database_mode_event_bus.instance_id} '
+                f'subscriber_count={self.database_mode_event_bus.subscriber_count}'
+            )
+            self.database_mode_event_bus.close()
+        if self.desktop_automation_service is not None:
+            self.desktop_automation_service.close()
+        if self.local_connectors_service is not None:
+            self.local_connectors_service.dispose()
         if self.plugin_connector is not None:
             self.plugin_connector.dispose()
         if self.box_service is not None:

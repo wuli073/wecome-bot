@@ -1,0 +1,6 @@
+{
+  "upstream": "https://github.com/ylytdeng/wechat-decrypt",
+  "upstream_branch": "main",
+  "local_source_commit": "97166e3",
+  "integration_mode": "vendored_snapshot"
+}

@@ -74,6 +74,19 @@ test.describe('authenticated app shell', () => {
     await expect(page.getByText('Unable to connect to server')).toHaveCount(0);
   });
 
+  test('sidebar shows Chatbot branding and removes the account entry', async ({
+    page,
+  }) => {
+    await installLangBotApiMocks(page, { authenticated: true });
+
+    await page.goto('/home/monitoring');
+
+    await expect(page.getByText('Chatbot').first()).toBeVisible();
+    await expect(page.getByText('Community')).toHaveCount(0);
+    await expect(page.getByText('frontend-smoke')).toHaveCount(0);
+    await expect(page.getByText('admin@example.com')).toHaveCount(0);
+  });
+
   test('/home/extensions shows plugin debug information from the backend', async ({
     page,
   }) => {

@@ -800,6 +800,20 @@ class RuntimeConnectionHandler(handler.Handler):
                 },
             )
 
+    def fail_pending_calls(self, exc: Exception) -> None:
+        """Fail and clear all pending action waiters/queues for this connection."""
+        for future in list(self.resp_waiters.values()):
+            if not future.done():
+                future.set_exception(exc)
+        self.resp_waiters.clear()
+
+        for queue in list(self.resp_queues.values()):
+            try:
+                queue.put_nowait(handler.ActionResponse.error(message=str(exc)))
+            except Exception:
+                pass
+        self.resp_queues.clear()
+
     async def ping(self) -> dict[str, Any]:
         """Ping the runtime"""
         return await self.call_action(

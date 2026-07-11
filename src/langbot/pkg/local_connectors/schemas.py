@@ -1,0 +1,41 @@
+from __future__ import annotations
+
+
+CONNECTOR_IDS = ("wechat-local", "wxwork-local")
+
+CONNECTOR_STATUS_UNSUPPORTED = "unsupported_platform"
+CONNECTOR_STATUS_NOT_CONFIGURED = "not_configured"
+CONNECTOR_STATUS_CLIENT_NOT_RUNNING = "client_not_running"
+CONNECTOR_STATUS_DATA_PATH_NOT_FOUND = "data_path_not_found"
+CONNECTOR_STATUS_PERMISSION_REQUIRED = "permission_required"
+CONNECTOR_STATUS_PORT_IN_USE = "port_in_use"
+CONNECTOR_STATUS_DECRYPT_FAILED = "decrypt_failed"
+CONNECTOR_STATUS_START_FAILED = "start_failed"
+CONNECTOR_STATUS_RUNTIME_ERROR = "runtime_error"
+CONNECTOR_STATUS_STOPPED = "stopped"
+CONNECTOR_STATUS_CONNECTED = "connected"
+CONNECTOR_STATUS_WARMING_UP = "warming_up"
+CONNECTOR_STATUS_MONITOR_ERROR = "monitor_error"
+
+JOB_STATUS_PENDING = "pending"
+JOB_STATUS_RUNNING = "running"
+JOB_STATUS_SUCCEEDED = "succeeded"
+JOB_STATUS_FAILED = "failed"
+JOB_STATUS_CANCELLED = "cancelled"
+
+JOB_STAGE_DETECTING = "detecting"
+JOB_STAGE_EXTRACTING_KEY = "extracting_key"
+JOB_STAGE_DECRYPTING = "decrypting"
+JOB_STAGE_STARTING_MCP = "starting_mcp"
+JOB_STAGE_TESTING_MCP = "testing_mcp"
+JOB_STAGE_ENABLING_MCP = "enabling_mcp"
+JOB_STAGE_CONNECTED = "connected"
+
+PROCESS_ROLE_MCP = "mcp"
+PROCESS_ROLE_MONITOR = "monitor"
+
+TERMINAL_JOB_STATES = {
+    JOB_STATUS_SUCCEEDED,
+    JOB_STATUS_FAILED,
+    JOB_STATUS_CANCELLED,
+}

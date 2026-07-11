@@ -3,6 +3,7 @@ from __future__ import annotations
 import abc
 import typing
 import enum
+import ipaddress
 import quart
 import traceback
 from quart.typing import RouteCallable
@@ -55,6 +56,49 @@ class RouterGroup(abc.ABC):
     async def initialize(self) -> None:
         pass
 
+    def _is_local_no_auth_request(self) -> bool:
+        """Return whether the request qualifies for local no-auth mode."""
+        global_api_key = self.ap.instance_config.data.get('api', {}).get('global_api_key', '')
+        if global_api_key:
+            return False
+
+        remote_addr = quart.request.remote_addr
+        if remote_addr not in {'127.0.0.1', '::1'}:
+            return False
+
+        host = quart.request.host or ''
+        normalized_host = host
+
+        if normalized_host.startswith('['):
+            closing_index = normalized_host.find(']')
+            if closing_index == -1:
+                return False
+            normalized_host = normalized_host[1:closing_index]
+        elif normalized_host.count(':') == 1:
+            normalized_host = normalized_host.rsplit(':', 1)[0]
+
+        try:
+            if ipaddress.ip_address(normalized_host) == ipaddress.ip_address('::1'):
+                normalized_host = '::1'
+        except ValueError:
+            normalized_host = normalized_host.lower()
+
+        return normalized_host in {'127.0.0.1', 'localhost', '::1'}
+
+    async def _apply_local_no_auth_context(
+        self, f: RouteCallable, kwargs: dict[str, typing.Any]
+    ) -> typing.Optional[typing.Tuple[quart.Response, int]]:
+        """Populate route context for local no-auth requests when needed."""
+        if 'user_email' not in f.__code__.co_varnames:
+            return None
+
+        user = await self.ap.user_service.get_first_user()
+        if not user:
+            return self.http_status(401, -1, 'No local user available')
+
+        kwargs['user_email'] = user.user
+        return None
+
     def route(
         self,
         rule: str,
@@ -68,7 +112,12 @@ class RouterGroup(abc.ABC):
             rule = self.path + rule
 
             async def handler_error(*args, **kwargs):
-                if auth_type == AuthType.USER_TOKEN:
+                if auth_type != AuthType.NONE and self._is_local_no_auth_request():
+                    local_no_auth_response = await self._apply_local_no_auth_context(f, kwargs)
+                    if local_no_auth_response is not None:
+                        return local_no_auth_response
+
+                elif auth_type == AuthType.USER_TOKEN:
                     # get token from Authorization header
                     token = quart.request.headers.get('Authorization', '').replace('Bearer ', '')
 

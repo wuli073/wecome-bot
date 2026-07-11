@@ -27,7 +27,7 @@ export default function BackendUnavailablePage() {
       await initializeSystemInfo({ throwOnError: true });
       const state = location.state as BackendUnavailableLocationState | null;
       const storedReturnTo = sessionStorage.getItem(RETURN_TO_STORAGE_KEY);
-      const returnTo = state?.from || storedReturnTo || '/home';
+      const returnTo = state?.from || storedReturnTo || '/home/monitoring';
       sessionStorage.removeItem(RETURN_TO_STORAGE_KEY);
 
       if (systemInfo.wizard_status === 'none') {
@@ -35,7 +35,7 @@ export default function BackendUnavailablePage() {
         return;
       }
 
-      navigate(returnTo === '/backend-unavailable' ? '/home' : returnTo, {
+      navigate(returnTo === '/backend-unavailable' ? '/home/monitoring' : returnTo, {
         replace: true,
       });
     } catch (error) {
@@ -76,10 +76,10 @@ export default function BackendUnavailablePage() {
           <Button
             variant="outline"
             className="gap-2"
-            onClick={() => navigate('/login')}
+            onClick={() => navigate('/home/monitoring')}
           >
             <Home className="h-4 w-4" />
-            {t('errorPage.backToLogin')}
+            {t('errorPage.backToHome')}
           </Button>
           <Button className="gap-2" onClick={handleRetry} disabled={checking}>
             {checking ? (

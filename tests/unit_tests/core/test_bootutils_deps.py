@@ -118,13 +118,15 @@ class TestPrecheckPluginDeps:
     def test_precheck_plugin_deps_with_plugins_dir(self):
         """precheck_plugin_deps checks plugins subdirectories."""
         from langbot.pkg.core.bootutils.deps import precheck_plugin_deps
+        import os
 
         def mock_listdir(path):
-            if path == 'plugins':
+            normalized = os.path.normpath(path)
+            if normalized == os.path.normpath('plugins'):
                 return ['plugin1', 'plugin2']
-            if path == 'plugins/plugin1':
+            if normalized == os.path.normpath('plugins/plugin1'):
                 return ['requirements.txt', 'main.py']
-            if path == 'plugins/plugin2':
+            if normalized == os.path.normpath('plugins/plugin2'):
                 return ['main.py']
             return []
 
@@ -136,4 +138,4 @@ class TestPrecheckPluginDeps:
 
                         asyncio.get_event_loop().run_until_complete(precheck_plugin_deps())
 
-        mock_install.assert_called_once_with('plugins/plugin1/requirements.txt', extra_params=[])
+        mock_install.assert_called_once_with(os.path.join('plugins', 'plugin1', 'requirements.txt'), extra_params=[])

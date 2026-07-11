@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from .. import stage, app
 from ...utils import version, proxy
@@ -39,6 +40,22 @@ from ...vector import mgr as vectordb_mgr
 from .. import taskmgr
 from ...telemetry import telemetry as telemetry_module
 from ...survey import manager as survey_module
+from ...local_connectors import service as local_connectors_service
+from ...database_mode.events import DatabaseModeEventBus
+from ...database_mode import service as database_mode_service
+from ...database_mode import processing_service as database_mode_processing_service
+from ...broadcast.service import BroadcastService
+from ...broadcast.worker import BroadcastExecutionWorker
+from ...desktop_automation.repository import DesktopAutomationRepository
+from ...desktop_automation.runtime_process import (
+    DesktopRuntimeProcessManager,
+    apply_local_desktop_automation_defaults,
+)
+from ...desktop_automation.client import DesktopRuntimeClient
+from ...desktop_automation.service import DesktopAutomationService
+from ...utils import paths
+from .. import entities as core_entities
+from ..local_shutdown_control import build_local_shutdown_watcher_from_env
 
 
 @stage.stage_class('BuildAppStage')
@@ -113,6 +130,11 @@ class BuildAppStage(stage.BootingStage):
         ap.persistence_mgr = persistence_mgr_inst
         await persistence_mgr_inst.initialize()
 
+        local_connectors_service_inst = local_connectors_service.LocalConnectorsService(ap)
+        ap.local_connectors_service = local_connectors_service_inst
+        await local_connectors_service_inst.initialize_builtin_mcp_servers()
+        await local_connectors_service_inst.restore_configured_connectors()
+
         # Telemetry manager: attach to app so other components can call via self.ap.telemetry
         telemetry_inst = telemetry_module.TelemetryManager(ap)
         await telemetry_inst.initialize()
@@ -140,8 +162,8 @@ class BuildAppStage(stage.BootingStage):
         ap.box_service = box_service_inst
 
         llm_tool_mgr_inst = llm_tool_mgr.ToolManager(ap)
-        await llm_tool_mgr_inst.initialize()
         ap.tool_mgr = llm_tool_mgr_inst
+        await llm_tool_mgr_inst.initialize()
 
         im_mgr_inst = im_mgr.PlatformManager(ap=ap)
         await im_mgr_inst.initialize()
@@ -182,6 +204,65 @@ class BuildAppStage(stage.BootingStage):
 
         monitoring_service_inst = monitoring_service.MonitoringService(ap)
         ap.monitoring_service = monitoring_service_inst
+
+        ap.database_mode_event_bus = DatabaseModeEventBus()
+        ap.logger.info(
+            f'database_mode_event_bus_created event_bus_instance_id={ap.database_mode_event_bus.instance_id} '
+            f'subscriber_count={ap.database_mode_event_bus.subscriber_count}'
+        )
+
+        database_mode_service_inst = database_mode_service.DatabaseModeService(ap)
+        ap.database_mode_service = database_mode_service_inst
+        ap.database_mode_processing_service = database_mode_processing_service.DatabaseModeProcessingService(ap)
+        await ap.database_mode_processing_service.reconcile_stale_processing_runs()
+        ap.broadcast_service = BroadcastService(ap)
+
+        desktop_automation_config = apply_local_desktop_automation_defaults(
+            ap.instance_config.data.get('desktop_automation', {})
+        )
+        ap.instance_config.data['desktop_automation'] = desktop_automation_config
+        desktop_automation_repository = DesktopAutomationRepository(ap.persistence_mgr)
+        desktop_automation_runtime_process_manager = DesktopRuntimeProcessManager(
+            config=desktop_automation_config,
+            broadcast_config=ap.instance_config.data.get('broadcast', {}),
+        )
+        ap.desktop_automation_service = DesktopAutomationService(
+            ap,
+            repository=desktop_automation_repository,
+            runtime_process_manager=desktop_automation_runtime_process_manager,
+            runtime_client_factory=lambda runtime_info: DesktopRuntimeClient(
+                base_url=f"http://{runtime_info['host']}:{runtime_info['port']}",
+                token=str(runtime_info['token']),
+                expected_protocol_version=str(desktop_automation_config.get('expected_protocol_version') or '1'),
+            ),
+        )
+        await ap.desktop_automation_service.reconcile_stale_runs()
+        ap.broadcast_execution_worker = BroadcastExecutionWorker(
+            service=ap.broadcast_service,
+        )
+        quart_app = ap.http_ctrl.quart_app
+
+        repo_root_text = paths.get_repo_root()
+        repo_root = Path(repo_root_text).resolve() if repo_root_text else None
+        watcher = build_local_shutdown_watcher_from_env(
+            app=ap,
+            repo_root=repo_root,
+        ) if repo_root is not None else None
+        ap.local_shutdown_control_watcher = watcher
+        if watcher is not None:
+            ap.task_mgr.create_task(
+                watcher.watch(),
+                name='local-shutdown-control-watcher',
+                scopes=[core_entities.LifecycleControlScope.APPLICATION],
+            )
+
+        @quart_app.before_serving
+        async def _start_broadcast_execution_worker() -> None:
+            await ap.broadcast_execution_worker.start()
+
+        @quart_app.after_serving
+        async def _stop_broadcast_execution_worker() -> None:
+            await ap.broadcast_execution_worker.stop()
 
         maintenance_service_inst = maintenance_service.MaintenanceService(ap)
         ap.maintenance_service = maintenance_service_inst

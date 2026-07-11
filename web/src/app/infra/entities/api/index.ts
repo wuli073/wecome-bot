@@ -429,10 +429,6 @@ export interface AsyncTask {
   task_context: AsyncTaskTaskContext;
 }
 
-export interface ApiRespUserToken {
-  token: string;
-}
-
 export interface ApiRespMarketplacePlugins {
   plugins: PluginV4[];
   total: number;
@@ -563,56 +559,654 @@ export interface MCPServerRuntimeInfo {
   box_enabled?: boolean;
 }
 
+interface MCPServerCommon<
+  TMode extends 'sse' | 'http' | 'remote' | 'stdio',
+  TExtraArgs,
+> {
+  uuid?: string;
+  name: string;
+  mode: TMode;
+  enable: boolean;
+  extra_args: TExtraArgs;
+  runtime_info?: MCPServerRuntimeInfo;
+  readme?: string;
+  created_at?: string;
+  updated_at?: string;
+  builtin?: boolean;
+  locked?: boolean;
+  managed_by?: string | null;
+  connector_id?: string | null;
+}
+
 export type MCPServer =
-  | {
-      uuid?: string;
-      name: string;
-      mode: 'sse';
-      enable: boolean;
-      extra_args: MCPServerExtraArgsSSE;
-      runtime_info?: MCPServerRuntimeInfo;
-      readme?: string;
-      created_at?: string;
-      updated_at?: string;
-    }
-  | {
-      uuid?: string;
-      name: string;
-      mode: 'http';
-      enable: boolean;
-      extra_args: MCPServerExtraArgsHttp;
-      runtime_info?: MCPServerRuntimeInfo;
-      readme?: string;
-      created_at?: string;
-      updated_at?: string;
-    }
-  | {
-      uuid?: string;
-      name: string;
-      mode: 'remote';
-      enable: boolean;
-      extra_args: MCPServerExtraArgsRemote;
-      runtime_info?: MCPServerRuntimeInfo;
-      readme?: string;
-      created_at?: string;
-      updated_at?: string;
-    }
-  | {
-      uuid?: string;
-      name: string;
-      mode: 'stdio';
-      enable: boolean;
-      extra_args: MCPServerExtraArgsStdio;
-      runtime_info?: MCPServerRuntimeInfo;
-      readme?: string;
-      created_at?: string;
-      updated_at?: string;
-    };
+  | MCPServerCommon<'sse', MCPServerExtraArgsSSE>
+  | MCPServerCommon<'http', MCPServerExtraArgsHttp>
+  | MCPServerCommon<'remote', MCPServerExtraArgsRemote>
+  | MCPServerCommon<'stdio', MCPServerExtraArgsStdio>;
 
 export interface MCPTool {
   name: string;
   description: string;
   parameters?: object;
+}
+
+export interface LocalConnectorWorker {
+  owned: boolean;
+  pid?: number | null;
+  port: number;
+  started_at?: number | null;
+}
+
+export interface LocalConnectorMonitorStatus {
+  enabled: boolean;
+  owned: boolean;
+  pid?: number | null;
+  started_at?: number | null;
+  running_status: string;
+  warmup_completed: boolean;
+  poll_seconds?: number | null;
+  last_scan_at?: string | null;
+  last_change_at?: string | null;
+  last_event_at?: string | null;
+  outbox_pending: number;
+  last_error?: string | null;
+}
+
+export interface LocalConnectorStatus {
+  connector_id: string;
+  name: string;
+  builtin: boolean;
+  locked: boolean;
+  managed_by: string;
+  expected_tool_count: number;
+  status: string;
+  job_status?: string | null;
+  job_id?: string | null;
+  last_error_code?: string | null;
+  last_error_message?: string | null;
+  db_dir?: string | null;
+  keys_file?: string | null;
+  decrypted_dir?: string | null;
+  tool_count: number;
+  updated_at: number;
+  worker: LocalConnectorWorker;
+  monitor?: LocalConnectorMonitorStatus;
+}
+
+export interface LocalConnectorJob {
+  job_id: string;
+  connector_id: string;
+  status: string;
+  stage: string;
+  progress: number;
+  message: string;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ApiRespLocalConnectors {
+  connectors: LocalConnectorStatus[];
+}
+
+export interface ApiRespLocalConnector {
+  connector: LocalConnectorStatus;
+}
+
+export interface ApiRespLocalConnectorJob {
+  job: LocalConnectorJob | null;
+}
+
+export interface ApiRespLocalConnectorMonitor {
+  monitor: LocalConnectorMonitorStatus;
+}
+
+export interface DatabaseModeConversationStats {
+  draft_ready: number;
+  failed: number;
+  pending: number;
+  processed: number;
+  processing: number;
+  skipped: number;
+  total: number;
+}
+
+export interface DatabaseModeConversation {
+  id: number;
+  source: string;
+  conversation_name: string;
+  conversation_type: string;
+  last_message_at?: string | null;
+  pending_count: number;
+  failed_count: number;
+  latest_customer: string;
+  latest_message_summary: string;
+}
+
+export interface DatabaseModeMessage {
+  id: number;
+  event_id: string;
+  message_key: string;
+  conversation_id: number;
+  external_message_id?: string | null;
+  sender_id: string;
+  sender_name: string;
+  content: string;
+  content_preview: string;
+  message_type: string;
+  sent_at: string;
+  observed_at: string;
+  status: string;
+  draft_text?: string | null;
+  draft_source?: string | null;
+  ai_suggested_reply?: string | null;
+  attempt_count: number;
+  last_error?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  processed_at?: string | null;
+}
+
+export interface ApiRespDatabaseModeConversations {
+  conversations: DatabaseModeConversation[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface ApiRespDatabaseModeConversation {
+  conversation: {
+    id: number;
+    connector_id: string;
+    source: string;
+    external_conversation_id: string;
+    conversation_name: string;
+    conversation_type: string;
+    last_message_at?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+    stats: DatabaseModeConversationStats;
+    latest_customer: string;
+  };
+}
+
+export interface ApiRespDatabaseModeMessages {
+  messages: DatabaseModeMessage[];
+  total: number;
+  page: number;
+  page_size: number;
+  stats: DatabaseModeConversationStats;
+}
+
+export interface ApiRespDatabaseModeMessage {
+  message: DatabaseModeMessage;
+}
+
+export interface ApiBroadcastScope {
+  bot_uuid: string;
+  connector_id: string;
+}
+
+export interface ApiBroadcastTemplate {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  name: string;
+  content: string;
+  variables: string[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiBroadcastVariableMappingRule {
+  source_field: string;
+  variable_key: string;
+  merge_mode: 'first' | 'lines' | 'unique_lines' | 'commas' | 'unique_commas';
+  order: number;
+}
+
+export interface ApiBroadcastVariableProfile {
+  group_field: string | null;
+  mapping_rules: ApiBroadcastVariableMappingRule[];
+}
+
+export interface ApiBroadcastTemplateRenderResult {
+  rendered_text: string;
+  required_variables: string[];
+  missing_variables: string[];
+  valid: boolean;
+}
+
+export interface ApiBroadcastGroupRule {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  source_value: string;
+  match_type: 'exact' | 'contains' | 'regex';
+  match_expression: string;
+  target_conversation_id?: string | null;
+  target_conversation_name: string;
+  priority: number;
+  enabled: boolean;
+  invalid_legacy?: boolean;
+  invalid_reason?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiBroadcastGroupMatchResult {
+  matched: boolean;
+  rule_id: number | null;
+  matched_rule_id?: number | null;
+  source_value?: string;
+  target_conversation_id?: string | null;
+  target_conversation_name: string | null;
+  match_type: 'exact' | 'contains' | 'regex' | null;
+  candidate_count?: number;
+  candidate_rules?: ApiBroadcastGroupRule[];
+  conflict?: boolean;
+  reason?: string | null;
+}
+
+export interface ApiBroadcastGroupName {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  name: string;
+  external_conversation_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiBroadcastGroupNamesResponse {
+  group_names: ApiBroadcastGroupName[];
+}
+
+export interface ApiBroadcastGroupNameSyncResult {
+  scanned: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  errors: string[];
+}
+
+export type ApiBroadcastImportBatchStatus =
+  | 'imported'
+  | 'matched'
+  | 'drafts_generated';
+
+export type ApiBroadcastImportMatchStatus = 'matched' | 'unmatched' | 'invalid';
+
+export type ApiBroadcastImportGroupMatchStatus =
+  | ApiBroadcastImportMatchStatus
+  | 'conflict';
+
+export type ApiBroadcastImportGroupFieldSource =
+  | 'configured'
+  | 'auto_detected'
+  | 'user_confirmed'
+  | 'legacy_fallback';
+
+export interface ApiBroadcastImportBatch {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  original_file_name: string;
+  file_type: string;
+  worksheet_name: string | null;
+  status: ApiBroadcastImportBatchStatus;
+  drafts_stale: boolean;
+  total_rows: number;
+  valid_rows: number;
+  invalid_rows: number;
+  matched_rows: number;
+  unmatched_rows: number;
+  group_field_used?: string | null;
+  group_field_source?: ApiBroadcastImportGroupFieldSource | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiBroadcastImportRow {
+  id: number;
+  import_batch_id: number;
+  source_row_number: number;
+  raw_data: Record<string, string>;
+  group_value: string | null;
+  matched_conversation_id?: string | null;
+  matched_conversation_name: string | null;
+  matched_rule_id: number | null;
+  match_status: ApiBroadcastImportMatchStatus;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface ApiBroadcastImportDetail extends ApiBroadcastImportBatch {
+  rows: ApiBroadcastImportRow[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}
+
+export interface ApiBroadcastAttachment {
+  id: number;
+  attachment_asset_id: number;
+  original_name?: string;
+  original_name_snapshot?: string;
+  size_bytes?: number;
+  size_bytes_snapshot?: number;
+  sha256?: string;
+  sha256_snapshot?: string;
+  extension: string;
+  mime_type: string;
+  sort_order: number;
+}
+
+export interface ApiBroadcastImportGroupSummary {
+  group_key: string;
+  group_value: string;
+  raw_row_count: number;
+  distinct_order_number_count: number;
+  matched_conversation_id?: string | null;
+  matched_conversation_name: string | null;
+  match_status: ApiBroadcastImportGroupMatchStatus;
+  reason: string | null;
+  attachment_count: number;
+  expandable: boolean;
+  first_source_row_number: number;
+  template_id?: number | null;
+  template_name?: string | null;
+  template_enabled?: boolean | null;
+}
+
+export interface ApiBroadcastImportGroupsResponse {
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+  raw_row_total: number;
+  group_total: number;
+  matched_group_total: number;
+  unmatched_group_total: number;
+  invalid_group_total: number;
+  conflict_group_total: number;
+  order_number_field_configured: boolean;
+  groups: ApiBroadcastImportGroupSummary[];
+}
+
+export type ApiBroadcastGroupRuleCandidateStatus =
+  | 'new'
+  | 'configured'
+  | 'needs_repair'
+  | 'conflict'
+  | 'invalid';
+
+export interface ApiBroadcastGroupRuleCandidateItem {
+  group_key: string;
+  customer_name: string;
+  raw_row_count: number;
+  status: ApiBroadcastGroupRuleCandidateStatus;
+  reason: string | null;
+  existing_rule_ids: number[];
+  existing_rules: ApiBroadcastGroupRule[];
+  current_matched_rule: ApiBroadcastGroupRule | null;
+  current_target_conversation_id?: string | null;
+  current_target_conversation_name: string | null;
+  current_match_type: 'exact' | 'contains' | 'regex' | null;
+}
+
+export interface ApiBroadcastImportGroupRuleCandidatesResponse {
+  import_batch_id: number;
+  group_field_used: string;
+  group_field_source: ApiBroadcastImportGroupFieldSource;
+  raw_row_total: number;
+  unique_customer_total: number;
+  stats: {
+    new_count: number;
+    configured_count: number;
+    needs_repair_count: number;
+    conflict_count: number;
+    invalid_count: number;
+  };
+  items: ApiBroadcastGroupRuleCandidateItem[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}
+
+export interface ApiBroadcastBulkAssignResultItem {
+  group_key: string;
+  customer_name: string;
+  rule_id: number;
+  target_conversation_id: string;
+  target_conversation_name: string;
+}
+
+export interface ApiBroadcastBulkAssignResult {
+  created_count: number;
+  group_field_used: string;
+  group_field_source: ApiBroadcastImportGroupFieldSource;
+  items: ApiBroadcastBulkAssignResultItem[];
+}
+
+export interface ApiBroadcastImportGroupRowsResponse {
+  group_key: string;
+  group_value: string | null;
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+  rows: ApiBroadcastImportRow[];
+}
+
+export type ApiBroadcastDraftSendStatus = 'pending' | 'sent' | 'unknown';
+export type ApiBroadcastDraftStatus =
+  | 'pending_review'
+  | 'ready'
+  | 'invalid'
+  | ApiBroadcastDraftSendStatus;
+
+export interface ApiBroadcastDraft {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  import_batch_id: number;
+  group_value: string;
+  target_conversation_id?: string | null;
+  target_conversation_name: string | null;
+  template_id: number | null;
+  template_name_snapshot: string;
+  template_content_snapshot: string;
+  render_variables: Record<string, string>;
+  draft_text: string;
+  status: ApiBroadcastDraftStatus;
+  send_status?: ApiBroadcastDraftSendStatus | null;
+  sent_at?: string | null;
+  legacy_status?: 'pending_review' | 'ready' | 'invalid' | null;
+  error_message: string | null;
+  drafts_stale: boolean;
+  attachments_stale?: boolean;
+  attachments?: ApiBroadcastAttachment[];
+  created_at: string;
+  updated_at: string;
+  message?: string | null;
+}
+
+export interface ApiBroadcastImportDraftGenerationItem {
+  group_key: string;
+  draft_id: number;
+  operation: 'created' | 'updated';
+  modified_fields: string[];
+}
+
+export interface ApiBroadcastImportDraftGenerationResult {
+  total_group_count: number;
+  pending_review_count: number;
+  invalid_count: number;
+  unmatched_group_count: number;
+  created_count?: number;
+  updated_count?: number;
+  generated_group_keys?: string[];
+  draft_ids?: number[];
+  draft_results?: ApiBroadcastImportDraftGenerationItem[];
+}
+
+export interface ApiBroadcastImportGroupTemplateAssignment {
+  group_key: string;
+  template_id: number | null;
+}
+
+export interface ApiBroadcastDraftStatusUpdateResult {
+  updated_count: number;
+}
+
+export interface ApiBroadcastExecutionTask {
+  id: number;
+  execution_batch_id: number;
+  draft_id: number | null;
+  draft_text_snapshot: string;
+  target_conversation_snapshot: string;
+  channel: string;
+  action: string;
+  status: string;
+  sequence_no: number;
+  attempt_count: number;
+  max_attempts: number;
+  idempotency_key: string;
+  request_digest: string;
+  runtime_task_id: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  operator_note: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  cancelled_at: string | null;
+  updated_at: string;
+  retry_allowed?: boolean;
+  send_outcome?: 'sent' | 'failed' | 'unknown' | 'skipped' | null;
+  enter_dispatched?: boolean | null;
+  message_sent?: boolean | null;
+  terminal_confirmed?: boolean | null;
+  terminal_source?: string | null;
+  attachments?: ApiBroadcastAttachment[];
+}
+
+export interface ApiBroadcastExecutionBatch {
+  id: number;
+  bot_uuid: string;
+  connector_id: string;
+  channel: string;
+  mode: string;
+  status: string;
+  total_tasks: number;
+  pending_tasks: number;
+  running_tasks: number;
+  succeeded_tasks: number;
+  failed_tasks: number;
+  cancelled_tasks: number;
+  interrupted_tasks: number;
+  created_by: string;
+  last_action_by: string | null;
+  error_message: string | null;
+  version: number;
+  created_at: string;
+  started_at: string | null;
+  paused_at: string | null;
+  finished_at: string | null;
+  cancelled_at: string | null;
+  tasks?: ApiBroadcastExecutionTask[];
+  total_count?: number;
+  sent_count?: number;
+  failed_count?: number;
+  unknown_count?: number;
+  skipped_count?: number;
+  duplicate_target_count?: number;
+  items?: Array<{
+    draft_id: number | null;
+    outcome: 'sent' | 'failed' | 'unknown' | 'skipped';
+    error_code: string | null;
+    error_message: string | null;
+    enter_dispatched: boolean | null;
+    message_sent?: boolean | null;
+    terminal_confirmed?: boolean | null;
+    terminal_source?: string | null;
+    started_at: string | null;
+    completed_at: string | null;
+  }>;
+}
+
+export interface ApiBroadcastExecutionAttempt {
+  id: number;
+  execution_task_id: number;
+  attempt_no: number;
+  idempotency_key: string;
+  request_digest: string;
+  runtime_task_id: string | null;
+  request_summary: string | null;
+  response_summary: string | null;
+  status: string;
+  error_code: string | null;
+  error_message: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface ApiBroadcastExecutionEvidence {
+  id: number;
+  execution_attempt_id: number;
+  window_title: string | null;
+  target_conversation: string | null;
+  action: string;
+  input_located: boolean;
+  draft_written: boolean;
+  send_triggered: boolean;
+  clipboard_restored: boolean;
+  runtime_state: string | null;
+  evidence_summary: string | null;
+  technical_details: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export type DatabaseModeRealtimeEventType =
+  | 'database-message-created'
+  | 'database-message-updated'
+  | 'database-message-deleted'
+  | 'database-conversation-updated'
+  | 'database-mode-invalidated'
+  | 'ready';
+
+export interface DatabaseModeRealtimeEvent {
+  type: DatabaseModeRealtimeEventType;
+  event_id?: string;
+  conversation_id?: number | null;
+  message_id?: number | null;
+  occurred_at?: string | null;
+  metadata?: {
+    desktop_run_id?: number | null;
+    desktop_status?: string | null;
+    desktop_stage?: string | null;
+    desktop_error_code?: string | null;
+    draft_id?: number | null;
+    bot_uuid?: string | null;
+    action?: string | null;
+    timings?: {
+      file_change_detected_at?: string | null;
+      stability_completed_at?: string | null;
+      decrypt_started_at?: string | null;
+      decrypt_completed_at?: string | null;
+      scan_completed_at?: string | null;
+      outbox_created_at?: string | null;
+      delivery_succeeded_at?: string | null;
+      langbot_ingested_at?: string | null;
+      sse_published_at?: string | null;
+    };
+  };
 }
 
 export interface PluginTool {
@@ -649,3 +1243,6 @@ export interface ApiRespSkills {
 export interface ApiRespSkill {
   skill: Skill;
 }
+
+// Re-export Bot-scoped Database Mode API types
+export * from './bot-database';

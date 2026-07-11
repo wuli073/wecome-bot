@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "backend": {
+    "host": "127.0.0.1",
+    "port": 5302,
+    "healthPath": "/healthz",
+    "runtimeStatusPath": "/api/v1/desktop-automation/runtime/status",
+    "startupTimeoutSeconds": 60
+  }
+}

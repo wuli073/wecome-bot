@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: MessagePlatformAdapter
+metadata:
+  name: wxwork_database
+  label:
+    en_US: WeCom Database
+    zh_Hans: 企业微信数据库
+    zh_Hant: 企業微信資料庫
+    ja_JP: WeCom データベース
+  description:
+    en_US: Built-in adapter for database-backed WeCom session monitoring and draft processing
+    zh_Hans: 用于数据库会话监控与草稿处理的企业微信内置适配器
+    zh_Hant: 用於資料庫會話監控與草稿處理的企業微信內建適配器
+    ja_JP: データベース会話監視と草稿処理のための WeCom 内蔵アダプター
+  icon: wecom.png
+spec:
+  categories:
+    - builtin
+    - china
+  config:
+    - name: connector_id
+      label:
+        en_US: Connector ID
+        zh_Hans: 连接器 ID
+        zh_Hant: 連接器 ID
+        ja_JP: コネクター ID
+      description:
+        en_US: Fixed to the built-in local connector used by the database monitor
+        zh_Hans: 固定为数据库监控使用的内置本地连接器
+        zh_Hant: 固定為資料庫監控使用的內建本地連接器
+        ja_JP: データベース監視で使用する内蔵ローカルコネクターに固定されます
+      type: string
+      required: false
+      default: "wxwork-local"
+    - name: auto_generate_draft
+      label:
+        en_US: Auto Generate Draft
+        zh_Hans: 自动生成草稿
+        zh_Hant: 自動產生草稿
+        ja_JP: 草稿を自動生成
+      description:
+        en_US: Automatically process only new messages observed after the current enable boundary
+        zh_Hans: 仅自动处理当前启用边界之后观察到的新消息
+        zh_Hant: 僅自動處理目前啟用邊界之後觀察到的新訊息
+        ja_JP: 現在の有効化境界以降に観測された新規メッセージのみ自動処理します
+      type: boolean
+      required: false
+      default: false
+execution:
+  python:
+    path: "wxwork_database.py"
+    attr: "WXWorkDatabaseAdapter"

@@ -15,20 +15,15 @@ const ruRU = {
     editionCloud: 'Cloud',
   },
   common: {
-    login: 'Войти',
     logout: 'Выйти',
     accountOptions: 'Настройки',
     account: 'Аккаунт',
     integration: 'Интеграция',
     email: 'Электронная почта',
     password: 'Пароль',
-    welcome: 'С возвращением в LangBot 👋',
-    continueToLogin: 'Войдите, чтобы продолжить',
-    loginSuccess: 'Вход выполнен успешно',
-    loginFailed: 'Ошибка входа, проверьте адрес электронной почты и пароль',
     loginLoadError: 'Не удалось подключиться к серверу',
     loginLoadErrorDesc:
-      'Не удалось подключиться к серверу LangBot. Убедитесь, что сервис запущен, и повторите попытку.',
+      'Не удалось подключиться к серверу Chatbot. Убедитесь, что сервис запущен, и повторите попытку.',
     retry: 'Повторить',
     enterEmail: 'Введите адрес электронной почты',
     enterPassword: 'Введите пароль',
@@ -71,7 +66,6 @@ const ruRU = {
     copySuccess: 'Скопировано',
     copyFailed: 'Ошибка копирования',
     test: 'Тест',
-    forgotPassword: 'Забыли пароль?',
     agreementNotice: 'Продолжая, вы соглашаетесь с нашей',
     privacyPolicy: 'Политикой конфиденциальности',
     and: 'и',
@@ -80,11 +74,8 @@ const ruRU = {
     loading: 'Загрузка...',
     fieldRequired: 'Это поле обязательно для заполнения',
     or: 'или',
-    loginWithSpace: 'Войти через Space',
     spaceLoginRecommended:
       'Рекомендуется: Используйте официальные стабильные API моделей и облачные сервисы',
-    loginLocal: 'Войти с локальной учётной записью',
-    loginWithPassword: 'Войти с паролем',
     spaceLoginTitle: 'Войти через Space',
     spaceLoginDescription:
       'Отсканируйте QR-код или перейдите по ссылке ниже для авторизации',
@@ -99,10 +90,9 @@ const ruRU = {
     spaceLoginProcessing: 'Вход через Space',
     spaceLoginProcessingDescription:
       'Пожалуйста, подождите, пока мы завершим вход...',
-    spaceLoginSuccessDescription: 'Перенаправление в LangBot...',
+    spaceLoginSuccessDescription: 'Перенаправление в Chatbot...',
     spaceLoginError: 'Ошибка входа',
     spaceLoginNoCode: 'Отсутствует код авторизации',
-    backToLogin: 'Вернуться к входу',
     backToHome: 'На главную',
     spaceAccountCannotChangePassword:
       'Для аккаунтов Space невозможно изменить пароль здесь',
@@ -139,10 +129,10 @@ const ruRU = {
     apiKeyCopied: 'API-ключ скопирован в буфер обмена',
     noApiKeys: 'API-ключи не настроены',
     apiKeyHint:
-      'API-ключи позволяют внешним системам получать доступ к API сервисов LangBot',
+      'API-ключи позволяют внешним системам получать доступ к API сервисов Chatbot',
     mcpTab: 'MCP',
     mcpHint:
-      'LangBot exposes an MCP (Model Context Protocol) server so AI agents can manage this instance. It uses the same API keys as the Service API.',
+      'Chatbot exposes an MCP (Model Context Protocol) server so AI agents can manage this instance. It uses the same API keys as the Service API.',
     mcpEndpoint: 'MCP Endpoint',
     mcpAuthTitle: 'Authentication',
     mcpAuthDesc:
@@ -163,7 +153,7 @@ const ruRU = {
     webhookUrlRequired: 'URL вебхука обязателен',
     noWebhooks: 'Вебхуки не настроены',
     webhookHint:
-      'Вебхуки позволяют LangBot отправлять события личных и групповых сообщений во внешние системы',
+      'Вебхуки позволяют Chatbot отправлять события личных и групповых сообщений во внешние системы',
     actions: 'Действия',
     apiKeyCreatedMessage:
       'Пожалуйста, скопируйте этот API-ключ. Если кнопка не работает, скопируйте вручную.',
@@ -282,12 +272,12 @@ const ruRU = {
     requester: 'Тип провайдера',
     selectRequester: 'Выберите тип провайдера',
     searchProviders: 'Поиск провайдеров...',
-    langbotModelsDescription: 'Облачные модели на базе LangBot Space',
+    langbotModelsDescription: 'Облачные модели на базе Chatbot Space',
     credits: 'Кредиты',
     loginWithSpace: 'Войти через Space',
     loginToUseModels: 'Войдите через Space, чтобы использовать облачные модели',
     noModels: 'Модели не настроены',
-    langbotModels: 'Модели LangBot',
+    langbotModels: 'Модели Chatbot',
     spaceTrialTooltip:
       'Доступны бесплатные пробные кредиты! Войдите через Space, чтобы получить доступ к облачным моделям без настройки.',
     unlockModels: 'Войдите для использования',
@@ -327,7 +317,7 @@ const ruRU = {
   bots: {
     title: 'Боты',
     description:
-      'Создание и управление ботами — точками входа LangBot для подключения к различным платформам',
+      'Создание и управление ботами — точками входа Chatbot для подключения к различным платформам',
     createBot: 'Создать бота',
     selectFromSidebar: 'Выберите бота из боковой панели',
     editBot: 'Редактировать бота',
@@ -415,8 +405,8 @@ const ruRU = {
     webhookUrlHintEither:
       'Используйте любой из двух URL выше в настройках вашей платформы',
     webhookSaasHint:
-      'Для Webhook требуется публично доступный домен. LangBot Cloud предоставляет готовую публичную конечную точку для вашего бота.',
-    webhookSaasLink: 'Подробнее о LangBot Cloud',
+      'Для Webhook требуется публично доступный домен. Chatbot Cloud предоставляет готовую публичную конечную точку для вашего бота.',
+    webhookSaasLink: 'Подробнее о Chatbot Cloud',
     adapterCategory: {
       popular: 'Популярные',
       china: 'Китай',
@@ -716,7 +706,7 @@ const ruRU = {
     markAsReadFailed: 'Не удалось отметить как прочитанное',
     filterByComponent: 'Компонент плагина',
     filterByComponentHint:
-      'Типы возможностей, которые предоставляет плагин — инструмент (Tool), команда (Command), обработчик событий (EventListener) и т. д., — расширяющие функции LangBot. Фильтруйте по компоненту, чтобы видеть только плагины с нужной возможностью.',
+      'Типы возможностей, которые предоставляет плагин — инструмент (Tool), команда (Command), обработчик событий (EventListener) и т. д., — расширяющие функции Chatbot. Фильтруйте по компоненту, чтобы видеть только плагины с нужной возможностью.',
     allComponents: 'Все компоненты',
     componentName: {
       Tool: 'Инструмент',
@@ -1121,8 +1111,8 @@ const ruRU = {
     },
   },
   register: {
-    title: 'Инициализация LangBot 👋',
-    description: 'Вы впервые запускаете LangBot',
+    title: 'Инициализация Chatbot 👋',
+    description: 'Вы впервые запускаете Chatbot',
     adminAccountNote:
       'Указанная учётная запись будет настроена как администратор',
     register: 'Регистрация',
@@ -1132,7 +1122,7 @@ const ruRU = {
     spaceInfoTip1:
       'Space предоставляет единую службу аутентификации без загрузки конфиденциальной информации.',
     spaceInfoTip2:
-      'Вход через Space даёт доступ к моделям LangBot и облачным сервисам, включая бесплатные кредиты для быстрого старта.',
+      'Вход через Space даёт доступ к моделям Chatbot и облачным сервисам, включая бесплатные кредиты для быстрого старта.',
     spaceInfoTip3:
       'Способ входа не влияет на другие функции. Вы можете настроить модели из других источников в любое время.',
     registerLocal: 'Зарегистрировать локальную учётную запись',
@@ -1156,7 +1146,6 @@ const ruRU = {
     resetting: 'Сброс...',
     resetSuccess: 'Пароль успешно сброшен, пожалуйста, войдите',
     resetFailed: 'Ошибка сброса пароля, проверьте email и ключ восстановления',
-    backToLogin: 'Вернуться к входу',
   },
   embedding: {
     description: 'Управление моделями Embedding для векторизации текста',
@@ -1520,7 +1509,7 @@ const ruRU = {
     },
     spaceBanner: {
       message:
-        'Подключитесь к LangBot Space для бесплатных пробных кредитов и мгновенной настройки!',
+        'Подключитесь к Chatbot Space для бесплатных пробных кредитов и мгновенной настройки!',
       action: 'Авторизация через Space',
     },
     config: {
@@ -1547,7 +1536,6 @@ const ruRU = {
     backendUnavailableStatus: 'Бэкенд недоступен',
     goBack: 'Назад',
     backToHome: 'На главную',
-    backToLogin: 'Вернуться к входу',
     retrying: 'Повторяем',
     retryFailed:
       'По-прежнему не удается подключиться к бэкенду. Запустите сервис и повторите попытку.',

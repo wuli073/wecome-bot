@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://langbot.app/schemas/chatbot-launcher-state.schema.json",
+  "title": "Chatbot Launcher State",
+  "description": "Schema for %LOCALAPPDATA%\\\\Chatbot\\\\runtime\\\\launcher-state.json. This state only records launcher-owned backend identity and last-known local URLs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "lastUpdatedUtc",
+    "lastKnownUrls",
+    "safety"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "lastUpdatedUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "backend": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "processCreateTimeUtc",
+        "executablePath",
+        "sessionId"
+      ],
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "processCreateTimeUtc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "executablePath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "lastKnownUrls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backendBaseUrl",
+        "healthUrl",
+        "runtimeStatusUrl"
+      ],
+      "properties": {
+        "backendBaseUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "healthUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "runtimeStatusUrl": {
+          "type": "string",
+          "format": "uri"
+        }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "broadcastSendEnabled",
+        "rpaAutoSendEnabled"
+      ],
+      "properties": {
+        "broadcastSendEnabled": {
+          "type": "boolean",
+          "const": false
+        },
+        "rpaAutoSendEnabled": {
+          "type": "boolean",
+          "const": false
+        }
+      }
+    }
+  }
+}

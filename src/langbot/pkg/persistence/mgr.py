@@ -161,6 +161,10 @@ class PersistenceManager:
             raise
 
     async def execute_async(self, *args, **kwargs) -> sqlalchemy.engine.cursor.CursorResult:
+        conn = kwargs.pop('conn', None)
+        if conn is not None:
+            return await conn.execute(*args, **kwargs)
+
         async with self.get_db_engine().connect() as conn:
             result = await conn.execute(*args, **kwargs)
             await conn.commit()
