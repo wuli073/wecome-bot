@@ -165,6 +165,7 @@ async def watch_shutdown_requests(*, app_inst, shutdown_request_path: Path) -> N
             if payload.get('action') == 'shutdown':
                 reason = str(payload.get('reason') or 'packaged-control-file')
                 app_inst.request_shutdown(f'packaged-control-file:{reason}')
+                await app_inst.shutdown()
                 return
         await asyncio.sleep(0.5)
 

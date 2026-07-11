@@ -237,6 +237,10 @@ class Application:
                 await self.shutdown()
                 return 1
 
+            if self.shutdown_requested_event.is_set():
+                await self.shutdown()
+                return 0
+
             critical_task_wrappers: dict[str, taskmgr.TaskWrapper] = {}
 
             critical_task_wrappers['query-controller'] = self.task_mgr.create_task(

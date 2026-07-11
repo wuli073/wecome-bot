@@ -269,3 +269,38 @@ def test_portable_zip_assembly_writes_sha256_sidecar() -> None:
         assert Path(payload["SidecarPath"]) == Path(str(payload["ZipPath"]) + ".sha256")
         assert payload["ZipHash"] in payload["SidecarText"]
         assert Path(payload["ZipPath"]).name in payload["SidecarText"]
+
+
+def test_portable_layout_requires_final_launch_metadata() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    layout = json.loads(
+        (repo_root / "packaging" / "build" / "portable-layout.json").read_text(encoding="utf-8")
+    )
+
+    required_paths = set(layout["portableRequiredPaths"])
+    assert {"ChatbotLauncher.exe", "launcher.json", "manifest.json"} <= required_paths
+    assert "manifest.json" not in set(layout["portableForbiddenPaths"])
+
+
+def test_portable_only_generates_manifest_before_final_layout_check() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    script = (repo_root / "scripts" / "build-trial-release.ps1").read_text(encoding="utf-8")
+    build_flow = script.split("try {", maxsplit=1)[1]
+
+    manifest_stage = "Invoke-BuildStage -Context $context -Name 'manifest generation'"
+    layout_check_stage = "Invoke-BuildStage -Context $context -Name 'minimal portable layout sanity check'"
+    assert manifest_stage in build_flow
+    assert build_flow.index(manifest_stage) < build_flow.index(layout_check_stage)
+
+
+def test_server_lark_sdk_is_pinned_to_verified_complete_release() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    pyproject = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    lockfile = (repo_root / "uv.lock").read_text(encoding="utf-8")
+    runtime_lock = (repo_root / "packaging" / "server" / "requirements.lock.txt").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"lark-oapi==1.7.1"' in pyproject
+    assert 'name = "lark-oapi"\nversion = "1.7.1"' in lockfile
+    assert "lark-oapi==1.7.1" in runtime_lock

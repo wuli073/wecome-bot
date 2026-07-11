@@ -122,6 +122,29 @@ def test_packaged_environment_verifier_accepts_launcher_driven_roots():
     assert env['DESKTOP_AUTOMATION__ENABLED'] == 'true'
     assert env['DESKTOP_AUTOMATION__RUNTIME_EXECUTABLE'] == str(config.rpa_runtime_path)
 
+    async def verify_shutdown_control() -> None:
+        shutdown_path = _repo_tmp_dir() / 'backend-shutdown.json'
+        shutdown_path.write_text('{"action":"shutdown"}', encoding='utf-8')
+        shutdown_calls: list[str] = []
+
+        class Application:
+            shutdown_requested_event = asyncio.Event()
+
+            def request_shutdown(self, reason: str) -> None:
+                shutdown_calls.append(reason)
+                self.shutdown_requested_event.set()
+
+            async def shutdown(self) -> None:
+                shutdown_calls.append('shutdown')
+
+        await entrypoint.watch_shutdown_requests(
+            app_inst=Application(),
+            shutdown_request_path=shutdown_path,
+        )
+        assert shutdown_calls == ['packaged-control-file:packaged-control-file', 'shutdown']
+
+    asyncio.run(verify_shutdown_control())
+
 
 def test_prepare_packaged_runtime_creates_user_data_dirs_and_switches_cwd(monkeypatch):
     entrypoint = _load_module(

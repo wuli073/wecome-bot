@@ -556,3 +556,30 @@ def test_verify_script_validates_zip_sha256_sidecar() -> None:
     assert "$zipSha256Path = $zipFull + '.sha256'" in verify_script
     assert "ZIP checksum sidecar is missing" in verify_script
     assert "ZIP checksum mismatch" in verify_script
+
+
+def test_verify_script_smokes_final_packaged_server_and_lark_sdk() -> None:
+    verify_script = VERIFY_SCRIPT.read_text(encoding="utf-8-sig")
+
+    for term in [
+        "Test-PackagedServerImports",
+        "Test-PackagedBackendBoot",
+        "server\\runtime\\python\\python.exe",
+        "server\\app\\packaging\\server\\entrypoint.py",
+        "lark_oapi.api.corehr.v2",
+        "lark_oapi.api.core.hr",
+        "backend-shutdown.json",
+        "RPA_STATUS_WAIT",
+    ]:
+        assert term in verify_script
+
+
+def test_verify_script_cleans_packaged_backend_child_processes() -> None:
+    verify_script = VERIFY_SCRIPT.read_text(encoding="utf-8-sig")
+
+    for term in [
+        "Stop-PackagedBackendChildren",
+        "packaged backend child process remained after shutdown",
+        "taskkill.exe /PID",
+    ]:
+        assert term in verify_script

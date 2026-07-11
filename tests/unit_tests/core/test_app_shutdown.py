@@ -236,6 +236,28 @@ async def test_application_run_allows_platform_manager_startup_to_return_after_s
     assert exit_code == 0
 
 
+async def test_application_run_does_not_start_critical_tasks_after_startup_shutdown_request():
+    ap = _make_application()
+    critical_task_starts: list[str] = []
+
+    async def platform_startup_only():
+        ap.request_shutdown('startup-shutdown')
+
+    async def critical_task():
+        critical_task_starts.append('started')
+        await asyncio.Future()
+
+    ap.platform_mgr = SimpleNamespace(run=platform_startup_only)
+    ap.ctrl = SimpleNamespace(run=critical_task)
+    ap.http_ctrl = SimpleNamespace(run=critical_task, request_shutdown=lambda: None)
+    ap.shutdown = _async_noop()
+
+    exit_code = await ap.run()
+
+    assert exit_code == 0
+    assert critical_task_starts == []
+
+
 async def test_application_run_treats_http_controller_failure_as_critical():
     ap = _make_application()
     startup_complete = asyncio.Event()

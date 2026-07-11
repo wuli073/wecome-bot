@@ -53,6 +53,7 @@
   "portableRequiredPaths": [
     "ChatbotLauncher.exe",
     "launcher.json",
+    "manifest.json",
     "server/runtime",
     "server/app",
     "connectors/runtime",
@@ -66,7 +67,6 @@
     "licenses"
   ],
   "portableForbiddenPaths": [
-    "manifest.json",
     "build-sensitive-scan.json",
     "build-report.json"
   ]

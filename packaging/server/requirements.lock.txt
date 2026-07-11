@@ -1320,9 +1320,9 @@ langsmith==0.8.18 \
     # via
     #   langbot
     #   langchain-core
-lark-oapi==1.6.4 \
-    --hash=sha256:9013b2793f627612906090c5d960ca7bd1cf8896a66875528221c769e0ceecc0 \
-    --hash=sha256:b2aceccd1a01e55a82927ba1ee187e2eae5392cc97bc00ce0b3f08da3fb9a4ce
+lark-oapi==1.7.1 \
+    --hash=sha256:16945576a8c783a10e50911c00e421c1212fde3a76b2c2a6a4879b8606c1af8f \
+    --hash=sha256:57dc4616010cb9355dba11be3cf9b571b1a088b13abc22baf233c7e3527dd396
     # via langbot
 line-bot-sdk==3.22.0 \
     --hash=sha256:64e202330997e02fd7cfe77b51f9df812aff61dd9d0e7ba840e8ecd96c2dda67 \

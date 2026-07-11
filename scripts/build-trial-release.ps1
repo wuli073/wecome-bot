@@ -715,8 +715,10 @@ try {
     Invoke-BuildStage -Context $context -Name 'portable sanitization' -Action { Invoke-PortableSanitization -Context $context }
     if (-not $context.PortableOnly) {
         Invoke-BuildStage -Context $context -Name 'sensitive scan' -Action { Invoke-SensitiveScan -Context $context }
-        Invoke-BuildStage -Context $context -Name 'manifest generation' -Action { Invoke-ManifestGeneration -Context $context }
         Invoke-BuildStage -Context $context -Name 'build report generation' -Action { Invoke-BuildReportGeneration -Context $context }
+    }
+    Invoke-BuildStage -Context $context -Name 'manifest generation' -Action { Invoke-ManifestGeneration -Context $context }
+    if (-not $context.PortableOnly) {
         Invoke-BuildStage -Context $context -Name 'portable zip assembly' -Action { Invoke-PortableZipAssembly -Context $context }
         Invoke-BuildStage -Context $context -Name 'minimal portable layout sanity check' -Action { Invoke-PortableSanityCheck -Context $context }
         Invoke-BuildStage -Context $context -Name 'portable artifact publish' -Action { Invoke-PortableArtifactPublish -Context $context }

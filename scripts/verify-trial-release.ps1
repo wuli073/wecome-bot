@@ -679,9 +679,10 @@ function Write-LauncherFailureDiagnostics([string]$UserData, [int]$Port, [string
 
 function Test-PortableStructure {
     $required = @(
-        "ChatbotLauncher.exe", "launcher.json", "manifest.json", "build-report.json", "build-sensitive-scan.json",
+        "ChatbotLauncher.exe", "launcher.json", "manifest.json",
         "server\runtime", "server\app", "connectors\runtime", "connectors\app\wechat-decrypt",
-        "resources\web\dist\index.html", "runtime\desktop-rpa", "licenses"
+        "resources\web\dist\index.html", "resources\templates", "resources\migrations", "resources\defaults",
+        "runtime\desktop-rpa", "licenses", "prerequisites"
     )
     $missing = @()
     foreach ($relative in $required) { if (-not (Test-Path -LiteralPath (Join-Path $script:ReleaseRoot $relative))) { $missing += $relative } }
@@ -704,13 +705,19 @@ function Test-Manifest {
     if ($entries.Count -eq 0) { throw "manifest contains no entries" }
     $critical = @($entries | Where-Object { $_.critical -eq $true })
     if ($critical.Count -eq 0) { throw "manifest contains no critical entries" }
-    foreach ($entry in $critical) {
+    foreach ($requiredEntry in @("ChatbotLauncher.exe", "launcher.json")) {
+        if (@($entries | Where-Object { $_.path -eq $requiredEntry }).Count -ne 1) {
+            throw "manifest must contain exactly one $requiredEntry entry"
+        }
+    }
+    foreach ($entry in $entries) {
         $relative = ([string]$entry.path).Replace('/', '\')
         if ([System.IO.Path]::IsPathRooted($relative) -or $relative -match '(^|\\)\.\.(\\|$)') { throw "Unsafe manifest path: $($entry.path)" }
         $path = Join-Path $script:ReleaseRoot $relative
         Assert-UnderRoot $script:ReleaseRoot $path "Manifest entry escaped release root"
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Critical manifest file is missing: $($entry.path)" }
-        if ((Sha256 $path) -ne ([string]$entry.sha256).ToLowerInvariant()) { throw "Critical manifest hash mismatch: $($entry.path)" }
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Manifest file is missing: $($entry.path)" }
+        if ([int64](Get-Item -LiteralPath $path).Length -ne [int64]$entry.size) { throw "Manifest size mismatch: $($entry.path)" }
+        if ($entry.critical -eq $true -and (Sha256 $path) -ne ([string]$entry.sha256).ToLowerInvariant()) { throw "Critical manifest hash mismatch: $($entry.path)" }
     }
     $evidence = "version=$($manifest.version); criticalHashes=$($critical.Count)"
     if (($manifest.PSObject.Properties.Name -notcontains "product") -or ($manifest.PSObject.Properties.Name -notcontains "architecture")) {
@@ -751,7 +758,7 @@ function Test-Sha256Sums {
 }
 
 function Test-ZipContents {
-    if (-not $ZipPath) { return New-StatusObject "UNVERIFIED" "" "" "ZipPath was not provided." }
+    if (-not $ZipPath) { return "ZipPath was not provided; direct portable layout is the verification target." }
     $zipFull = FullPath $ZipPath
     if (-not (Test-Path -LiteralPath $zipFull -PathType Leaf)) { throw "ZipPath does not exist: $zipFull" }
     $rawNames = @(& tar -tf $zipFull 2>$null)
@@ -778,6 +785,9 @@ function Test-ZipContents {
 
 function Test-SensitiveScan {
     $path = Join-Path $script:ReleaseRoot "build-sensitive-scan.json"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        return "PortableOnly release has no sensitive scan artifact; forbidden-content and manifest checks remain required."
+    }
     $scan = Read-Json $path
     if ($null -eq $scan.summary) { throw "sensitive scan summary missing" }
     if ($scan.summary.blocked -eq $true) { throw "sensitive scan is blocked" }
@@ -893,6 +903,158 @@ print(json.dumps({
     if ([string]$payload.pythonutf8 -ne "1") { throw "connector smoke did not inherit PYTHONUTF8=1" }
     if ([string]$payload.pythonioencoding -ne "utf-8") { throw "connector smoke did not inherit PYTHONIOENCODING=utf-8" }
     return New-StatusObject "PASS" "pid=$($proc.Id); executable=$($payload.executable); module=$($payload.module); pythondontwritebytecode=$($payload.pythondontwritebytecode)" $stdout ""
+}
+
+function Test-PackagedServerImports {
+    $python = Join-Path $script:ReleaseRoot "server\runtime\python\python.exe"
+    $entrypoint = Join-Path $script:ReleaseRoot "server\app\packaging\server\entrypoint.py"
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "server packaged python is missing" }
+    if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf)) { throw "server entrypoint is missing" }
+    Assert-UnderRoot (Join-Path $script:ReleaseRoot "server\runtime") $python "Server python escaped release runtime"
+    Assert-UnderRoot (Join-Path $script:ReleaseRoot "server\app") $entrypoint "Server entrypoint escaped release app"
+
+    $stdout = Join-Path $script:LogRoot "server-imports.stdout.log"
+    $stderr = Join-Path $script:LogRoot "server-imports.stderr.log"
+    $smokeScript = Join-Path $script:LogRoot "server-imports.py"
+    @"
+import importlib
+import importlib.util
+import json
+import pathlib
+import sys
+
+entrypoint_path = pathlib.Path(r'''$entrypoint''').resolve()
+spec = importlib.util.spec_from_file_location('packaged_entrypoint_smoke', entrypoint_path)
+if spec is None or spec.loader is None:
+    raise RuntimeError('unable to load packaged backend entrypoint')
+entrypoint = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = entrypoint
+spec.loader.exec_module(entrypoint)
+lark = importlib.import_module('lark_oapi')
+corehr = importlib.import_module('lark_oapi.api.corehr.v2')
+try:
+    importlib.import_module('lark_oapi.api.core.hr')
+except ModuleNotFoundError:
+    legacy_core_hr_available = False
+else:
+    legacy_core_hr_available = True
+print(json.dumps({
+    'ok': True,
+    'python': str(pathlib.Path(sys.executable).resolve()),
+    'entrypoint': str(entrypoint_path),
+    'lark': str(pathlib.Path(lark.__file__).resolve()),
+    'corehr': str(pathlib.Path(corehr.__file__).resolve()),
+    'legacy_core_hr_available': legacy_core_hr_available,
+}, ensure_ascii=False))
+"@ | Set-Content -LiteralPath $smokeScript -Encoding UTF8
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $python
+    $psi.WorkingDirectory = $script:ReleaseRoot
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.Arguments = (@("-B", "-X", "utf8", $smokeScript) | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
+    $psi.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"] = "1"
+    $psi.EnvironmentVariables["PYTHONUTF8"] = "1"
+    $psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8"
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    if (-not $proc.WaitForExit(30000)) {
+        try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
+        Capture-ProcessOutput $proc $stdout $stderr
+        throw "packaged server import smoke timed out; stdout=$stdout; stderr=$stderr"
+    }
+    Capture-ProcessOutput $proc $stdout $stderr
+    if ($proc.ExitCode -ne 0) { throw "packaged server import smoke failed with exit code $($proc.ExitCode); stdout=$stdout; stderr=$stderr" }
+    $payload = Read-Json $stdout
+    if ($payload.ok -ne $true) { throw "packaged server import smoke payload was not ok" }
+    foreach ($path in @($payload.python, $payload.entrypoint, $payload.lark, $payload.corehr)) {
+        if (-not (Test-UnderRoot $script:ReleaseRoot ([string]$path))) { throw "packaged server import used a path outside final release root: $path" }
+    }
+    if ($payload.legacy_core_hr_available -eq $true) { throw "lark_oapi.api.core.hr must not be used; the SDK namespace is lark_oapi.api.corehr" }
+    return New-StatusObject "PASS" "python=$($payload.python); lark=$($payload.lark); corehr=$($payload.corehr)" $stdout ""
+}
+
+function Stop-PackagedBackendChildren([int[]]$ProcessIds) {
+    $remaining = @()
+    foreach ($processId in @($ProcessIds | Sort-Object -Unique)) {
+        $record = Get-ProcessRecord $processId
+        if ($null -eq $record) { continue }
+        $executable = [string]$record.executablePath
+        $isOwnedRuntime = (Test-UnderRoot (Join-Path $script:ReleaseRoot "server\runtime") $executable) -or
+            (Test-UnderRoot (Join-Path $script:ReleaseRoot "runtime\desktop-rpa") $executable)
+        if (-not $isOwnedRuntime) { continue }
+        $null = & taskkill.exe /PID $processId /T /F 2>$null
+        if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $processId -ErrorAction SilentlyContinue)) {
+            $remaining += $processId
+        }
+    }
+    Start-Sleep -Seconds 1
+    foreach ($processId in @($ProcessIds | Sort-Object -Unique)) {
+        if (Get-Process -Id $processId -ErrorAction SilentlyContinue) { $remaining += $processId }
+    }
+    $remaining = @($remaining | Sort-Object -Unique)
+    if ($remaining.Count -gt 0) {
+        throw "packaged backend child process remained after shutdown: $($remaining -join ', ')"
+    }
+}
+
+function Test-PackagedBackendBoot {
+    if ($SkipLaunch) { return New-StatusObject "UNVERIFIED" "" "" "SkipLaunch was specified." }
+    $python = Join-Path $script:ReleaseRoot "server\runtime\python\python.exe"
+    $entrypoint = Join-Path $script:ReleaseRoot "server\app\packaging\server\entrypoint.py"
+    $userData = Join-Path $script:SessionRoot "PackagedBackendUserData"
+    $runtimeRoot = Join-Path $userData "runtime"
+    $shutdownPath = Join-Path $runtimeRoot "backend-shutdown.json"
+    $rpaRuntime = Join-Path $script:ReleaseRoot "runtime\desktop-rpa\LangBot Desktop RPA Runtime.exe"
+    $port = $script:RuntimeTestPort
+    Ensure-Directory $runtimeRoot
+
+    $stdout = Join-Path $script:LogRoot "packaged-backend.stdout.log"
+    $stderr = Join-Path $script:LogRoot "packaged-backend.stderr.log"
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $python
+    $psi.WorkingDirectory = $script:ReleaseRoot
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $false
+    $psi.RedirectStandardError = $false
+    $arguments = @($entrypoint, "--install-root", $script:ReleaseRoot, "--user-data-root", $userData, "--host", "127.0.0.1", "--port", "$port", "--shutdown-request-path", $shutdownPath, "--rpa-runtime-path", $rpaRuntime)
+    $psi.Arguments = (@("-B") + $arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
+    $psi.EnvironmentVariables["LOCALAPPDATA"] = $userData
+    $psi.EnvironmentVariables["CHATBOT_USER_DATA_ROOT"] = $userData
+    $psi.EnvironmentVariables["LANGBOT_DATA_ROOT"] = Join-Path $userData "data"
+    $psi.EnvironmentVariables["LANGBOT_BROADCAST_SEND_ENABLED"] = "0"
+    $psi.EnvironmentVariables["LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS"] = ""
+    $psi.EnvironmentVariables["LANGBOT_RPA_ALLOW_AUTO_SEND"] = "0"
+    $psi.EnvironmentVariables["LANGBOT_RPA_FORCE_DISABLE_SEND"] = "1"
+    $psi.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"] = "1"
+    $psi.EnvironmentVariables["PYTHONUTF8"] = "1"
+    $psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8"
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $childProcessIds = @()
+    try {
+        $health = Wait-Http "http://127.0.0.1:$port/healthz" $StartupTimeoutSeconds
+        $healthJson = $health | ConvertTo-Json -Compress
+        if ($healthJson -notmatch '"code"\s*:\s*0' -and $healthJson -notmatch '"msg"\s*:\s*"ok"') { throw "packaged backend health response was invalid: $healthJson" }
+        $runtime = Wait-Http "http://127.0.0.1:$port/api/v1/desktop-automation/runtime/status" $StartupTimeoutSeconds
+        $runtimeJson = $runtime | ConvertTo-Json -Compress
+        if ($runtimeJson -match '"send_enabled"\s*:\s*true') { throw "RPA_STATUS_WAIT reported real send enabled" }
+        $childProcessIds += @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { [int]$_.ParentProcessId -eq $proc.Id } | ForEach-Object { [int]$_.ProcessId })
+        @{ action = "shutdown"; reason = "packaged-backend-verifier"; requestedAtUtc = [DateTime]::UtcNow.ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath $shutdownPath -Encoding UTF8
+        if (-not $proc.WaitForExit(90000)) { throw "packaged backend did not exit after shutdown request" }
+        if ($proc.ExitCode -ne 0) { throw "packaged backend exited with code $($proc.ExitCode); backendLog=$(Join-Path $userData 'logs\\backend.log')" }
+        return New-StatusObject "PASS" "pid=$($proc.Id); health=$healthJson; RPA_STATUS_WAIT=$runtimeJson; shutdown=$shutdownPath" (Join-Path $userData "logs\\backend.log") ""
+    }
+    finally {
+        $childProcessIds += @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { [int]$_.ParentProcessId -eq $proc.Id } | ForEach-Object { [int]$_.ProcessId })
+        if (-not $proc.HasExited) {
+            @{ action = "shutdown"; reason = "packaged-backend-verifier-cleanup"; requestedAtUtc = [DateTime]::UtcNow.ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath $shutdownPath -Encoding UTF8
+            if (-not $proc.WaitForExit(10000)) { try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {} }
+        }
+        Stop-PackagedBackendChildren -ProcessIds $childProcessIds
+        if (-not $proc.HasExited) { throw "packaged backend process remained after cleanup: $($proc.Id)" }
+    }
 }
 
 function Test-MinimizedPathMode {
@@ -1091,8 +1253,13 @@ try {
     Invoke-Check "forbidden-content" { Test-ForbiddenContent }
     $script:ImmutableBaseline = Get-ReleaseFileSnapshot
     Invoke-Check "real-send-defaults" { Test-SafetyDefaults }
+    Invoke-Check "packaged-server-imports" { Test-PackagedServerImports }
     Invoke-Check "connector-smoke" { Invoke-ConnectorSmoke }
     Invoke-Check "minimized-path" { Test-MinimizedPathMode }
+    Invoke-Check "packaged-backend-boot" { Test-PackagedBackendBoot }
+    if ($script:Results[-1].status -ne "PASS") {
+        throw "packaged-backend-boot failed; skipping launcher runtime and subsequent launch-dependent checks."
+    }
     Invoke-Check "launcher-runtime" { Invoke-LauncherVerification }
     if ($script:Results[-1].status -ne "PASS") {
         throw "launcher-runtime failed; skipping port-conflict and subsequent launch-dependent checks."
