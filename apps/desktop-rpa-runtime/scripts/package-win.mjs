@@ -176,16 +176,23 @@ export function packageWindowsRuntime(mode = 'release') {
   logNativeRebuildExpectations()
   run(npmCommand, ['run', 'build'])
   ensureOutputDirReady(outputDir, packagedExePath)
-  run(
-    electronBuilderCommand,
-    builderArgs,
-    {
-      env: {
-        ...process.env,
-        CSC_IDENTITY_AUTO_DISCOVERY: 'false',
-      },
+  const builderOptions = {
+    env: {
+      ...process.env,
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false',
     },
-  )
+  }
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      run(electronBuilderCommand, builderArgs, builderOptions)
+      return
+    } catch (error) {
+      if (attempt === 3) throw error
+      console.warn(`[package-win] electron-builder attempt ${attempt} failed; retrying deterministic output after a short delay.`)
+      sleep(2000 * attempt)
+      ensureOutputDirReady(outputDir, packagedExePath)
+    }
+  }
 }
 
 function parseMode(argv) {
