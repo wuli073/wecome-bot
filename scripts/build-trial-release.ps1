@@ -263,7 +263,7 @@ function Invoke-VendorTreeAssembly {
 
     if (-not $Context.SkipTests) {
         Invoke-ExternalCommand -Context $Context -FilePath 'uv' -WorkingDirectory $Context.RepoRoot -ArgumentList @(
-            'run', 'pytest', 'tests\vendor_wechat_decrypt\test_runtime_layout.py', '-q'
+            'run', 'python', '-m', 'pytest', 'tests\vendor_wechat_decrypt\test_runtime_layout.py', '-q'
         )
     }
 

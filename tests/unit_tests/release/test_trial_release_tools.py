@@ -304,3 +304,10 @@ def test_server_lark_sdk_is_pinned_to_verified_complete_release() -> None:
     assert '"lark-oapi==1.7.1"' in pyproject
     assert 'name = "lark-oapi"\nversion = "1.7.1"' in lockfile
     assert "lark-oapi==1.7.1" in runtime_lock
+
+
+def test_vendor_layout_gate_uses_python_module_pytest_invocation() -> None:
+    script = (Path(__file__).resolve().parents[3] / "scripts" / "build-trial-release.ps1").read_text(encoding="utf-8")
+
+    expected_arguments = "'run', 'python', '-m', 'pytest', 'tests\\vendor_wechat_decrypt\\test_runtime_layout.py', '-q'"
+    assert expected_arguments in script
