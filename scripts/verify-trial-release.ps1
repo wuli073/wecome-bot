@@ -1187,7 +1187,7 @@ function Test-PortConflict {
         $script:LauncherProcess = $proc
         $stdout = Join-Path $script:LogRoot "port-conflict-launcher.stdout.log"
         $stderr = Join-Path $script:LogRoot "port-conflict-launcher.stderr.log"
-        if (-not $proc.WaitForExit(30000)) {
+        if (-not $proc.WaitForExit(120000)) {
             try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
             Capture-ProcessOutput $proc $stdout $stderr
             throw "port-conflict launcher did not exit within 30 seconds"

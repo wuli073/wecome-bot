@@ -171,7 +171,11 @@ async def watch_shutdown_requests(*, app_inst, shutdown_request_path: Path) -> N
                 request_id = str(payload.get('requestId') or '')
                 request_session_id = str(payload.get('sessionId') or '')
                 backend_pid = payload.get('backendPid')
-                if not request_id or (expected_session_id and request_session_id != expected_session_id) or (expected_session_id and backend_pid != os.getpid()):
+                if expected_session_id and (
+                    not request_id
+                    or request_session_id != expected_session_id
+                    or backend_pid != os.getpid()
+                ):
                     continue
                 acknowledgement = {
                     'accepted': True,
