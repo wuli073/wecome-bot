@@ -1150,7 +1150,7 @@ internal sealed class DefaultLauncherFileSystem : ILauncherFileSystem
         File.Move(sourcePath, destinationPath, overwrite: true);
     }
 
-    public void WriteAllText(string path, string contents) => File.WriteAllText(path, contents, Utf8NoBom);
+    public void WriteAllText(string path, string contents) => File.WriteAllText(path, contents, new UTF8Encoding(false));
 
     public string ReadAllText(string path) => File.ReadAllText(path, Encoding.UTF8);
 
