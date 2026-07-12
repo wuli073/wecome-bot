@@ -146,7 +146,7 @@ def test_packaged_environment_verifier_accepts_launcher_driven_roots(monkeypatch
             app_inst=Application(),
             shutdown_request_path=shutdown_path,
         )
-        assert shutdown_calls == ['packaged-control-file:packaged-control-file', 'shutdown']
+        assert shutdown_calls == ['packaged-control-file:packaged-control-file']
         acknowledgement = __import__('json').loads(shutdown_path.with_name('backend-shutdown.ack.json').read_text(encoding='utf-8'))
         assert acknowledgement == {
             'accepted': True,
