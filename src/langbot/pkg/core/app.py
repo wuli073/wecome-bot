@@ -261,8 +261,9 @@ class Application:
                     scopes=[core_entities.LifecycleControlScope.APPLICATION],
                 )
                 await self.http_ctrl.wait_until_listening()
-                self.set_startup_phase('http_server_listening')
-                self.set_startup_phase('health_available')
+                if self.startup_phase != 'ready':
+                    self.set_startup_phase('http_server_listening')
+                    self.set_startup_phase('health_available')
 
                 shutdown_waiter = asyncio.create_task(self.shutdown_requested_event.wait())
                 done, _ = await asyncio.wait(
