@@ -880,7 +880,7 @@ print(json.dumps({
     $psi.EnvironmentVariables["PYTHONUTF8"] = "1"
     $psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8"
     $proc = [System.Diagnostics.Process]::Start($psi)
-    if (-not $proc.WaitForExit(30000)) {
+    if (-not $proc.WaitForExit(120000)) {
         $record = Get-ProcessRecord $proc.Id
         if ($record -and (Test-UnderRoot (Join-Path $script:ReleaseRoot "connectors\runtime") ([string]$record.executablePath))) {
             try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
