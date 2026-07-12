@@ -128,7 +128,7 @@ def test_packaged_environment_verifier_accepts_launcher_driven_roots(monkeypatch
         monkeypatch.setenv('CHATBOT_LAUNCH_SESSION_ID', session_id)
         shutdown_path.write_text(
             '{"action":"shutdown","requestId":"request-1","sessionId":"launcher-session","backendPid":%s}' % __import__('os').getpid(),
-            encoding='utf-8',
+            encoding='utf-8-sig',
         )
         shutdown_calls: list[str] = []
 

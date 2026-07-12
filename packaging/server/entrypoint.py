@@ -163,7 +163,7 @@ async def watch_shutdown_requests(*, app_inst, shutdown_request_path: Path) -> N
     while not app_inst.shutdown_requested_event.is_set():
         if shutdown_request_path.exists():
             try:
-                payload = json.loads(shutdown_request_path.read_text(encoding='utf-8'))
+                payload = json.loads(shutdown_request_path.read_text(encoding='utf-8-sig'))
             except Exception:
                 payload = {}
             shutdown_request_path.unlink(missing_ok=True)
