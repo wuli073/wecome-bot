@@ -67,6 +67,7 @@ public sealed class LifecycleTests
         Assert.Equal("1", environment["PYTHONDONTWRITEBYTECODE"]);
         Assert.Equal("1", environment["PYTHONUTF8"]);
         Assert.Equal("utf-8", environment["PYTHONIOENCODING"]);
+        Assert.Equal("1", environment["PYTHONUNBUFFERED"]);
         Assert.Equal("true", environment["DESKTOP_AUTOMATION__ENABLED"]);
         Assert.Equal(@"C:\Chatbot\runtime\desktop-rpa\LangBot Desktop RPA Runtime.exe", environment["DESKTOP_AUTOMATION__RUNTIME_EXECUTABLE"]);
     }
@@ -96,15 +97,13 @@ public sealed class LifecycleTests
     }
 
     [Fact]
-    public async Task StartAsync_UsesConfiguredHealthAndRuntimeStatusPathsAndOpensBrowserAfterReadiness()
+    public async Task StartAsync_OpensBrowserAfterHealthWithoutWaitingForOptionalRuntime()
     {
         var http = new FakeHttpProbeClient
         {
         };
         http.HealthResponses.Enqueue(false);
         http.HealthResponses.Enqueue(true);
-        http.RuntimeResponses.Enqueue(new LauncherRuntimeObservation("starting", false, false));
-        http.RuntimeResponses.Enqueue(new LauncherRuntimeObservation("ready", true, false));
         var browser = new FakeBrowserLauncher();
         var process = new FakeProcess();
         var launcher = new FakeProcessLauncher(process);
@@ -118,10 +117,9 @@ public sealed class LifecycleTests
 
         Assert.Equal(2, http.HealthRequests.Count);
         Assert.All(http.HealthRequests, request => Assert.Equal(new Uri("http://127.0.0.1:5302/custom-health"), request));
-        Assert.Equal(new Uri("http://127.0.0.1:5302/custom-runtime"), http.RuntimeRequests.Last());
+        Assert.Empty(http.RuntimeRequests);
         Assert.Equal(new Uri("http://127.0.0.1:5302/"), Assert.Single(browser.OpenedUris));
-        Assert.NotNull(manager.LastObservation);
-        Assert.True(manager.LastObservation!.IsReady);
+        Assert.Null(manager.LastObservation);
     }
 
     [Fact]

@@ -333,6 +333,7 @@ public sealed class LauncherProcessManager
             ["PYTHONDONTWRITEBYTECODE"] = "1",
             ["PYTHONUTF8"] = "1",
             ["PYTHONIOENCODING"] = "utf-8",
+            ["PYTHONUNBUFFERED"] = "1",
             ["LANGBOT_BROADCAST_SEND_ENABLED"] = "0",
             ["LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS"] = string.Empty,
             ["LANGBOT_RPA_ALLOW_AUTO_SEND"] = "0",
@@ -406,7 +407,6 @@ public sealed class LauncherProcessManager
         try
         {
             await WaitForHealthAsync(process, cancellationToken).ConfigureAwait(false);
-            await WaitForRuntimeReadyAsync(cancellationToken).ConfigureAwait(false);
             PersistLauncherState(snapshot);
             _browserLauncher.Open(BrowserUri);
         }
@@ -714,6 +714,11 @@ public sealed class LauncherProcessManager
     {
         var stderrSummary = ReadLastSummaryLine(request.StandardErrorPath);
         var stdoutSummary = ReadLastSummaryLine(request.StandardOutputPath);
+        var lastBootStage = ReadLastBootStage(request.StandardOutputPath);
+        var portStatus = ownership.IsListening
+            ? $"listening (pid={ownership.OwningPid?.ToString(CultureInfo.InvariantCulture) ?? "unknown"})"
+            : "not listening";
+        var uptime = _clock.UtcNow - snapshot.CreateTimeUtc;
         var lastSummary = !string.IsNullOrWhiteSpace(stderrSummary)
             ? stderrSummary
             : !string.IsNullOrWhiteSpace(stdoutSummary)
@@ -721,6 +726,19 @@ public sealed class LauncherProcessManager
                 : ownership.OwnedByOtherProcess
                     ? $"Port {_config.Backend.Port} is owned by pid {ownership.OwningPid}."
                     : "No backend stderr summary was captured.";
+        lastSummary = string.Join(
+            Environment.NewLine,
+            new[]
+            {
+                $"BackendAlive: {!process.HasExited}",
+                $"Uptime: {uptime.TotalSeconds:F1}s",
+                $"Port: {portStatus}",
+                $"LastBootStage: {lastBootStage}",
+                "LastHealthError: health endpoint did not respond before the deadline.",
+                $"stdoutTail: {ReadLastSummaryLine(request.StandardOutputPath)}",
+                $"stderrTail: {ReadLastSummaryLine(request.StandardErrorPath)}",
+                $"Summary: {lastSummary}",
+            });
         return new LauncherStartupFailureDetails(
             BackendPid: snapshot.Pid,
             ExitCode: process.ExitCode,
@@ -741,6 +759,19 @@ public sealed class LauncherProcessManager
         var lines = _fileSystem.ReadAllText(path)
             .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
         return lines.LastOrDefault(static line => !string.IsNullOrWhiteSpace(line)) ?? string.Empty;
+    }
+
+    private string ReadLastBootStage(string path)
+    {
+        if (!_fileSystem.FileExists(path))
+        {
+            return "unknown";
+        }
+
+        return _fileSystem.ReadAllText(path)
+            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+            .LastOrDefault(line => line.Contains("BOOT_STAGE", StringComparison.Ordinal))
+            ?? "unknown";
     }
 
     private void EnsureWorkingDirectories()
@@ -913,8 +944,10 @@ internal sealed class DefaultLauncherProcess : ILauncherProcess
     private readonly string _expectedExecutablePath;
     private readonly string _stdoutPath;
     private readonly string _stderrPath;
-    private readonly Task<string> _stdoutTask;
-    private readonly Task<string> _stderrTask;
+    private readonly StreamWriter _stdoutWriter;
+    private readonly StreamWriter _stderrWriter;
+    private readonly Task _stdoutTask;
+    private readonly Task _stderrTask;
     private int _outputFlushed;
 
     public DefaultLauncherProcess(
@@ -927,8 +960,12 @@ internal sealed class DefaultLauncherProcess : ILauncherProcess
         _expectedExecutablePath = Path.GetFullPath(expectedExecutablePath);
         _stdoutPath = stdoutPath;
         _stderrPath = stderrPath;
-        _stdoutTask = _process.StandardOutput.ReadToEndAsync();
-        _stderrTask = _process.StandardError.ReadToEndAsync();
+        Directory.CreateDirectory(Path.GetDirectoryName(_stdoutPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(_stderrPath)!);
+        _stdoutWriter = new StreamWriter(_stdoutPath, false, new UTF8Encoding(false)) { AutoFlush = true };
+        _stderrWriter = new StreamWriter(_stderrPath, false, new UTF8Encoding(false)) { AutoFlush = true };
+        _stdoutTask = PumpAsync(_process.StandardOutput, _stdoutWriter);
+        _stderrTask = PumpAsync(_process.StandardError, _stderrWriter);
     }
 
     public bool HasExited => _process.HasExited;
@@ -975,6 +1012,10 @@ internal sealed class DefaultLauncherProcess : ILauncherProcess
 
     public void Dispose()
     {
+        if (_process.HasExited)
+        {
+            FlushOutputAsync().GetAwaiter().GetResult();
+        }
         _process.Dispose();
     }
 
@@ -985,10 +1026,21 @@ internal sealed class DefaultLauncherProcess : ILauncherProcess
             return;
         }
 
-        Directory.CreateDirectory(Path.GetDirectoryName(_stdoutPath)!);
-        Directory.CreateDirectory(Path.GetDirectoryName(_stderrPath)!);
-        await File.WriteAllTextAsync(_stdoutPath, await _stdoutTask.ConfigureAwait(false), Encoding.UTF8).ConfigureAwait(false);
-        await File.WriteAllTextAsync(_stderrPath, await _stderrTask.ConfigureAwait(false), Encoding.UTF8).ConfigureAwait(false);
+        await Task.WhenAll(_stdoutTask, _stderrTask).ConfigureAwait(false);
+        await _stdoutWriter.FlushAsync().ConfigureAwait(false);
+        await _stderrWriter.FlushAsync().ConfigureAwait(false);
+        _stdoutWriter.Dispose();
+        _stderrWriter.Dispose();
+    }
+
+    private static async Task PumpAsync(StreamReader reader, StreamWriter writer)
+    {
+        var buffer = new char[4096];
+        int read;
+        while ((read = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length)).ConfigureAwait(false)) > 0)
+        {
+            await writer.WriteAsync(buffer.AsMemory(0, read)).ConfigureAwait(false);
+        }
     }
 }
 

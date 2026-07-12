@@ -141,6 +141,7 @@ def build_packaged_environment(
             'PYTHONDONTWRITEBYTECODE': '1',
             'PYTHONUTF8': '1',
             'PYTHONIOENCODING': 'utf-8',
+            'PYTHONUNBUFFERED': '1',
         }
     )
     return env
@@ -229,6 +230,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     os.environ['CHATBOT_PACKAGED'] = '1'
+    os.environ.setdefault('PYTHONUTF8', '1')
+    os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
+    os.environ.setdefault('PYTHONUNBUFFERED', '1')
+    print('BOOT_STAGE {"stage":"entrypoint_started"}', flush=True)
 
     install_root = args.install_root.strip()
     if not install_root:
@@ -253,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
 
     prepare_packaged_runtime(config)
     os.environ.update(build_packaged_environment(config))
+    print('BOOT_STAGE {"stage":"paths_resolved"}', flush=True)
 
     loop = asyncio.new_event_loop()
     state: dict[str, object] = {'pending_shutdown': False, 'app': None}
