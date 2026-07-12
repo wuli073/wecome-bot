@@ -123,9 +123,12 @@ async def test_build_app_stage_restores_local_connectors_only_once(monkeypatch):
     ]:
         monkeypatch.setattr(f'langbot.pkg.core.stages.build_app.{target}', lambda *_args, **_kwargs: SimpleNamespace())
 
+    states: list[object] = []
     app = SimpleNamespace(
         instance_config=SimpleNamespace(data={'desktop_automation': {}, 'api': {'port': 5302}}),
         logger=SimpleNamespace(info=lambda *_args, **_kwargs: None),
+        http_ctrl=None,
+        set_runtime_state=lambda state, **_kwargs: states.append(state),
     )
 
     stage = BuildAppStage()
@@ -134,3 +137,4 @@ async def test_build_app_stage_restores_local_connectors_only_once(monkeypatch):
     assert initialize_builtin_mock.await_count == 1
     assert restore_mock.await_count == 1
     assert watcher_args['repo_root'] == Path.cwd()
+    assert states
