@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "buildId": "development",
   "backend": {
     "host": "127.0.0.1",
     "port": 5302,

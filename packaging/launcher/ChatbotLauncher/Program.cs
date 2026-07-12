@@ -67,7 +67,8 @@ public static class LauncherContracts
 
 public sealed record LauncherConfig(
     [property: JsonPropertyName("schemaVersion")] int SchemaVersion,
-    [property: JsonPropertyName("backend")] LauncherBackendConfig Backend)
+    [property: JsonPropertyName("backend")] LauncherBackendConfig Backend,
+    [property: JsonPropertyName("buildId")] string BuildId = "development")
 {
     public static LauncherConfig LoadFromFile(string path)
     {
@@ -93,6 +94,10 @@ public sealed record LauncherConfig(
         }
 
         Backend.Validate();
+        if (string.IsNullOrWhiteSpace(BuildId))
+        {
+            throw new InvalidOperationException("launcher buildId must not be empty.");
+        }
     }
 }
 

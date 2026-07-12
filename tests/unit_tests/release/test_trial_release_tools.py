@@ -25,6 +25,18 @@ def test_release_script_derives_packaged_api_base_from_launcher_config() -> None
     assert "$bundleText = [string]::Join" in script
 
 
+def test_release_build_identity_is_embedded_in_every_packaged_consumer() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    context_module = (repo_root / "packaging" / "build" / "BuildContext.psm1").read_text(encoding="utf-8")
+    script = (repo_root / "scripts" / "build-trial-release.ps1").read_text(encoding="utf-8")
+
+    assert "SourceHead" in context_module
+    assert "BuildId" in context_module
+    assert "Add-Member -NotePropertyName buildId -NotePropertyValue $Context.BuildId -Force" in script
+    assert "resources\\web\\dist\\build-info.json" in script
+    assert "--metadata-json" in script
+
+
 def test_packaged_web_api_base_is_readable_in_powershell() -> None:
     repo_root = Path(__file__).resolve().parents[3]
     module_path = repo_root / "packaging" / "build" / "BuildContext.psm1"

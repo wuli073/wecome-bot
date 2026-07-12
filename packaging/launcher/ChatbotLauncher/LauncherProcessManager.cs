@@ -99,7 +99,7 @@ public sealed record LauncherLaunchRequest(
 
 public sealed record LauncherProcessSnapshot(int Pid, string ExecutablePath, DateTimeOffset CreateTimeUtc);
 
-public sealed record LauncherRuntimeObservation(string Status, bool RuntimeReachable, bool SendEnabled)
+public sealed record LauncherRuntimeObservation(string Status, bool RuntimeReachable, bool SendEnabled, string BuildId = "development")
 {
     public bool IsReady =>
         string.Equals(Status, "CORE_READY", StringComparison.OrdinalIgnoreCase)
@@ -328,6 +328,7 @@ public sealed class LauncherProcessManager
             ["CHATBOT_LOG_ROOT"] = GetSessionLogRoot(sessionId),
             ["CHATBOT_RUNTIME_ROOT"] = _layout.RuntimeRoot,
             ["CHATBOT_LAUNCH_SESSION_ID"] = sessionId,
+            ["CHATBOT_BUILD_ID"] = _config.BuildId,
             ["CHATBOT_RPA_RUNTIME_PATH"] = _layout.RpaRuntimeExecutable,
             ["CHATBOT_BACKEND_HEALTH_PATH"] = _config.Backend.HealthPath,
             ["CHATBOT_BACKEND_RUNTIME_STATUS_PATH"] = _config.Backend.RuntimeStatusPath,
@@ -630,6 +631,11 @@ public sealed class LauncherProcessManager
             var observation = await ObserveRuntimeStatusAsync(cancellationToken).ConfigureAwait(false);
             if (observation.IsReady)
             {
+                if (!string.Equals(observation.BuildId, _config.BuildId, StringComparison.Ordinal))
+                {
+                    throw new LauncherUserFacingException(
+                        $"Backend BuildId mismatch. Expected {_config.BuildId}, got {observation.BuildId}.");
+                }
                 return;
             }
 
@@ -1190,7 +1196,10 @@ internal sealed class DefaultLauncherHttpProbeClient : ILauncherHttpProbeClient
                 && reachableElement.ValueKind == JsonValueKind.True;
             var sendEnabled = root.TryGetProperty("send_enabled", out var sendElement)
                 && sendElement.ValueKind == JsonValueKind.True;
-            return new LauncherRuntimeObservation(status, runtimeReachable, sendEnabled);
+            var buildId = root.TryGetProperty("buildId", out var buildIdElement)
+                ? buildIdElement.GetString() ?? string.Empty
+                : string.Empty;
+            return new LauncherRuntimeObservation(status, runtimeReachable, sendEnabled, buildId);
         }
         catch (HttpRequestException)
         {

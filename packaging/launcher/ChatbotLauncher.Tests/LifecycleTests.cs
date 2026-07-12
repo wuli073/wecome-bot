@@ -69,6 +69,7 @@ public sealed class LifecycleTests
         Assert.Equal("utf-8", environment["PYTHONIOENCODING"]);
         Assert.Equal("1", environment["PYTHONUNBUFFERED"]);
         Assert.Equal("true", environment["DESKTOP_AUTOMATION__ENABLED"]);
+        Assert.Equal("development", environment["CHATBOT_BUILD_ID"]);
         Assert.Equal(@"C:\Chatbot\runtime\desktop-rpa\LangBot Desktop RPA Runtime.exe", environment["DESKTOP_AUTOMATION__RUNTIME_EXECUTABLE"]);
     }
 
@@ -203,6 +204,19 @@ public sealed class LifecycleTests
 
         Assert.Equal(LauncherExitCodes.BackendHealthTimeout, error.ExitCode);
         Assert.Contains("backend.stderr.log", error.Message);
+    }
+
+    [Fact]
+    public async Task StartAsync_RejectsBackendWithDifferentBuildId()
+    {
+        var http = new FakeHttpProbeClient();
+        http.HealthResponses.Enqueue(true);
+        http.RuntimeResponses.Enqueue(new LauncherRuntimeObservation("CORE_READY", true, false, "stale-build"));
+        var manager = CreateManager(http: http);
+
+        var error = await Assert.ThrowsAsync<LauncherUserFacingException>(() => manager.StartAsync());
+
+        Assert.Contains("BuildId mismatch", error.Message);
     }
 
     [Fact]

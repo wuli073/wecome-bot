@@ -128,6 +128,11 @@ function New-BuildContext {
 
     $sessionId = [System.Guid]::NewGuid().ToString('N')
     $sessionShortId = $sessionId.Substring(0, 12)
+    $sourceHead = (& git -C $normalizedRepoRoot rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceHead)) {
+        throw 'Unable to resolve source HEAD for release BuildId.'
+    }
+    $buildId = '{0}+{1}.{2}' -f $Version, $sourceHead.Substring(0, 12), $sessionShortId
     $sessionRoot = Join-Path (Join-Path $normalizedOutputRoot '.s') $sessionShortId
     Ensure-Directory -Path $sessionRoot
     $workDirectory = Join-Path $sessionRoot 'work'
@@ -158,6 +163,8 @@ function New-BuildContext {
         OutputRoot = $normalizedOutputRoot
         SessionId = $sessionId
         SessionShortId = $sessionShortId
+        SourceHead = $sourceHead
+        BuildId = $buildId
         SessionReleaseRoot = $sessionReleaseRoot
         ReleasePublishRoot = $releasePublishRoot
         InternalRoot = $internalRoot

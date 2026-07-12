@@ -11,6 +11,7 @@ public sealed class LauncherConfigTests
         var config = LauncherConfig.LoadFromFile(GetProjectFilePath("launcher.json"));
 
         Assert.Equal(LauncherContracts.SchemaVersion, config.SchemaVersion);
+        Assert.Equal("development", config.BuildId);
         Assert.Equal("127.0.0.1", config.Backend.Host);
         Assert.Equal(5302, config.Backend.Port);
         Assert.Equal("/healthz", config.Backend.HealthPath);

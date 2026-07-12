@@ -405,6 +405,17 @@ function Invoke-PortableDirectoryAssembly {
 
     $releaseLauncherJson = Join-Path $Context.PortableRoot 'launcher.json'
     Copy-FileWithParent -Source (Join-Path $Context.RepoRoot 'packaging\launcher\ChatbotLauncher\launcher.json') -Destination $releaseLauncherJson
+    $launcherConfig = Get-Content -LiteralPath $releaseLauncherJson -Raw | ConvertFrom-Json
+    $launcherConfig | Add-Member -NotePropertyName buildId -NotePropertyValue $Context.BuildId -Force
+    $launcherConfig | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $releaseLauncherJson -Encoding UTF8
+
+    $buildInfo = [ordered]@{
+        buildId = $Context.BuildId
+        sourceHead = $Context.SourceHead
+        version = $Context.Version
+    }
+    $buildInfoJson = $buildInfo | ConvertTo-Json -Depth 4
+    Set-Content -LiteralPath (Join-Path $Context.PortableRoot 'build-info.json') -Value $buildInfoJson -Encoding UTF8
 
     Invoke-Robocopy -Source (Join-Path $Context.ServerAssemblyRoot 'runtime') -Destination (Join-Path $Context.PortableRoot 'server\runtime')
     Invoke-Robocopy -Source (Join-Path $Context.ServerAssemblyRoot 'app') -Destination (Join-Path $Context.PortableRoot 'server\app')
@@ -414,6 +425,7 @@ function Invoke-PortableDirectoryAssembly {
 
     $webDistSource = Join-Path $Context.RepoRoot 'web\dist'
     Invoke-Robocopy -Source $webDistSource -Destination (Join-Path $Context.PortableRoot 'resources\web\dist')
+    Set-Content -LiteralPath (Join-Path $Context.PortableRoot 'resources\web\dist\build-info.json') -Value $buildInfoJson -Encoding UTF8
 
     foreach ($resourceCopy in $Context.PortableLayout.resourceCopies) {
         $targetPath = Join-Path $Context.PortableRoot $resourceCopy.target
@@ -532,6 +544,7 @@ function Invoke-ManifestGeneration {
         '--version', $Context.Version,
         '--manifest-path', $manifestPath,
         '--sha256sums-path', $sha256SumsPath
+        '--metadata-json', (([ordered]@{ buildId = $Context.BuildId; sourceHead = $Context.SourceHead }) | ConvertTo-Json -Compress)
     )
 
     $Context.ManifestPath = $manifestPath
