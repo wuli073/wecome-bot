@@ -551,6 +551,20 @@ def test_install_script_checks_rpa_send_enabled_after_json_conversion() -> None:
     assert "ConvertTo-Json -Compress -match" not in install_script
 
 
+def test_install_script_verifies_onboarding_api_endpoints() -> None:
+    install_script = INSTALL_SCRIPT.read_text(encoding="utf-8-sig")
+
+    for term in [
+        "Stage-OnboardingApi",
+        "/readyz",
+        "/api/v1/platform/adapters",
+        "/api/v1/system/wizard/progress",
+        "/api/v1/system/wizard/completed",
+        "ONBOARDING_API",
+    ]:
+        assert term in install_script
+
+
 def test_verify_script_validates_zip_sha256_sidecar() -> None:
     verify_script = VERIFY_SCRIPT.read_text(encoding="utf-8-sig")
     assert "$zipSha256Path = $zipFull + '.sha256'" in verify_script

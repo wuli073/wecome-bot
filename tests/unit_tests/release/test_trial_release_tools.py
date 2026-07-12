@@ -15,6 +15,15 @@ def test_release_script_enforces_final_windows_path_budget() -> None:
     assert "final internal portable" in script
 
 
+def test_release_script_derives_packaged_api_base_from_launcher_config() -> None:
+    script = (Path(__file__).resolve().parents[3] / "scripts" / "build-trial-release.ps1").read_text(encoding="utf-8")
+
+    assert "function Get-PackagedWebApiBase" in script
+    assert "PACKAGED_WEB_API_BASE_MISMATCH" in script
+    assert "VITE_API_BASE_URL" in script
+    assert "launcher.json" in script
+
+
 def _load_script_module(module_name: str, script_name: str):
     repo_root = Path(__file__).resolve().parents[3]
     script_path = repo_root / "packaging" / "build" / script_name

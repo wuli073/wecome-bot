@@ -165,11 +165,50 @@ function Invoke-EnvironmentCheck {
     Write-BuildMessage -Context $Context -Message ("Skip tests: {0}" -f $Context.SkipTests)
 }
 
+function Get-PackagedWebApiBase {
+    param([hashtable]$Context)
+
+    $launcherConfigPath = Join-Path $Context.RepoRoot 'packaging\launcher\ChatbotLauncher\launcher.json'
+    if (-not (Test-Path -LiteralPath $launcherConfigPath -PathType Leaf)) {
+        throw "PACKAGED_WEB_API_BASE_MISMATCH: Launcher configuration is missing: $launcherConfigPath"
+    }
+
+    try {
+        $launcherConfig = Get-Content -LiteralPath $launcherConfigPath -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw "PACKAGED_WEB_API_BASE_MISMATCH: Launcher configuration is invalid: $($_.Exception.Message)"
+    }
+
+    $host = [string]$launcherConfig.backend.host
+    $port = $launcherConfig.backend.port
+    if ([string]::IsNullOrWhiteSpace($host) -or $host -match '[:/\\\s]') {
+        throw "PACKAGED_WEB_API_BASE_MISMATCH: Launcher backend host is invalid: $host"
+    }
+    if ($port -isnot [int] -and $port -isnot [long]) {
+        throw "PACKAGED_WEB_API_BASE_MISMATCH: Launcher backend port is invalid: $port"
+    }
+    if ($port -lt 1 -or $port -gt 65535) {
+        throw "PACKAGED_WEB_API_BASE_MISMATCH: Launcher backend port is outside the valid range: $port"
+    }
+
+    return "http://$host`:$port"
+}
+
 function Invoke-FrontendBuild {
     param([hashtable]$Context)
 
     $webRoot = Join-Path $Context.RepoRoot 'web'
+    $expectedApiBase = Get-PackagedWebApiBase -Context $Context
+    $env:VITE_API_BASE_URL = $expectedApiBase
     Invoke-ExternalCommand -Context $Context -FilePath 'npm' -WorkingDirectory $webRoot -ArgumentList @('run', 'build')
+    $distRoot = Join-Path $webRoot 'dist'
+    $bundleText = Get-ChildItem -LiteralPath $distRoot -Recurse -File |
+        Where-Object { $_.Extension -in '.css', '.html', '.js', '.map' } |
+        ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }
+    if ($bundleText -match '127\.0\.0\.1:5300' -or $bundleText -notmatch [regex]::Escape($expectedApiBase)) {
+        throw "PACKAGED_WEB_API_BASE_MISMATCH: expected $expectedApiBase"
+    }
 }
 
 function New-RuntimeAssembly {

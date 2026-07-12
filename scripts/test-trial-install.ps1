@@ -457,6 +457,81 @@ function Stage-RpaStatusWait {
     return New-StatusObject -Status "PASS" -Evidence ("runtime=" + ($result | ConvertTo-Json -Compress))
 }
 
+function Stage-OnboardingApi {
+    $config = Read-JsonFile -Path (Join-Path $script:InstallRoot "launcher.json")
+    $backendHost = [string]$config.backend.host
+    $port = [int]$config.backend.port
+    $baseUri = "http://${backendHost}:$port"
+    $origin = "http://127.0.0.1:58751"
+    $corsHeaders = @{ Origin = $origin }
+    $preflightEvidence = @()
+
+    foreach ($request in @(
+        @{ Path = "/api/v1/platform/adapters"; Method = "GET" },
+        @{ Path = "/api/v1/system/wizard/progress"; Method = "PUT" },
+        @{ Path = "/api/v1/system/wizard/completed"; Method = "POST" }
+    )) {
+        $preflight = Invoke-WebRequest -UseBasicParsing -Method OPTIONS -Uri ($baseUri + $request.Path) -Headers @{
+            Origin = $origin
+            "Access-Control-Request-Method" = $request.Method
+            "Access-Control-Request-Headers" = "content-type"
+        } -TimeoutSec 10 -ErrorAction Stop
+        if ($preflight.Headers["Access-Control-Allow-Origin"] -ne $origin) {
+            throw "CORS origin was not accepted for $($request.Method) $($request.Path)"
+        }
+        if ([string]$preflight.Headers["Access-Control-Allow-Methods"] -notmatch [regex]::Escape($request.Method)) {
+            throw "CORS method was not accepted for $($request.Method) $($request.Path)"
+        }
+        $preflightEvidence += [ordered]@{
+            path = $request.Path
+            method = $request.Method
+            status = [int]$preflight.StatusCode
+            allowOrigin = [string]$preflight.Headers["Access-Control-Allow-Origin"]
+            allowMethods = [string]$preflight.Headers["Access-Control-Allow-Methods"]
+            allowHeaders = [string]$preflight.Headers["Access-Control-Allow-Headers"]
+        }
+    }
+
+    $ready = Invoke-WebRequest -UseBasicParsing -Uri "$baseUri/readyz" -Headers $corsHeaders -TimeoutSec 10 -ErrorAction Stop
+    $readyBody = $ready.Content | ConvertFrom-Json
+    if ($readyBody.status -ne "ready") { throw "readyz did not report ready" }
+
+    $platform = Invoke-WebRequest -UseBasicParsing -Uri "$baseUri/api/v1/platform/adapters" -Headers $corsHeaders -TimeoutSec 10 -ErrorAction Stop
+    $platformBody = $platform.Content | ConvertFrom-Json
+    $platformCount = @($platformBody.data.adapters).Count
+    if ($platformBody.code -ne 0 -or $platformCount -lt 1) { throw "platform adapter catalog is unavailable" }
+
+    $progressPayload = @{ step = 0; selected_adapter = $null; created_bot_uuid = $null; bot_saved = $false; selected_runner = $null } | ConvertTo-Json -Compress
+    $progress = Invoke-WebRequest -UseBasicParsing -Method PUT -Uri "$baseUri/api/v1/system/wizard/progress" -Headers $corsHeaders -ContentType "application/json" -Body $progressPayload -TimeoutSec 10 -ErrorAction Stop
+    $progressBody = $progress.Content | ConvertFrom-Json
+    if ($progressBody.code -ne 0) { throw "wizard progress update failed" }
+
+    $completedPayload = @{ status = "skipped" } | ConvertTo-Json -Compress
+    $completed = Invoke-WebRequest -UseBasicParsing -Method POST -Uri "$baseUri/api/v1/system/wizard/completed" -Headers $corsHeaders -ContentType "application/json" -Body $completedPayload -TimeoutSec 10 -ErrorAction Stop
+    $completedBody = $completed.Content | ConvertFrom-Json
+    if ($completedBody.code -ne 0) { throw "wizard completed update failed" }
+    $completedRepeat = Invoke-WebRequest -UseBasicParsing -Method POST -Uri "$baseUri/api/v1/system/wizard/completed" -Headers $corsHeaders -ContentType "application/json" -Body $completedPayload -TimeoutSec 10 -ErrorAction Stop
+    $completedRepeatBody = $completedRepeat.Content | ConvertFrom-Json
+    if ($completedRepeatBody.code -ne 0) { throw "wizard completed update is not idempotent" }
+
+    $systemInfo = Invoke-WebRequest -UseBasicParsing -Uri "$baseUri/api/v1/system/info" -Headers $corsHeaders -TimeoutSec 10 -ErrorAction Stop
+    $systemInfoBody = $systemInfo.Content | ConvertFrom-Json
+    if ($systemInfoBody.data.wizard_status -ne "skipped" -or $null -ne $systemInfoBody.data.wizard_progress) {
+        throw "wizard state was not persisted"
+    }
+
+    $evidence = Write-JsonEvidence -Name "onboarding-api" -Payload ([ordered]@{
+        origin = $origin
+        ready = @{ url = "$baseUri/readyz"; status = [int]$ready.StatusCode; body = $readyBody; allowOrigin = [string]$ready.Headers["Access-Control-Allow-Origin"] }
+        platform = @{ url = "$baseUri/api/v1/platform/adapters"; status = [int]$platform.StatusCode; count = $platformCount; allowOrigin = [string]$platform.Headers["Access-Control-Allow-Origin"] }
+        progress = @{ url = "$baseUri/api/v1/system/wizard/progress"; status = [int]$progress.StatusCode; allowOrigin = [string]$progress.Headers["Access-Control-Allow-Origin"] }
+        completed = @{ url = "$baseUri/api/v1/system/wizard/completed"; status = [int]$completed.StatusCode; repeatStatus = [int]$completedRepeat.StatusCode; allowOrigin = [string]$completed.Headers["Access-Control-Allow-Origin"] }
+        persistence = @{ status = $systemInfoBody.data.wizard_status; progress = $systemInfoBody.data.wizard_progress }
+        preflight = $preflightEvidence
+    })
+    return New-StatusObject -Status "PASS" -Evidence "ready=200; platformCount=$platformCount; progress=200; completed=200" -LogPath $evidence
+}
+
 function Stage-Stop {
     Stop-LauncherGracefully -TimeoutSeconds 10
     $processes = @(Get-ProcessDetails)
@@ -517,6 +592,7 @@ try {
         Invoke-Stage -Name "FIRST_LAUNCH" -TimeoutSeconds 30 -Action { Stage-FirstLaunch }
         Invoke-Stage -Name "HEALTH_WAIT" -TimeoutSeconds $StartupTimeoutSeconds -Action { Stage-HealthWait }
         Invoke-Stage -Name "RPA_STATUS_WAIT" -TimeoutSeconds $StartupTimeoutSeconds -Action { Stage-RpaStatusWait }
+        Invoke-Stage -Name "ONBOARDING_API" -TimeoutSeconds 60 -Action { Stage-OnboardingApi }
         Invoke-Stage -Name "STOP" -TimeoutSeconds 20 -Action { Stage-Stop }
     }
 
