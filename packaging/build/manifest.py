@@ -110,7 +110,7 @@ def main() -> int:
         parser.error("--metadata-json and --metadata-path are mutually exclusive")
     metadata = json.loads(args.metadata_json) if args.metadata_json else {}
     if args.metadata_path:
-        metadata = json.loads(Path(args.metadata_path).read_text(encoding="utf-8"))
+        metadata = json.loads(Path(args.metadata_path).read_text(encoding="utf-8-sig"))
     write_manifest_artifacts(
         bundle_root=Path(args.bundle_root),
         version=args.version,

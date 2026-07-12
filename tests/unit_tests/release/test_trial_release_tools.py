@@ -120,6 +120,23 @@ def test_manifest_builder_marks_critical_and_non_critical_entries() -> None:
         assert manifest["nonCriticalValidation"] == "sha256"
 
 
+def test_manifest_builder_accepts_utf8_bom_metadata_file() -> None:
+    manifest_module = _load_script_module("trial_manifest_metadata", "manifest.py")
+
+    with _temp_root() as temp_root:
+        tmp_path = Path(temp_root)
+        bundle_root = tmp_path / "bundle"
+        bundle_root.mkdir()
+        (bundle_root / "payload.txt").write_text("payload", encoding="utf-8")
+        metadata_path = tmp_path / "build-metadata.json"
+        metadata_path.write_text('{"buildId":"test-build"}', encoding="utf-8-sig")
+
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+        manifest = manifest_module.build_manifest(bundle_root=bundle_root, version="0.1.0", metadata=metadata)
+
+        assert manifest["metadata"]["buildId"] == "test-build"
+
+
 def test_sensitive_scan_detects_leaks_and_redacts_report() -> None:
     scan_module = _load_script_module("trial_sensitive_scan", "sensitive-scan.py")
 
