@@ -203,9 +203,9 @@ function Invoke-FrontendBuild {
     $env:VITE_API_BASE_URL = $expectedApiBase
     Invoke-ExternalCommand -Context $Context -FilePath 'npm' -WorkingDirectory $webRoot -ArgumentList @('run', 'build')
     $distRoot = Join-Path $webRoot 'dist'
-    $bundleText = Get-ChildItem -LiteralPath $distRoot -Recurse -File |
+    $bundleText = [string]::Join("`n", @(Get-ChildItem -LiteralPath $distRoot -Recurse -File |
         Where-Object { $_.Extension -in '.css', '.html', '.js', '.map' } |
-        ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }
+        ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }))
     if ($bundleText -match '127\.0\.0\.1:5300' -or $bundleText -notmatch [regex]::Escape($expectedApiBase)) {
         throw "PACKAGED_WEB_API_BASE_MISMATCH: expected $expectedApiBase"
     }

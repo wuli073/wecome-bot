@@ -22,6 +22,7 @@ def test_release_script_derives_packaged_api_base_from_launcher_config() -> None
     assert "PACKAGED_WEB_API_BASE_MISMATCH" in script
     assert "VITE_API_BASE_URL" in script
     assert "launcher.json" in script
+    assert "$bundleText = [string]::Join" in script
 
 
 def test_packaged_web_api_base_is_readable_in_powershell() -> None:
