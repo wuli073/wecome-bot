@@ -286,6 +286,7 @@ function Update-IsolatedLauncherConfig([int]$Port) {
     $config = Get-LauncherConfig -LauncherConfigPath $isolatedLauncherPath
     $config.backend.host = "127.0.0.1"
     $config.backend.port = $Port
+    $config.backend.startupTimeoutSeconds = [Math]::Max([int]$config.backend.startupTimeoutSeconds, 120)
     $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $isolatedLauncherPath -Encoding UTF8
     Copy-Item -LiteralPath $isolatedLauncherPath -Destination (Join-Path $script:LogRoot "isolated-launcher.json") -Force
     Update-IsolatedLauncherManifest -LauncherConfigPath $isolatedLauncherPath
