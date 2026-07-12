@@ -838,7 +838,10 @@ function Test-SafetyDefaults {
         if ($missing.Count -gt 0) { throw "Launcher source missing safety env defaults: $($missing -join ', ')" }
         return "Launcher source sets real-send defaults closed."
     }
-    return New-StatusObject "UNVERIFIED" "binary launcher present" "" "Runtime verification is required to prove real-send defaults."
+    # The executable is verified below by the isolated launcher-runtime check,
+    # which observes the packaged backend status.  Do not make the preflight
+    # itself an unverified terminal result solely because source is absent.
+    return "binary launcher present; runtime verification scheduled"
 }
 
 function Invoke-ConnectorSmoke {
