@@ -68,6 +68,18 @@ public sealed class ManifestValidatorTests
         Assert.Contains("extra file", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void ValidateInstallation_AllowsGeneratedBuildArtifacts()
+    {
+        using var fixture = new ManifestFixture();
+        fixture.WriteManifest();
+        File.WriteAllText(Path.Combine(fixture.Layout.InstallRoot, "build-report.json"), "{}", Encoding.UTF8);
+        File.WriteAllText(Path.Combine(fixture.Layout.InstallRoot, "build-sensitive-scan.json"), "{}", Encoding.UTF8);
+        File.WriteAllText(Path.Combine(fixture.Layout.InstallRoot, "SHA256SUMS.txt"), "", Encoding.UTF8);
+
+        fixture.Manager.ValidateInstallation();
+    }
+
     private sealed class ManifestFixture : IDisposable
     {
         private readonly string _root;
@@ -101,6 +113,7 @@ public sealed class ManifestValidatorTests
             var manifestPath = Path.Combine(Layout.InstallRoot, "manifest.json");
             var entries = new[]
             {
+                BuildEntry("launcher.json", critical: true),
                 BuildEntry("ChatbotLauncher.exe", critical: true),
                 BuildEntry(@"server\runtime\python\python.exe", critical: true),
                 BuildEntry(@"server\app\packaging\server\entrypoint.py", critical: true),

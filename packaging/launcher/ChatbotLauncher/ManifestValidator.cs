@@ -6,6 +6,14 @@ namespace ChatbotLauncher;
 
 internal sealed class ManifestValidator
 {
+    private static readonly string[] GeneratedArtifactNames =
+    {
+        "manifest.json",
+        "SHA256SUMS.txt",
+        "build-report.json",
+        "build-sensitive-scan.json",
+    };
+
     private readonly ILauncherFileSystem _fileSystem;
 
     public ManifestValidator(ILauncherFileSystem fileSystem)
@@ -64,6 +72,7 @@ internal sealed class ManifestValidator
         var expectedPaths = manifest.Entries
             .Select(entry => ResolveEntryPath(installRoot, entry.Path))
             .Append(manifestPath)
+            .Concat(GeneratedArtifactNames.Select(name => Path.Combine(installRoot, name)))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var extraFile = _fileSystem.EnumerateFiles(installRoot)
             .FirstOrDefault(path => !expectedPaths.Contains(path));
