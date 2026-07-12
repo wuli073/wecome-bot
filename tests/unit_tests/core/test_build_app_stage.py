@@ -10,6 +10,28 @@ from langbot.pkg.core.stages.build_app import BuildAppStage
 
 
 @pytest.mark.asyncio
+async def test_packaged_onboarding_loads_adapter_catalog_without_starting_platform_runtime(monkeypatch):
+    onboarding_initialize = AsyncMock()
+    runtime_initialize = AsyncMock()
+
+    class PlatformManager:
+        def __init__(self, *, ap):
+            self.ap = ap
+
+        initialize_onboarding = onboarding_initialize
+        initialize = runtime_initialize
+
+    monkeypatch.setattr('langbot.pkg.core.stages.build_app.im_mgr.PlatformManager', PlatformManager)
+    app = SimpleNamespace()
+
+    await BuildAppStage()._initialize_onboarding_core(app)
+
+    assert app.platform_mgr is not None
+    onboarding_initialize.assert_awaited_once()
+    runtime_initialize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_build_app_stage_restores_local_connectors_only_once(monkeypatch):
     restore_mock = AsyncMock()
     initialize_builtin_mock = AsyncMock()
@@ -27,6 +49,24 @@ async def test_build_app_stage_restores_local_connectors_only_once(monkeypatch):
     def object_with_initialize(*_args, **_kwargs):
         return SimpleNamespace(initialize=AsyncMock(side_effect=noop_async))
 
+    platform_onboarding_initialize = AsyncMock(side_effect=noop_async)
+    platform_runtime_initialize = AsyncMock(side_effect=noop_async)
+
+    def platform_manager_factory(*_args, **_kwargs):
+        return SimpleNamespace(
+            initialize_onboarding=platform_onboarding_initialize,
+            initialize=platform_runtime_initialize,
+        )
+
+    persistence_initialize = AsyncMock(side_effect=noop_async)
+    seed_space_model_providers = AsyncMock(side_effect=noop_async)
+
+    def persistence_manager_factory(*_args, **_kwargs):
+        return SimpleNamespace(
+            initialize=persistence_initialize,
+            write_space_model_providers=seed_space_model_providers,
+        )
+
     monkeypatch.setattr(
         'langbot.pkg.core.stages.build_app.local_connectors_service.LocalConnectorsService',
         local_connectors_factory,
@@ -34,7 +74,10 @@ async def test_build_app_stage_restores_local_connectors_only_once(monkeypatch):
     monkeypatch.setattr('langbot.pkg.core.stages.build_app.proxy.ProxyManager', object_with_initialize)
     monkeypatch.setattr('langbot.pkg.core.stages.build_app.version.VersionManager', object_with_initialize)
     monkeypatch.setattr('langbot.pkg.core.stages.build_app.storagemgr.StorageMgr', object_with_initialize)
-    monkeypatch.setattr('langbot.pkg.core.stages.build_app.persistencemgr.PersistenceManager', object_with_initialize)
+    monkeypatch.setattr(
+        'langbot.pkg.core.stages.build_app.persistencemgr.PersistenceManager',
+        persistence_manager_factory,
+    )
     monkeypatch.setattr('langbot.pkg.core.stages.build_app.telemetry_module.TelemetryManager', object_with_initialize)
     monkeypatch.setattr('langbot.pkg.core.stages.build_app.survey_module.SurveyManager', object_with_initialize)
     monkeypatch.setattr('langbot.pkg.core.stages.build_app.cmdmgr.CommandManager', object_with_initialize)
@@ -42,7 +85,7 @@ async def test_build_app_stage_restores_local_connectors_only_once(monkeypatch):
     monkeypatch.setattr('langbot.pkg.core.stages.build_app.llm_session_mgr.SessionManager', object_with_initialize)
     monkeypatch.setattr('langbot.pkg.core.stages.build_app.box_service.BoxService', object_with_initialize)
     monkeypatch.setattr('langbot.pkg.core.stages.build_app.llm_tool_mgr.ToolManager', object_with_initialize)
-    monkeypatch.setattr('langbot.pkg.core.stages.build_app.im_mgr.PlatformManager', object_with_initialize)
+    monkeypatch.setattr('langbot.pkg.core.stages.build_app.im_mgr.PlatformManager', platform_manager_factory)
     monkeypatch.setattr('langbot.pkg.core.stages.build_app.rag_mgr.RAGManager', object_with_initialize)
     monkeypatch.setattr('langbot.pkg.core.stages.build_app.vectordb_mgr.VectorDBManager', object_with_initialize)
     def http_controller_factory(*_args, **_kwargs):
@@ -136,5 +179,8 @@ async def test_build_app_stage_restores_local_connectors_only_once(monkeypatch):
 
     assert initialize_builtin_mock.await_count == 1
     assert restore_mock.await_count == 1
+    platform_onboarding_initialize.assert_awaited_once()
+    platform_runtime_initialize.assert_awaited_once()
+    seed_space_model_providers.assert_awaited_once()
     assert watcher_args['repo_root'] == Path.cwd()
     assert states

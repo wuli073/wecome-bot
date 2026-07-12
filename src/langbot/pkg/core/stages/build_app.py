@@ -145,6 +145,7 @@ class BuildAppStage(stage.BootingStage):
             )
             return
 
+        await self._initialize_onboarding_core(ap)
         await self._initialize_remaining(ap)
 
     async def _run_packaged_initialization(self, ap: app.Application) -> None:
@@ -159,11 +160,14 @@ class BuildAppStage(stage.BootingStage):
     async def _initialize_onboarding_core(self, ap: app.Application) -> None:
         """Initialize the dependencies required by the first-run wizard."""
         im_mgr_inst = im_mgr.PlatformManager(ap=ap)
-        await im_mgr_inst.initialize()
+        await im_mgr_inst.initialize_onboarding()
         ap.platform_mgr = im_mgr_inst
 
     async def _initialize_remaining(self, ap: app.Application) -> None:
         """Initialize components that must not delay packaged HTTP liveness."""
+        await ap.persistence_mgr.write_space_model_providers()
+        await ap.platform_mgr.initialize()
+
         local_connectors_service_inst = local_connectors_service.LocalConnectorsService(ap)
         ap.local_connectors_service = local_connectors_service_inst
         await local_connectors_service_inst.initialize_builtin_mcp_servers()

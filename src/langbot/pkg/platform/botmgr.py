@@ -425,7 +425,7 @@ class PlatformManager:
 
     bots: list[RuntimeBot]
 
-    websocket_proxy_bot: RuntimeBot
+    websocket_proxy_bot: RuntimeBot | None
 
     adapter_components: list[engine.Component]
 
@@ -436,24 +436,25 @@ class PlatformManager:
         self.bots = []
         self.adapter_components = []
         self.adapter_dict = {}
+        self.websocket_proxy_bot = None
 
-    async def initialize(self):
-        # delete all bot log images
-        await self.ap.storage_mgr.storage_provider.delete_dir_recursive('bot_log_images')
-
+    async def initialize_onboarding(self):
+        """Load adapter metadata needed by the onboarding UI."""
         disabled_adapters = self.ap.instance_config.data.get('system', {}).get('disabled_adapters', []) or []
-
         self.adapter_components = self.ap.discover.get_components_by_kind('MessagePlatformAdapter')
-        adapter_dict: dict[str, type[abstract_platform_adapter.AbstractMessagePlatformAdapter]] = {}
-        for component in self.adapter_components:
-            if component.metadata.name in disabled_adapters:
-                continue
-            adapter_dict[component.metadata.name] = component.get_python_component_class()
-        self.adapter_dict = adapter_dict
-
-        # Filter out disabled adapters from components list (for API responses)
         if disabled_adapters:
             self.adapter_components = [c for c in self.adapter_components if c.metadata.name not in disabled_adapters]
+
+    async def initialize(self):
+        await self.initialize_onboarding()
+
+        # Delete bot log images only after HTTP is available in packaged builds.
+        await self.ap.storage_mgr.storage_provider.delete_dir_recursive('bot_log_images')
+
+        self.adapter_dict = {
+            component.metadata.name: component.get_python_component_class()
+            for component in self.adapter_components
+        }
 
         # initialize websocket adapter
         websocket_adapter_class = self.adapter_dict['websocket']

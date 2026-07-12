@@ -79,8 +79,6 @@ class PersistenceManager:
         # Run Alembic migrations (new migration system)
         await self._run_alembic_migrations()
 
-        await self.write_space_model_providers()
-
     async def create_tables(self):
         # create tables
         async with self.get_db_engine().connect() as conn:

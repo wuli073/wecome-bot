@@ -63,6 +63,27 @@ async def test_load_bots_from_db_backfills_wxwork_database_bindings_before_loadi
     assert call_log == [('binding', 'wxwork-bot'), ('load', 'wxwork-bot'), ('load', 'telegram-bot')]
 
 
+async def test_initialize_onboarding_loads_adapter_metadata_without_importing_adapter_classes():
+    enabled_component = SimpleNamespace(metadata=SimpleNamespace(name='telegram'), to_plain_dict=Mock())
+    disabled_component = SimpleNamespace(metadata=SimpleNamespace(name='qq'), to_plain_dict=Mock())
+    enabled_component.get_python_component_class = Mock()
+    disabled_component.get_python_component_class = Mock()
+    ap = SimpleNamespace(
+        instance_config=SimpleNamespace(data={'system': {'disabled_adapters': ['qq']}}),
+        discover=SimpleNamespace(
+            get_components_by_kind=Mock(return_value=[enabled_component, disabled_component]),
+        ),
+    )
+    manager = PlatformManager(ap=ap)
+
+    await manager.initialize_onboarding()
+
+    assert manager.adapter_components == [enabled_component]
+    enabled_component.get_python_component_class.assert_not_called()
+    disabled_component.get_python_component_class.assert_not_called()
+    assert manager.websocket_proxy_bot is None
+
+
 async def test_load_bots_from_db_repeated_backfill_keeps_single_binding():
     persistence_mgr = _PersistenceManager()
     await persistence_mgr.initialize()
