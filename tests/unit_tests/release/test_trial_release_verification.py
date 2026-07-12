@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
@@ -543,6 +543,13 @@ def test_verify_script_avoids_reserved_home_variable_assignment() -> None:
     assert "$home =" not in verify_script.lower()
     assert "$homeResponse =" in verify_script
     assert "$pid =" not in install_script.lower()
+
+
+def test_verifier_uses_the_isolated_launcher_startup_deadline() -> None:
+    verify_script = VERIFY_SCRIPT.read_text(encoding="utf-8-sig")
+
+    assert "$launcherStartupTimeoutSeconds = [int]$config.backend.startupTimeoutSeconds" in verify_script
+    assert "Wait-Http $healthUri $launcherStartupTimeoutSeconds" in verify_script
 
 
 def test_install_script_waits_for_a_core_usable_runtime_state() -> None:

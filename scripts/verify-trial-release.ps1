@@ -1073,6 +1073,10 @@ function Invoke-LauncherVerification {
     $config = Get-LauncherConfig -LauncherConfigPath (Get-IsolatedLauncherConfigPath)
     $backendHost = [string]$config.backend.host
     $port = [int]$config.backend.port
+    $launcherStartupTimeoutSeconds = [int]$config.backend.startupTimeoutSeconds
+    if ($launcherStartupTimeoutSeconds -lt 1) {
+        throw "launcher.json startupTimeoutSeconds must be positive"
+    }
     $userData = $script:UserDataRoot
     Ensure-Directory $userData
     $pathValue = $env:Path
@@ -1124,7 +1128,7 @@ function Invoke-LauncherVerification {
     try {
         $healthUri = "http://${backendHost}:$port$($config.backend.healthPath)"
         $statusUri = "http://${backendHost}:$port$($config.backend.runtimeStatusPath)"
-        try { $health = Wait-Http $healthUri $StartupTimeoutSeconds }
+        try { $health = Wait-Http $healthUri $launcherStartupTimeoutSeconds }
         catch {
             $classification = Get-HealthFailureClassification $userData $port
             $diagnosticPath = Write-LauncherFailureDiagnostics $userData $port $classification
