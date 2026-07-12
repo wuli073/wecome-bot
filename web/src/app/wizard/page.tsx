@@ -102,6 +102,8 @@ export default function WizardPage() {
     null,
   );
   const [isLoading, setIsLoading] = useState(true);
+  const [isCoreReady, setIsCoreReady] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isCreatingBot, setIsCreatingBot] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSavingBot, setIsSavingBot] = useState(false);
@@ -127,8 +129,34 @@ export default function WizardPage() {
   // ---- Fetch remote data & restore progress ----
   useEffect(() => {
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const readyRequest = new AbortController();
+
+    const waitForRetry = () =>
+      new Promise<void>((resolve) => {
+        retryTimer = setTimeout(resolve, 500);
+      });
+
     (async () => {
       try {
+        const baseUrl =
+          httpClient.getBaseUrl() === '/' ? '' : httpClient.getBaseUrl();
+        while (!cancelled) {
+          try {
+            const response = await fetch(`${baseUrl}/readyz`, {
+              signal: readyRequest.signal,
+            });
+            if (response.ok) {
+              if (!cancelled) setIsCoreReady(true);
+              break;
+            }
+          } catch {
+            if (readyRequest.signal.aborted) return;
+            // The backend can still be binding; keep the wizard non-interactive.
+          }
+          await waitForRetry();
+        }
+        if (cancelled) return;
         // Initialize user/system info (wizard is outside /home layout)
         await Promise.all([initializeUserInfo(), initializeSystemInfo()]);
 
@@ -183,13 +211,15 @@ export default function WizardPage() {
         }
       } catch (err) {
         console.error('Failed to load wizard data', err);
-        toast.error(t('wizard.loadError'));
+        setLoadError(t('wizard.loadError'));
       } finally {
         if (!cancelled) setIsLoading(false);
       }
     })();
     return () => {
       cancelled = true;
+      readyRequest.abort();
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
     };
   }, [t]);
 
@@ -527,7 +557,27 @@ export default function WizardPage() {
   if (isLoading) {
     return (
       <div className="fixed inset-0 z-50 bg-background flex items-center justify-center">
-        <LoadingSpinner text={t('wizard.loading')} />
+        <LoadingSpinner
+          text={isCoreReady ? t('wizard.loading') : t('wizard.initializing')}
+        />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="fixed inset-0 z-50 bg-background flex items-center justify-center p-6">
+        <Card className="max-w-md w-full">
+          <CardHeader>
+            <CardTitle>{t('wizard.platformLoadError')}</CardTitle>
+            <CardDescription>{loadError}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={() => window.location.reload()}>
+              {t('wizard.retry')}
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     );
   }

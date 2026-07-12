@@ -48,7 +48,11 @@ function shouldUseCurrentOrigin(configuredBaseURL: string): boolean {
 
     const configuredIsLoopback = LOOPBACK_HOSTS.has(configured.hostname);
     const currentIsLoopback = LOOPBACK_HOSTS.has(current.hostname);
-    return configured.protocol === current.protocol && configuredIsLoopback && currentIsLoopback;
+    return (
+      configured.protocol === current.protocol &&
+      configuredIsLoopback &&
+      currentIsLoopback
+    );
   } catch {
     return false;
   }
@@ -56,14 +60,16 @@ function shouldUseCurrentOrigin(configuredBaseURL: string): boolean {
 
 export function resolveBackendBaseURL(configuredBaseURL?: string): string {
   if (typeof window === 'undefined') {
-    return configuredBaseURL ? normalizeConfiguredBaseURL(configuredBaseURL) : '/';
+    return configuredBaseURL
+      ? normalizeConfiguredBaseURL(configuredBaseURL)
+      : '/';
   }
 
   if (!configuredBaseURL) {
     return '/';
   }
 
-  if (shouldUseCurrentOrigin(configuredBaseURL)) {
+  if (import.meta.env.DEV && shouldUseCurrentOrigin(configuredBaseURL)) {
     return '/';
   }
 

@@ -1769,6 +1769,9 @@ const enUS = {
     createError: 'Failed to create resources',
     spaceAuthError: 'Failed to initiate Space authorization',
     skipSaveError: 'Failed to save skip status. Please try again.',
+    initializing: 'The service is initializing. Please wait.',
+    platformLoadError: 'Failed to load platform list',
+    retry: 'Retry',
     completeSaveError: 'Failed to save completion status. Please try again.',
     step: {
       platform: 'Platform',

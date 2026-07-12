@@ -1691,6 +1691,9 @@ const zhHans = {
     createError: '创建资源失败',
     spaceAuthError: '无法发起 Space 授权',
     skipSaveError: '保存跳过状态失败，请重试。',
+    initializing: '服务正在初始化，请稍候。',
+    platformLoadError: '平台列表加载失败',
+    retry: '重试',
     completeSaveError: '保存完成状态失败，请重试。',
     step: {
       platform: '平台接入',
