@@ -31,3 +31,14 @@ def test_http_listener_does_not_overwrite_packaged_onboarding_readiness() -> Non
     ).read_text(encoding='utf-8')
 
     assert "if self.startup_phase != 'ready':" in source
+
+    build_source = (
+        Path(__file__).resolve().parents[3]
+        / 'src'
+        / 'langbot'
+        / 'pkg'
+        / 'core'
+        / 'stages'
+        / 'build_app.py'
+    ).read_text(encoding='utf-8')
+    assert "if ap.startup_phase != 'ready':\n                ap.set_startup_phase('http_server_starting')" in build_source

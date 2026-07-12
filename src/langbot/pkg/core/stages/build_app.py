@@ -138,7 +138,8 @@ class BuildAppStage(stage.BootingStage):
             http_ctrl = http_controller.HTTPController(ap)
             await http_ctrl.initialize()
             ap.http_ctrl = http_ctrl
-            ap.set_startup_phase('http_server_starting')
+            if ap.startup_phase != 'ready':
+                ap.set_startup_phase('http_server_starting')
             ap.startup_task = asyncio.create_task(
                 self._run_packaged_initialization(ap),
                 name='packaged-optional-initialization',
