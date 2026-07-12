@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import typing
 from random import randint
 
@@ -35,11 +36,19 @@ class HTTPController:
     quart_app: quart.Quart
 
     DEFAULT_HTTP_HOST = '127.0.0.1'
+    LOOPBACK_ORIGIN = re.compile(
+        r'^http://(?:127\.0\.0\.1|localhost):(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$'
+    )
 
     def __init__(self, ap: app.Application) -> None:
         self.ap = ap
         self.quart_app = quart.Quart(__name__)
-        quart_cors.cors(self.quart_app, allow_origin='*')
+        quart_cors.cors(
+            self.quart_app,
+            allow_origin=self.LOOPBACK_ORIGIN,
+            allow_headers=['Authorization', 'Content-Type', 'X-API-Key'],
+            allow_methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        )
         self.quart_app.config['MAX_CONTENT_LENGTH'] = group.MAX_FILE_SIZE
         self.mcp_mount: MCPMount | None = None
         self._shutdown_event = asyncio.Event()

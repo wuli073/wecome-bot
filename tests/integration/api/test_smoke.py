@@ -111,6 +111,8 @@ def fake_api_app():
             'system': {'allow_modify_login_info': True, 'limitation': {}},
         }
     )
+    app.startup_phase = 'ready'
+    app.startup_error = None
 
     # API-specific services
     app.user_service = Mock()
@@ -237,7 +239,7 @@ class TestHealthEndpoint:
 
         assert response.status_code == 200
         data = await response.get_json()
-        assert data == {'code': 0, 'msg': 'ok'}
+        assert data == {'code': 0, 'msg': 'ok', 'status': 'ok', 'phase': 'ready'}
 
     @pytest.mark.asyncio
     async def test_healthz_no_auth_required(self, quart_test_client):
@@ -248,6 +250,39 @@ class TestHealthEndpoint:
         """
         response = await quart_test_client.get('/healthz')
         assert response.status_code == 200
+
+
+@pytest.mark.usefixtures('mock_circular_import_chain')
+class TestLoopbackCors:
+    @pytest.mark.asyncio
+    async def test_random_loopback_origin_receives_cors_preflight_headers(self, quart_test_client):
+        origin = 'http://127.0.0.1:58751'
+        response = await quart_test_client.options(
+            '/api/v1/platform/adapters',
+            headers={
+                'Origin': origin,
+                'Access-Control-Request-Method': 'GET',
+                'Access-Control-Request-Headers': 'content-type',
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.headers['Access-Control-Allow-Origin'] == origin
+        assert 'GET' in response.headers['Access-Control-Allow-Methods']
+        assert 'content-type' in response.headers['Access-Control-Allow-Headers'].lower()
+
+    @pytest.mark.asyncio
+    async def test_non_loopback_origin_receives_no_cors_authorization(self, quart_test_client):
+        response = await quart_test_client.options(
+            '/api/v1/platform/adapters',
+            headers={
+                'Origin': 'http://example.test:58751',
+                'Access-Control-Request-Method': 'GET',
+            },
+        )
+
+        assert response.status_code == 200
+        assert 'Access-Control-Allow-Origin' not in response.headers
 
 
 @pytest.mark.usefixtures('mock_circular_import_chain')
@@ -370,7 +405,7 @@ class TestHttpBind:
 
             return SimpleNamespace(secure_sockets=[], insecure_sockets=[], quic_sockets=[])
 
-        async def fake_run_with_readiness(*, config, sockets):
+        async def fake_run_with_readiness(*, config, sockets, shutdown_trigger):
             return None
 
         monkeypatch.setattr(controller, '_reserve_sockets', fake_reserve_sockets)

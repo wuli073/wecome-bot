@@ -134,6 +134,7 @@ class BuildAppStage(stage.BootingStage):
         ap.set_startup_phase('database_ready')
 
         if os.environ.get('CHATBOT_PACKAGED') == '1':
+            await self._initialize_onboarding_core(ap)
             http_ctrl = http_controller.HTTPController(ap)
             await http_ctrl.initialize()
             ap.http_ctrl = http_ctrl
@@ -150,15 +151,18 @@ class BuildAppStage(stage.BootingStage):
         try:
             await self._initialize_remaining(ap)
         except Exception:
-            ap.set_startup_phase('failed', error='optional initialization failed')
             ap.logger.exception('Packaged optional initialization failed.')
-            raise
+
+    async def _initialize_onboarding_core(self, ap: app.Application) -> None:
+        """Initialize the dependencies required by the first-run wizard."""
+        im_mgr_inst = im_mgr.PlatformManager(ap=ap)
+        await im_mgr_inst.initialize()
+        ap.platform_mgr = im_mgr_inst
+        ap.set_startup_phase('platform_adapters_loaded')
+        ap.set_startup_phase('ready')
 
     async def _initialize_remaining(self, ap: app.Application) -> None:
         """Initialize components that must not delay packaged HTTP liveness."""
-        if os.environ.get('CHATBOT_PACKAGED') == '1':
-            ap.set_startup_phase('optional_services_starting')
-
         local_connectors_service_inst = local_connectors_service.LocalConnectorsService(ap)
         ap.local_connectors_service = local_connectors_service_inst
         await local_connectors_service_inst.initialize_builtin_mcp_servers()
@@ -181,8 +185,6 @@ class BuildAppStage(stage.BootingStage):
         llm_model_mgr_inst = llm_model_mgr.ModelManager(ap)
         ap.model_mgr = llm_model_mgr_inst
         await llm_model_mgr_inst.initialize()
-        if os.environ.get('CHATBOT_PACKAGED') == '1':
-            ap.set_startup_phase('model_sync_complete')
 
         llm_session_mgr_inst = llm_session_mgr.SessionManager(ap)
         await llm_session_mgr_inst.initialize()
@@ -191,18 +193,10 @@ class BuildAppStage(stage.BootingStage):
         box_service_inst = box_service.BoxService(ap)
         await box_service_inst.initialize()
         ap.box_service = box_service_inst
-        if os.environ.get('CHATBOT_PACKAGED') == '1' and not box_service_inst.available:
-            ap.set_startup_phase('box_runtime_unavailable')
 
         llm_tool_mgr_inst = llm_tool_mgr.ToolManager(ap)
         ap.tool_mgr = llm_tool_mgr_inst
         await llm_tool_mgr_inst.initialize()
-        if os.environ.get('CHATBOT_PACKAGED') == '1':
-            ap.set_startup_phase('mcp_loaded')
-
-        im_mgr_inst = im_mgr.PlatformManager(ap=ap)
-        await im_mgr_inst.initialize()
-        ap.platform_mgr = im_mgr_inst
 
         # Initialize webhook pusher
         webhook_pusher_inst = WebhookPusher(ap)
@@ -313,5 +307,3 @@ class BuildAppStage(stage.BootingStage):
 
         ctrl = controller.Controller(ap)
         ap.ctrl = ctrl
-        if os.environ.get('CHATBOT_PACKAGED') == '1':
-            ap.set_startup_phase('ready')
