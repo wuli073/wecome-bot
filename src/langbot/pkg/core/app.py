@@ -4,6 +4,9 @@ import logging
 import asyncio
 import traceback
 import os
+import json
+import time
+import datetime
 
 from ..platform import botmgr as im_mgr
 from ..platform.webhook_pusher import WebhookPusher
@@ -194,6 +197,29 @@ class Application:
         self._shutdown_task: asyncio.Task[None] | None = None
         self._critical_failure: BaseException | None = None
         self._shutdown_reason: str | None = None
+        self.startup_phase = 'initializing'
+        self.startup_error: str | None = None
+        self.startup_task: asyncio.Task[None] | None = None
+        self._boot_started_at = time.monotonic()
+
+    def set_startup_phase(self, stage: str, *, error: str | None = None) -> None:
+        """Record a non-sensitive packaged startup transition."""
+        self.startup_phase = stage
+        self.startup_error = error
+        payload = {
+            'timestamp': datetime.datetime.now(datetime.UTC).isoformat(),
+            'pid': os.getpid(),
+            'sessionId': os.environ.get('CHATBOT_LAUNCH_SESSION_ID', ''),
+            'stage': stage,
+            'elapsedMs': round((time.monotonic() - self._boot_started_at) * 1000),
+        }
+        if error:
+            payload['error'] = error
+        message = f'BOOT_STAGE {json.dumps(payload, ensure_ascii=True, separators=(",", ":"))}'
+        if self.logger is not None:
+            self.logger.info(message)
+        else:
+            print(message, flush=True)
 
     async def initialize(self):
         if self.desktop_automation_service is None:
@@ -227,6 +253,32 @@ class Application:
 
     async def run(self) -> int:
         try:
+            critical_task_wrappers: dict[str, taskmgr.TaskWrapper] = {}
+            if self.startup_task is not None:
+                critical_task_wrappers['http-api-controller'] = self.task_mgr.create_task(
+                    self.http_ctrl.run(),
+                    name='http-api-controller',
+                    scopes=[core_entities.LifecycleControlScope.APPLICATION],
+                )
+                await self.http_ctrl.wait_until_listening()
+                self.set_startup_phase('http_server_listening')
+                self.set_startup_phase('health_available')
+
+                shutdown_waiter = asyncio.create_task(self.shutdown_requested_event.wait())
+                done, _ = await asyncio.wait(
+                    {self.startup_task, shutdown_waiter},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                shutdown_waiter.cancel()
+                await asyncio.gather(shutdown_waiter, return_exceptions=True)
+                if self.shutdown_requested_event.is_set():
+                    self.startup_task.cancel()
+                    await asyncio.gather(self.startup_task, return_exceptions=True)
+                    await self.shutdown()
+                    return 0
+                self.startup_task.result()
+                await self.initialize()
+
             await self.plugin_connector.initialize_plugins()
 
             try:
@@ -241,18 +293,17 @@ class Application:
                 await self.shutdown()
                 return 0
 
-            critical_task_wrappers: dict[str, taskmgr.TaskWrapper] = {}
-
             critical_task_wrappers['query-controller'] = self.task_mgr.create_task(
                 self.ctrl.run(),
                 name='query-controller',
                 scopes=[core_entities.LifecycleControlScope.APPLICATION],
             )
-            critical_task_wrappers['http-api-controller'] = self.task_mgr.create_task(
-                self.http_ctrl.run(),
-                name='http-api-controller',
-                scopes=[core_entities.LifecycleControlScope.APPLICATION],
-            )
+            if 'http-api-controller' not in critical_task_wrappers:
+                critical_task_wrappers['http-api-controller'] = self.task_mgr.create_task(
+                    self.http_ctrl.run(),
+                    name='http-api-controller',
+                    scopes=[core_entities.LifecycleControlScope.APPLICATION],
+                )
             # Telemetry instance heartbeat (startup + daily); respects
             # space.disable_telemetry via TelemetryManager.send().
             if self.telemetry is not None:

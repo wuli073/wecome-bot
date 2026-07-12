@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 from .. import stage, app
@@ -128,7 +129,35 @@ class BuildAppStage(stage.BootingStage):
 
         persistence_mgr_inst = persistencemgr.PersistenceManager(ap)
         ap.persistence_mgr = persistence_mgr_inst
+        ap.set_startup_phase('database_started')
         await persistence_mgr_inst.initialize()
+        ap.set_startup_phase('database_ready')
+
+        if os.environ.get('CHATBOT_PACKAGED') == '1':
+            http_ctrl = http_controller.HTTPController(ap)
+            await http_ctrl.initialize()
+            ap.http_ctrl = http_ctrl
+            ap.set_startup_phase('http_server_starting')
+            ap.startup_task = asyncio.create_task(
+                self._run_packaged_initialization(ap),
+                name='packaged-optional-initialization',
+            )
+            return
+
+        await self._initialize_remaining(ap)
+
+    async def _run_packaged_initialization(self, ap: app.Application) -> None:
+        try:
+            await self._initialize_remaining(ap)
+        except Exception:
+            ap.set_startup_phase('failed', error='optional initialization failed')
+            ap.logger.exception('Packaged optional initialization failed.')
+            raise
+
+    async def _initialize_remaining(self, ap: app.Application) -> None:
+        """Initialize components that must not delay packaged HTTP liveness."""
+        if os.environ.get('CHATBOT_PACKAGED') == '1':
+            ap.set_startup_phase('optional_services_starting')
 
         local_connectors_service_inst = local_connectors_service.LocalConnectorsService(ap)
         ap.local_connectors_service = local_connectors_service_inst
@@ -152,6 +181,8 @@ class BuildAppStage(stage.BootingStage):
         llm_model_mgr_inst = llm_model_mgr.ModelManager(ap)
         ap.model_mgr = llm_model_mgr_inst
         await llm_model_mgr_inst.initialize()
+        if os.environ.get('CHATBOT_PACKAGED') == '1':
+            ap.set_startup_phase('model_sync_complete')
 
         llm_session_mgr_inst = llm_session_mgr.SessionManager(ap)
         await llm_session_mgr_inst.initialize()
@@ -160,10 +191,14 @@ class BuildAppStage(stage.BootingStage):
         box_service_inst = box_service.BoxService(ap)
         await box_service_inst.initialize()
         ap.box_service = box_service_inst
+        if os.environ.get('CHATBOT_PACKAGED') == '1' and not box_service_inst.available:
+            ap.set_startup_phase('box_runtime_unavailable')
 
         llm_tool_mgr_inst = llm_tool_mgr.ToolManager(ap)
         ap.tool_mgr = llm_tool_mgr_inst
         await llm_tool_mgr_inst.initialize()
+        if os.environ.get('CHATBOT_PACKAGED') == '1':
+            ap.set_startup_phase('mcp_loaded')
 
         im_mgr_inst = im_mgr.PlatformManager(ap=ap)
         await im_mgr_inst.initialize()
@@ -198,9 +233,10 @@ class BuildAppStage(stage.BootingStage):
         await vectordb_mgr_inst.initialize()
         ap.vector_db_mgr = vectordb_mgr_inst
 
-        http_ctrl = http_controller.HTTPController(ap)
-        await http_ctrl.initialize()
-        ap.http_ctrl = http_ctrl
+        if ap.http_ctrl is None:
+            http_ctrl = http_controller.HTTPController(ap)
+            await http_ctrl.initialize()
+            ap.http_ctrl = http_ctrl
 
         monitoring_service_inst = monitoring_service.MonitoringService(ap)
         ap.monitoring_service = monitoring_service_inst
@@ -277,3 +313,5 @@ class BuildAppStage(stage.BootingStage):
 
         ctrl = controller.Controller(ap)
         ap.ctrl = ctrl
+        if os.environ.get('CHATBOT_PACKAGED') == '1':
+            ap.set_startup_phase('ready')

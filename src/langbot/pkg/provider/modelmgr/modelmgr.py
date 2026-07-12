@@ -85,15 +85,12 @@ class ModelManager:
             self.ap.logger.info('LangBot Space Models service is disabled, skipping sync.')
             return
 
-        sync_timeout = space_config.get('models_sync_timeout')
+        sync_timeout = space_config.get('models_sync_timeout', 10)
         try:
-            if sync_timeout:
-                await asyncio.wait_for(
-                    self.sync_new_models_from_space(),
-                    timeout=float(sync_timeout),
-                )
-            else:
-                await self.sync_new_models_from_space()
+            await asyncio.wait_for(
+                self.sync_new_models_from_space(),
+                timeout=float(sync_timeout),
+            )
         except asyncio.TimeoutError:
             self.ap.logger.warning(f'LangBot Space model sync timed out after {sync_timeout}s, skipping startup sync.')
         except Exception as e:

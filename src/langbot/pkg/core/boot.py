@@ -39,7 +39,11 @@ async def make_app(loop: asyncio.AbstractEventLoop) -> app.Application:
 
         await stage_inst.run(ap)
 
-    await ap.initialize()
+    # The packaged entrypoint starts HTTP before optional services finish.  The
+    # desktop runtime prewarm needs services from that second phase, so it is
+    # invoked by Application.run once the phase has completed.
+    if os.environ.get('CHATBOT_PACKAGED') != '1':
+        await ap.initialize()
 
     return ap
 

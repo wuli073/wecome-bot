@@ -119,6 +119,7 @@ def test_packaged_environment_verifier_accepts_launcher_driven_roots(monkeypatch
     assert env['PYTHONDONTWRITEBYTECODE'] == '1'
     assert env['PYTHONUTF8'] == '1'
     assert env['PYTHONIOENCODING'] == 'utf-8'
+    assert env['PYTHONUNBUFFERED'] == '1'
     assert env['DESKTOP_AUTOMATION__ENABLED'] == 'true'
     assert env['DESKTOP_AUTOMATION__RUNTIME_EXECUTABLE'] == str(config.rpa_runtime_path)
 

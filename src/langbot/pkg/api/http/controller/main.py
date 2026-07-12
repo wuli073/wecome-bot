@@ -43,6 +43,13 @@ class HTTPController:
         self.quart_app.config['MAX_CONTENT_LENGTH'] = group.MAX_FILE_SIZE
         self.mcp_mount: MCPMount | None = None
         self._shutdown_event = asyncio.Event()
+        self._listening_event = asyncio.Event()
+        self._startup_error: BaseException | None = None
+
+    async def wait_until_listening(self) -> None:
+        await self._listening_event.wait()
+        if self._startup_error is not None:
+            raise self._startup_error
 
     async def initialize(self) -> None:
         @self.quart_app.errorhandler(RequestEntityTooLarge)
@@ -61,15 +68,20 @@ class HTTPController:
         self.ap.logger.info('LangBot MCP server mounted at /mcp (API-key authenticated).')
 
     def run(self) -> typing.Coroutine[typing.Any, typing.Any, None]:
-        host = self._get_bind_host()
-        port = int(self.ap.instance_config.data['api']['port'])
-        config = self._build_hypercorn_config(host=host, port=port)
-        sockets = self._reserve_sockets(config)
-        return self._run_with_readiness(
-            config=config,
-            sockets=sockets,
-            shutdown_trigger=self._shutdown_event.wait,
-        )
+        try:
+            host = self._get_bind_host()
+            port = int(self.ap.instance_config.data['api']['port'])
+            config = self._build_hypercorn_config(host=host, port=port)
+            sockets = self._reserve_sockets(config)
+            return self._run_with_readiness(
+                config=config,
+                sockets=sockets,
+                shutdown_trigger=self._shutdown_event.wait,
+            )
+        except Exception as exc:
+            self._startup_error = exc
+            self._listening_event.set()
+            raise
 
     def request_shutdown(self) -> None:
         self._shutdown_event.set()
@@ -109,7 +121,9 @@ class HTTPController:
             await asyncio.gather(server_task, return_exceptions=True)
             self._close_sockets(sockets)
             raise
-        except Exception:
+        except Exception as exc:
+            self._startup_error = exc
+            self._listening_event.set()
             if not server_task.done():
                 server_task.cancel()
                 await asyncio.gather(server_task, return_exceptions=True)
@@ -177,6 +191,7 @@ class HTTPController:
                 await config.log.info(f'Running on https://{bind} (CTRL + C to quit)')
                 if not ready_future.done():
                     ready_future.set_result(bind)
+                self._listening_event.set()
 
             for sock in sockets.insecure_sockets:
                 if config.workers > 1 and platform.system() == 'Windows':
@@ -186,6 +201,7 @@ class HTTPController:
                 await config.log.info(f'Running on http://{bind} (CTRL + C to quit)')
                 if not ready_future.done():
                     ready_future.set_result(bind)
+                self._listening_event.set()
 
             for sock in sockets.quic_sockets:
                 if config.workers > 1 and platform.system() == 'Windows':
@@ -201,9 +217,11 @@ class HTTPController:
                 await config.log.info(f'Running on https://{bind} (QUIC) (CTRL + C to quit)')
                 if not ready_future.done():
                     ready_future.set_result(bind)
+                self._listening_event.set()
 
             if not ready_future.done():
                 ready_future.set_result(None)
+            self._listening_event.set()
 
             try:
                 async with TaskGroup() as task_group:
@@ -272,7 +290,17 @@ class HTTPController:
     async def register_routes(self) -> None:
         @self.quart_app.route('/healthz')
         async def healthz():
-            return {'code': 0, 'msg': 'ok'}
+            return {'code': 0, 'msg': 'ok', 'status': 'ok', 'phase': self.ap.startup_phase}
+
+        @self.quart_app.route('/readyz')
+        async def readyz():
+            if self.ap.startup_phase == 'ready':
+                return {'status': 'ready', 'phase': 'ready'}
+            response = {'status': 'initializing', 'phase': self.ap.startup_phase}
+            if self.ap.startup_error:
+                response['error'] = self.ap.startup_error
+                return response, 503
+            return response, 503
 
         for g in group.preregistered_groups:
             ginst = g(self.ap, self.quart_app)
