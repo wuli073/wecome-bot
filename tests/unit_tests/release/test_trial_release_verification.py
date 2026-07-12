@@ -533,7 +533,7 @@ def test_task17_scripts_cover_required_release_safety_terms() -> None:
     ]:
         assert classification in verify_script
     assert "finally" in verify_script and "verify-trial-release-result.json" in verify_script
-    for term in ["UpgradeSetupPath", "RPA_STATUS_WAIT", "VERIFY_NO_RESIDUE", "Shortcut", "KeepWorkDirectory", "SkipUpgrade", "SkipUninstall", "Missing Start Menu shortcut", "@(Get-ShortcutEvidence", "@(Wait-ForControlledProcessesExit"]:
+    for term in ["UpgradeSetupPath", "RUNTIME_STATUS_WAIT", "VERIFY_NO_RESIDUE", "Shortcut", "KeepWorkDirectory", "SkipUpgrade", "SkipUninstall", "Missing Start Menu shortcut", "@(Get-ShortcutEvidence", "@(Wait-ForControlledProcessesExit"]:
         assert term in install_script
 
 
@@ -545,10 +545,10 @@ def test_verify_script_avoids_reserved_home_variable_assignment() -> None:
     assert "$pid =" not in install_script.lower()
 
 
-def test_install_script_checks_rpa_send_enabled_after_json_conversion() -> None:
+def test_install_script_waits_for_a_core_usable_runtime_state() -> None:
     install_script = INSTALL_SCRIPT.read_text(encoding="utf-8-sig")
-    assert 'if (($status | ConvertTo-Json -Compress) -match \'"send_enabled"\\s*:\\s*true\')' in install_script
-    assert "ConvertTo-Json -Compress -match" not in install_script
+    assert '$status.state -notin @("CORE_READY", "READY", "DEGRADED")' in install_script
+    assert '$status.state -eq "FAILED"' in install_script
 
 
 def test_install_script_verifies_onboarding_api_endpoints() -> None:
@@ -583,7 +583,7 @@ def test_verify_script_smokes_final_packaged_server_and_lark_sdk() -> None:
         "lark_oapi.api.corehr.v2",
         "lark_oapi.api.core.hr",
         "backend-shutdown.json",
-        "RPA_STATUS_WAIT",
+        "/api/v1/system/runtime/status",
     ]:
         assert term in verify_script
 

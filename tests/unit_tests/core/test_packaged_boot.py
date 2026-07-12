@@ -115,7 +115,7 @@ def test_packaged_environment_verifier_accepts_launcher_driven_roots(monkeypatch
     assert env['API__HOST'] == '127.0.0.1'
     assert env['API__PORT'] == '5311'
     assert env['CHATBOT_BACKEND_HEALTH_PATH'] == '/healthz'
-    assert env['CHATBOT_BACKEND_RUNTIME_STATUS_PATH'] == '/api/v1/desktop-automation/runtime/status'
+    assert env['CHATBOT_BACKEND_RUNTIME_STATUS_PATH'] == '/api/v1/system/runtime/status'
     assert env['PYTHONDONTWRITEBYTECODE'] == '1'
     assert env['PYTHONUTF8'] == '1'
     assert env['PYTHONIOENCODING'] == 'utf-8'

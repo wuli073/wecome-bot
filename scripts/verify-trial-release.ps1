@@ -1041,14 +1041,14 @@ function Test-PackagedBackendBoot {
         $health = Wait-Http "http://127.0.0.1:$port/healthz" $StartupTimeoutSeconds
         $healthJson = $health | ConvertTo-Json -Compress
         if ($healthJson -notmatch '"code"\s*:\s*0' -and $healthJson -notmatch '"msg"\s*:\s*"ok"') { throw "packaged backend health response was invalid: $healthJson" }
-        $runtime = Wait-Http "http://127.0.0.1:$port/api/v1/desktop-automation/runtime/status" $StartupTimeoutSeconds
+        $runtime = Wait-Http "http://127.0.0.1:$port/api/v1/system/runtime/status" $StartupTimeoutSeconds
         $runtimeJson = $runtime | ConvertTo-Json -Compress
-        if ($runtimeJson -match '"send_enabled"\s*:\s*true') { throw "RPA_STATUS_WAIT reported real send enabled" }
+        if ($runtime.state -notin @("CORE_READY", "READY", "DEGRADED")) { throw "runtime lifecycle was not core usable: $runtimeJson" }
         $childProcessIds += @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { [int]$_.ParentProcessId -eq $proc.Id } | ForEach-Object { [int]$_.ProcessId })
         @{ action = "shutdown"; reason = "packaged-backend-verifier"; requestedAtUtc = [DateTime]::UtcNow.ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath $shutdownPath -Encoding UTF8
         if (-not $proc.WaitForExit(90000)) { throw "packaged backend did not exit after shutdown request" }
         if ($proc.ExitCode -ne 0) { throw "packaged backend exited with code $($proc.ExitCode); backendLog=$(Join-Path $userData 'logs\\backend.log')" }
-        return New-StatusObject "PASS" "pid=$($proc.Id); health=$healthJson; RPA_STATUS_WAIT=$runtimeJson; shutdown=$shutdownPath" (Join-Path $userData "logs\\backend.log") ""
+        return New-StatusObject "PASS" "pid=$($proc.Id); health=$healthJson; runtime=$runtimeJson; shutdown=$shutdownPath" (Join-Path $userData "logs\\backend.log") ""
     }
     finally {
         $childProcessIds += @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { [int]$_.ParentProcessId -eq $proc.Id } | ForEach-Object { [int]$_.ProcessId })

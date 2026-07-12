@@ -431,7 +431,7 @@ function Stage-HealthWait {
     }
 }
 
-function Stage-RpaStatusWait {
+function Stage-RuntimeStatusWait {
     $config = Read-JsonFile -Path (Join-Path $script:InstallRoot "launcher.json")
     $backendHost = [string]$config.backend.host
     $port = [int]$config.backend.port
@@ -439,8 +439,11 @@ function Stage-RpaStatusWait {
     $result = Wait-Until -TimeoutSeconds $StartupTimeoutSeconds -Condition {
         try {
             $status = Invoke-RestMethod -Uri $statusUri -TimeoutSec 5
-            if (($status | ConvertTo-Json -Compress) -match '"send_enabled"\s*:\s*true') {
-                throw "real send is enabled"
+            if ($status.state -eq "FAILED") {
+                throw "backend lifecycle failed"
+            }
+            if ($status.state -notin @("CORE_READY", "READY", "DEGRADED")) {
+                return $null
             }
             return $status
         }
@@ -452,7 +455,7 @@ function Stage-RpaStatusWait {
     if ($null -eq $result) {
         $log = Collect-LaunchDiagnostics -Name "runtime-timeout" -StatusUri $statusUri
         $lastError = if ($script:lastStatusError) { [string]$script:lastStatusError } else { "" }
-        throw "RPA_STATUS_WAIT failed. Timed out waiting for backend runtime status. Last error: $lastError Diagnostics: $log"
+        throw "RUNTIME_STATUS_WAIT failed. Timed out waiting for a core-usable backend state. Last error: $lastError Diagnostics: $log"
     }
     return New-StatusObject -Status "PASS" -Evidence ("runtime=" + ($result | ConvertTo-Json -Compress))
 }
@@ -591,7 +594,7 @@ try {
     if ($Phase -eq "All" -or $Phase -eq "FirstLaunch") {
         Invoke-Stage -Name "FIRST_LAUNCH" -TimeoutSeconds 30 -Action { Stage-FirstLaunch }
         Invoke-Stage -Name "HEALTH_WAIT" -TimeoutSeconds $StartupTimeoutSeconds -Action { Stage-HealthWait }
-        Invoke-Stage -Name "RPA_STATUS_WAIT" -TimeoutSeconds $StartupTimeoutSeconds -Action { Stage-RpaStatusWait }
+        Invoke-Stage -Name "RUNTIME_STATUS_WAIT" -TimeoutSeconds $StartupTimeoutSeconds -Action { Stage-RuntimeStatusWait }
         Invoke-Stage -Name "ONBOARDING_API" -TimeoutSeconds 60 -Action { Stage-OnboardingApi }
         Invoke-Stage -Name "STOP" -TimeoutSeconds 20 -Action { Stage-Stop }
     }

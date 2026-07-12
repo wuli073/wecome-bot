@@ -4,7 +4,7 @@
     "host": "127.0.0.1",
     "port": 5302,
     "healthPath": "/healthz",
-    "runtimeStatusPath": "/api/v1/desktop-automation/runtime/status",
+    "runtimeStatusPath": "/api/v1/system/runtime/status",
     "startupTimeoutSeconds": 60
   }
 }

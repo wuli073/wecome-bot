@@ -97,13 +97,14 @@ public sealed class LifecycleTests
     }
 
     [Fact]
-    public async Task StartAsync_OpensBrowserAfterHealthWithoutWaitingForOptionalRuntime()
+    public async Task StartAsync_OpensBrowserAfterCoreRuntimeState()
     {
         var http = new FakeHttpProbeClient
         {
         };
         http.HealthResponses.Enqueue(false);
         http.HealthResponses.Enqueue(true);
+        http.RuntimeResponses.Enqueue(new LauncherRuntimeObservation("CORE_READY", true, false));
         var browser = new FakeBrowserLauncher();
         var process = new FakeProcess();
         var launcher = new FakeProcessLauncher(process);
@@ -117,9 +118,9 @@ public sealed class LifecycleTests
 
         Assert.Equal(2, http.HealthRequests.Count);
         Assert.All(http.HealthRequests, request => Assert.Equal(new Uri("http://127.0.0.1:5302/custom-health"), request));
-        Assert.Empty(http.RuntimeRequests);
+        Assert.Equal(new Uri("http://127.0.0.1:5302/custom-runtime"), Assert.Single(http.RuntimeRequests));
         Assert.Equal(new Uri("http://127.0.0.1:5302/"), Assert.Single(browser.OpenedUris));
-        Assert.Null(manager.LastObservation);
+        Assert.Equal("CORE_READY", manager.LastObservation!.Status);
     }
 
     [Fact]

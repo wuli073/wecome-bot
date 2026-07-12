@@ -102,7 +102,10 @@ public sealed record LauncherProcessSnapshot(int Pid, string ExecutablePath, Dat
 public sealed record LauncherRuntimeObservation(string Status, bool RuntimeReachable, bool SendEnabled)
 {
     public bool IsReady =>
-        RuntimeReachable || string.Equals(Status, "ready", StringComparison.OrdinalIgnoreCase);
+        string.Equals(Status, "CORE_READY", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(Status, "READY", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(Status, "DEGRADED", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(Status, "ready", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed record LauncherStartupFailureDetails(
@@ -407,6 +410,7 @@ public sealed class LauncherProcessManager
         try
         {
             await WaitForHealthAsync(process, cancellationToken).ConfigureAwait(false);
+            await WaitForRuntimeReadyAsync(process, cancellationToken).ConfigureAwait(false);
             PersistLauncherState(snapshot);
             _browserLauncher.Open(BrowserUri);
         }
@@ -615,7 +619,7 @@ public sealed class LauncherProcessManager
         throw CreateStartupFailure(process, backendStillRunning: !process.HasExited);
     }
 
-    private async Task WaitForRuntimeReadyAsync(CancellationToken cancellationToken)
+    private async Task WaitForRuntimeReadyAsync(ILauncherProcess process, CancellationToken cancellationToken)
     {
         var deadline = _clock.UtcNow.AddSeconds(_config.Backend.StartupTimeoutSeconds);
         while (_clock.UtcNow < deadline)
@@ -625,6 +629,11 @@ public sealed class LauncherProcessManager
             if (observation.IsReady)
             {
                 return;
+            }
+
+            if (string.Equals(observation.Status, "FAILED", StringComparison.OrdinalIgnoreCase) || process.HasExited)
+            {
+                throw CreateStartupFailure(process, backendStillRunning: !process.HasExited);
             }
 
             await _clock.Delay(PollInterval, cancellationToken).ConfigureAwait(false);
@@ -1170,8 +1179,12 @@ internal sealed class DefaultLauncherHttpProbeClient : ILauncherHttpProbeClient
                 root = dataElement;
             }
 
-            var status = root.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "unknown" : "unknown";
-            var runtimeReachable = root.TryGetProperty("runtime_reachable", out var reachableElement)
+            var status = root.TryGetProperty("state", out var stateElement)
+                ? stateElement.GetString() ?? "unknown"
+                : root.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "unknown" : "unknown";
+            var runtimeReachable = root.TryGetProperty("coreReady", out var coreReadyElement)
+                ? coreReadyElement.ValueKind == JsonValueKind.True
+                : root.TryGetProperty("runtime_reachable", out var reachableElement)
                 && reachableElement.ValueKind == JsonValueKind.True;
             var sendEnabled = root.TryGetProperty("send_enabled", out var sendElement)
                 && sendElement.ValueKind == JsonValueKind.True;

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Mapping
 
 BACKEND_HEALTH_PATH = '/healthz'
-BACKEND_RUNTIME_STATUS_PATH = '/api/v1/desktop-automation/runtime/status'
+BACKEND_RUNTIME_STATUS_PATH = '/api/v1/system/runtime/status'
 PACKAGED_BIND_HOST = '127.0.0.1'
 REQUIRED_KEYS = (
     'CHATBOT_PACKAGED',

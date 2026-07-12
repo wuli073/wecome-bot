@@ -15,12 +15,12 @@ from langbot.pkg.core import boot
 
 # Task 1 packaged startup interface contract references:
 # - backend health: src/langbot/pkg/api/http/controller/main.py:272-275 -> GET /healthz
-# - Desktop RPA runtime status: src/langbot/pkg/api/http/controller/groups/bot_database_mode.py:661-677
-#   -> GET /api/v1/desktop-automation/runtime/status
+# - authoritative lifecycle status: src/langbot/pkg/api/http/controller/main.py
+#   -> GET /api/v1/system/runtime/status
 # - graceful shutdown: packaged launcher uses an owner-scoped control file under %LOCALAPPDATA%\Chatbot\runtime
 # - packaged host/port source: launcher-provided host/port overrides, always forced to 127.0.0.1
 BACKEND_HEALTH_PATH = '/healthz'
-BACKEND_RUNTIME_STATUS_PATH = '/api/v1/desktop-automation/runtime/status'
+BACKEND_RUNTIME_STATUS_PATH = '/api/v1/system/runtime/status'
 PACKAGED_BIND_HOST = '127.0.0.1'
 DEFAULT_BACKEND_PORT = 5302
 DEFAULT_SHUTDOWN_FILENAME = 'backend-shutdown.json'
