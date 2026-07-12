@@ -55,6 +55,7 @@ from ..database_mode import processing_service as database_mode_processing_servi
 from ..desktop_automation import service as desktop_automation_service
 from ..broadcast import service as broadcast_service
 from .local_shutdown_control import LocalShutdownControlWatcher
+from .lifecycle import RuntimeState
 
 
 class Application:
@@ -197,8 +198,12 @@ class Application:
         self._shutdown_task: asyncio.Task[None] | None = None
         self._critical_failure: BaseException | None = None
         self._shutdown_reason: str | None = None
-        self.startup_phase = 'initializing'
+        self.runtime_state = RuntimeState.STARTING
+        self.startup_phase = self.runtime_state.value
         self.startup_error: str | None = None
+        self.runtime_failure_code: str | None = None
+        self.session_id = os.environ.get('CHATBOT_LAUNCH_SESSION_ID', '')
+        self.build_id = os.environ.get('CHATBOT_BUILD_ID', '')
         self.startup_task: asyncio.Task[None] | None = None
         self._boot_started_at = time.monotonic()
 
@@ -220,6 +225,18 @@ class Application:
             self.logger.info(message)
         else:
             print(message, flush=True)
+
+    def set_runtime_state(
+        self,
+        state: RuntimeState,
+        *,
+        failure_code: str | None = None,
+    ) -> None:
+        """Update the authoritative runtime lifecycle state."""
+        self.runtime_state = state
+        self.startup_phase = state.value
+        self.runtime_failure_code = failure_code
+        self.set_startup_phase(state.value, error=failure_code)
 
     async def initialize(self):
         if self.desktop_automation_service is None:
@@ -261,9 +278,8 @@ class Application:
                     scopes=[core_entities.LifecycleControlScope.APPLICATION],
                 )
                 await self.http_ctrl.wait_until_listening()
-                if self.startup_phase != 'ready':
-                    self.set_startup_phase('http_server_listening')
-                    self.set_startup_phase('health_available')
+                if self.runtime_state is RuntimeState.STARTING:
+                    self.set_runtime_state(RuntimeState.HTTP_READY)
 
                 shutdown_waiter = asyncio.create_task(self.shutdown_requested_event.wait())
                 done, _ = await asyncio.wait(
@@ -278,6 +294,10 @@ class Application:
                     await self.shutdown()
                     return 0
                 self.startup_task.result()
+                if self.runtime_state is RuntimeState.DEGRADED:
+                    await self.shutdown_requested_event.wait()
+                    await self.shutdown()
+                    return 0
                 await self.initialize()
 
             await self.plugin_connector.initialize_plugins()

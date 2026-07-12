@@ -12,6 +12,7 @@ import quart_cors
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from ....core import app
+from ....core.lifecycle import RuntimeState, ready_status_code, runtime_payload
 from ....utils import importutil
 from ....local_connectors import routes as _local_connector_routes  # noqa: F401
 from ...mcp.mount import MCPMount
@@ -297,19 +298,49 @@ class HTTPController:
         return self.DEFAULT_HTTP_HOST
 
     async def register_routes(self) -> None:
+        def lifecycle_state() -> RuntimeState:
+            raw_state = getattr(self.ap, 'runtime_state', getattr(self.ap, 'startup_phase', RuntimeState.STARTING))
+            try:
+                return RuntimeState(raw_state)
+            except ValueError:
+                legacy_states = {
+                    'ready': RuntimeState.READY,
+                    'initializing': RuntimeState.STARTING,
+                    'http_server_listening': RuntimeState.HTTP_READY,
+                    'health_available': RuntimeState.HTTP_READY,
+                    'database_started': RuntimeState.CORE_INITIALIZING,
+                    'database_ready': RuntimeState.CORE_INITIALIZING,
+                }
+                return legacy_states.get(str(raw_state), RuntimeState.STARTING)
+
+        def lifecycle_payload() -> dict[str, object]:
+            return runtime_payload(
+                lifecycle_state(),
+                session_id=getattr(self.ap, 'session_id', ''),
+                build_id=getattr(self.ap, 'build_id', ''),
+                failure_code=getattr(self.ap, 'runtime_failure_code', None),
+            )
+
         @self.quart_app.route('/healthz')
         async def healthz():
-            return {'code': 0, 'msg': 'ok', 'status': 'ok', 'phase': self.ap.startup_phase}
+            payload = lifecycle_payload()
+            return {
+                'code': 0,
+                'msg': 'ok',
+                'status': 'ok',
+                'state': payload['state'],
+                'sessionId': payload['sessionId'],
+                'buildId': payload['buildId'],
+            }
+
+        @self.quart_app.route('/api/v1/system/runtime/status')
+        async def runtime_status():
+            return lifecycle_payload()
 
         @self.quart_app.route('/readyz')
         async def readyz():
-            if self.ap.startup_phase == 'ready':
-                return {'status': 'ready', 'phase': 'ready'}
-            response = {'status': 'initializing', 'phase': self.ap.startup_phase}
-            if self.ap.startup_error:
-                response['error'] = self.ap.startup_error
-                return response, 503
-            return response, 503
+            payload = lifecycle_payload()
+            return payload, ready_status_code(lifecycle_state())
 
         for g in group.preregistered_groups:
             ginst = g(self.ap, self.quart_app)

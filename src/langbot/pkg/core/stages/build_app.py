@@ -56,6 +56,7 @@ from ...desktop_automation.client import DesktopRuntimeClient
 from ...desktop_automation.service import DesktopAutomationService
 from ...utils import paths
 from .. import entities as core_entities
+from ..lifecycle import RuntimeState
 from ..local_shutdown_control import build_local_shutdown_watcher_from_env
 
 
@@ -129,17 +130,15 @@ class BuildAppStage(stage.BootingStage):
 
         persistence_mgr_inst = persistencemgr.PersistenceManager(ap)
         ap.persistence_mgr = persistence_mgr_inst
-        ap.set_startup_phase('database_started')
+        ap.set_runtime_state(RuntimeState.CORE_INITIALIZING)
         await persistence_mgr_inst.initialize()
-        ap.set_startup_phase('database_ready')
 
         if os.environ.get('CHATBOT_PACKAGED') == '1':
             await self._initialize_onboarding_core(ap)
             http_ctrl = http_controller.HTTPController(ap)
             await http_ctrl.initialize()
             ap.http_ctrl = http_ctrl
-            if ap.startup_phase != 'ready':
-                ap.set_startup_phase('http_server_starting')
+            ap.set_runtime_state(RuntimeState.CORE_READY)
             ap.startup_task = asyncio.create_task(
                 self._run_packaged_initialization(ap),
                 name='packaged-optional-initialization',
@@ -153,14 +152,15 @@ class BuildAppStage(stage.BootingStage):
             await self._initialize_remaining(ap)
         except Exception:
             ap.logger.exception('Packaged optional initialization failed.')
+            ap.set_runtime_state(RuntimeState.DEGRADED, failure_code='optional-initialization-failed')
+        else:
+            ap.set_runtime_state(RuntimeState.READY)
 
     async def _initialize_onboarding_core(self, ap: app.Application) -> None:
         """Initialize the dependencies required by the first-run wizard."""
         im_mgr_inst = im_mgr.PlatformManager(ap=ap)
         await im_mgr_inst.initialize()
         ap.platform_mgr = im_mgr_inst
-        ap.set_startup_phase('platform_adapters_loaded')
-        ap.set_startup_phase('ready')
 
     async def _initialize_remaining(self, ap: app.Application) -> None:
         """Initialize components that must not delay packaged HTTP liveness."""

@@ -239,7 +239,14 @@ class TestHealthEndpoint:
 
         assert response.status_code == 200
         data = await response.get_json()
-        assert data == {'code': 0, 'msg': 'ok', 'status': 'ok', 'phase': 'ready'}
+        assert data == {
+            'code': 0,
+            'msg': 'ok',
+            'status': 'ok',
+            'state': 'READY',
+            'sessionId': '',
+            'buildId': '',
+        }
 
     @pytest.mark.asyncio
     async def test_healthz_no_auth_required(self, quart_test_client):
@@ -250,6 +257,40 @@ class TestHealthEndpoint:
         """
         response = await quart_test_client.get('/healthz')
         assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_runtime_lifecycle_endpoints_expose_authoritative_state(self, quart_test_client, fake_api_app):
+        fake_api_app.runtime_state = 'DEGRADED'
+        fake_api_app.session_id = 'test-session'
+        fake_api_app.build_id = 'test-build'
+        fake_api_app.runtime_failure_code = 'optional-service'
+
+        health = await quart_test_client.get('/healthz')
+        runtime = await quart_test_client.get('/api/v1/system/runtime/status')
+        ready = await quart_test_client.get('/readyz')
+
+        assert health.status_code == 200
+        assert await health.get_json() == {
+            'code': 0,
+            'msg': 'ok',
+            'status': 'ok',
+            'state': 'DEGRADED',
+            'sessionId': 'test-session',
+            'buildId': 'test-build',
+        }
+        assert runtime.status_code == 200
+        assert await runtime.get_json() == {
+            'state': 'DEGRADED',
+            'phase': 'DEGRADED',
+            'coreReady': True,
+            'ready': False,
+            'degraded': True,
+            'failureCode': 'optional-service',
+            'sessionId': 'test-session',
+            'buildId': 'test-build',
+        }
+        assert ready.status_code == 200
+        assert (await ready.get_json())['state'] == 'DEGRADED'
 
 
 @pytest.mark.usefixtures('mock_circular_import_chain')
