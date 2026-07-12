@@ -21,18 +21,7 @@ def test_packaged_startup_marks_onboarding_ready_before_optional_services() -> N
     )
 
 
-def test_http_listener_does_not_overwrite_packaged_onboarding_readiness() -> None:
-    source = (
-        Path(__file__).resolve().parents[3]
-        / 'src'
-        / 'langbot'
-        / 'pkg'
-        / 'core'
-        / 'app.py'
-    ).read_text(encoding='utf-8')
-
-    assert 'if self.runtime_state is RuntimeState.STARTING:' in source
-
+def test_packaged_http_listener_starts_before_core_initialization() -> None:
     build_source = (
         Path(__file__).resolve().parents[3]
         / 'src'
@@ -42,7 +31,23 @@ def test_http_listener_does_not_overwrite_packaged_onboarding_readiness() -> Non
         / 'stages'
         / 'build_app.py'
     ).read_text(encoding='utf-8')
-    assert 'ap.set_runtime_state(RuntimeState.CORE_READY)' in build_source
+
+    assert 'await http_ctrl.register_routes()' in build_source
+    assert 'await http_ctrl.wait_until_listening()' in build_source
+    assert build_source.index('await http_ctrl.wait_until_listening()') < build_source.index(
+        'ap.set_runtime_state(RuntimeState.CORE_INITIALIZING)'
+    )
+
+    app_source = (
+        Path(__file__).resolve().parents[3]
+        / 'src'
+        / 'langbot'
+        / 'pkg'
+        / 'core'
+        / 'app.py'
+    ).read_text(encoding='utf-8')
+
+    assert "critical_task_wrappers['http-api-controller'] = self.http_task_wrapper" in app_source
 
 
 def test_model_provider_seed_is_not_part_of_persistence_core_initialization() -> None:

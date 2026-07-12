@@ -205,6 +205,7 @@ class Application:
         self.session_id = os.environ.get('CHATBOT_LAUNCH_SESSION_ID', '')
         self.build_id = os.environ.get('CHATBOT_BUILD_ID', '')
         self.startup_task: asyncio.Task[None] | None = None
+        self.http_task_wrapper: taskmgr.TaskWrapper | None = None
         self._boot_started_at = time.monotonic()
 
     def set_startup_phase(self, stage: str, *, error: str | None = None) -> None:
@@ -271,16 +272,9 @@ class Application:
     async def run(self) -> int:
         try:
             critical_task_wrappers: dict[str, taskmgr.TaskWrapper] = {}
+            if self.http_task_wrapper is not None:
+                critical_task_wrappers['http-api-controller'] = self.http_task_wrapper
             if self.startup_task is not None:
-                critical_task_wrappers['http-api-controller'] = self.task_mgr.create_task(
-                    self.http_ctrl.run(),
-                    name='http-api-controller',
-                    scopes=[core_entities.LifecycleControlScope.APPLICATION],
-                )
-                await self.http_ctrl.wait_until_listening()
-                if self.runtime_state is RuntimeState.STARTING:
-                    self.set_runtime_state(RuntimeState.HTTP_READY)
-
                 shutdown_waiter = asyncio.create_task(self.shutdown_requested_event.wait())
                 done, _ = await asyncio.wait(
                     {self.startup_task, shutdown_waiter},

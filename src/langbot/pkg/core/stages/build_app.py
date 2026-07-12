@@ -130,14 +130,22 @@ class BuildAppStage(stage.BootingStage):
 
         persistence_mgr_inst = persistencemgr.PersistenceManager(ap)
         ap.persistence_mgr = persistence_mgr_inst
+        if os.environ.get('CHATBOT_PACKAGED') == '1':
+            http_ctrl = http_controller.HTTPController(ap)
+            await http_ctrl.register_routes()
+            ap.http_ctrl = http_ctrl
+            ap.http_task_wrapper = ap.task_mgr.create_task(
+                http_ctrl.run(),
+                name='http-api-controller',
+                scopes=[core_entities.LifecycleControlScope.APPLICATION],
+            )
+            await http_ctrl.wait_until_listening()
+            ap.set_runtime_state(RuntimeState.HTTP_READY)
         ap.set_runtime_state(RuntimeState.CORE_INITIALIZING)
         await persistence_mgr_inst.initialize()
 
         if os.environ.get('CHATBOT_PACKAGED') == '1':
             await self._initialize_onboarding_core(ap)
-            http_ctrl = http_controller.HTTPController(ap)
-            await http_ctrl.initialize()
-            ap.http_ctrl = http_ctrl
             ap.set_runtime_state(RuntimeState.CORE_READY)
             ap.startup_task = asyncio.create_task(
                 self._run_packaged_initialization(ap),
@@ -165,6 +173,8 @@ class BuildAppStage(stage.BootingStage):
 
     async def _initialize_remaining(self, ap: app.Application) -> None:
         """Initialize components that must not delay packaged HTTP liveness."""
+        if ap.http_ctrl is not None:
+            await ap.http_ctrl.initialize_mcp_mount()
         await ap.persistence_mgr.write_space_model_providers()
         await ap.platform_mgr.initialize()
 

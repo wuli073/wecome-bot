@@ -73,6 +73,13 @@ class HTTPController:
 
         await self.register_routes()
 
+        await self.initialize_mcp_mount()
+
+    async def initialize_mcp_mount(self) -> None:
+        """Start MCP support after the core HTTP listener is available."""
+        if self.mcp_mount is not None:
+            return
+
         self.mcp_mount = MCPMount(self.ap)
         await self.mcp_mount.start_session_manager()
         self.ap.logger.info('LangBot MCP server mounted at /mcp (API-key authenticated).')
