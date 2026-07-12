@@ -1155,16 +1155,32 @@ internal sealed class DefaultLauncherHttpProbeClient : ILauncherHttpProbeClient
 
     public async Task<LauncherRuntimeObservation> GetRuntimeStatusAsync(Uri uri, CancellationToken cancellationToken)
     {
-        using var response = await _client.GetAsync(uri, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        var payload = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
-        var root = payload.RootElement;
-        var status = root.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "unknown" : "unknown";
-        var runtimeReachable = root.TryGetProperty("runtime_reachable", out var reachableElement)
-            && reachableElement.ValueKind == JsonValueKind.True;
-        var sendEnabled = root.TryGetProperty("send_enabled", out var sendElement)
-            && sendElement.ValueKind == JsonValueKind.True;
-        return new LauncherRuntimeObservation(status, runtimeReachable, sendEnabled);
+        try
+        {
+            using var response = await _client.GetAsync(uri, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return new LauncherRuntimeObservation("initializing", false, false);
+            }
+
+            using var payload = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+            var root = payload.RootElement;
+            if (root.TryGetProperty("data", out var dataElement) && dataElement.ValueKind == JsonValueKind.Object)
+            {
+                root = dataElement;
+            }
+
+            var status = root.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "unknown" : "unknown";
+            var runtimeReachable = root.TryGetProperty("runtime_reachable", out var reachableElement)
+                && reachableElement.ValueKind == JsonValueKind.True;
+            var sendEnabled = root.TryGetProperty("send_enabled", out var sendElement)
+                && sendElement.ValueKind == JsonValueKind.True;
+            return new LauncherRuntimeObservation(status, runtimeReachable, sendEnabled);
+        }
+        catch (HttpRequestException)
+        {
+            return new LauncherRuntimeObservation("unavailable", false, false);
+        }
     }
 }
 
