@@ -518,6 +518,29 @@ function Wait-Http([string]$Uri, [int]$TimeoutSeconds) {
     throw "Timed out waiting for $Uri. Last error: $($last.message)"
 }
 
+function Wait-CoreRuntimeStatus([string]$Uri, [int]$TimeoutSeconds) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $last = $null
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $status = Invoke-RestMethod -Uri $Uri -TimeoutSec 3
+            $last = $status | ConvertTo-Json -Compress
+            if ($status.state -in @('CORE_READY', 'READY', 'DEGRADED')) {
+                return $status
+            }
+            if ($status.state -eq 'FAILED') {
+                throw "runtime lifecycle entered FAILED: $last"
+            }
+        }
+        catch {
+            if ($_.Exception.Message -match 'runtime lifecycle entered FAILED') { throw }
+            $last = Redact-VerificationText $_.Exception.Message
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "Timed out waiting for a core-usable runtime state at $Uri. Last status: $last"
+}
+
 function Get-LauncherStateEvidence([string]$UserData) {
     $statePath = Join-Path $UserData "runtime\launcher-state.json"
     $evidence = [ordered]@{
@@ -1041,9 +1064,8 @@ function Test-PackagedBackendBoot {
         $health = Wait-Http "http://127.0.0.1:$port/healthz" $StartupTimeoutSeconds
         $healthJson = $health | ConvertTo-Json -Compress
         if ($healthJson -notmatch '"code"\s*:\s*0' -and $healthJson -notmatch '"msg"\s*:\s*"ok"') { throw "packaged backend health response was invalid: $healthJson" }
-        $runtime = Wait-Http "http://127.0.0.1:$port/api/v1/system/runtime/status" $StartupTimeoutSeconds
+        $runtime = Wait-CoreRuntimeStatus "http://127.0.0.1:$port/api/v1/system/runtime/status" $StartupTimeoutSeconds
         $runtimeJson = $runtime | ConvertTo-Json -Compress
-        if ($runtime.state -notin @("CORE_READY", "READY", "DEGRADED")) { throw "runtime lifecycle was not core usable: $runtimeJson" }
         $childProcessIds += @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { [int]$_.ParentProcessId -eq $proc.Id } | ForEach-Object { [int]$_.ProcessId })
         @{ action = "shutdown"; reason = "packaged-backend-verifier"; requestedAtUtc = [DateTime]::UtcNow.ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath $shutdownPath -Encoding UTF8
         if (-not $proc.WaitForExit(90000)) { throw "packaged backend did not exit after shutdown request" }
