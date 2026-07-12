@@ -197,6 +197,8 @@ public sealed class VcRuntimeTests
         {
             return ReadAllBytes(path).LongLength;
         }
+
+        public IEnumerable<string> EnumerateFiles(string rootPath) => _files.Keys;
     }
 
     private sealed class FakeClock : ILauncherClock

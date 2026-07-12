@@ -43,7 +43,7 @@ public sealed class ManifestValidatorTests
     }
 
     [Fact]
-    public void ValidateInstallation_UsesQuickValidationForNonCriticalFiles()
+    public void ValidateInstallation_ThrowsWhenNonCriticalShaDoesNotMatch()
     {
         using var fixture = new ManifestFixture();
         fixture.WriteManifest();
@@ -51,7 +51,21 @@ public sealed class ManifestValidatorTests
         var originalSize = new FileInfo(nonCriticalPath).Length;
         File.WriteAllBytes(nonCriticalPath, Enumerable.Repeat((byte)'x', (int)originalSize).ToArray());
 
-        fixture.Manager.ValidateInstallation();
+        var error = Assert.Throws<LauncherUserFacingException>(() => fixture.Manager.ValidateInstallation());
+
+        Assert.Contains("SHA-256", error.Message);
+    }
+
+    [Fact]
+    public void ValidateInstallation_ThrowsWhenInstallRootContainsAnExtraFile()
+    {
+        using var fixture = new ManifestFixture();
+        fixture.WriteManifest();
+        File.WriteAllText(Path.Combine(fixture.Layout.InstallRoot, "stale-module.py"), "stale", Encoding.UTF8);
+
+        var error = Assert.Throws<LauncherUserFacingException>(() => fixture.Manager.ValidateInstallation());
+
+        Assert.Contains("extra file", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class ManifestFixture : IDisposable
@@ -99,7 +113,7 @@ public sealed class ManifestValidatorTests
             var payload = new
             {
                 schemaVersion = 1,
-                nonCriticalValidation = "size",
+                nonCriticalValidation = "sha256",
                 entries,
             };
             File.WriteAllText(manifestPath, JsonSerializer.Serialize(payload), Encoding.UTF8);

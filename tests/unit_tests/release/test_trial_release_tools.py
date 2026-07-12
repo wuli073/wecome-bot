@@ -104,6 +104,7 @@ def test_manifest_builder_marks_critical_and_non_critical_entries() -> None:
         assert entries["resources/web/dist/index.html"]["critical"] is True
         assert entries["logs/readme.txt"]["critical"] is False
         assert len(entries["ChatbotLauncher.exe"]["sha256"]) == 64
+        assert manifest["nonCriticalValidation"] == "sha256"
 
 
 def test_sensitive_scan_detects_leaks_and_redacts_report() -> None:

@@ -75,7 +75,7 @@ def build_manifest(bundle_root: Path, version: str, metadata: dict[str, Any] | N
         "architecture": "x64",
         "version": version,
         "generatedAtUtc": _utc_now(),
-        "nonCriticalValidation": "size",
+        "nonCriticalValidation": "sha256",
         "entries": entries,
         "metadata": metadata or {},
     }

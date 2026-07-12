@@ -484,6 +484,8 @@ public sealed class LifecycleTests
             return ReadAllBytes(path).LongLength;
         }
 
+        public IEnumerable<string> EnumerateFiles(string rootPath) => _files;
+
         private static string ComputeSha256(string value)
         {
             return Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value))).ToLowerInvariant();

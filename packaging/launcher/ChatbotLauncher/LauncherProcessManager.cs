@@ -178,6 +178,8 @@ public interface ILauncherFileSystem
     byte[] ReadAllBytes(string path);
 
     long GetFileSize(string path);
+
+    IEnumerable<string> EnumerateFiles(string rootPath);
 }
 
 public interface ILauncherClock
@@ -1238,6 +1240,9 @@ internal sealed class DefaultLauncherFileSystem : ILauncherFileSystem
     public byte[] ReadAllBytes(string path) => File.ReadAllBytes(path);
 
     public long GetFileSize(string path) => new FileInfo(path).Length;
+
+    public IEnumerable<string> EnumerateFiles(string rootPath) =>
+        Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories);
 }
 
 internal sealed class DefaultLauncherClock : ILauncherClock

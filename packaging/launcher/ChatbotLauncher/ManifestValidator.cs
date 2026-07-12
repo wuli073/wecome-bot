@@ -60,6 +60,18 @@ internal sealed class ManifestValidator
                 }
             }
         }
+
+        var expectedPaths = manifest.Entries
+            .Select(entry => ResolveEntryPath(installRoot, entry.Path))
+            .Append(manifestPath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var extraFile = _fileSystem.EnumerateFiles(installRoot)
+            .FirstOrDefault(path => !expectedPaths.Contains(path));
+        if (extraFile is not null)
+        {
+            throw new LauncherUserFacingException(
+                $"Packaged installation contains an extra file: {Path.GetRelativePath(installRoot, extraFile)}.");
+        }
     }
 
     private static string ResolveEntryPath(string installRoot, string relativePath)
