@@ -567,6 +567,15 @@ def test_install_script_waits_for_a_core_usable_runtime_state() -> None:
     assert '$status.state -eq "FAILED"' in install_script
 
 
+def test_install_script_honors_the_installed_launcher_startup_deadline() -> None:
+    install_script = INSTALL_SCRIPT.read_text(encoding="utf-8-sig")
+
+    assert "$configured = [int]$Config.backend.startupTimeoutSeconds" in install_script
+    assert "Get-InstalledStartupTimeoutSeconds -Config $config" in install_script
+    assert "Wait-ForHttpReady -Uri $healthUri -TimeoutSeconds $startupTimeoutSeconds" in install_script
+    assert "Wait-Until -TimeoutSeconds $startupTimeoutSeconds" in install_script
+
+
 def test_install_script_verifies_onboarding_api_endpoints() -> None:
     install_script = INSTALL_SCRIPT.read_text(encoding="utf-8-sig")
 

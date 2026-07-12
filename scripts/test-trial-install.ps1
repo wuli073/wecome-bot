@@ -81,6 +81,13 @@ function Read-JsonFile {
     return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
 }
 
+function Get-InstalledStartupTimeoutSeconds {
+    param([Parameter(Mandatory = $true)][object]$Config)
+    $configured = [int]$Config.backend.startupTimeoutSeconds
+    if ($configured -lt 1) { throw "launcher.json startupTimeoutSeconds must be positive" }
+    return [Math]::Max($StartupTimeoutSeconds, $configured)
+}
+
 function New-StatusObject {
     param(
         [Parameter(Mandatory = $true)][ValidateSet("PASS", "FAIL", "UNVERIFIED")][string]$Status,
@@ -418,11 +425,12 @@ function Stage-FirstLaunch {
 
 function Stage-HealthWait {
     $config = Read-JsonFile -Path (Join-Path $script:InstallRoot "launcher.json")
+    $startupTimeoutSeconds = Get-InstalledStartupTimeoutSeconds -Config $config
     $backendHost = [string]$config.backend.host
     $port = [int]$config.backend.port
     $healthUri = "http://${backendHost}:$port$($config.backend.healthPath)"
     try {
-        $health = Wait-ForHttpReady -Uri $healthUri -TimeoutSeconds $StartupTimeoutSeconds
+        $health = Wait-ForHttpReady -Uri $healthUri -TimeoutSeconds $startupTimeoutSeconds
         return New-StatusObject -Status "PASS" -Evidence ("health=" + ($health | ConvertTo-Json -Compress))
     }
     catch {
@@ -433,14 +441,15 @@ function Stage-HealthWait {
 
 function Stage-RuntimeStatusWait {
     $config = Read-JsonFile -Path (Join-Path $script:InstallRoot "launcher.json")
+    $startupTimeoutSeconds = Get-InstalledStartupTimeoutSeconds -Config $config
     $backendHost = [string]$config.backend.host
     $port = [int]$config.backend.port
     $statusUri = "http://${backendHost}:$port$($config.backend.runtimeStatusPath)"
-    $result = Wait-Until -TimeoutSeconds $StartupTimeoutSeconds -Condition {
+    $result = Wait-Until -TimeoutSeconds $startupTimeoutSeconds -Condition {
         try {
             $status = Invoke-RestMethod -Uri $statusUri -TimeoutSec 5
             if ($status.state -eq "FAILED") {
-                throw "backend lifecycle failed"
+                return $status
             }
             if ($status.state -notin @("CORE_READY", "READY", "DEGRADED")) {
                 return $null
@@ -451,6 +460,10 @@ function Stage-RuntimeStatusWait {
             $script:lastStatusError = $_.Exception.Message
             return $null
         }
+    }
+    if ($result -and $result.state -eq "FAILED") {
+        $log = Collect-LaunchDiagnostics -Name "runtime-failed" -StatusUri $statusUri
+        throw "RUNTIME_STATUS_WAIT failed. Backend lifecycle failed. Diagnostics: $log"
     }
     if ($null -eq $result) {
         $log = Collect-LaunchDiagnostics -Name "runtime-timeout" -StatusUri $statusUri
@@ -592,9 +605,11 @@ try {
     }
 
     if ($Phase -eq "All" -or $Phase -eq "FirstLaunch") {
+        $installedConfig = Read-JsonFile -Path (Join-Path $script:InstallRoot "launcher.json")
+        $installedStartupTimeoutSeconds = Get-InstalledStartupTimeoutSeconds -Config $installedConfig
         Invoke-Stage -Name "FIRST_LAUNCH" -TimeoutSeconds 30 -Action { Stage-FirstLaunch }
-        Invoke-Stage -Name "HEALTH_WAIT" -TimeoutSeconds $StartupTimeoutSeconds -Action { Stage-HealthWait }
-        Invoke-Stage -Name "RUNTIME_STATUS_WAIT" -TimeoutSeconds $StartupTimeoutSeconds -Action { Stage-RuntimeStatusWait }
+        Invoke-Stage -Name "HEALTH_WAIT" -TimeoutSeconds $installedStartupTimeoutSeconds -Action { Stage-HealthWait }
+        Invoke-Stage -Name "RUNTIME_STATUS_WAIT" -TimeoutSeconds $installedStartupTimeoutSeconds -Action { Stage-RuntimeStatusWait }
         Invoke-Stage -Name "ONBOARDING_API" -TimeoutSeconds 60 -Action { Stage-OnboardingApi }
         Invoke-Stage -Name "STOP" -TimeoutSeconds 20 -Action { Stage-Stop }
     }
