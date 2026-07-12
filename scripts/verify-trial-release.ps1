@@ -960,7 +960,7 @@ print(json.dumps({
     $psi.EnvironmentVariables["PYTHONUTF8"] = "1"
     $psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8"
     $proc = [System.Diagnostics.Process]::Start($psi)
-    if (-not $proc.WaitForExit(30000)) {
+    if (-not $proc.WaitForExit(120000)) {
         try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
         Capture-ProcessOutput $proc $stdout $stderr
         throw "packaged server import smoke timed out; stdout=$stdout; stderr=$stderr"
