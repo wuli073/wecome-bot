@@ -24,6 +24,25 @@ def test_release_script_derives_packaged_api_base_from_launcher_config() -> None
     assert "launcher.json" in script
 
 
+def test_packaged_web_api_base_is_readable_in_powershell() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    module_path = repo_root / "packaging" / "build" / "BuildContext.psm1"
+    helper_script = _load_build_script_without_entrypoint().replace(
+        "Import-Module (Join-Path $PSScriptRoot '..\\packaging\\build\\BuildContext.psm1') -Force",
+        f"Import-Module '{module_path}' -Force -WarningAction SilentlyContinue",
+    )
+
+    with _temp_root() as temp_root:
+        helper_file = Path(temp_root) / "build-functions.ps1"
+        helper_file.write_text(helper_script, encoding="utf-8")
+        result = _run_powershell(
+            f". '{helper_file}' -Version '0.1.5-rc3'; "
+            f"Get-PackagedWebApiBase -Context @{{ RepoRoot = '{repo_root}' }}"
+        )
+
+    assert result.stdout.strip() == "http://127.0.0.1:5302"
+
+
 def _load_script_module(module_name: str, script_name: str):
     repo_root = Path(__file__).resolve().parents[3]
     script_path = repo_root / "packaging" / "build" / script_name

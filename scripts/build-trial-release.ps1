@@ -180,10 +180,10 @@ function Get-PackagedWebApiBase {
         throw "PACKAGED_WEB_API_BASE_MISMATCH: Launcher configuration is invalid: $($_.Exception.Message)"
     }
 
-    $host = [string]$launcherConfig.backend.host
+    $backendHost = [string]$launcherConfig.backend.host
     $port = $launcherConfig.backend.port
-    if ([string]::IsNullOrWhiteSpace($host) -or $host -match '[:/\\\s]') {
-        throw "PACKAGED_WEB_API_BASE_MISMATCH: Launcher backend host is invalid: $host"
+    if ([string]::IsNullOrWhiteSpace($backendHost) -or $backendHost -match '[:/\\\s]') {
+        throw "PACKAGED_WEB_API_BASE_MISMATCH: Launcher backend host is invalid: $backendHost"
     }
     if ($port -isnot [int] -and $port -isnot [long]) {
         throw "PACKAGED_WEB_API_BASE_MISMATCH: Launcher backend port is invalid: $port"
@@ -192,7 +192,7 @@ function Get-PackagedWebApiBase {
         throw "PACKAGED_WEB_API_BASE_MISMATCH: Launcher backend port is outside the valid range: $port"
     }
 
-    return "http://$host`:$port"
+    return "http://$backendHost`:$port"
 }
 
 function Invoke-FrontendBuild {
