@@ -34,7 +34,8 @@ def test_release_build_identity_is_embedded_in_every_packaged_consumer() -> None
     assert "BuildId" in context_module
     assert "Add-Member -NotePropertyName buildId -NotePropertyValue $Context.BuildId -Force" in script
     assert "resources\\web\\dist\\build-info.json" in script
-    assert "--metadata-json" in script
+    assert "--metadata-path" in script
+    assert "build-metadata.json" in script
 
 
 def test_packaged_web_api_base_is_readable_in_powershell() -> None:

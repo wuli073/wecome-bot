@@ -536,6 +536,9 @@ function Invoke-ManifestGeneration {
 
     $manifestPath = Join-Path $Context.PortableRoot 'manifest.json'
     $sha256SumsPath = Join-Path $Context.PortableRoot 'SHA256SUMS.txt'
+    $metadataPath = Join-Path $Context.PortableRoot 'build-metadata.json'
+    ([ordered]@{ buildId = $Context.BuildId; sourceHead = $Context.SourceHead } | ConvertTo-Json -Compress) |
+        Set-Content -LiteralPath $metadataPath -Encoding UTF8
 
     Invoke-ExternalCommand -Context $Context -FilePath 'uv' -WorkingDirectory $Context.RepoRoot -ArgumentList @(
         'run', '--no-sync', 'python',
@@ -544,7 +547,7 @@ function Invoke-ManifestGeneration {
         '--version', $Context.Version,
         '--manifest-path', $manifestPath,
         '--sha256sums-path', $sha256SumsPath
-        '--metadata-json', (([ordered]@{ buildId = $Context.BuildId; sourceHead = $Context.SourceHead }) | ConvertTo-Json -Compress)
+        '--metadata-path', $metadataPath
     )
 
     $Context.ManifestPath = $manifestPath
