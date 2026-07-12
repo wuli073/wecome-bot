@@ -186,3 +186,27 @@ def test_prepare_packaged_runtime_creates_user_data_dirs_and_switches_cwd(monkey
     assert (config.data_root / 'labels').exists()
     assert (config.data_root / 'metadata').exists()
     assert cwd_calls == [str(config.user_data_root)]
+
+
+@pytest.mark.asyncio
+async def test_early_shutdown_watcher_accepts_control_request_before_application_exists(monkeypatch):
+    entrypoint = _load_module(
+        'task7_packaged_entrypoint_early_shutdown',
+        'packaging/server/entrypoint.py',
+    )
+    shutdown_path = _repo_tmp_dir() / 'backend-shutdown.json'
+    monkeypatch.setenv('CHATBOT_LAUNCH_SESSION_ID', 'launcher-session')
+    shutdown_path.write_text(
+        '{"action":"shutdown","requestId":"request-1","sessionId":"launcher-session","backendPid":%s}'
+        % __import__('os').getpid(),
+        encoding='utf-8',
+    )
+    requested = asyncio.Event()
+
+    await entrypoint.watch_early_shutdown_requests(
+        shutdown_request_path=shutdown_path,
+        shutdown_requested_event=requested,
+    )
+
+    assert requested.is_set()
+    assert shutdown_path.with_name('backend-shutdown.ack.json').exists()

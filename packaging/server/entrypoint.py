@@ -194,26 +194,81 @@ async def watch_shutdown_requests(*, app_inst, shutdown_request_path: Path) -> N
         await asyncio.sleep(0.5)
 
 
+async def watch_early_shutdown_requests(
+    *,
+    shutdown_request_path: Path,
+    shutdown_requested_event: asyncio.Event,
+) -> None:
+    """Accept the launcher control file before Application construction completes."""
+    acknowledgement_path = shutdown_request_path.with_name(DEFAULT_SHUTDOWN_ACK_FILENAME)
+    expected_session_id = os.environ.get('CHATBOT_LAUNCH_SESSION_ID', '').strip()
+    while not shutdown_requested_event.is_set():
+        if shutdown_request_path.exists():
+            try:
+                payload = json.loads(shutdown_request_path.read_text(encoding='utf-8-sig'))
+            except Exception:
+                payload = {}
+            shutdown_request_path.unlink(missing_ok=True)
+            if payload.get('action') == 'shutdown':
+                request_id = str(payload.get('requestId') or '')
+                request_session_id = str(payload.get('sessionId') or '')
+                backend_pid = payload.get('backendPid')
+                if expected_session_id and (
+                    not request_id
+                    or request_session_id != expected_session_id
+                    or backend_pid != os.getpid()
+                ):
+                    continue
+                acknowledgement = {
+                    'accepted': True,
+                    'action': 'shutdown',
+                    'requestId': request_id,
+                    'sessionId': expected_session_id,
+                    'backendPid': os.getpid(),
+                }
+                temporary_path = acknowledgement_path.with_name(f'{acknowledgement_path.name}.tmp-{request_id}')
+                temporary_path.write_text(json.dumps(acknowledgement), encoding='utf-8')
+                temporary_path.replace(acknowledgement_path)
+                shutdown_requested_event.set()
+                return
+        await asyncio.sleep(0.5)
+
+
 async def packaged_main(
     loop: asyncio.AbstractEventLoop,
     *,
     shutdown_request_path: Path,
     state: dict[str, object] | None = None,
 ) -> int:
-    app_inst = await boot.make_app(loop)
-    if state is not None:
-        state['app'] = app_inst
-        if state.get('pending_shutdown'):
-            app_inst.request_shutdown('pending-signal')
+    early_shutdown_requested = asyncio.Event()
     watcher_task = loop.create_task(
-        watch_shutdown_requests(app_inst=app_inst, shutdown_request_path=shutdown_request_path),
-        name='packaged-backend-shutdown-watcher',
+        watch_early_shutdown_requests(
+            shutdown_request_path=shutdown_request_path,
+            shutdown_requested_event=early_shutdown_requested,
+        ),
+        name='packaged-backend-early-shutdown-watcher',
     )
     try:
+        app_inst = await boot.make_app(loop)
+        if state is not None:
+            state['app'] = app_inst
+            if state.get('pending_shutdown'):
+                app_inst.request_shutdown('pending-signal')
+
+        async def forward_shutdown_request() -> None:
+            await early_shutdown_requested.wait()
+            app_inst.request_shutdown('packaged-control-file:early-watcher')
+
+        forward_task = loop.create_task(forward_shutdown_request(), name='packaged-backend-shutdown-forwarder')
+        if early_shutdown_requested.is_set():
+            app_inst.request_shutdown('packaged-control-file:early-watcher')
         return await app_inst.run()
     finally:
         watcher_task.cancel()
         await asyncio.gather(watcher_task, return_exceptions=True)
+        if 'forward_task' in locals():
+            forward_task.cancel()
+            await asyncio.gather(forward_task, return_exceptions=True)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
