@@ -60,16 +60,16 @@ function shouldUseCurrentOrigin(configuredBaseURL: string): boolean {
 
 export function resolveBackendBaseURL(configuredBaseURL?: string): string {
   if (typeof window === 'undefined') {
-    return configuredBaseURL
+    return import.meta.env.DEV && configuredBaseURL
       ? normalizeConfiguredBaseURL(configuredBaseURL)
       : '/';
   }
 
-  if (!configuredBaseURL) {
+  if (!import.meta.env.DEV || !configuredBaseURL) {
     return '/';
   }
 
-  if (import.meta.env.DEV && shouldUseCurrentOrigin(configuredBaseURL)) {
+  if (shouldUseCurrentOrigin(configuredBaseURL)) {
     return '/';
   }
 

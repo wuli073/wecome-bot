@@ -7,6 +7,9 @@ function resolveApiBaseUrl(mode: string) {
   const apiBaseUrl = env.VITE_API_BASE_URL?.trim();
 
   if (!apiBaseUrl) {
+    if (mode !== 'development') {
+      return undefined;
+    }
     throw new Error('Missing VITE_API_BASE_URL. Configure it in web/.env.');
   }
 
@@ -34,16 +37,21 @@ export default defineConfig(({ mode }) => {
         '@': path.resolve(__dirname, './src'),
       },
     },
-    server: {
-      port: 3000,
-      strictPort: true,
-      proxy: {
-        '/api': {
-          target: apiBaseUrl,
-          changeOrigin: false,
+    server: apiBaseUrl
+      ? {
+          port: 3000,
+          strictPort: true,
+          proxy: {
+            '/api': {
+              target: apiBaseUrl,
+              changeOrigin: false,
+            },
+          },
+        }
+      : {
+          port: 3000,
+          strictPort: true,
         },
-      },
-    },
     build: {
       outDir: 'dist',
     },
