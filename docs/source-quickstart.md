@@ -11,6 +11,16 @@
 
 脚本使用 `uv.lock` 和 `web/package-lock.json` 进行冻结安装；不会升级依赖或改写 lock 文件。
 
+## Windows 源码分发
+
+Windows 源码分发包中的脚本按顺序使用：
+
+1. `01-check-environment.bat` 检查 Windows x64、PowerShell、WinGet、Git、Node.js 22、npm、uv 和 GitHub 连通性。缺少 Git、Node.js 22 或 uv 时，会汇总缺失项；确认后使用 WinGet 安装。npm 随 Node.js 安装，脚本不会单独安装 npm。缺少 WinGet 时，请先从 Microsoft Store 安装或更新 App Installer 后重新运行 01。Windows 架构、PowerShell 或网络问题仍需自行处理。
+2. `02-install-wecome-bot.bat` 只负责拉取或更新项目，并安装项目内部依赖。
+3. `03-start-wecome-bot.bat` 只负责启动项目。
+
+分发包中的 BAT 文件使用 UTF-8 无 BOM 和 CRLF 行尾；第一行保持为 `@echo off`，第二行执行 `chcp 65001 >nul`，以避免 BOM 影响 cmd.exe 解析首条命令。
+
 ## Clone 与 checkout
 
 ```powershell
