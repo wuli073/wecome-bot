@@ -47,3 +47,18 @@ async def test_none_attribute_error_is_structured_unavailable_not_traceback() ->
 
     assert status == 503
     assert payload == {'code': 50301, 'msg': 'SERVICE_UNAVAILABLE'}
+
+
+async def test_missing_application_optional_service_is_structured_unavailable() -> None:
+    app = SimpleNamespace(runtime_state=RuntimeState.DEGRADED)
+    quart_app = quart.Quart(__name__)
+    router = _RouterGroup(app, quart_app)
+
+    async with quart_app.app_context():
+        response, status = router.optional_service_response(
+            AttributeError("'Application' object has no attribute 'tool_mgr'")
+        )
+        payload = await response.get_json()
+
+    assert status == 503
+    assert payload == {'code': 50301, 'msg': 'SERVICE_UNAVAILABLE'}

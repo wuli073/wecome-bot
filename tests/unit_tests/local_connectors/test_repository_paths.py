@@ -29,12 +29,13 @@ def test_packaged_repository_prefers_explicit_user_data_root(monkeypatch, tmp_pa
     assert repository.base_dir == override_root / "connectors"
 
 
-def test_source_repository_keeps_legacy_wecomebot_root(monkeypatch, tmp_path):
+def test_source_repository_prefers_explicit_user_data_root(monkeypatch, tmp_path):
     from langbot.pkg.local_connectors.repository import LocalConnectorRepository
 
     monkeypatch.delenv("CHATBOT_PACKAGED", raising=False)
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    source_data = tmp_path / "isolated-source-data"
+    monkeypatch.setenv("CHATBOT_USER_DATA_ROOT", str(source_data))
 
     repository = LocalConnectorRepository()
 
-    assert repository.base_dir == tmp_path / "WecomeBot" / "connectors"
+    assert repository.base_dir == source_data / "connectors"

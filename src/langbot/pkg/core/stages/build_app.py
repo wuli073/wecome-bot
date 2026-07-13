@@ -155,6 +155,7 @@ class BuildAppStage(stage.BootingStage):
 
         await self._initialize_onboarding_core(ap)
         await self._initialize_remaining(ap)
+        ap.set_runtime_state(RuntimeState.READY)
 
     async def _run_packaged_initialization(self, ap: app.Application) -> None:
         try:

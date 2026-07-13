@@ -224,7 +224,11 @@ class RouterGroup(abc.ABC):
     def optional_service_response(self, error: AttributeError):
         """Return a stable lifecycle response for an unavailable optional service."""
         state = str(getattr(getattr(self.ap, 'runtime_state', None), 'value', getattr(self.ap, 'startup_phase', 'STARTING')))
-        if "'NoneType' object has no attribute" not in str(error):
+        message = str(error)
+        if (
+            "'NoneType' object has no attribute" not in message
+            and "'Application' object has no attribute" not in message
+        ):
             return None
         code = 'SERVICE_INITIALIZING' if state in {'HTTP_READY', 'CORE_INITIALIZING', 'CORE_READY'} else 'SERVICE_UNAVAILABLE'
         return self.http_status(503, 50301, code)
