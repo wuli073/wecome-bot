@@ -552,18 +552,18 @@ def test_verifier_uses_the_isolated_launcher_startup_deadline() -> None:
     assert "Wait-Http $healthUri $launcherStartupTimeoutSeconds" in verify_script
 
 
-def test_direct_backend_verifier_waits_through_initializing_runtime_states() -> None:
+def test_direct_backend_verifier_waits_for_post_ready_runtime_states() -> None:
     verify_script = VERIFY_SCRIPT.read_text(encoding="utf-8-sig")
 
-    assert 'function Wait-CoreRuntimeStatus' in verify_script
-    assert "$status.state -in @('CORE_READY', 'READY', 'DEGRADED')" in verify_script
+    assert 'function Wait-PostReadyRuntimeStatus' in verify_script
+    assert "$status.state -in @('READY', 'DEGRADED')" in verify_script
     assert "$status.state -eq 'FAILED'" in verify_script
-    assert 'Wait-CoreRuntimeStatus "http://127.0.0.1:$port/api/v1/system/runtime/status" $StartupTimeoutSeconds' in verify_script
+    assert 'Wait-PostReadyRuntimeStatus "http://127.0.0.1:$port/api/v1/system/runtime/status" $StartupTimeoutSeconds' in verify_script
 
 
-def test_install_script_waits_for_a_core_usable_runtime_state() -> None:
+def test_install_script_waits_for_a_post_ready_runtime_state() -> None:
     install_script = INSTALL_SCRIPT.read_text(encoding="utf-8-sig")
-    assert '$status.state -notin @("CORE_READY", "READY", "DEGRADED")' in install_script
+    assert '$status.state -notin @("READY", "DEGRADED")' in install_script
     assert '$status.state -eq "FAILED"' in install_script
 
 
@@ -628,6 +628,7 @@ def test_verify_script_smokes_final_packaged_server_and_lark_sdk() -> None:
         "/api/v1/system/runtime/status",
         "PostReadyProbeSeconds",
         "packaged backend exited during post-ready probe",
+        "Assert-BackendPortListening",
     ]:
         assert term in verify_script
 

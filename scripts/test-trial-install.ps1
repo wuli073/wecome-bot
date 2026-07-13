@@ -469,7 +469,7 @@ function Stage-RuntimeStatusWait {
             if ($status.state -eq "FAILED") {
                 return $status
             }
-            if ($status.state -notin @("CORE_READY", "READY", "DEGRADED")) {
+            if ($status.state -notin @("READY", "DEGRADED")) {
                 return $null
             }
             return $status
@@ -486,7 +486,7 @@ function Stage-RuntimeStatusWait {
     if ($null -eq $result) {
         $log = Collect-LaunchDiagnostics -Name "runtime-timeout" -StatusUri $statusUri
         $lastError = if ($script:lastStatusError) { [string]$script:lastStatusError } else { "" }
-        throw "RUNTIME_STATUS_WAIT failed. Timed out waiting for a core-usable backend state. Last error: $lastError Diagnostics: $log"
+        throw "RUNTIME_STATUS_WAIT failed. Timed out waiting for READY or DEGRADED. Last error: $lastError Diagnostics: $log"
     }
     return New-StatusObject -Status "PASS" -Evidence ("runtime=" + ($result | ConvertTo-Json -Compress))
 }

@@ -203,22 +203,31 @@ async def test_runtime_prewarm_is_scheduled_as_application_task_when_enabled():
     assert ensure_calls == ['ensure']
 
 
-async def test_runtime_prewarm_failure_does_not_fail_http_startup():
+async def test_desktop_rpa_exit_degrades_without_ending_backend_run_task():
     ap = _make_application()
     ap.instance_config.data['desktop_automation']['enabled'] = True
+    ap.runtime_state = app_module.RuntimeState.READY
 
     async def ensure_runtime_client():
         raise RuntimeError('prewarm failed')
 
     ap.desktop_automation_service = SimpleNamespace(ensure_runtime_client=ensure_runtime_client)
+    ap.platform_mgr = SimpleNamespace(run=_async_noop())
 
     await ap.initialize()
+    run_task = asyncio.create_task(ap.run())
+    await asyncio.sleep(0)
     await asyncio.sleep(0)
 
-    assert any(wrapper.name == 'desktop-runtime-prewarm' for wrapper in ap.task_mgr.tasks)
+    assert not run_task.done()
+    assert ap.runtime_state is app_module.RuntimeState.DEGRADED
+    assert ap.runtime_failure_code == 'optional:desktop-runtime-prewarm'
+
+    ap.request_shutdown('test-stop')
+    assert await run_task == 0
 
 
-async def test_optional_task_failure_degrades_without_ending_backend_run_task():
+async def test_plugin_runtime_exit_degrades_without_ending_backend_run_task():
     ap = _make_application()
 
     async def platform_startup_only():

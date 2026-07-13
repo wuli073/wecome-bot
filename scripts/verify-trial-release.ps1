@@ -519,14 +519,14 @@ function Wait-Http([string]$Uri, [int]$TimeoutSeconds) {
     throw "Timed out waiting for $Uri. Last error: $($last.message)"
 }
 
-function Wait-CoreRuntimeStatus([string]$Uri, [int]$TimeoutSeconds) {
+function Wait-PostReadyRuntimeStatus([string]$Uri, [int]$TimeoutSeconds) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $last = $null
     while ((Get-Date) -lt $deadline) {
         try {
             $status = Invoke-RestMethod -Uri $Uri -TimeoutSec 3
             $last = $status | ConvertTo-Json -Compress
-            if ($status.state -in @('CORE_READY', 'READY', 'DEGRADED')) {
+            if ($status.state -in @('READY', 'DEGRADED')) {
                 return $status
             }
             if ($status.state -eq 'FAILED') {
@@ -539,7 +539,18 @@ function Wait-CoreRuntimeStatus([string]$Uri, [int]$TimeoutSeconds) {
         }
         Start-Sleep -Milliseconds 500
     }
-    throw "Timed out waiting for a core-usable runtime state at $Uri. Last status: $last"
+    throw "Timed out waiting for READY or DEGRADED at $Uri. Last status: $last"
+}
+
+function Assert-BackendPortListening([int]$Port, [int]$ExpectedProcessId) {
+    $listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    if ($listeners.Count -eq 0) {
+        throw "packaged backend port is not listening during post-ready probe: port=$Port"
+    }
+    if (-not @($listeners | Where-Object { [int]$_.OwningProcess -eq $ExpectedProcessId })) {
+        $owners = @($listeners | ForEach-Object { $_.OwningProcess }) -join ','
+        throw "packaged backend port is not owned by the backend during post-ready probe: port=$Port expectedPid=$ExpectedProcessId actualPids=$owners"
+    }
 }
 
 function Get-LauncherStateEvidence([string]$UserData) {
@@ -1065,7 +1076,7 @@ function Test-PackagedBackendBoot {
         $health = Wait-Http "http://127.0.0.1:$port/healthz" $StartupTimeoutSeconds
         $healthJson = $health | ConvertTo-Json -Compress
         if ($healthJson -notmatch '"code"\s*:\s*0' -and $healthJson -notmatch '"msg"\s*:\s*"ok"') { throw "packaged backend health response was invalid: $healthJson" }
-        $runtime = Wait-CoreRuntimeStatus "http://127.0.0.1:$port/api/v1/system/runtime/status" $StartupTimeoutSeconds
+        $runtime = Wait-PostReadyRuntimeStatus "http://127.0.0.1:$port/api/v1/system/runtime/status" $StartupTimeoutSeconds
         $runtimeJson = $runtime | ConvertTo-Json -Compress
         $postReadyDeadline = (Get-Date).AddSeconds($PostReadyProbeSeconds)
         $postReadyProbes = 0
@@ -1073,16 +1084,17 @@ function Test-PackagedBackendBoot {
             if ($proc.HasExited) {
                 throw "packaged backend exited during post-ready probe: pid=$($proc.Id) exitCode=$($proc.ExitCode)"
             }
+            Assert-BackendPortListening -Port $port -ExpectedProcessId $proc.Id
             $probeHealth = Invoke-RestMethod -Uri "http://127.0.0.1:$port/healthz" -TimeoutSec 3
             if ($probeHealth.code -ne 0 -and $probeHealth.msg -ne "ok") {
                 throw "packaged backend health became invalid during post-ready probe: $($probeHealth | ConvertTo-Json -Compress)"
             }
             $probeRuntime = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/v1/system/runtime/status" -TimeoutSec 3
-            if ($probeRuntime.state -notin @('CORE_READY', 'READY', 'DEGRADED')) {
+            if ($probeRuntime.state -notin @('READY', 'DEGRADED')) {
                 throw "packaged backend runtime became unusable during post-ready probe: $($probeRuntime | ConvertTo-Json -Compress)"
             }
             $postReadyProbes++
-            Start-Sleep -Seconds 5
+            Start-Sleep -Seconds 1
         }
         $childProcessIds += @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { [int]$_.ParentProcessId -eq $proc.Id } | ForEach-Object { [int]$_.ProcessId })
         @{ action = "shutdown"; reason = "packaged-backend-verifier"; requestedAtUtc = [DateTime]::UtcNow.ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath $shutdownPath -Encoding UTF8

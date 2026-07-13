@@ -14,7 +14,7 @@ def test_ready_endpoint_distinguishes_initializing_and_failed_states() -> None:
     assert ready_status_code(RuntimeState.FAILED) == 500
 
 
-async def test_packaged_optional_failure_transitions_to_degraded(monkeypatch) -> None:
+async def test_packaged_box_unavailable_transitions_to_degraded_without_shutdown(monkeypatch) -> None:
     from langbot.pkg.core.app import Application
     from langbot.pkg.core.stages.build_app import BuildAppStage
 
@@ -32,3 +32,4 @@ async def test_packaged_optional_failure_transitions_to_degraded(monkeypatch) ->
 
     assert app.runtime_state is RuntimeState.DEGRADED
     assert app.runtime_failure_code == 'optional-initialization-failed'
+    assert not app.shutdown_requested_event.is_set()
