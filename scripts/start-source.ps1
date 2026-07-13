@@ -41,15 +41,66 @@ function Get-ProcessRecord([int]$ProcessId, [string]$Role) {
     return [ordered]@{ role=$Role; pid=$ProcessId; startTicks=$process.StartTime.ToUniversalTime().Ticks; executable=[string]$cim.ExecutablePath; commandLine=[string]$cim.CommandLine }
 }
 function Test-ProcessRecord($Record) {
-    if ($null -eq $Record -or -not $Record.pid) { return $false }
+    if ($null -eq $Record) { return $false }
+    foreach ($name in @('pid', 'startTicks', 'executable', 'commandLine')) {
+        if (-not (Test-ManagedSourceStateProperty -Object $Record -Name $name)) { return $false }
+    }
+
+    $processId = 0
+    $startTicks = [int64]0
+    $pidValue = Get-ManagedSourceStateProperty -Object $Record -Name 'pid'
+    $startTicksValue = Get-ManagedSourceStateProperty -Object $Record -Name 'startTicks'
+    $executable = Get-ManagedSourceStateProperty -Object $Record -Name 'executable'
+    $commandLine = Get-ManagedSourceStateProperty -Object $Record -Name 'commandLine'
+    if ($null -eq $pidValue -or $null -eq $startTicksValue -or [string]::IsNullOrWhiteSpace([string]$executable) -or [string]::IsNullOrWhiteSpace([string]$commandLine)) { return $false }
+    if (-not [int]::TryParse([string]$pidValue, [ref]$processId) -or $processId -le 0) { return $false }
+    if (-not [int64]::TryParse([string]$startTicksValue, [ref]$startTicks) -or $startTicks -le 0) { return $false }
+
     try {
-        $process = Get-Process -Id ([int]$Record.pid) -ErrorAction Stop
-        $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $($Record.pid)" -ErrorAction Stop
-        if ($process.StartTime.ToUniversalTime().Ticks -ne [int64]$Record.startTicks) { return $false }
+        $process = Get-Process -Id $processId -ErrorAction Stop
+        $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop
+        if ($process.StartTime.ToUniversalTime().Ticks -ne $startTicks) { return $false }
         $marker = $script:RepoRoot.ToLowerInvariant()
         return ([string]$cim.CommandLine).ToLowerInvariant().Contains($marker)
     }
     catch { return $false }
+}
+function Get-ProcessRecordId($Record) {
+    $processId = 0
+    $pidValue = Get-ManagedSourceStateProperty -Object $Record -Name 'pid'
+    if ($null -eq $pidValue -or -not [int]::TryParse([string]$pidValue, [ref]$processId) -or $processId -le 0) { return $null }
+    return $processId
+}
+function Get-StatePort($State, [string]$Name) {
+    $port = 0
+    $value = Get-ManagedSourceStateProperty -Object $State -Name $Name
+    if ($null -eq $value -or -not [int]::TryParse([string]$value, [ref]$port) -or $port -lt 1 -or $port -gt 65535) { return $null }
+    return $port
+}
+function Test-CurrentRepoState($State) {
+    $repoRoot = Get-ManagedSourceStateProperty -Object $State -Name 'repoRoot'
+    if ($repoRoot -isnot [string] -or [string]::IsNullOrWhiteSpace($repoRoot)) { return $false }
+    try {
+        return [IO.Path]::GetFullPath($repoRoot).Equals($script:RepoRoot, [StringComparison]::OrdinalIgnoreCase)
+    }
+    catch { return $false }
+}
+function Test-ControlPath($Path) {
+    if ($Path -isnot [string] -or -not [IO.Path]::IsPathRooted($Path)) { return $false }
+    try {
+        $root = [IO.Path]::GetFullPath($script:ControlRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        $candidate = [IO.Path]::GetFullPath($Path)
+        return $candidate.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+    }
+    catch { return $false }
+}
+function Stop-VerifiedProcess($Record) {
+    if (-not (Test-ProcessRecord $Record)) { return $false }
+    $processId = Get-ProcessRecordId $Record
+    if ($null -eq $processId -or -not (Test-ProcessRecord $Record)) { return $false }
+    # Terminate only a process that passed PID, start time, and repository command-line validation.
+    & taskkill.exe /PID $processId /T /F | Out-Null
+    return $true
 }
 function Get-PortOwner([int]$Port) {
     $listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -89,7 +140,18 @@ function Wait-ForWeb([int]$Timeout) {
 }
 function Start-Source {
     $existing = Read-ManagedSourceState $script:StatePath
-    if ($existing -and (Test-ProcessRecord $existing.backend)) { throw "A managed source stack is already running (backend PID $($existing.backend.pid)). Use stop-source.ps1 first." }
+    if ($existing -and -not (Test-CurrentRepoState $existing)) { throw 'Refusing to replace a managed source state owned by a different repository.' }
+    $existingRecords = @()
+    if ($existing) {
+        foreach ($recordName in @('backend', 'web', 'backendListener')) {
+            $record = Get-ManagedSourceStateProperty -Object $existing -Name $recordName
+            if (Test-ProcessRecord $record) { $existingRecords += $record }
+        }
+    }
+    if ($existingRecords.Count -gt 0) {
+        $pids = @($existingRecords | ForEach-Object { Get-ProcessRecordId $_ }) -join ', '
+        throw "A managed source stack is already running (PID $pids). Use stop-source.ps1 first."
+    }
     Assert-PortFree $BackendPort; Assert-PortFree $WebPort
     $python = Join-Path $script:RepoRoot '.venv\Scripts\python.exe'
     $vite = Join-Path $script:RepoRoot 'web\node_modules\vite\bin\vite.js'
@@ -130,7 +192,7 @@ function Start-Source {
         }
         finally { foreach ($key in $webEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $savedWeb[$key], 'Process') } }
         $state.web = Get-ProcessRecord $web.Id 'web'; Write-ManagedSourceState $script:StatePath $state; Wait-ForWeb 45
-        $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=$state.backend.pid; webPid=$state.web.pid; backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='disabled'; runtimeState=$readiness.runtime.state }
+        $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=(Get-ProcessRecordId (Get-ManagedSourceStateProperty -Object $state -Name 'backend')); webPid=(Get-ProcessRecordId (Get-ManagedSourceStateProperty -Object $state -Name 'web')); backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='disabled'; runtimeState=$readiness.runtime.state }
         if (-not $NoBrowser) { Start-Process $script:WebUrl }
         return $result
     }
@@ -139,26 +201,33 @@ function Start-Source {
 function Stop-Source {
     $state = Read-ManagedSourceState $script:StatePath
     if ($null -eq $state) { return [ordered]@{ status='stopped'; detail='no-managed-source-state' } }
-    if ($state.repoRoot -ne $script:RepoRoot) { throw 'Refusing to stop a source stack owned by a different repository.' }
-    if ($state.shutdownPath -and (Test-ProcessRecord $state.backend)) { Write-ManagedSourceState $state.shutdownPath ([ordered]@{ sessionId=$state.sessionId; action='shutdown'; reason='source-stop'; requestedAt=[DateTime]::UtcNow.ToString('o') }); Start-Sleep -Seconds 2 }
-    foreach ($record in @($state.web, $state.backend)) {
-        if (Test-ProcessRecord $record) {
-            # The backend can fork a Hypercorn child. Terminate only this
-            # verified root and its descendants, never processes by image name.
-            & taskkill.exe /PID ([int]$record.pid) /T /F | Out-Null
-        }
-    }
-    if (Test-ProcessRecord $state.backendListener) {
-        & taskkill.exe /PID ([int]$state.backendListener.pid) /T /F | Out-Null
-    }
-    foreach ($port in @([int]$state.backendPort, [int]$state.webPort)) { $deadline=[DateTime]::UtcNow.AddSeconds(15); while ((Get-PortOwner $port) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }; if (Get-PortOwner $port) { throw "Managed source stack did not release port $port." } }
-    Remove-Item -LiteralPath $script:StatePath -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $state.shutdownPath -Force -ErrorAction SilentlyContinue
-    return [ordered]@{ status='stopped'; backendPort=$state.backendPort; webPort=$state.webPort }
+    if (-not (Test-CurrentRepoState $state)) { throw 'Refusing to stop a source stack owned by a different repository.' }
+    $backend = Get-ManagedSourceStateProperty -Object $state -Name 'backend'
+    $web = Get-ManagedSourceStateProperty -Object $state -Name 'web'
+    $backendListener = Get-ManagedSourceStateProperty -Object $state -Name 'backendListener'
+    $shutdownPath = Get-ManagedSourceStateProperty -Object $state -Name 'shutdownPath'
+    $sessionId = Get-ManagedSourceStateProperty -Object $state -Name 'sessionId'
+    if ((Test-ControlPath $shutdownPath) -and (Test-ProcessRecord $backend)) { Write-ManagedSourceState $shutdownPath ([ordered]@{ sessionId=$sessionId; action='shutdown'; reason='source-stop'; requestedAt=[DateTime]::UtcNow.ToString('o') }); Start-Sleep -Seconds 2 }
+    foreach ($record in @($web, $backend, $backendListener)) { [void](Stop-VerifiedProcess $record) }
+    $backendPort = Get-StatePort $state 'backendPort'
+    $webPort = Get-StatePort $state 'webPort'
+    Remove-Item -LiteralPath $script:StatePath -Force -ErrorAction SilentlyContinue
+    if (Test-ControlPath $shutdownPath) { Remove-Item -LiteralPath $shutdownPath -Force -ErrorAction SilentlyContinue }
+    return [ordered]@{ status='stopped'; backendPort=$backendPort; webPort=$webPort }
 }
 function Get-SourceStatus {
-    $state = Read-ManagedSourceState $script:StatePath
-    if ($null -eq $state) { return [ordered]@{ status='stopped'; userData=$script:UserDataRoot } }
-    return [ordered]@{ status=if ((Test-ProcessRecord $state.backend) -and (Test-ProcessRecord $state.web)) {'running'} else {'degraded'}; backendPid=$state.backend.pid; webPid=$state.web.pid; backendPort=$state.backendPort; webPort=$state.webPort; logs=$state.logsRoot; userData=$state.userDataRoot }
+    $state = Read-ManagedSourceState $script:StatePath -Quiet
+    if ($null -eq $state) { return [ordered]@{ status='stopped'; detail='no-managed-source-state'; backendPid=$null; webPid=$null; userData=$script:UserDataRoot } }
+    if (-not (Test-CurrentRepoState $state)) { return [ordered]@{ status='stopped'; detail='foreign-managed-source-state'; backendPid=$null; webPid=$null; userData=$script:UserDataRoot } }
+    $backend = Get-ManagedSourceStateProperty -Object $state -Name 'backend'
+    $web = Get-ManagedSourceStateProperty -Object $state -Name 'web'
+    $backendValid = Test-ProcessRecord $backend
+    $webValid = Test-ProcessRecord $web
+    $backendPid = if ($backendValid) { Get-ProcessRecordId $backend } else { $null }
+    $webPid = if ($webValid) { Get-ProcessRecordId $web } else { $null }
+    $detail = if ($backendValid -and $webValid) { 'running' } elseif ($backendValid -or $webValid) { 'partial-managed-source-state' } elseif ($null -eq $backend -and $null -eq $web) { 'partial-managed-source-state' } else { 'stale-managed-source-state' }
+    $status = if ($backendValid -and $webValid) { 'running' } elseif ($backendValid -or $webValid) { 'degraded' } else { 'stopped' }
+    return [ordered]@{ status=$status; detail=$detail; backendPid=$backendPid; webPid=$webPid; backendPort=(Get-StatePort $state 'backendPort'); webPort=(Get-StatePort $state 'webPort'); logs=(Get-ManagedSourceStateProperty -Object $state -Name 'logsRoot'); userData=(Get-ManagedSourceStateProperty -Object $state -Name 'userDataRoot') }
 }
 
 try {
