@@ -16,7 +16,7 @@
 Windows 源码分发包中的脚本按顺序使用：
 
 1. `01-check-environment.bat` 检查 Windows x64、PowerShell、WinGet、Git、Node.js 22、npm、uv 和 GitHub 连通性。缺少 Git、Node.js 22 或 uv 时，会汇总缺失项；确认后使用 WinGet 安装。npm 随 Node.js 安装，脚本不会单独安装 npm。缺少 WinGet 时，请先从 Microsoft Store 安装或更新 App Installer 后重新运行 01。Windows 架构、PowerShell 或网络问题仍需自行处理。
-2. `02-install-wecome-bot.bat` 只负责拉取或更新项目，并安装项目内部依赖。
+2. `02-install-wecome-bot.bat` 只负责拉取或更新项目，并安装项目内部依赖。它会由 `uv` 自动下载和管理 Python 3.12；不需要预装系统 Python，已安装的 Python 3.14 也不会影响安装。首次准备受管 Python 3.12 需要网络并可能多花一些时间。
 3. `03-start-wecome-bot.bat` 只负责启动项目。
 
 分发包中的 BAT 文件使用 UTF-8 无 BOM 和 CRLF 行尾；第一行保持为 `@echo off`，第二行执行 `chcp 65001 >nul`，以避免 BOM 影响 cmd.exe 解析首条命令。
@@ -35,7 +35,9 @@ git checkout <branch-or-tag>
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-source.ps1
 ```
 
-该命令运行 `uv sync --frozen --dev` 和 `npm ci`。它不会创建或覆盖 `web/.env`。
+该命令先运行 `uv python install 3.12`，再运行 `uv sync --frozen --dev --python 3.12 --managed-python` 和 `npm ci`。`.venv` 固定使用 Python 3.12，并在安装后验证 Python 版本及 `onnxruntime` 导入。它不会创建或覆盖 `web/.env`。
+
+无需修改系统 PATH，也无需卸载 Python 3.14。若看到 `onnxruntime` 或 `cp314` 安装错误，说明仍在使用旧版安装脚本；更新后重新运行 `02-install-wecome-bot.bat`。
 
 ## 启动
 

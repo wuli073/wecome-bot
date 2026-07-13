@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $webRoot = Join-Path $repoRoot 'web'
+$venvPath = [IO.Path]::GetFullPath((Join-Path $repoRoot '.venv'))
 
 function Require-Command([string]$Name) {
     $command = Get-Command $Name -ErrorAction SilentlyContinue
@@ -20,10 +21,44 @@ function Get-TextCommand([string]$FilePath, [string[]]$Arguments) {
     return ([string]($output | Select-Object -First 1)).Trim()
 }
 
+function Get-ExistingVenvPythonVersion([string]$VenvPath) {
+    $python = Join-Path $VenvPath 'Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { return $null }
+
+    $output = & $python --version 2>&1
+    if ($LASTEXITCODE -ne 0) { return $null }
+    return ([string]($output | Select-Object -First 1)).Trim()
+}
+
+function Remove-IncompatibleProjectVenv([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Virtual environment path is empty.' }
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $parentPath = [IO.Path]::GetDirectoryName($fullPath)
+    $expectedName = '.venv'
+    if (
+        -not [StringComparer]::OrdinalIgnoreCase.Equals($fullPath, $venvPath) -or
+        -not [StringComparer]::OrdinalIgnoreCase.Equals($parentPath, $repoRoot) -or
+        -not [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFileName($fullPath), $expectedName)
+    ) {
+        throw "Refusing to remove a path outside the project virtual environment: $fullPath"
+    }
+
+    if (Test-Path -LiteralPath $fullPath -PathType Container) {
+        Remove-Item -LiteralPath $fullPath -Recurse -Force
+    }
+}
+
+function Invoke-ManagedPythonSync([string]$UvPath) {
+    & $UvPath sync --frozen --dev --python 3.12 --managed-python
+    return $LASTEXITCODE
+}
+
 if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) {
     throw 'This source distribution supports Windows x64 only.'
 }
 
+Write-Host '[1/5] Checking source prerequisites...'
 $git = Require-Command 'git.exe'
 $node = Require-Command 'node.exe'
 $npm = Require-Command 'npm.cmd'
@@ -45,13 +80,32 @@ $lockFiles = @((Join-Path $repoRoot 'uv.lock'), (Join-Path $webRoot 'package-loc
 $before = @{}
 foreach ($lockFile in $lockFiles) { $before[$lockFile] = (Get-FileHash -LiteralPath $lockFile -Algorithm SHA256).Hash }
 
+Write-Host '[2/5] Preparing managed Python 3.12...'
+& $uv python install 3.12
+if ($LASTEXITCODE -ne 0) { throw 'uv python install 3.12 failed.' }
+
+$existingVenvPython = Get-ExistingVenvPythonVersion $venvPath
+Write-Host '[3/5] Installing Python dependencies...'
 Push-Location $repoRoot
 try {
-    & $uv sync --frozen --dev
-    if ($LASTEXITCODE -ne 0) { throw 'uv sync --frozen --dev failed.' }
+    $syncExitCode = Invoke-ManagedPythonSync $uv
+    if ($syncExitCode -ne 0 -and $existingVenvPython -and $existingVenvPython -notmatch '^Python 3\.12\.') {
+        Write-Host "Rebuilding incompatible project virtual environment ($existingVenvPython)..."
+        Remove-IncompatibleProjectVenv $venvPath
+        $syncExitCode = Invoke-ManagedPythonSync $uv
+    }
+    if ($syncExitCode -ne 0) { throw 'uv sync --frozen --dev --python 3.12 --managed-python failed.' }
 }
 finally { Pop-Location }
 
+Write-Host '[4/5] Verifying Python environment...'
+$venvPython = Join-Path $venvPath 'Scripts\python.exe'
+if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) { throw "Project Python executable is missing: $venvPython" }
+$pythonVersion = Get-TextCommand $venvPython @('--version')
+if ($pythonVersion -notmatch '^Python 3\.12\.') { throw "Expected Python 3.12 in .venv; found $pythonVersion." }
+$onnxruntimeVersion = Get-TextCommand $venvPython @('-c', 'import onnxruntime; print(onnxruntime.__version__)')
+
+Write-Host '[5/5] Installing Web dependencies...'
 Push-Location $webRoot
 try {
     & $npm ci
@@ -67,6 +121,9 @@ foreach ($lockFile in $lockFiles) {
 $envStatus = if (Test-Path -LiteralPath (Join-Path $webRoot '.env')) { 'preserved' } else { 'not-created' }
 [ordered]@{
     status = 'ok'
+    python = $pythonVersion
+    pythonExecutable = $venvPython
+    onnxruntime = $onnxruntimeVersion
     git = (Get-TextCommand $git @('--version'))
     node = $nodeVersion
     npm = (Get-TextCommand $npm @('--version'))
