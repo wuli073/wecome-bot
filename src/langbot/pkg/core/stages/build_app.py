@@ -159,6 +159,8 @@ class BuildAppStage(stage.BootingStage):
     async def _run_packaged_initialization(self, ap: app.Application) -> None:
         try:
             await self._initialize_remaining(ap)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             ap.logger.exception('Packaged optional initialization failed.')
             ap.set_runtime_state(RuntimeState.DEGRADED, failure_code='optional-initialization-failed')
@@ -313,8 +315,13 @@ class BuildAppStage(stage.BootingStage):
         ap.maintenance_service = maintenance_service_inst
 
         async def runtime_disconnect_callback(connector: plugin_connector.PluginRuntimeConnector) -> None:
-            await asyncio.sleep(3)
-            await plugin_connector_inst.initialize()
+            try:
+                await asyncio.sleep(3)
+                await plugin_connector_inst.initialize()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                ap.report_optional_failure('plugin-runtime-reconnect', exc)
 
         plugin_connector_inst = plugin_connector.PluginRuntimeConnector(ap, runtime_disconnect_callback)
         await plugin_connector_inst.initialize()

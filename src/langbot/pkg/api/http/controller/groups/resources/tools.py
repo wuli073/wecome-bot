@@ -9,7 +9,10 @@ class ToolsRouterGroup(group.RouterGroup):
         @self.route('', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
         async def _() -> str:
             """获取所有可用工具列表"""
-            tools = await self.ap.tool_mgr.get_all_tools()
+            tool_mgr = self.require_optional_service('tool_mgr')
+            if isinstance(tool_mgr, tuple):
+                return tool_mgr
+            tools = await tool_mgr.get_all_tools()
 
             tool_list = []
             for tool in tools:
@@ -27,7 +30,10 @@ class ToolsRouterGroup(group.RouterGroup):
         @self.route('/<tool_name>', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
         async def _(tool_name: str) -> str:
             """获取特定工具详情"""
-            tools = await self.ap.tool_mgr.get_all_tools()
+            tool_mgr = self.require_optional_service('tool_mgr')
+            if isinstance(tool_mgr, tuple):
+                return tool_mgr
+            tools = await tool_mgr.get_all_tools()
 
             for tool in tools:
                 if tool.name == tool_name:

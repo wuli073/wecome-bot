@@ -13,8 +13,11 @@ class ExtensionsRouterGroup(group.RouterGroup):
     async def initialize(self) -> None:
         @self.route('', methods=['GET'], auth_type=group.AuthType.USER_TOKEN_OR_API_KEY)
         async def _() -> quart.Response:
+            plugin_connector = self.require_optional_service('plugin_connector')
+            if isinstance(plugin_connector, tuple):
+                return plugin_connector
             plugins, mcp_servers, skills = await asyncio.gather(
-                self.ap.plugin_connector.list_plugins(),
+                plugin_connector.list_plugins(),
                 self.ap.mcp_service.get_mcp_servers(contain_runtime_info=True),
                 self.ap.skill_service.list_skills(),
                 return_exceptions=True,

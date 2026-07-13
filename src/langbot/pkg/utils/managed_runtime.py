@@ -45,6 +45,21 @@ class ManagedRuntimeConnector:
         )
         self.runtime_subprocess_task = asyncio.create_task(self.runtime_subprocess.wait())
 
+        def _report_runtime_exit(completed: asyncio.Task) -> None:
+            if self.ap.shutdown_requested_event.is_set() or completed.cancelled():
+                return
+            try:
+                exit_code = completed.result()
+            except Exception as exc:
+                self.ap.report_optional_failure(f'{type(self).__name__}-process-wait', exc)
+                return
+            self.ap.report_optional_failure(
+                f'{type(self).__name__}-process-exit',
+                RuntimeError(f'managed runtime exited with code {exit_code}'),
+            )
+
+        self.runtime_subprocess_task.add_done_callback(_report_runtime_exit)
+
     async def _wait_until_ready(
         self,
         check: Callable[[], Awaitable[None]],

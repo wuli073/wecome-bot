@@ -200,6 +200,12 @@ class RouterGroup(abc.ABC):
                 try:
                     return await f(*args, **kwargs)
 
+                except AttributeError as e:
+                    optional_response = self.optional_service_response(e)
+                    if optional_response is not None:
+                        return optional_response
+                    traceback.print_exc()
+                    return self.http_status(500, -2, str(e))
                 except Exception as e:  # 自动 500
                     traceback.print_exc()
                     # return self.http_status(500, -2, str(e))
@@ -213,6 +219,23 @@ class RouterGroup(abc.ABC):
             return f
 
         return decorator
+
+    def optional_service_response(self, error: AttributeError):
+        """Return a stable lifecycle response for an unavailable optional service."""
+        state = str(getattr(getattr(self.ap, 'runtime_state', None), 'value', getattr(self.ap, 'startup_phase', 'STARTING')))
+        if "'NoneType' object has no attribute" not in str(error):
+            return None
+        code = 'SERVICE_INITIALIZING' if state in {'HTTP_READY', 'CORE_INITIALIZING', 'CORE_READY'} else 'SERVICE_UNAVAILABLE'
+        return self.http_status(503, 50301, code)
+
+    def require_optional_service(self, attribute: str):
+        """Return an optional service or a deterministic lifecycle response."""
+        service = getattr(self.ap, attribute, None)
+        if service is not None:
+            return service
+        state = str(getattr(getattr(self.ap, 'runtime_state', None), 'value', getattr(self.ap, 'startup_phase', 'STARTING')))
+        code = 'SERVICE_INITIALIZING' if state in {'HTTP_READY', 'CORE_INITIALIZING', 'CORE_READY'} else 'SERVICE_UNAVAILABLE'
+        return self.http_status(503, 50301, code)
 
     def success(self, data: typing.Any = None) -> quart.Response:
         """Return a 200 response"""

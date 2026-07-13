@@ -6,6 +6,8 @@ import json
 import os
 import signal
 import sys
+import traceback
+from datetime import UTC, datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -26,6 +28,36 @@ DEFAULT_BACKEND_PORT = 5302
 DEFAULT_SHUTDOWN_FILENAME = 'backend-shutdown.json'
 DEFAULT_SHUTDOWN_ACK_FILENAME = 'backend-shutdown.ack.json'
 DEFAULT_RPA_RUNTIME_RELATIVE_PATH = Path('runtime') / 'desktop-rpa' / 'LangBot Desktop RPA Runtime.exe'
+
+
+class BackendLifecycleDiagnostics:
+    """Emit process-boundary records that survive abrupt lifecycle failures."""
+
+    def __init__(self) -> None:
+        self.last_boot_stage = 'entrypoint_started'
+        self.last_lifecycle_state = 'STARTING'
+        self.stop_reason = 'none'
+        self.unhandled_exception = 'none'
+
+    def emit(self, event: str, **fields: object) -> None:
+        payload = {
+            'timestamp': datetime.now(UTC).isoformat(),
+            'pid': os.getpid(),
+            'event': event,
+            'lastBootStage': self.last_boot_stage,
+            'lifecycleState': self.last_lifecycle_state,
+            'stopReason': self.stop_reason,
+            **fields,
+        }
+        print(f'BACKEND_LIFECYCLE {json.dumps(payload, ensure_ascii=True, separators=(",", ":"))}', flush=True)
+
+    def update_from_app(self, app_inst) -> None:
+        if app_inst is None:
+            return
+        self.last_boot_stage = str(getattr(app_inst, 'startup_phase', self.last_boot_stage))
+        runtime_state = getattr(app_inst, 'runtime_state', None)
+        self.last_lifecycle_state = str(getattr(runtime_state, 'value', runtime_state or self.last_lifecycle_state))
+        self.stop_reason = str(getattr(app_inst, '_shutdown_reason', None) or self.stop_reason)
 
 
 @dataclass(frozen=True)
@@ -239,6 +271,7 @@ async def packaged_main(
     *,
     shutdown_request_path: Path,
     state: dict[str, object] | None = None,
+    diagnostics: BackendLifecycleDiagnostics | None = None,
 ) -> int:
     early_shutdown_requested = asyncio.Event()
     watcher_task = loop.create_task(
@@ -250,6 +283,9 @@ async def packaged_main(
     )
     try:
         app_inst = await boot.make_app(loop)
+        if diagnostics is not None:
+            diagnostics.update_from_app(app_inst)
+            diagnostics.emit('application_constructed')
         if state is not None:
             state['app'] = app_inst
             if state.get('pending_shutdown'):
@@ -262,7 +298,16 @@ async def packaged_main(
         forward_task = loop.create_task(forward_shutdown_request(), name='packaged-backend-shutdown-forwarder')
         if early_shutdown_requested.is_set():
             app_inst.request_shutdown('packaged-control-file:early-watcher')
-        return await app_inst.run()
+        exit_code = await app_inst.run()
+        if diagnostics is not None:
+            diagnostics.update_from_app(app_inst)
+            diagnostics.emit('application_run_completed', exitCode=exit_code)
+        return exit_code
+    except BaseException as exc:
+        if diagnostics is not None:
+            diagnostics.unhandled_exception = f'{type(exc).__name__}: {exc}'
+            diagnostics.emit('packaged_main_exception', exception=diagnostics.unhandled_exception)
+        raise
     finally:
         watcher_task.cancel()
         await asyncio.gather(watcher_task, return_exceptions=True)
@@ -288,7 +333,8 @@ def main(argv: list[str] | None = None) -> int:
     os.environ.setdefault('PYTHONUTF8', '1')
     os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
     os.environ.setdefault('PYTHONUNBUFFERED', '1')
-    print('BOOT_STAGE {"stage":"entrypoint_started"}', flush=True)
+    diagnostics = BackendLifecycleDiagnostics()
+    diagnostics.emit('entrypoint_started')
 
     install_root = args.install_root.strip()
     if not install_root:
@@ -313,10 +359,23 @@ def main(argv: list[str] | None = None) -> int:
 
     prepare_packaged_runtime(config)
     os.environ.update(build_packaged_environment(config))
-    print('BOOT_STAGE {"stage":"paths_resolved"}', flush=True)
+    diagnostics.last_boot_stage = 'paths_resolved'
+    diagnostics.emit('paths_resolved')
 
     loop = asyncio.new_event_loop()
     state: dict[str, object] = {'pending_shutdown': False, 'app': None}
+    exit_code = 1
+
+    def loop_exception_handler(_loop, context: dict[str, object]) -> None:
+        exception = context.get('exception')
+        message = str(context.get('message') or 'event-loop exception')
+        diagnostics.unhandled_exception = (
+            f'{type(exception).__name__}: {exception}' if exception is not None else message
+        )
+        diagnostics.update_from_app(state.get('app'))
+        diagnostics.emit('event_loop_exception', message=message, exception=diagnostics.unhandled_exception)
+
+    loop.set_exception_handler(loop_exception_handler)
 
     def signal_handler(sig, _frame):
         state['pending_shutdown'] = True
@@ -336,11 +395,32 @@ def main(argv: list[str] | None = None) -> int:
             ),
             name='packaged-backend-main',
         )
-        return loop.run_until_complete(task)
+        exit_code = loop.run_until_complete(task)
+        diagnostics.update_from_app(state.get('app'))
+        return exit_code
     except KeyboardInterrupt:
-        return 0
+        exit_code = 0
+        diagnostics.stop_reason = 'keyboard-interrupt'
+        return exit_code
+    except BaseException as exc:
+        diagnostics.unhandled_exception = f'{type(exc).__name__}: {exc}'
+        diagnostics.update_from_app(state.get('app'))
+        diagnostics.emit('entrypoint_exception', exception=diagnostics.unhandled_exception)
+        traceback.print_exc()
+        return exit_code
     finally:
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop), return_exceptions=True))
+        pending_tasks = tuple(asyncio.all_tasks(loop))
+        for pending in pending_tasks:
+            if pending.done() or pending.cancelled():
+                continue
+            pending.cancel()
+        loop.run_until_complete(asyncio.gather(*pending_tasks, return_exceptions=True))
+        diagnostics.update_from_app(state.get('app'))
+        diagnostics.emit(
+            'process_exit',
+            exitCode=exit_code,
+            unhandledException=diagnostics.unhandled_exception,
+        )
         loop.close()
         asyncio.set_event_loop(None)
 

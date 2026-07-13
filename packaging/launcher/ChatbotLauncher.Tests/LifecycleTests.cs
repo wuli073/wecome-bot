@@ -254,6 +254,36 @@ public sealed class LifecycleTests
         Assert.True(process.KillTreeCalled);
     }
 
+    [Fact]
+    public async Task BackendExited_RecordsProcessExitProvenanceWithoutStoppingLauncher()
+    {
+        var process = new FakeProcess { HasExitedValue = true };
+        var layout = LauncherInstallationLayout.CreateDefault(
+            @"C:\Chatbot",
+            @"C:\Users\Alice\AppData\Local");
+        var fileSystem = new FakeFileSystem(layout);
+        var manager = new LauncherProcessManager(
+            new LauncherConfig(LauncherContracts.SchemaVersion, new LauncherBackendConfig("127.0.0.1", 5302, "/healthz", "/runtime", 30)),
+            layout,
+            new FakeProcessLauncher(process),
+            ReadyHttpClient(),
+            new FakeBrowserLauncher(),
+            new FakePortOwnershipProbe(),
+            fileSystem,
+            new FakeClock());
+
+        await manager.StartAsync();
+        process.RaiseExited();
+
+        var sessionLog = fileSystem.EnumerateFiles(layout.LogRoot)
+            .Single(path => path.EndsWith("launcher.log", StringComparison.OrdinalIgnoreCase));
+        var log = fileSystem.ReadAllText(sessionLog);
+        Assert.Contains("BACKEND_PROCESS_EXITED", log);
+        Assert.Contains("pid=4242", log);
+        Assert.Contains("exitCode=7", log);
+        Assert.Contains("launcherInitiated=False", log);
+    }
+
     private static FakeHttpProbeClient ReadyHttpClient()
     {
         var http = new FakeHttpProbeClient();
@@ -313,6 +343,8 @@ public sealed class LifecycleTests
 
     private sealed class FakeProcess : ILauncherProcess
     {
+        public event EventHandler? Exited;
+
         public bool HasExitedValue { get; set; }
 
         public bool KillTreeCalled { get; private set; }
@@ -345,6 +377,8 @@ public sealed class LifecycleTests
         public void Dispose()
         {
         }
+
+        public void RaiseExited() => Exited?.Invoke(this, EventArgs.Empty);
     }
 
     private sealed class FakePortOwnershipProbe : ILauncherPortOwnershipProbe

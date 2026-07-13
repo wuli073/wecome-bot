@@ -255,8 +255,7 @@ class Application:
                 if self.logger is not None:
                     self.logger.info('Desktop runtime ready (prewarm).')
             except Exception as exc:
-                if self.logger is not None:
-                    self.logger.warning(f'Desktop runtime prewarm degraded: {exc}')
+                self.report_optional_failure('desktop-runtime-prewarm', exc)
 
         self.task_mgr.create_task(
             prewarm_runtime(),
@@ -267,7 +266,42 @@ class Application:
     def request_shutdown(self, reason: str | None = None) -> None:
         if reason is not None and self._shutdown_reason is None:
             self._shutdown_reason = reason
+        if self.logger is not None:
+            self.logger.info(
+                'BACKEND_SHUTDOWN_REQUEST '
+                f'reason={reason or "unspecified"} state={self.runtime_state.value} '
+                f'phase={self.startup_phase}'
+            )
         self.shutdown_requested_event.set()
+
+    def report_optional_failure(self, component: str, exc: BaseException) -> None:
+        """Record an optional runtime failure without terminating HTTP service."""
+        if self.logger is not None:
+            self.logger.error(
+                'OPTIONAL_RUNTIME_FAILED '
+                f'component={component} state={self.runtime_state.value} '
+                f'exception={type(exc).__name__}: {exc}',
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+        if not self.shutdown_requested_event.is_set():
+            self.set_runtime_state(RuntimeState.DEGRADED, failure_code=f'optional:{component}')
+
+    def supervise_optional_task(self, coro, *, name: str) -> asyncio.Task:
+        """Create an optional task whose failure cannot terminate the backend."""
+        task = self.event_loop.create_task(coro, name=name)
+
+        def _on_done(completed: asyncio.Task) -> None:
+            if completed.cancelled():
+                return
+            try:
+                exception = completed.exception()
+            except asyncio.CancelledError:
+                return
+            if exception is not None:
+                self.report_optional_failure(name, exception)
+
+        task.add_done_callback(_on_done)
+        return task
 
     async def run(self) -> int:
         try:
@@ -434,7 +468,12 @@ class Application:
             await self.shutdown()
             return 0
         except Exception as e:
-            self.logger.error(f'Application runtime fatal exception: {e}')
+            self.logger.error(
+                'BACKEND_APPLICATION_FATAL '
+                f'state={self.runtime_state.value} phase={self.startup_phase} '
+                f'shutdown_reason={self._shutdown_reason or "none"} '
+                f'exception={type(e).__name__}: {e}'
+            )
             self.logger.debug(f'Traceback: {traceback.format_exc()}')
             await self.shutdown()
             return 1

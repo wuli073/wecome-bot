@@ -4,6 +4,7 @@ using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Runtime.CompilerServices;
 
 namespace ChatbotLauncher;
 
@@ -119,6 +120,8 @@ public sealed record LauncherStartupFailureDetails(
 
 public interface ILauncherProcess : IDisposable
 {
+    event EventHandler? Exited;
+
     bool HasExited { get; }
 
     int? ExitCode { get; }
@@ -242,6 +245,9 @@ public sealed class LauncherProcessManager
     private LauncherLaunchRequest? _ownedLaunchRequest;
     private LauncherRuntimeObservation? _lastObservation;
     private string? _sessionId;
+    private string _lastStopReason = "none";
+    private bool _launcherInitiatedTermination;
+    private bool _startupSucceeded;
 
     public LauncherProcessManager(
         LauncherConfig config,
@@ -409,13 +415,26 @@ public sealed class LauncherProcessManager
             _ownedLaunchRequest = request;
             _lastObservation = null;
         }
+        process.Exited += OnBackendProcessExited;
+        if (process.HasExited)
+        {
+            OnBackendProcessExited(process, EventArgs.Empty);
+        }
 
         try
         {
             await WaitForHealthAsync(process, cancellationToken).ConfigureAwait(false);
             await WaitForRuntimeReadyAsync(process, cancellationToken).ConfigureAwait(false);
             PersistLauncherState(snapshot);
-            _browserLauncher.Open(BrowserUri);
+            _startupSucceeded = true;
+            try
+            {
+                _browserLauncher.Open(BrowserUri);
+            }
+            catch (Exception ex)
+            {
+                AppendLauncherLog($"Browser open failed after backend startup; backend remains running: pid={snapshot.Pid} exception={ex.GetType().Name}: {ex.Message}");
+            }
         }
         catch
         {
@@ -430,7 +449,10 @@ public sealed class LauncherProcessManager
         await StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task StopAsync(string reason = "launcher-exit", CancellationToken cancellationToken = default)
+    public async Task StopAsync(
+        string reason = "launcher-exit",
+        CancellationToken cancellationToken = default,
+        [CallerMemberName] string caller = "")
     {
         ILauncherProcess? process;
         LauncherProcessSnapshot? snapshot;
@@ -440,6 +462,12 @@ public sealed class LauncherProcessManager
             snapshot = _ownedSnapshot;
         }
 
+        _lastStopReason = reason;
+        _launcherInitiatedTermination = true;
+        AppendLauncherLog(
+            $"BACKEND_STOP_REQUEST caller={caller} reason={reason} requestId=pending sessionId={_sessionId ?? "none"} " +
+            $"pid={snapshot?.Pid.ToString(CultureInfo.InvariantCulture) ?? "none"} startupSucceeded={_startupSucceeded} " +
+            $"lastRuntime={_lastObservation?.Status ?? "unknown"} forceKill=false");
         if (process is null || snapshot is null)
         {
             PersistLauncherState(null);
@@ -450,6 +478,9 @@ public sealed class LauncherProcessManager
         if (!exited)
         {
             var requestId = WriteShutdownRequest(reason);
+            AppendLauncherLog(
+                $"BACKEND_STOP_REQUEST caller={caller} reason={reason} requestId={requestId} sessionId={_sessionId} " +
+                $"pid={snapshot.Pid} startupSucceeded={_startupSucceeded} lastRuntime={_lastObservation?.Status ?? "unknown"} forceKill=false");
             var exitTask = process.WaitForExitAsync(ShutdownTimeout, cancellationToken);
             var acknowledgementTask = WaitForShutdownAcknowledgementAsync(requestId, snapshot.Pid, cancellationToken);
             await Task.WhenAll(exitTask, acknowledgementTask).ConfigureAwait(false);
@@ -462,6 +493,9 @@ public sealed class LauncherProcessManager
             if (IsOwnedProcess(process, snapshot))
             {
                 AppendLauncherLog($"Force killing owned backend process tree: pid={snapshot.Pid}");
+                AppendLauncherLog(
+                    $"BACKEND_STOP_FORCE_KILL caller={caller} reason={reason} requestId=issued sessionId={_sessionId} " +
+                    $"pid={snapshot.Pid} startupSucceeded={_startupSucceeded} lastRuntime={_lastObservation?.Status ?? "unknown"} forceKill=true");
                 process.KillTree();
                 await process.WaitForExitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
             }
@@ -471,6 +505,7 @@ public sealed class LauncherProcessManager
             }
         }
 
+        process.Exited -= OnBackendProcessExited;
         process.Dispose();
         lock (_sync)
         {
@@ -856,6 +891,31 @@ public sealed class LauncherProcessManager
         _fileSystem.WriteAllText(logPath, line);
     }
 
+    private void OnBackendProcessExited(object? sender, EventArgs eventArgs)
+    {
+        if (sender is not ILauncherProcess process)
+        {
+            return;
+        }
+
+        LauncherProcessSnapshot? snapshot;
+        LauncherLaunchRequest? request;
+        LauncherRuntimeObservation? observation;
+        lock (_sync)
+        {
+            snapshot = _ownedSnapshot;
+            request = _ownedLaunchRequest;
+            observation = _lastObservation;
+        }
+
+        var bootStage = request is null ? "unknown" : ReadLastBootStage(request.StandardOutputPath);
+        AppendLauncherLog(
+            $"BACKEND_PROCESS_EXITED timestamp={_clock.UtcNow:O} pid={snapshot?.Pid.ToString(CultureInfo.InvariantCulture) ?? "unknown"} " +
+            $"exitCode={process.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "unknown"} lifecycleState={observation?.Status ?? "unknown"} " +
+            $"lastBootStage={bootStage} stopReason={_lastStopReason} launcherInitiated={_launcherInitiatedTermination} " +
+            $"startupSucceeded={_startupSucceeded}");
+    }
+
     private string GetSessionLogRoot(string sessionId) => Path.Combine(_layout.LogRoot, "sessions", sessionId);
 
     private string GetShutdownAcknowledgementPath() => Path.Combine(_layout.RuntimeRoot, "backend-shutdown.ack.json");
@@ -983,7 +1043,11 @@ internal sealed class DefaultLauncherProcess : ILauncherProcess
         _stderrWriter = new StreamWriter(_stderrPath, false, new UTF8Encoding(false)) { AutoFlush = true };
         _stdoutTask = PumpAsync(_process.StandardOutput, _stdoutWriter);
         _stderrTask = PumpAsync(_process.StandardError, _stderrWriter);
+        _process.EnableRaisingEvents = true;
+        _process.Exited += OnProcessExited;
     }
+
+    public event EventHandler? Exited;
 
     public bool HasExited => _process.HasExited;
 
@@ -1033,6 +1097,7 @@ internal sealed class DefaultLauncherProcess : ILauncherProcess
         {
             FlushOutputAsync().GetAwaiter().GetResult();
         }
+        _process.Exited -= OnProcessExited;
         _process.Dispose();
     }
 
@@ -1059,6 +1124,8 @@ internal sealed class DefaultLauncherProcess : ILauncherProcess
             await writer.WriteAsync(buffer.AsMemory(0, read)).ConfigureAwait(false);
         }
     }
+
+    private void OnProcessExited(object? sender, EventArgs eventArgs) => Exited?.Invoke(this, eventArgs);
 }
 
 internal sealed class DefaultLauncherPortOwnershipProbe : ILauncherPortOwnershipProbe

@@ -218,6 +218,30 @@ async def test_runtime_prewarm_failure_does_not_fail_http_startup():
     assert any(wrapper.name == 'desktop-runtime-prewarm' for wrapper in ap.task_mgr.tasks)
 
 
+async def test_optional_task_failure_degrades_without_ending_backend_run_task():
+    ap = _make_application()
+
+    async def platform_startup_only():
+        return None
+
+    async def failing_optional_task():
+        raise RuntimeError('plugin runtime exited')
+
+    ap.platform_mgr = SimpleNamespace(run=platform_startup_only)
+    run_task = asyncio.create_task(ap.run())
+    ap.supervise_optional_task(failing_optional_task(), name='plugin-runtime-monitor')
+
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert not run_task.done()
+    assert ap.runtime_state is app_module.RuntimeState.DEGRADED
+    assert ap.runtime_failure_code == 'optional:plugin-runtime-monitor'
+
+    ap.request_shutdown('test-stop')
+    assert await run_task == 0
+
+
 async def test_application_run_allows_platform_manager_startup_to_return_after_spawning_platform_tasks():
     ap = _make_application()
 

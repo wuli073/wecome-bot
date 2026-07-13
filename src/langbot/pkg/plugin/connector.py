@@ -96,6 +96,10 @@ class PluginRuntimeConnector(ManagedRuntimeConnector):
                 rchandler.fail_pending_calls(PluginRuntimeNotConnectedError('Plugin runtime disconnected'))
                 self.runtime_status = 'degraded'
                 self.last_runtime_error = 'Plugin runtime disconnected'
+                self.ap.report_optional_failure(
+                    'plugin-runtime-disconnect',
+                    PluginRuntimeNotConnectedError(self.last_runtime_error),
+                )
                 if platform.get_platform() == 'docker' or platform.use_websocket_to_connect_plugin_runtime():
                     self.ap.logger.error('Disconnected from plugin runtime, trying to reconnect...')
                     await self.runtime_disconnect_callback(self)
@@ -108,7 +112,10 @@ class PluginRuntimeConnector(ManagedRuntimeConnector):
 
             self.handler = handler.RuntimeConnectionHandler(connection, disconnect_callback, self.ap)
 
-            self.handler_task = asyncio.create_task(self.handler.run())
+            self.handler_task = self.ap.supervise_optional_task(
+                self.handler.run(),
+                name='plugin-runtime-handler',
+            )
             _ = await self.handler.ping()
             # Push the configured marketplace (Space) URL to the runtime so it
             # downloads plugins from the same Space LangBot is bound to, rather
@@ -139,6 +146,7 @@ class PluginRuntimeConnector(ManagedRuntimeConnector):
             ) -> None:
                 if exc is not None:
                     self.ap.logger.error(f'Failed to connect to plugin runtime({ws_url}): {exc}')
+                    self.ap.report_optional_failure('plugin-runtime-connect', exc)
                 else:
                     self.ap.logger.error(f'Failed to connect to plugin runtime({ws_url}), trying to reconnect...')
                 await self.runtime_disconnect_callback(self)
@@ -164,6 +172,7 @@ class PluginRuntimeConnector(ManagedRuntimeConnector):
             ) -> None:
                 if exc is not None:
                     self.ap.logger.error(f'(windows) Failed to connect to plugin runtime({ws_url}): {exc}')
+                    self.ap.report_optional_failure('plugin-runtime-connect', exc)
                 else:
                     self.ap.logger.error(
                         f'(windows) Failed to connect to plugin runtime({ws_url}), trying to reconnect...'
@@ -189,9 +198,12 @@ class PluginRuntimeConnector(ManagedRuntimeConnector):
             task = self.ctrl.run(new_connection_callback)
 
         if self.heartbeat_task is None:
-            self.heartbeat_task = asyncio.create_task(self.heartbeat_loop())
+            self.heartbeat_task = self.ap.supervise_optional_task(
+                self.heartbeat_loop(),
+                name='plugin-runtime-heartbeat',
+            )
 
-        asyncio.create_task(task)
+        self.ap.supervise_optional_task(task, name='plugin-runtime-connection')
 
     async def initialize_plugins(self):
         pass
