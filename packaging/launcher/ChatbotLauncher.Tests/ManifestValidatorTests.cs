@@ -80,6 +80,30 @@ public sealed class ManifestValidatorTests
         fixture.Manager.ValidateInstallation();
     }
 
+    [Fact]
+    public void ValidateInstallation_AllowsInnoSetupUninstallerArtifacts()
+    {
+        using var fixture = new ManifestFixture();
+        fixture.WriteManifest();
+        File.WriteAllText(Path.Combine(fixture.Layout.InstallRoot, "unins000.exe"), "uninstaller", Encoding.UTF8);
+        File.WriteAllText(Path.Combine(fixture.Layout.InstallRoot, "unins000.dat"), "metadata", Encoding.UTF8);
+        File.WriteAllText(Path.Combine(fixture.Layout.InstallRoot, "unins000.msg"), "messages", Encoding.UTF8);
+
+        fixture.Manager.ValidateInstallation();
+    }
+
+    [Fact]
+    public void ValidateInstallation_RejectsUnexpectedInnoNamedArtifact()
+    {
+        using var fixture = new ManifestFixture();
+        fixture.WriteManifest();
+        File.WriteAllText(Path.Combine(fixture.Layout.InstallRoot, "unins000.dll"), "unexpected", Encoding.UTF8);
+
+        var error = Assert.Throws<LauncherUserFacingException>(() => fixture.Manager.ValidateInstallation());
+
+        Assert.Contains("extra file", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed class ManifestFixture : IDisposable
     {
         private readonly string _root;

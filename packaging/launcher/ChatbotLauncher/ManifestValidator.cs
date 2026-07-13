@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace ChatbotLauncher;
 
@@ -13,6 +14,10 @@ internal sealed class ManifestValidator
         "build-report.json",
         "build-sensitive-scan.json",
     };
+
+    private static readonly Regex InnoSetupUninstallerArtifactPattern = new(
+        @"^unins\d{3}\.(?:exe|dat|msg)$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private readonly ILauncherFileSystem _fileSystem;
 
@@ -75,12 +80,18 @@ internal sealed class ManifestValidator
             .Concat(GeneratedArtifactNames.Select(name => Path.Combine(installRoot, name)))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var extraFile = _fileSystem.EnumerateFiles(installRoot)
-            .FirstOrDefault(path => !expectedPaths.Contains(path));
+            .FirstOrDefault(path => !expectedPaths.Contains(path) && !IsInnoSetupUninstallerArtifact(installRoot, path));
         if (extraFile is not null)
         {
             throw new LauncherUserFacingException(
                 $"Packaged installation contains an extra file: {Path.GetRelativePath(installRoot, extraFile)}.");
         }
+    }
+
+    private static bool IsInnoSetupUninstallerArtifact(string installRoot, string path)
+    {
+        var relativePath = Path.GetRelativePath(installRoot, path).Replace(Path.DirectorySeparatorChar, '/');
+        return InnoSetupUninstallerArtifactPattern.IsMatch(relativePath);
     }
 
     private static string ResolveEntryPath(string installRoot, string relativePath)
