@@ -7,6 +7,7 @@ param(
     [switch]$MinimizedPath,
     [switch]$SkipLaunch,
     [int]$StartupTimeoutSeconds = 90,
+    [int]$PostReadyProbeSeconds = 60,
     [int]$RuntimeTestPort = 0,
     [int]$PortConflictTestPort = 0
 )
@@ -1066,11 +1067,28 @@ function Test-PackagedBackendBoot {
         if ($healthJson -notmatch '"code"\s*:\s*0' -and $healthJson -notmatch '"msg"\s*:\s*"ok"') { throw "packaged backend health response was invalid: $healthJson" }
         $runtime = Wait-CoreRuntimeStatus "http://127.0.0.1:$port/api/v1/system/runtime/status" $StartupTimeoutSeconds
         $runtimeJson = $runtime | ConvertTo-Json -Compress
+        $postReadyDeadline = (Get-Date).AddSeconds($PostReadyProbeSeconds)
+        $postReadyProbes = 0
+        while ((Get-Date) -lt $postReadyDeadline) {
+            if ($proc.HasExited) {
+                throw "packaged backend exited during post-ready probe: pid=$($proc.Id) exitCode=$($proc.ExitCode)"
+            }
+            $probeHealth = Invoke-RestMethod -Uri "http://127.0.0.1:$port/healthz" -TimeoutSec 3
+            if ($probeHealth.code -ne 0 -and $probeHealth.msg -ne "ok") {
+                throw "packaged backend health became invalid during post-ready probe: $($probeHealth | ConvertTo-Json -Compress)"
+            }
+            $probeRuntime = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/v1/system/runtime/status" -TimeoutSec 3
+            if ($probeRuntime.state -notin @('CORE_READY', 'READY', 'DEGRADED')) {
+                throw "packaged backend runtime became unusable during post-ready probe: $($probeRuntime | ConvertTo-Json -Compress)"
+            }
+            $postReadyProbes++
+            Start-Sleep -Seconds 5
+        }
         $childProcessIds += @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { [int]$_.ParentProcessId -eq $proc.Id } | ForEach-Object { [int]$_.ProcessId })
         @{ action = "shutdown"; reason = "packaged-backend-verifier"; requestedAtUtc = [DateTime]::UtcNow.ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath $shutdownPath -Encoding UTF8
         if (-not $proc.WaitForExit(90000)) { throw "packaged backend did not exit after shutdown request" }
         if ($proc.ExitCode -ne 0) { throw "packaged backend exited with code $($proc.ExitCode); backendLog=$(Join-Path $userData 'logs\\backend.log')" }
-        return New-StatusObject "PASS" "pid=$($proc.Id); health=$healthJson; runtime=$runtimeJson; shutdown=$shutdownPath" (Join-Path $userData "logs\\backend.log") ""
+        return New-StatusObject "PASS" "pid=$($proc.Id); health=$healthJson; runtime=$runtimeJson; postReadySeconds=$PostReadyProbeSeconds; postReadyProbes=$postReadyProbes; shutdown=$shutdownPath" (Join-Path $userData "logs\\backend.log") ""
     }
     finally {
         $childProcessIds += @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { [int]$_.ParentProcessId -eq $proc.Id } | ForEach-Object { [int]$_.ProcessId })

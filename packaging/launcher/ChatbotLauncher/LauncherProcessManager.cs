@@ -462,12 +462,13 @@ public sealed class LauncherProcessManager
             snapshot = _ownedSnapshot;
         }
 
+        var finalProbe = await CaptureFinalProbeAsync(cancellationToken).ConfigureAwait(false);
         _lastStopReason = reason;
         _launcherInitiatedTermination = true;
         AppendLauncherLog(
             $"BACKEND_STOP_REQUEST caller={caller} reason={reason} requestId=pending sessionId={_sessionId ?? "none"} " +
             $"pid={snapshot?.Pid.ToString(CultureInfo.InvariantCulture) ?? "none"} startupSucceeded={_startupSucceeded} " +
-            $"lastRuntime={_lastObservation?.Status ?? "unknown"} forceKill=false");
+            $"lastHealth={finalProbe.Health} lastRuntime={finalProbe.Runtime} forceKill=false");
         if (process is null || snapshot is null)
         {
             PersistLauncherState(null);
@@ -480,7 +481,7 @@ public sealed class LauncherProcessManager
             var requestId = WriteShutdownRequest(reason);
             AppendLauncherLog(
                 $"BACKEND_STOP_REQUEST caller={caller} reason={reason} requestId={requestId} sessionId={_sessionId} " +
-                $"pid={snapshot.Pid} startupSucceeded={_startupSucceeded} lastRuntime={_lastObservation?.Status ?? "unknown"} forceKill=false");
+                $"pid={snapshot.Pid} startupSucceeded={_startupSucceeded} lastHealth={finalProbe.Health} lastRuntime={finalProbe.Runtime} forceKill=false");
             var exitTask = process.WaitForExitAsync(ShutdownTimeout, cancellationToken);
             var acknowledgementTask = WaitForShutdownAcknowledgementAsync(requestId, snapshot.Pid, cancellationToken);
             await Task.WhenAll(exitTask, acknowledgementTask).ConfigureAwait(false);
@@ -495,7 +496,7 @@ public sealed class LauncherProcessManager
                 AppendLauncherLog($"Force killing owned backend process tree: pid={snapshot.Pid}");
                 AppendLauncherLog(
                     $"BACKEND_STOP_FORCE_KILL caller={caller} reason={reason} requestId=issued sessionId={_sessionId} " +
-                    $"pid={snapshot.Pid} startupSucceeded={_startupSucceeded} lastRuntime={_lastObservation?.Status ?? "unknown"} forceKill=true");
+                    $"pid={snapshot.Pid} startupSucceeded={_startupSucceeded} lastHealth={finalProbe.Health} lastRuntime={finalProbe.Runtime} forceKill=true");
                 process.KillTree();
                 await process.WaitForExitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
             }
@@ -603,6 +604,33 @@ public sealed class LauncherProcessManager
         return current.Pid == snapshot.Pid
             && string.Equals(current.ExecutablePath, snapshot.ExecutablePath, StringComparison.OrdinalIgnoreCase)
             && current.CreateTimeUtc == snapshot.CreateTimeUtc;
+    }
+
+    private async Task<(string Health, string Runtime)> CaptureFinalProbeAsync(CancellationToken cancellationToken)
+    {
+        var health = "unavailable";
+        var runtime = _lastObservation?.Status ?? "unknown";
+        try
+        {
+            health = await _httpProbeClient.CheckHealthAsync(_config.Backend.HealthUri, cancellationToken)
+                .ConfigureAwait(false) ? "200" : "unreachable";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            health = $"error:{ex.GetType().Name}";
+        }
+
+        try
+        {
+            runtime = (await _httpProbeClient.GetRuntimeStatusAsync(_config.Backend.RuntimeStatusUri, cancellationToken)
+                .ConfigureAwait(false)).Status;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            runtime = $"error:{ex.GetType().Name}";
+        }
+
+        return (health, runtime);
     }
 
     private LauncherLaunchRequest BuildLaunchRequest()

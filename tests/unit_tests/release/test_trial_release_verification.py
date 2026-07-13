@@ -626,6 +626,8 @@ def test_verify_script_smokes_final_packaged_server_and_lark_sdk() -> None:
         "lark_oapi.api.core.hr",
         "backend-shutdown.json",
         "/api/v1/system/runtime/status",
+        "PostReadyProbeSeconds",
+        "packaged backend exited during post-ready probe",
     ]:
         assert term in verify_script
 

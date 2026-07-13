@@ -122,6 +122,41 @@ public sealed class LifecycleTests
         Assert.Equal(new Uri("http://127.0.0.1:5302/custom-runtime"), Assert.Single(http.RuntimeRequests));
         Assert.Equal(new Uri("http://127.0.0.1:5302/"), Assert.Single(browser.OpenedUris));
         Assert.Equal("CORE_READY", manager.LastObservation!.Status);
+        Assert.False(process.Disposed);
+    }
+
+    [Fact]
+    public async Task StartAsync_BrowserFailureDoesNotStopBackend()
+    {
+        var process = new FakeProcess();
+        var browser = new FakeBrowserLauncher { ThrowOnOpen = true };
+        var manager = CreateManager(
+            http: ReadyHttpClient(),
+            browser: browser,
+            processLauncher: new FakeProcessLauncher(process));
+
+        await manager.StartAsync();
+
+        Assert.False(process.KillTreeCalled);
+        Assert.False(process.Disposed);
+    }
+
+    [Fact]
+    public async Task StatusProbeFailureDoesNotStopBackend()
+    {
+        var process = new FakeProcess();
+        var http = ReadyHttpClient();
+        var manager = CreateManager(http: http, processLauncher: new FakeProcessLauncher(process));
+        await manager.StartAsync();
+        http.ThrowOnRuntimeStatus = true;
+        typeof(LauncherProcessManager)
+            .GetField("_lastObservation", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(manager, null);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => manager.GetStatusSummaryAsync());
+
+        Assert.False(process.KillTreeCalled);
+        Assert.False(process.Disposed);
     }
 
     [Fact]
@@ -349,6 +384,8 @@ public sealed class LifecycleTests
 
         public bool KillTreeCalled { get; private set; }
 
+        public bool Disposed { get; private set; }
+
         public bool WaitForExitResult { get; set; } = true;
 
         public string ExecutablePath { get; set; } = @"C:\Chatbot\server\runtime\python\python.exe";
@@ -376,6 +413,7 @@ public sealed class LifecycleTests
 
         public void Dispose()
         {
+            Disposed = true;
         }
 
         public void RaiseExited() => Exited?.Invoke(this, EventArgs.Empty);
@@ -402,6 +440,8 @@ public sealed class LifecycleTests
 
         public List<Uri> RuntimeRequests { get; } = new();
 
+        public bool ThrowOnRuntimeStatus { get; set; }
+
         public Task<bool> CheckHealthAsync(Uri uri, CancellationToken cancellationToken)
         {
             HealthRequests.Add(uri);
@@ -411,6 +451,10 @@ public sealed class LifecycleTests
         public Task<LauncherRuntimeObservation> GetRuntimeStatusAsync(Uri uri, CancellationToken cancellationToken)
         {
             RuntimeRequests.Add(uri);
+            if (ThrowOnRuntimeStatus)
+            {
+                throw new InvalidOperationException("runtime probe failed");
+            }
             return Task.FromResult(RuntimeResponses.Count > 0
                 ? RuntimeResponses.Dequeue()
                 : new LauncherRuntimeObservation("ready", true, false));
@@ -421,9 +465,15 @@ public sealed class LifecycleTests
     {
         public List<Uri> OpenedUris { get; } = new();
 
+        public bool ThrowOnOpen { get; set; }
+
         public void Open(Uri uri)
         {
             OpenedUris.Add(uri);
+            if (ThrowOnOpen)
+            {
+                throw new InvalidOperationException("browser unavailable");
+            }
         }
     }
 
