@@ -588,6 +588,7 @@ def test_install_script_verifies_onboarding_api_endpoints() -> None:
         "ONBOARDING_API",
     ]:
         assert term in install_script
+    assert '$readyBody.state -notin @("CORE_READY", "READY", "DEGRADED")' in install_script
 
 
 def test_install_script_retries_onboarding_api_requests_with_a_deadline() -> None:
@@ -597,6 +598,13 @@ def test_install_script_retries_onboarding_api_requests_with_a_deadline() -> Non
     assert "[int]$DeadlineSeconds = 60" in install_script
     assert "[scriptblock]$Action" in install_script
     assert "Invoke-HttpWithRetry -Action" in install_script
+
+
+def test_install_script_waits_for_forced_process_cleanup() -> None:
+    install_script = INSTALL_SCRIPT.read_text(encoding="utf-8-sig")
+
+    assert install_script.count("Wait-ForControlledProcessesExit -TimeoutSeconds 15") >= 2
+    assert "taskkill.exe /PID ([int]$proc.pid) /T /F" in install_script
 
 
 def test_verify_script_validates_zip_sha256_sidecar() -> None:

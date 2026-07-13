@@ -374,9 +374,9 @@ function Stop-LauncherGracefully {
     $remaining = @(Wait-ForControlledProcessesExit -TimeoutSeconds 15)
     if ($remaining.Count -gt 0) {
         foreach ($proc in $remaining) {
-            try { Stop-Process -Id ([int]$proc.pid) -Force -ErrorAction SilentlyContinue } catch {}
+            try { $null = & taskkill.exe /PID ([int]$proc.pid) /T /F } catch {}
         }
-        Start-Sleep -Seconds 2
+        $null = Wait-ForControlledProcessesExit -TimeoutSeconds 15
     }
 }
 
@@ -528,7 +528,7 @@ function Stage-OnboardingApi {
 
     $ready = Invoke-HttpWithRetry -Action { Invoke-WebRequest -UseBasicParsing -Uri "$baseUri/readyz" -Headers $corsHeaders -TimeoutSec 10 -ErrorAction Stop }
     $readyBody = $ready.Content | ConvertFrom-Json
-    if ($readyBody.status -ne "ready") { throw "readyz did not report ready" }
+    if ($readyBody.state -notin @("CORE_READY", "READY", "DEGRADED")) { throw "readyz did not report a core-usable state" }
 
     $platform = Invoke-HttpWithRetry -Action { Invoke-WebRequest -UseBasicParsing -Uri "$baseUri/api/v1/platform/adapters" -Headers $corsHeaders -TimeoutSec 10 -ErrorAction Stop }
     $platformBody = $platform.Content | ConvertFrom-Json
