@@ -590,6 +590,14 @@ def test_install_script_verifies_onboarding_api_endpoints() -> None:
         assert term in install_script
 
 
+def test_install_script_retries_onboarding_api_requests_with_a_deadline() -> None:
+    install_script = INSTALL_SCRIPT.read_text(encoding="utf-8-sig")
+
+    assert "function Invoke-HttpWithRetry" in install_script
+    assert "[int]$DeadlineSeconds = 60" in install_script
+    assert "Invoke-HttpWithRetry -Request" in install_script
+
+
 def test_verify_script_validates_zip_sha256_sidecar() -> None:
     verify_script = VERIFY_SCRIPT.read_text(encoding="utf-8-sig")
     assert "$zipSha256Path = $zipFull + '.sha256'" in verify_script
