@@ -14,6 +14,7 @@ $userDataRoot = [IO.Path]::GetFullPath($UserDataRoot)
 $statePath = Join-Path $userDataRoot 'runtime\source-stack-state.json'
 $baseUrl = "http://127.0.0.1:$BackendPort"
 $results = [System.Collections.Generic.List[object]]::new()
+. (Join-Path $PSScriptRoot 'source-state.ps1')
 
 function Add-Result([string]$Name, [ValidateSet('pass', 'warn', 'fail')][string]$Status, [string]$Detail) {
     $results.Add([pscustomobject]@{ check=$Name; status=$Status; detail=$Detail })
@@ -53,7 +54,7 @@ foreach ($port in @($BackendPort, $WebPort, 5681)) {
     Add-Result "port:$port" $status $detail
 }
 
-$state = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } else { $null }
+$state = Read-ManagedSourceState $statePath
 if ($null -eq $state) { Add-Result 'managed-source-stack' 'warn' "not started; state=$statePath" }
 else { Add-Result 'managed-source-stack' 'pass' "backend PID $($state.backend.pid), web PID $($state.web.pid), logs $($state.logsRoot)" }
 

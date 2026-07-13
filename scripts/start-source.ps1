@@ -21,15 +21,20 @@ $script:LogsRoot = Join-Path $script:UserDataRoot 'logs\source'
 $script:ControlRoot = Join-Path $script:RepoRoot '.tmp\local-stack\control'
 $script:BaseUrl = "http://127.0.0.1:$BackendPort"
 $script:WebUrl = "http://127.0.0.1:$WebPort"
+. (Join-Path $PSScriptRoot 'source-state.ps1')
 
 function Ensure-Directory([string]$Path) { New-Item -ItemType Directory -Force -Path $Path | Out-Null }
-function Write-Json([string]$Path, $Value) {
-    Ensure-Directory (Split-Path -Parent $Path)
-    $temporary = "$Path.tmp"
-    [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
-    Move-Item -LiteralPath $temporary -Destination $Path -Force
+function Start-LoggedProcess([string]$FilePath, [string[]]$ArgumentList, [string]$WorkingDirectory, [string]$StdoutLogPath, [string]$StderrLogPath) {
+    Ensure-Directory (Split-Path -Parent $StdoutLogPath)
+    Ensure-Directory (Split-Path -Parent $StderrLogPath)
+    $quote = { param([string]$Value) '"{0}"' -f $Value.Replace('"', '""') }
+    $command = 'call {0} {1} 1>>{2} 2>>{3} <nul' -f `
+        (& $quote $FilePath), `
+        ((@($ArgumentList | ForEach-Object { & $quote $_ }) -join ' ')), `
+        (& $quote $StdoutLogPath), `
+        (& $quote $StderrLogPath)
+    return Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/s', '/c', $command) -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru
 }
-function Read-Json([string]$Path) { if (Test-Path -LiteralPath $Path) { return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }; return $null }
 function Get-ProcessRecord([int]$ProcessId, [string]$Role) {
     $process = Get-Process -Id $ProcessId -ErrorAction Stop
     $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
@@ -83,7 +88,7 @@ function Wait-ForWeb([int]$Timeout) {
     throw "Web server did not become ready: $script:WebUrl"
 }
 function Start-Source {
-    $existing = Read-Json $script:StatePath
+    $existing = Read-ManagedSourceState $script:StatePath
     if ($existing -and (Test-ProcessRecord $existing.backend)) { throw "A managed source stack is already running (backend PID $($existing.backend.pid)). Use stop-source.ps1 first." }
     Assert-PortFree $BackendPort; Assert-PortFree $WebPort
     $python = Join-Path $script:RepoRoot '.venv\Scripts\python.exe'
@@ -97,22 +102,34 @@ function Start-Source {
     $environment = @{ PYTHONPATH=(Join-Path $script:RepoRoot 'src'); CHATBOT_USER_DATA_ROOT=$script:UserDataRoot; LANGBOT_DATA_ROOT=$script:UserDataRoot; API__PORT=[string]$BackendPort; API__WEBHOOK_PREFIX=$script:BaseUrl; LANGBOT_RPA_FORCE_DISABLE_SEND='1'; LANGBOT_RPA_ALLOW_AUTO_SEND='0'; LANGBOT_BROADCAST_SEND_ENABLED='0'; LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS=''; LANGBOT_LOCAL_STACK_SESSION_ID=$sessionId; LANGBOT_LOCAL_SHUTDOWN_REQUEST_PATH=$shutdownPath }
     $saved = @{}; foreach ($key in $environment.Keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process'); [Environment]::SetEnvironmentVariable($key, $environment[$key], 'Process') }
     try {
-        $backend = Start-Process -FilePath $python -ArgumentList @((Join-Path $script:RepoRoot 'main.py')) -WorkingDirectory $script:UserDataRoot -RedirectStandardOutput (Join-Path $script:LogsRoot 'backend.stdout.log') -RedirectStandardError (Join-Path $script:LogsRoot 'backend.stderr.log') -WindowStyle Hidden -PassThru
+        $backend = Start-LoggedProcess `
+            -FilePath $python `
+            -ArgumentList @((Join-Path $script:RepoRoot 'main.py')) `
+            -WorkingDirectory $script:UserDataRoot `
+            -StdoutLogPath (Join-Path $script:LogsRoot 'backend.stdout.log') `
+            -StderrLogPath (Join-Path $script:LogsRoot 'backend.stderr.log')
     }
     finally { foreach ($key in $environment.Keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key], 'Process') } }
     $state = [ordered]@{ schema=1; sessionId=$sessionId; repoRoot=$script:RepoRoot; userDataRoot=$script:UserDataRoot; backendPort=$BackendPort; webPort=$WebPort; logsRoot=$script:LogsRoot; shutdownPath=$shutdownPath; backend=(Get-ProcessRecord $backend.Id 'backend'); backendListener=$null; web=$null }
-    Write-Json $script:StatePath $state
+    Write-ManagedSourceState $script:StatePath $state
     try {
         $readiness = Wait-ForBackend (Join-Path $script:LogsRoot 'backend.stderr.log') $StartupTimeoutSeconds
         $backendListenerPid = Get-PortOwner $BackendPort
         if ($null -eq $backendListenerPid) { throw "Backend health succeeded but port $BackendPort has no listener." }
         $state.backendListener = Get-ProcessRecord $backendListenerPid 'backend-listener'
-        Write-Json $script:StatePath $state
+        Write-ManagedSourceState $script:StatePath $state
         $webEnvironment = @{ VITE_API_BASE_URL=$script:BaseUrl }
         $savedWeb = @{}; foreach ($key in $webEnvironment.Keys) { $savedWeb[$key] = [Environment]::GetEnvironmentVariable($key, 'Process'); [Environment]::SetEnvironmentVariable($key, $webEnvironment[$key], 'Process') }
-        try { $web = Start-Process -FilePath (Get-Command node.exe -ErrorAction Stop).Source -ArgumentList @($vite, '--host', '127.0.0.1', '--port', $WebPort, '--strictPort') -WorkingDirectory (Join-Path $script:RepoRoot 'web') -RedirectStandardOutput (Join-Path $script:LogsRoot 'web.stdout.log') -RedirectStandardError (Join-Path $script:LogsRoot 'web.stderr.log') -WindowStyle Hidden -PassThru }
+        try {
+            $web = Start-LoggedProcess `
+                -FilePath (Get-Command node.exe -ErrorAction Stop).Source `
+                -ArgumentList @($vite, '--host', '127.0.0.1', '--port', $WebPort, '--strictPort') `
+                -WorkingDirectory (Join-Path $script:RepoRoot 'web') `
+                -StdoutLogPath (Join-Path $script:LogsRoot 'web.stdout.log') `
+                -StderrLogPath (Join-Path $script:LogsRoot 'web.stderr.log')
+        }
         finally { foreach ($key in $webEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $savedWeb[$key], 'Process') } }
-        $state.web = Get-ProcessRecord $web.Id 'web'; Write-Json $script:StatePath $state; Wait-ForWeb 45
+        $state.web = Get-ProcessRecord $web.Id 'web'; Write-ManagedSourceState $script:StatePath $state; Wait-ForWeb 45
         $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=$state.backend.pid; webPid=$state.web.pid; backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='disabled'; runtimeState=$readiness.runtime.state }
         if (-not $NoBrowser) { Start-Process $script:WebUrl }
         return $result
@@ -120,10 +137,10 @@ function Start-Source {
     catch { Stop-Source | Out-Null; throw }
 }
 function Stop-Source {
-    $state = Read-Json $script:StatePath
+    $state = Read-ManagedSourceState $script:StatePath
     if ($null -eq $state) { return [ordered]@{ status='stopped'; detail='no-managed-source-state' } }
     if ($state.repoRoot -ne $script:RepoRoot) { throw 'Refusing to stop a source stack owned by a different repository.' }
-    if ($state.shutdownPath -and (Test-ProcessRecord $state.backend)) { Write-Json $state.shutdownPath ([ordered]@{ sessionId=$state.sessionId; action='shutdown'; reason='source-stop'; requestedAt=[DateTime]::UtcNow.ToString('o') }); Start-Sleep -Seconds 2 }
+    if ($state.shutdownPath -and (Test-ProcessRecord $state.backend)) { Write-ManagedSourceState $state.shutdownPath ([ordered]@{ sessionId=$state.sessionId; action='shutdown'; reason='source-stop'; requestedAt=[DateTime]::UtcNow.ToString('o') }); Start-Sleep -Seconds 2 }
     foreach ($record in @($state.web, $state.backend)) {
         if (Test-ProcessRecord $record) {
             # The backend can fork a Hypercorn child. Terminate only this
@@ -139,7 +156,7 @@ function Stop-Source {
     return [ordered]@{ status='stopped'; backendPort=$state.backendPort; webPort=$state.webPort }
 }
 function Get-SourceStatus {
-    $state = Read-Json $script:StatePath
+    $state = Read-ManagedSourceState $script:StatePath
     if ($null -eq $state) { return [ordered]@{ status='stopped'; userData=$script:UserDataRoot } }
     return [ordered]@{ status=if ((Test-ProcessRecord $state.backend) -and (Test-ProcessRecord $state.web)) {'running'} else {'degraded'}; backendPid=$state.backend.pid; webPid=$state.web.pid; backendPort=$state.backendPort; webPort=$state.webPort; logs=$state.logsRoot; userData=$state.userDataRoot }
 }
