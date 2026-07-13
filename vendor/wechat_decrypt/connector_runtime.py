@@ -220,8 +220,8 @@ def detect_connector(connector: str) -> dict:
             ok=False,
             connector=connector,
             action='detect',
-            error_code=errors.DATA_PATH_NOT_FOUND,
-            error_message='Data path not found',
+            error_code=errors.CLIENT_NOT_LOGGED_IN,
+            error_message='Client is running but no logged-in data directory was found',
         )
 
     return build_result(
@@ -318,14 +318,37 @@ def extract_key(connector: str, runtime_dir: str) -> dict:
 
     runtime = write_runtime_config(connector, runtime_dir, detect['db_dir'])
     spec = CONNECTOR_SPECS[connector]
-    script_result = run_managed_script(spec['extract_script'], runtime['app_dir'])
-    if script_result['returncode'] != 0 or not os.path.exists(runtime['keys_file']):
+    try:
+        script_result = run_managed_script(spec['extract_script'], runtime['app_dir'])
+    except PermissionError:
         return build_result(
             ok=False,
             connector=connector,
             action='extract-key',
-            error_code=errors.KEY_EXTRACTION_FAILED,
-            error_message='Key extraction failed',
+            error_code=errors.PROCESS_ACCESS_DENIED,
+            error_message='Access to the client process was denied',
+        )
+
+    if script_result['returncode'] != 0 or not os.path.exists(runtime['keys_file']):
+        diagnostic = (script_result.get('stderr', '') + '\n' + script_result.get('stdout', '')).lower()
+        if 'access is denied' in diagnostic or 'permission denied' in diagnostic:
+            error_code = errors.PROCESS_ACCESS_DENIED
+            error_message = 'Access to the client process was denied'
+        elif 'unsupported' in diagnostic and 'version' in diagnostic:
+            error_code = errors.CLIENT_VERSION_UNSUPPORTED
+            error_message = 'Client version is not supported for key extraction'
+        elif script_result['returncode'] == 0:
+            error_code = errors.KEY_NOT_FOUND
+            error_message = 'No key was found in the running client process'
+        else:
+            error_code = errors.KEY_EXTRACTION_FAILED
+            error_message = 'Key extraction failed'
+        return build_result(
+            ok=False,
+            connector=connector,
+            action='extract-key',
+            error_code=error_code,
+            error_message=error_message,
             runtime_dir=runtime['runtime_root'],
             keys_file=runtime['keys_file'],
         )

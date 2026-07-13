@@ -151,6 +151,37 @@ class ConnectorRuntimeTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(stdout.getvalue(), "")
 
+    def test_detect_reports_not_logged_in_when_a_running_client_has_no_data_directory(self):
+        import connector_runtime
+
+        with patch("connector_runtime.is_windows", return_value=True), patch(
+            "connector_runtime.is_process_running", return_value=True
+        ), patch("connector_runtime.detect_wechat_db_dir_from_ini", return_value=None):
+            result = connector_runtime.detect_connector("wechat")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "CLIENT_NOT_LOGGED_IN")
+
+    def test_extract_reports_key_not_found_when_scanner_completes_without_a_key_file(self):
+        import connector_runtime
+
+        with tempfile.TemporaryDirectory() as runtime_dir:
+            with patch("connector_runtime.detect_connector", return_value={
+                "ok": True,
+                "connector": "wechat",
+                "action": "detect",
+                "error_code": None,
+                "db_dir": r"C:\\db_storage",
+            }), patch("connector_runtime.run_managed_script", return_value={
+                "returncode": 0,
+                "stdout": "",
+                "stderr": "",
+            }):
+                result = connector_runtime.extract_key("wechat", runtime_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "KEY_NOT_FOUND")
+
 
 if __name__ == "__main__":
     unittest.main()
