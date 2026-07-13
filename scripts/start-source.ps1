@@ -161,7 +161,7 @@ function Start-Source {
     Ensure-Directory $script:UserDataRoot; Ensure-Directory $script:LogsRoot; Ensure-Directory $script:ControlRoot
     $sessionId = [guid]::NewGuid().ToString('N')
     $shutdownPath = Join-Path $script:ControlRoot "source-$sessionId.shutdown.json"
-    $environment = @{ PYTHONPATH=(Join-Path $script:RepoRoot 'src'); CHATBOT_USER_DATA_ROOT=$script:UserDataRoot; LANGBOT_DATA_ROOT=$script:UserDataRoot; API__PORT=[string]$BackendPort; API__WEBHOOK_PREFIX=$script:BaseUrl; LANGBOT_RPA_FORCE_DISABLE_SEND='1'; LANGBOT_RPA_ALLOW_AUTO_SEND='0'; LANGBOT_BROADCAST_SEND_ENABLED='0'; LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS=''; LANGBOT_LOCAL_STACK_SESSION_ID=$sessionId; LANGBOT_LOCAL_SHUTDOWN_REQUEST_PATH=$shutdownPath }
+    $environment = @{ PYTHONPATH=(Join-Path $script:RepoRoot 'src'); CHATBOT_USER_DATA_ROOT=$script:UserDataRoot; LANGBOT_DATA_ROOT=$script:UserDataRoot; API__PORT=[string]$BackendPort; API__WEBHOOK_PREFIX=$script:BaseUrl; LANGBOT_RPA_FORCE_DISABLE_SEND='0'; LANGBOT_RPA_ALLOW_AUTO_SEND='1'; LANGBOT_BROADCAST_SEND_ENABLED='1'; LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS='*'; LANGBOT_LOCAL_STACK_SESSION_ID=$sessionId; LANGBOT_LOCAL_SHUTDOWN_REQUEST_PATH=$shutdownPath }
     $saved = @{}; foreach ($key in $environment.Keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process'); [Environment]::SetEnvironmentVariable($key, $environment[$key], 'Process') }
     try {
         $backend = Start-LoggedProcess `
@@ -192,7 +192,7 @@ function Start-Source {
         }
         finally { foreach ($key in $webEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $savedWeb[$key], 'Process') } }
         $state.web = Get-ProcessRecord $web.Id 'web'; Write-ManagedSourceState $script:StatePath $state; Wait-ForWeb 45
-        $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=(Get-ProcessRecordId (Get-ManagedSourceStateProperty -Object $state -Name 'backend')); webPid=(Get-ProcessRecordId (Get-ManagedSourceStateProperty -Object $state -Name 'web')); backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='disabled'; runtimeState=$readiness.runtime.state }
+        $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=(Get-ProcessRecordId (Get-ManagedSourceStateProperty -Object $state -Name 'backend')); webPid=(Get-ProcessRecordId (Get-ManagedSourceStateProperty -Object $state -Name 'web')); backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='enabled'; runtimeState=$readiness.runtime.state }
         if (-not $NoBrowser) { Start-Process $script:WebUrl }
         return $result
     }

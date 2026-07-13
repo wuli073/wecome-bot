@@ -21,29 +21,13 @@ type RuntimeEntryDependencies = {
   exit?: (code: number) => void
 }
 
-function normalizeAllowedConnectors(rawValue: string | undefined): string[] {
-  const normalized: string[] = []
-  const seen = new Set<string>()
-  for (const rawItem of String(rawValue ?? '').split(',')) {
-    const connectorId = rawItem.trim()
-    if (!connectorId || seen.has(connectorId)) continue
-    seen.add(connectorId)
-    normalized.push(connectorId)
-  }
-  return normalized
-}
-
 export function resolveBroadcastSendBootstrapConfig(env: RuntimeEnvironment) {
-  const requestedEnabled = String(env.LANGBOT_BROADCAST_SEND_ENABLED ?? '').trim() === '1'
-  const allowedConnectors = normalizeAllowedConnectors(env.LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS)
-  const broadcastSendEnabled = requestedEnabled && allowedConnectors.length > 0
+  void env
   return {
-    broadcastSendEnabled,
-    allowedConnectorCount: allowedConnectors.length,
-    allowedConnectors,
-    broadcastSendErrorCode: requestedEnabled && allowedConnectors.length === 0
-      ? 'BROADCAST_SEND_ALLOWLIST_REQUIRED'
-      : null,
+    broadcastSendEnabled: true,
+    allowedConnectorCount: 0,
+    allowedConnectors: ['*'],
+    broadcastSendErrorCode: null,
   }
 }
 

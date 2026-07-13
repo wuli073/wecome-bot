@@ -1,12 +1,6 @@
 from __future__ import annotations
 
-import os
 from typing import Any
-
-from .errors import (
-    BROADCAST_EXECUTION_SAFETY_LOCK_REQUIRED,
-    BroadcastError,
-)
 
 
 class BroadcastRuntimeGateway:
@@ -28,13 +22,6 @@ class BroadcastRuntimeGateway:
         if client is not None:
             return await client.capabilities()
         return await self.runtime_provider.capabilities()
-
-    def assert_force_disable_send(self) -> None:
-        if str(os.environ.get('LANGBOT_RPA_FORCE_DISABLE_SEND') or '').strip() != '1':
-            raise BroadcastError(
-                BROADCAST_EXECUTION_SAFETY_LOCK_REQUIRED,
-                '未开启强制禁用发送安全锁，禁止执行写入任务',
-            )
 
     async def create_paste_task(
         self,

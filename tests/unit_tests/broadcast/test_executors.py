@@ -10,9 +10,6 @@ class _FakeGateway:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
 
-    def assert_force_disable_send(self) -> None:
-        return None
-
     async def create_paste_task(self, **kwargs):
         self.calls.append(('paste', kwargs))
         return {

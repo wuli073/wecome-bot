@@ -22,7 +22,7 @@ from langbot.pkg.broadcast.errors import (  # noqa: E402
     BROADCAST_DRAFT_INVALID_CONFIRM_FORBIDDEN,
     BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED,
     BROADCAST_IMPORT_GROUP_RULE_BULK_ASSIGN_FAILED,
-    BROADCAST_SCOPE_REQUIRED,
+    BATCH_VALIDATION_FAILED,
     BroadcastError,
 )
 
@@ -349,9 +349,9 @@ async def test_render_template_uses_body_scope():
     )
 
 
-async def test_missing_scope_returns_400():
+async def test_invalid_scope_returns_400_without_a_scope_required_error():
     client, ap = await _make_client()
-    ap.broadcast_service.validate_scope = AsyncMock(side_effect=BroadcastError(BROADCAST_SCOPE_REQUIRED))
+    ap.broadcast_service.validate_scope = AsyncMock(side_effect=BroadcastError(BATCH_VALIDATION_FAILED))
 
     response = await client.get(
         '/api/v1/broadcast/templates',
@@ -360,7 +360,7 @@ async def test_missing_scope_returns_400():
     payload = await response.get_json()
 
     assert response.status_code == 400
-    assert payload['msg'] == BROADCAST_SCOPE_REQUIRED
+    assert payload['msg'] == BATCH_VALIDATION_FAILED
 
 
 async def test_variable_profile_error_returns_code_and_chinese_message_details():

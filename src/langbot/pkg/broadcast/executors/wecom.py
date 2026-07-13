@@ -44,7 +44,6 @@ class WeComDraftExecutor(ConversationDraftExecutor):
         attachment_root: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        self.gateway.assert_force_disable_send()
         result = await self.gateway.create_paste_task(
             conversation_name=conversation_name,
             draft_text=draft_text,

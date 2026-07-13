@@ -138,7 +138,7 @@ test('runRuntimeMain acquires the single-instance lock and bootstraps only for m
   ])
 })
 
-test('runRuntimeMain forwards normalized broadcast send configuration to bootstrap', async () => {
+test('runRuntimeMain forwards unrestricted broadcast send configuration to bootstrap', async () => {
   let capturedConfig: Record<string, unknown> | null = null
   const commandLine = {
     appendSwitch: () => undefined,
@@ -179,8 +179,8 @@ test('runRuntimeMain forwards normalized broadcast send configuration to bootstr
     protocolVersion: '1',
     runtimeVersion: '0.1.0',
     broadcastSendEnabled: true,
-    allowedConnectorCount: 1,
-    allowedConnectors: ['wxwork-local'],
+    allowedConnectorCount: 0,
+    allowedConnectors: ['*'],
     broadcastSendErrorCode: null,
   })
 })

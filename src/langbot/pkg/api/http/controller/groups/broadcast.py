@@ -54,7 +54,6 @@ from .....broadcast.errors import (
     BROADCAST_GROUP_RULE_DUPLICATE,
     BROADCAST_GROUP_RULE_NOT_FOUND,
     BROADCAST_GROUP_RULE_REGEX_INVALID,
-    BROADCAST_SCOPE_REQUIRED,
     BROADCAST_TEMPLATE_CONTENT_REQUIRED,
     BROADCAST_TEMPLATE_NAME_DUPLICATE,
     BROADCAST_TEMPLATE_NOT_FOUND,
@@ -647,7 +646,6 @@ class BroadcastRouterGroup(group.RouterGroup):
     @staticmethod
     def _broadcast_http_status(code: str) -> int:
         if code in {
-            BROADCAST_SCOPE_REQUIRED,
             BROADCAST_IMPORT_FILE_INVALID,
             BROADCAST_IMPORT_VARIABLE_PROFILE_REQUIRED,
             BROADCAST_IMPORT_GROUP_FIELD_REQUIRED,

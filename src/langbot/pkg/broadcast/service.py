@@ -92,7 +92,6 @@ from .errors import (
     BROADCAST_GROUP_RULE_DUPLICATE,
     BROADCAST_GROUP_RULE_NOT_FOUND,
     BROADCAST_GROUP_RULE_REGEX_INVALID,
-    BROADCAST_SCOPE_REQUIRED,
     BROADCAST_TEMPLATE_CONTENT_REQUIRED,
     BROADCAST_TEMPLATE_NAME_DUPLICATE,
     BROADCAST_TEMPLATE_NOT_FOUND,
@@ -191,15 +190,11 @@ class BroadcastService:
         bot_uuid = str(scope.get('bot_uuid') or '').strip()
         connector_id = str(scope.get('connector_id') or '').strip()
         if not bot_uuid or not connector_id:
-            raise BroadcastError(BROADCAST_SCOPE_REQUIRED)
+            raise BroadcastError(BATCH_VALIDATION_FAILED, 'bot_uuid and connector_id are required')
 
         bot = await self.ap.bot_service.get_bot(bot_uuid, include_secret=False)
-        if bot is None or bot.get('adapter') != 'wxwork_database':
-            raise BroadcastError(BROADCAST_SCOPE_REQUIRED)
-
-        actual_connector_id = await self._get_bound_connector_id(bot_uuid)
-        if actual_connector_id != connector_id:
-            raise BroadcastError(BROADCAST_SCOPE_REQUIRED)
+        if bot is None:
+            raise BroadcastError(BATCH_VALIDATION_FAILED, 'The selected bot does not exist')
         return {
             'bot_uuid': bot_uuid,
             'connector_id': connector_id,
@@ -2358,7 +2353,6 @@ class BroadcastService:
 
         gateway = self._get_runtime_gateway()
         try:
-            gateway.assert_force_disable_send()
             executor = build_executor(str(task.channel), gateway)
             executor.validate_capability(str(task.action))
             attempt_no = int(task.attempt_count or 0) + 1

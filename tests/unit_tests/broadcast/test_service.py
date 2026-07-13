@@ -2944,16 +2944,17 @@ async def test_create_group_rule_rejects_placeholder_and_requires_target_convers
     assert missing_id_error.value.code == BROADCAST_GROUP_RULE_REGEX_INVALID
 
 
-async def test_validate_scope_rejects_connector_mismatch(service_fixture):
+async def test_validate_scope_accepts_an_unrestricted_connector(service_fixture):
     service, _ = service_fixture
 
-    with pytest.raises(Exception, match='BROADCAST_SCOPE_REQUIRED'):
-        await service.validate_scope(
-            {
-                'bot_uuid': 'bot-1',
-                'connector_id': 'wxwork-other',
-            }
-        )
+    scope = await service.validate_scope(
+        {
+            'bot_uuid': 'bot-1',
+            'connector_id': 'wxwork-other',
+        }
+    )
+
+    assert scope == {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-other'}
 
 
 async def test_template_crud_extracts_variables_and_rejects_duplicate_names(service_fixture):

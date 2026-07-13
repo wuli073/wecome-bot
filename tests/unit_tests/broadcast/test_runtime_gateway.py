@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from langbot.pkg.broadcast.errors import BroadcastError
-
-
 pytestmark = pytest.mark.asyncio
 
 
@@ -165,20 +162,6 @@ async def test_runtime_gateway_keeps_send_contract_separate():
             'sendStrategy': 'enter',
         }
     ]
-
-
-async def test_runtime_gateway_requires_force_disable_send_for_phase4(monkeypatch):
-    from langbot.pkg.broadcast.runtime_gateway import BroadcastRuntimeGateway
-
-    runtime_client = _FakeRuntimeClient()
-    gateway = BroadcastRuntimeGateway(runtime_client)
-
-    monkeypatch.delenv('LANGBOT_RPA_FORCE_DISABLE_SEND', raising=False)
-    with pytest.raises(BroadcastError, match='BROADCAST_EXECUTION_SAFETY_LOCK_REQUIRED'):
-        gateway.assert_force_disable_send()
-
-    monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
-    gateway.assert_force_disable_send()
 
 
 async def test_runtime_gateway_exposes_query_and_cancel_task():

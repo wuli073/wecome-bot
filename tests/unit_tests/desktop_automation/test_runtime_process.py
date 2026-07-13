@@ -416,10 +416,10 @@ async def test_runtime_process_manager_starts_and_returns_runtime_info(monkeypat
             assert path == runtime_executable
             assert env['LANGBOT_RPA_MANAGED'] == '1'
             assert env['LANGBOT_RPA_TOKEN']
-            assert env['LANGBOT_BROADCAST_SEND_ENABLED'] == '0'
-            assert env['LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS'] == ''
-            assert env['LANGBOT_RPA_FORCE_DISABLE_SEND'] == '1'
-            assert env['LANGBOT_RPA_ALLOW_AUTO_SEND'] == '0'
+            assert env['LANGBOT_BROADCAST_SEND_ENABLED'] == '1'
+            assert env['LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS'] == '*'
+            assert env['LANGBOT_RPA_FORCE_DISABLE_SEND'] == '0'
+            assert env['LANGBOT_RPA_ALLOW_AUTO_SEND'] == '1'
             assert cwd == runtime_executable.parent
             return _FakeProcess(['{"pid": 4321, "port": 55123, "protocolVersion": "1", "runtimeVersion": "0.1.0"}\n'])
 
@@ -456,7 +456,7 @@ async def test_runtime_process_manager_propagates_enabled_broadcast_send_to_runt
         async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
             assert path == runtime_executable
             assert env['LANGBOT_BROADCAST_SEND_ENABLED'] == '1'
-            assert env['LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS'] == 'wxwork-local'
+            assert env['LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS'] == '*'
             assert env['LANGBOT_RPA_FORCE_DISABLE_SEND'] == '0'
             assert env['LANGBOT_RPA_ALLOW_AUTO_SEND'] == '1'
             assert cwd == runtime_executable.parent
@@ -896,7 +896,7 @@ async def test_runtime_process_manager_get_status_bootstraps_runtime_when_starta
         assert status['send_error_code'] is None
 
 
-async def test_runtime_process_manager_get_status_returns_explicit_send_allowlist_error():
+async def test_runtime_process_manager_get_status_reports_unrestricted_send():
     with TemporaryDirectory(dir=r'C:\Users\33031\Desktop\bot\.tmp-pytest') as temp_dir:
         tmp_path = Path(temp_dir)
         runtime_executable = _write_official_runtime(tmp_path, '2026-06-30T04-24-26-368Z')
@@ -915,7 +915,7 @@ async def test_runtime_process_manager_get_status_returns_explicit_send_allowlis
                     'providerHubReady': True,
                     'sendEnabled': False,
                     'allowedConnectorCount': 0,
-                    'sendErrorCode': 'BROADCAST_SEND_ALLOWLIST_REQUIRED',
+                    'sendErrorCode': None,
                 }
             ),
         )
@@ -932,7 +932,7 @@ async def test_runtime_process_manager_get_status_returns_explicit_send_allowlis
         assert status['status'] == 'ready'
         assert status['send_enabled'] is False
         assert status['allowed_connector_count'] == 0
-        assert status['send_error_code'] == 'BROADCAST_SEND_ALLOWLIST_REQUIRED'
+    assert status['send_error_code'] is None
 
 
 async def test_runtime_stop_uses_owned_snapshot_and_clears_fields_in_finally(monkeypatch):
