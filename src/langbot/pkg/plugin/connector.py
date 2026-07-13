@@ -43,6 +43,8 @@ class PluginRuntimeNotConnectedError(RuntimeError):
 class PluginRuntimeConnector(ManagedRuntimeConnector):
     """Plugin runtime connector"""
 
+    LIST_PLUGINS_TIMEOUT_SECONDS = 10.0
+
     handler: handler.RuntimeConnectionHandler
 
     handler_task: asyncio.Task
@@ -70,6 +72,8 @@ class PluginRuntimeConnector(ManagedRuntimeConnector):
         super().__init__(ap)
         self.runtime_disconnect_callback = runtime_disconnect_callback
         self.is_enable_plugin = self.ap.instance_config.data.get('plugin', {}).get('enable', True)
+        self.runtime_status = 'unavailable' if self.is_enable_plugin else 'disabled'
+        self.last_runtime_error: str | None = None
 
     async def heartbeat_loop(self):
         while True:
@@ -89,6 +93,13 @@ class PluginRuntimeConnector(ManagedRuntimeConnector):
             async def disconnect_callback(
                 rchandler: handler.RuntimeConnectionHandler,
             ) -> bool:
+                rchandler.fail_pending_calls(PluginRuntimeNotConnectedError('Plugin runtime disconnected'))
+                self.runtime_status = 'degraded'
+                self.last_runtime_error = 'Plugin runtime disconnected'
+                self.ap.report_optional_failure(
+                    'plugin-runtime-disconnect',
+                    PluginRuntimeNotConnectedError(self.last_runtime_error),
+                )
                 if platform.get_platform() == 'docker' or platform.use_websocket_to_connect_plugin_runtime():
                     self.ap.logger.error('Disconnected from plugin runtime, trying to reconnect...')
                     await self.runtime_disconnect_callback(self)
@@ -101,7 +112,10 @@ class PluginRuntimeConnector(ManagedRuntimeConnector):
 
             self.handler = handler.RuntimeConnectionHandler(connection, disconnect_callback, self.ap)
 
-            self.handler_task = asyncio.create_task(self.handler.run())
+            self.handler_task = self.ap.supervise_optional_task(
+                self.handler.run(),
+                name='plugin-runtime-handler',
+            )
             _ = await self.handler.ping()
             # Push the configured marketplace (Space) URL to the runtime so it
             # downloads plugins from the same Space LangBot is bound to, rather
@@ -114,6 +128,8 @@ class PluginRuntimeConnector(ManagedRuntimeConnector):
                 except Exception as e:
                     self.ap.logger.warning(f'Failed to push runtime config: {e}')
             self.ap.logger.info('Connected to plugin runtime.')
+            self.runtime_status = 'connected'
+            self.last_runtime_error = None
             await self.handler_task
 
         task: asyncio.Task | None = None
@@ -130,6 +146,7 @@ class PluginRuntimeConnector(ManagedRuntimeConnector):
             ) -> None:
                 if exc is not None:
                     self.ap.logger.error(f'Failed to connect to plugin runtime({ws_url}): {exc}')
+                    self.ap.report_optional_failure('plugin-runtime-connect', exc)
                 else:
                     self.ap.logger.error(f'Failed to connect to plugin runtime({ws_url}), trying to reconnect...')
                 await self.runtime_disconnect_callback(self)
@@ -155,6 +172,7 @@ class PluginRuntimeConnector(ManagedRuntimeConnector):
             ) -> None:
                 if exc is not None:
                     self.ap.logger.error(f'(windows) Failed to connect to plugin runtime({ws_url}): {exc}')
+                    self.ap.report_optional_failure('plugin-runtime-connect', exc)
                 else:
                     self.ap.logger.error(
                         f'(windows) Failed to connect to plugin runtime({ws_url}), trying to reconnect...'
@@ -180,9 +198,12 @@ class PluginRuntimeConnector(ManagedRuntimeConnector):
             task = self.ctrl.run(new_connection_callback)
 
         if self.heartbeat_task is None:
-            self.heartbeat_task = asyncio.create_task(self.heartbeat_loop())
+            self.heartbeat_task = self.ap.supervise_optional_task(
+                self.heartbeat_loop(),
+                name='plugin-runtime-heartbeat',
+            )
 
-        asyncio.create_task(task)
+        self.ap.supervise_optional_task(task, name='plugin-runtime-connection')
 
     async def initialize_plugins(self):
         pass
@@ -613,7 +634,28 @@ class PluginRuntimeConnector(ManagedRuntimeConnector):
         if not self.is_enable_plugin:
             return []
 
-        plugins = await self.handler.list_plugins()
+        if not hasattr(self, 'handler'):
+            self.runtime_status = 'degraded'
+            self.last_runtime_error = 'Plugin runtime is not connected'
+            raise PluginRuntimeNotConnectedError('Plugin runtime is not connected')
+
+        try:
+            plugins = await asyncio.wait_for(
+                self.handler.list_plugins(),
+                timeout=self.LIST_PLUGINS_TIMEOUT_SECONDS,
+            )
+            if self.runtime_status != 'connected':
+                self.runtime_status = 'connected'
+            self.last_runtime_error = None
+        except asyncio.TimeoutError as exc:
+            self.runtime_status = 'degraded'
+            self.last_runtime_error = f'list_plugins timed out after {self.LIST_PLUGINS_TIMEOUT_SECONDS:g}s'
+            self.ap.logger.error(self.last_runtime_error)
+            raise TimeoutError(self.last_runtime_error) from exc
+        except Exception as exc:
+            self.runtime_status = 'degraded'
+            self.last_runtime_error = str(exc)
+            raise
 
         # Filter plugins by component kinds if specified
         if component_kinds is not None:

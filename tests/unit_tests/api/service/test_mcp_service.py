@@ -39,6 +39,10 @@ def _create_mock_mcp_server(
     server.enable = enable
     server.mode = mode
     server.extra_args = extra_args or {}
+    server.builtin = False
+    server.locked = False
+    server.managed_by = None
+    server.connector_id = None
     return server
 
 
@@ -88,6 +92,63 @@ class TestMCPServiceGetRuntimeInfo:
 
         # Verify
         assert result is None
+
+
+class TestMCPServiceRefreshRuntime:
+    """Tests for refresh_mcp_server_runtime method."""
+
+    async def test_refresh_runtime_rebuilds_stale_session(self):
+        from langbot.pkg.provider.tools.loaders.mcp import MCPSessionStatus
+
+        ap = SimpleNamespace()
+        ap.persistence_mgr = SimpleNamespace()
+        ap.logger = Mock()
+        ap.tool_mgr = SimpleNamespace()
+        ap.tool_mgr.mcp_tool_loader = SimpleNamespace()
+
+        stale_session = MagicMock()
+        stale_session.status = MCPSessionStatus.CONNECTED
+        stale_session.refresh = AsyncMock(side_effect=RuntimeError('Session terminated'))
+
+        fresh_session = MagicMock()
+        fresh_session.start = AsyncMock()
+        fresh_session.get_runtime_info_dict = Mock(return_value={'status': 'connected', 'tool_count': 17})
+
+        ap.tool_mgr.mcp_tool_loader.sessions = {'微信解密': stale_session}
+        ap.tool_mgr.mcp_tool_loader.get_session = Mock(return_value=stale_session)
+        ap.tool_mgr.mcp_tool_loader.remove_mcp_server = AsyncMock()
+        ap.tool_mgr.mcp_tool_loader.load_mcp_server = AsyncMock(return_value=fresh_session)
+
+        server = _create_mock_mcp_server(
+            server_uuid='test-uuid',
+            name='微信解密',
+            enable=True,
+            mode='remote',
+            extra_args={'url': 'http://127.0.0.1:5680/mcp'},
+        )
+        ap.persistence_mgr.execute_async = AsyncMock(
+            return_value=_create_mock_result(first_item=server)
+        )
+        ap.persistence_mgr.serialize_model = Mock(
+            return_value={
+                'uuid': 'test-uuid',
+                'name': '微信解密',
+                'enable': True,
+                'mode': 'remote',
+                'extra_args': {'url': 'http://127.0.0.1:5680/mcp'},
+            }
+        )
+
+        service = MCPService(ap)
+
+        result = await service.refresh_mcp_server_runtime('微信解密')
+
+        stale_session.refresh.assert_awaited_once()
+        ap.tool_mgr.mcp_tool_loader.remove_mcp_server.assert_awaited_once_with('微信解密')
+        ap.tool_mgr.mcp_tool_loader.load_mcp_server.assert_awaited_once()
+        fresh_session.start.assert_awaited_once()
+        assert ap.tool_mgr.mcp_tool_loader.sessions['微信解密'] is fresh_session
+        assert result == {'status': 'connected', 'tool_count': 17}
 
 
 class TestMCPServiceGetMCPServers:
@@ -578,6 +639,30 @@ class TestMCPServiceDeleteMCPServer:
         # Verify - delete was called regardless
         ap.persistence_mgr.execute_async.assert_called()
 
+    async def test_delete_mcp_server_builtin_raises(self):
+        """Built-in MCP rows cannot be deleted."""
+        ap = SimpleNamespace()
+        ap.persistence_mgr = SimpleNamespace()
+        ap.tool_mgr = SimpleNamespace()
+        ap.tool_mgr.mcp_tool_loader = SimpleNamespace()
+        ap.tool_mgr.mcp_tool_loader.sessions = {}
+        ap.tool_mgr.mcp_tool_loader.remove_mcp_server = AsyncMock()
+
+        server = _create_mock_mcp_server(name='企业微信')
+        server.builtin = True
+        server.locked = True
+        server.managed_by = 'wecome-bot'
+        server.connector_id = 'wxwork-local'
+
+        ap.persistence_mgr.execute_async = AsyncMock(
+            return_value=_create_mock_result(first_item=server)
+        )
+
+        service = MCPService(ap)
+
+        with pytest.raises(ValueError, match='Built-in MCP server cannot be deleted'):
+            await service.delete_mcp_server('builtin-uuid')
+
 
 class TestMCPServiceTestMCPServer:
     """Tests for test_mcp_server method."""
@@ -644,3 +729,84 @@ class TestMCPServiceTestMCPServer:
         # Verify - load_mcp_server called
         ap.tool_mgr.mcp_tool_loader.load_mcp_server.assert_called_once()
         assert task_id == 456
+
+
+class TestMCPServiceBuiltinProtection:
+    """Tests for builtin MCP mutation guards."""
+
+    async def test_update_mcp_server_rejects_builtin_name_change(self):
+        ap = SimpleNamespace()
+        ap.persistence_mgr = SimpleNamespace()
+        ap.tool_mgr = SimpleNamespace()
+        ap.tool_mgr.mcp_tool_loader = None
+
+        server = _create_mock_mcp_server(name='企业微信', enable=False, mode='remote')
+        server.builtin = True
+        server.locked = True
+        server.managed_by = 'wecome-bot'
+        server.connector_id = 'wxwork-local'
+        server.extra_args = {'url': 'http://127.0.0.1:5681/mcp'}
+
+        ap.persistence_mgr.execute_async = AsyncMock(
+            return_value=_create_mock_result(first_item=server)
+        )
+
+        service = MCPService(ap)
+
+        with pytest.raises(ValueError, match='Built-in MCP server name cannot be changed'):
+            await service.update_mcp_server('builtin-uuid', {'name': '别名'})
+
+    async def test_update_mcp_server_rejects_builtin_url_change(self):
+        ap = SimpleNamespace()
+        ap.persistence_mgr = SimpleNamespace()
+        ap.tool_mgr = SimpleNamespace()
+        ap.tool_mgr.mcp_tool_loader = None
+
+        server = _create_mock_mcp_server(name='微信解密', enable=False, mode='remote')
+        server.builtin = True
+        server.locked = True
+        server.managed_by = 'wecome-bot'
+        server.connector_id = 'wechat-local'
+        server.extra_args = {'url': 'http://127.0.0.1:5680/mcp'}
+
+        ap.persistence_mgr.execute_async = AsyncMock(
+            return_value=_create_mock_result(first_item=server)
+        )
+
+        service = MCPService(ap)
+
+        with pytest.raises(ValueError, match='Built-in MCP server URL cannot be changed'):
+            await service.update_mcp_server(
+                'builtin-uuid',
+                {'extra_args': {'url': 'http://127.0.0.1:9999/mcp'}},
+            )
+
+    async def test_update_mcp_server_allows_builtin_enable_toggle(self):
+        ap = SimpleNamespace()
+        ap.persistence_mgr = SimpleNamespace()
+        ap.tool_mgr = SimpleNamespace()
+        ap.tool_mgr.mcp_tool_loader = None
+
+        server = _create_mock_mcp_server(name='微信解密', enable=False, mode='remote')
+        server.builtin = True
+        server.locked = True
+        server.managed_by = 'wecome-bot'
+        server.connector_id = 'wechat-local'
+        server.extra_args = {'url': 'http://127.0.0.1:5680/mcp'}
+
+        call_count = 0
+
+        async def mock_execute(_query):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _create_mock_result(first_item=server)
+            return Mock()
+
+        ap.persistence_mgr.execute_async = AsyncMock(side_effect=mock_execute)
+
+        service = MCPService(ap)
+
+        await service.update_mcp_server('builtin-uuid', {'enable': True})
+
+        assert ap.persistence_mgr.execute_async.call_count >= 2

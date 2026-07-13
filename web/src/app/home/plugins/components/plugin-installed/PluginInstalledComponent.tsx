@@ -162,13 +162,16 @@ const PluginInstalledComponent = forwardRef<
           );
         } else if (item.type === 'mcp') {
           const server = item.server;
+          const isBuiltin = !!server.builtin && !!server.connector_id;
           extensions.push(
             new ExtensionCardVO({
               id: server.name,
               author: '',
               label: server.name.replace(/__/g, '/'),
               name: server.name,
-              description: '',
+              description: isBuiltin
+                ? t('mcp.builtinConnectorDescription')
+                : '',
               version: '',
               enabled: server.enable,
               type: 'mcp',
@@ -177,6 +180,8 @@ const PluginInstalledComponent = forwardRef<
               runtimeStatus: server.runtime_info?.status,
               tools: server.runtime_info?.tool_count || 0,
               mode: server.mode,
+              builtin: isBuiltin,
+              connectorId: server.connector_id,
             }),
           );
         } else if (item.type === 'skill') {

@@ -72,4 +72,7 @@ async def test_add_query_returns_created_query_and_preserves_side_effects(
     assert query.query_id == 0
     assert query.bot_uuid == 'test-bot-uuid'
     assert query.pipeline_uuid == 'test-pipeline-uuid'
-    assert query.variables == {'_routed_by_rule': True}
+    assert query.variables == {
+        '_routed_by_rule': True,
+        '_reserved_for_immediate_processing': False,
+    }

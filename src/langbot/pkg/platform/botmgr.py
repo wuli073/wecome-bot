@@ -196,128 +196,148 @@ class RuntimeBot:
         except Exception as e:
             await self.logger.error(f'Failed to record discarded message: {e}')
 
+    async def _handle_incoming_message(
+        self,
+        event: platform_events.MessageEvent,
+        adapter: abstract_platform_adapter.AbstractMessagePlatformAdapter,
+        *,
+        launcher_type: provider_session.LauncherTypes,
+        initial_launcher_id: str | int,
+        process_immediately: bool = False,
+        pipeline_uuid_override: str | None = None,
+        routed_by_rule_override: bool | None = None,
+    ):
+        image_components = [
+            component for component in event.message_chain if isinstance(component, platform_message.Image)
+        ]
+        session_prefix = 'group' if launcher_type == provider_session.LauncherTypes.GROUP else 'person'
+        await self.logger.info(
+            f'{event.message_chain}',
+            images=image_components,
+            message_session_id=f'{session_prefix}_{initial_launcher_id}',
+        )
+
+        skip_pipeline = False
+        if hasattr(self.ap, 'webhook_pusher') and self.ap.webhook_pusher:
+            if launcher_type == provider_session.LauncherTypes.GROUP:
+                skip_pipeline = await self.ap.webhook_pusher.push_group_message(
+                    event, self.bot_entity.uuid, adapter.__class__.__name__
+                )
+            else:
+                skip_pipeline = await self.ap.webhook_pusher.push_person_message(
+                    event, self.bot_entity.uuid, adapter.__class__.__name__
+                )
+
+        if skip_pipeline:
+            await self.logger.info(f'Pipeline skipped for {session_prefix} message due to webhook response')
+            return None
+
+        launcher_id = initial_launcher_id
+        if hasattr(adapter, 'get_launcher_id'):
+            custom_launcher_id = adapter.get_launcher_id(event)
+            if custom_launcher_id:
+                launcher_id = custom_launcher_id
+
+        message_text = str(event.message_chain)
+        element_types = [comp.type for comp in event.message_chain]
+        if pipeline_uuid_override is None:
+            pipeline_uuid, routed_by_rule = self.resolve_pipeline_uuid(
+                session_prefix, launcher_id, message_text, element_types
+            )
+        else:
+            pipeline_uuid = pipeline_uuid_override
+            routed_by_rule = bool(routed_by_rule_override)
+
+        sender_id = event.sender.id
+        if pipeline_uuid == self.PIPELINE_DISCARD:
+            await self.logger.info(f'{session_prefix.title()} message discarded by routing rule')
+            await self._record_discarded_message(
+                launcher_type,
+                launcher_id,
+                sender_id,
+                event,
+                event.message_chain,
+            )
+            return None
+
+        return await self.ap.msg_aggregator.add_message(
+            bot_uuid=self.bot_entity.uuid,
+            launcher_type=launcher_type,
+            launcher_id=launcher_id,
+            sender_id=sender_id,
+            message_event=event,
+            message_chain=event.message_chain,
+            adapter=adapter,
+            pipeline_uuid=pipeline_uuid,
+            routed_by_rule=routed_by_rule,
+            process_immediately=process_immediately,
+        )
+
+    async def handle_message_event(
+        self,
+        event: platform_events.MessageEvent,
+        *,
+        adapter: abstract_platform_adapter.AbstractMessagePlatformAdapter | None = None,
+        process_immediately: bool = False,
+        pipeline_uuid_override: str | None = None,
+        routed_by_rule_override: bool | None = None,
+    ):
+        adapter = adapter or self.adapter
+        if isinstance(event, platform_events.FriendMessage):
+            return await self._handle_incoming_message(
+                event,
+                adapter,
+                launcher_type=provider_session.LauncherTypes.PERSON,
+                initial_launcher_id=event.sender.id,
+                process_immediately=process_immediately,
+                pipeline_uuid_override=pipeline_uuid_override,
+                routed_by_rule_override=routed_by_rule_override,
+            )
+
+        if isinstance(event, platform_events.GroupMessage):
+            return await self._handle_incoming_message(
+                event,
+                adapter,
+                launcher_type=provider_session.LauncherTypes.GROUP,
+                initial_launcher_id=event.group.id,
+                process_immediately=process_immediately,
+                pipeline_uuid_override=pipeline_uuid_override,
+                routed_by_rule_override=routed_by_rule_override,
+            )
+
+        raise TypeError(f'Unsupported message event type: {type(event).__name__}')
+
+    async def process_message_event_now(
+        self,
+        event: platform_events.MessageEvent,
+        *,
+        adapter: abstract_platform_adapter.AbstractMessagePlatformAdapter | None = None,
+        pipeline_uuid_override: str | None = None,
+        routed_by_rule_override: bool | None = None,
+    ):
+        query = await self.handle_message_event(
+            event,
+            adapter=adapter,
+            process_immediately=True,
+            pipeline_uuid_override=pipeline_uuid_override,
+            routed_by_rule_override=routed_by_rule_override,
+        )
+        if query is None:
+            return None
+        return await self.ap.ctrl.process_query_now(query)
+
     async def initialize(self):
         async def on_friend_message(
             event: platform_events.FriendMessage,
             adapter: abstract_platform_adapter.AbstractMessagePlatformAdapter,
         ):
-            image_components = [
-                component for component in event.message_chain if isinstance(component, platform_message.Image)
-            ]
-
-            await self.logger.info(
-                f'{event.message_chain}',
-                images=image_components,
-                message_session_id=f'person_{event.sender.id}',
-            )
-
-            # Push to webhooks and check if pipeline should be skipped
-            skip_pipeline = False
-            if hasattr(self.ap, 'webhook_pusher') and self.ap.webhook_pusher:
-                skip_pipeline = await self.ap.webhook_pusher.push_person_message(
-                    event, self.bot_entity.uuid, adapter.__class__.__name__
-                )
-
-            # Only add to query pool if no webhook requested to skip pipeline
-            if not skip_pipeline:
-                launcher_id = event.sender.id
-
-                if hasattr(adapter, 'get_launcher_id'):
-                    custom_launcher_id = adapter.get_launcher_id(event)
-                    if custom_launcher_id:
-                        launcher_id = custom_launcher_id
-
-                message_text = str(event.message_chain)
-                element_types = [comp.type for comp in event.message_chain]
-                pipeline_uuid, routed_by_rule = self.resolve_pipeline_uuid(
-                    'person', launcher_id, message_text, element_types
-                )
-
-                if pipeline_uuid == self.PIPELINE_DISCARD:
-                    await self.logger.info('Person message discarded by routing rule')
-                    await self._record_discarded_message(
-                        provider_session.LauncherTypes.PERSON,
-                        launcher_id,
-                        event.sender.id,
-                        event,
-                        event.message_chain,
-                    )
-                    return
-
-                await self.ap.msg_aggregator.add_message(
-                    bot_uuid=self.bot_entity.uuid,
-                    launcher_type=provider_session.LauncherTypes.PERSON,
-                    launcher_id=launcher_id,
-                    sender_id=event.sender.id,
-                    message_event=event,
-                    message_chain=event.message_chain,
-                    adapter=adapter,
-                    pipeline_uuid=pipeline_uuid,
-                    routed_by_rule=routed_by_rule,
-                )
-            else:
-                await self.logger.info('Pipeline skipped for person message due to webhook response')
+            await self.handle_message_event(event, adapter=adapter)
 
         async def on_group_message(
             event: platform_events.GroupMessage,
             adapter: abstract_platform_adapter.AbstractMessagePlatformAdapter,
         ):
-            image_components = [
-                component for component in event.message_chain if isinstance(component, platform_message.Image)
-            ]
-
-            await self.logger.info(
-                f'{event.message_chain}',
-                images=image_components,
-                message_session_id=f'group_{event.group.id}',
-            )
-
-            # Push to webhooks and check if pipeline should be skipped
-            skip_pipeline = False
-            if hasattr(self.ap, 'webhook_pusher') and self.ap.webhook_pusher:
-                skip_pipeline = await self.ap.webhook_pusher.push_group_message(
-                    event, self.bot_entity.uuid, adapter.__class__.__name__
-                )
-
-            # Only add to query pool if no webhook requested to skip pipeline
-            if not skip_pipeline:
-                launcher_id = event.group.id
-
-                if hasattr(adapter, 'get_launcher_id'):
-                    custom_launcher_id = adapter.get_launcher_id(event)
-                    if custom_launcher_id:
-                        launcher_id = custom_launcher_id
-
-                message_text = str(event.message_chain)
-                element_types = [comp.type for comp in event.message_chain]
-                pipeline_uuid, routed_by_rule = self.resolve_pipeline_uuid(
-                    'group', launcher_id, message_text, element_types
-                )
-
-                if pipeline_uuid == self.PIPELINE_DISCARD:
-                    await self.logger.info('Group message discarded by routing rule')
-                    await self._record_discarded_message(
-                        provider_session.LauncherTypes.GROUP,
-                        launcher_id,
-                        event.sender.id,
-                        event,
-                        event.message_chain,
-                    )
-                    return
-
-                await self.ap.msg_aggregator.add_message(
-                    bot_uuid=self.bot_entity.uuid,
-                    launcher_type=provider_session.LauncherTypes.GROUP,
-                    launcher_id=launcher_id,
-                    sender_id=event.sender.id,
-                    message_event=event,
-                    message_chain=event.message_chain,
-                    adapter=adapter,
-                    pipeline_uuid=pipeline_uuid,
-                    routed_by_rule=routed_by_rule,
-                )
-            else:
-                await self.logger.info('Pipeline skipped for group message due to webhook response')
+            await self.handle_message_event(event, adapter=adapter)
 
         self.adapter.register_listener(platform_events.FriendMessage, on_friend_message)
         self.adapter.register_listener(platform_events.GroupMessage, on_group_message)
@@ -405,7 +425,7 @@ class PlatformManager:
 
     bots: list[RuntimeBot]
 
-    websocket_proxy_bot: RuntimeBot
+    websocket_proxy_bot: RuntimeBot | None
 
     adapter_components: list[engine.Component]
 
@@ -416,24 +436,25 @@ class PlatformManager:
         self.bots = []
         self.adapter_components = []
         self.adapter_dict = {}
+        self.websocket_proxy_bot = None
 
-    async def initialize(self):
-        # delete all bot log images
-        await self.ap.storage_mgr.storage_provider.delete_dir_recursive('bot_log_images')
-
+    async def initialize_onboarding(self):
+        """Load adapter metadata needed by the onboarding UI."""
         disabled_adapters = self.ap.instance_config.data.get('system', {}).get('disabled_adapters', []) or []
-
         self.adapter_components = self.ap.discover.get_components_by_kind('MessagePlatformAdapter')
-        adapter_dict: dict[str, type[abstract_platform_adapter.AbstractMessagePlatformAdapter]] = {}
-        for component in self.adapter_components:
-            if component.metadata.name in disabled_adapters:
-                continue
-            adapter_dict[component.metadata.name] = component.get_python_component_class()
-        self.adapter_dict = adapter_dict
-
-        # Filter out disabled adapters from components list (for API responses)
         if disabled_adapters:
             self.adapter_components = [c for c in self.adapter_components if c.metadata.name not in disabled_adapters]
+
+    async def initialize(self):
+        await self.initialize_onboarding()
+
+        # Delete bot log images only after HTTP is available in packaged builds.
+        await self.ap.storage_mgr.storage_provider.delete_dir_recursive('bot_log_images')
+
+        self.adapter_dict = {
+            component.metadata.name: component.get_python_component_class()
+            for component in self.adapter_components
+        }
 
         # initialize websocket adapter
         websocket_adapter_class = self.adapter_dict['websocket']
@@ -476,6 +497,12 @@ class PlatformManager:
         for bot in bots:
             # load all bots here, enable or disable will be handled in runtime
             try:
+                if bot.adapter == 'wxwork_database' and getattr(self.ap, 'bot_service', None) is not None:
+                    await self.ap.bot_service._ensure_wxwork_database_binding(
+                        bot_uuid=bot.uuid,
+                        adapter_config=bot.adapter_config or {},
+                        bot_enabled=bool(bot.enable),
+                    )
                 await self.load_bot(bot)
             except platform_errors.AdapterNotFoundError as e:
                 self.ap.logger.warning(f'Adapter {e.adapter_name} not found, skipping bot {bot.uuid}')

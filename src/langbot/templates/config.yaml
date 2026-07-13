@@ -148,6 +148,13 @@ box:
         api_key: ''  # Can also be set via E2B_API_KEY env var.
         api_url: ''  # Custom API URL for self-hosted deployments.
         template: ''  # Default template ID (e.g. 'base', 'python-3.11').
+desktop_automation:
+    enabled: false
+    runtime_executable: ''
+    startup_timeout_seconds: 30
+    task_timeout_seconds: 120
+    stale_run_seconds: 300
+    expected_protocol_version: '1'
 space:
     # Space service URL for OAuth and API
     url: 'https://space.langbot.app'

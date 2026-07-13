@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
 
 from .. import stage, app
 from ...utils import version, proxy
@@ -39,6 +41,23 @@ from ...vector import mgr as vectordb_mgr
 from .. import taskmgr
 from ...telemetry import telemetry as telemetry_module
 from ...survey import manager as survey_module
+from ...local_connectors import service as local_connectors_service
+from ...database_mode.events import DatabaseModeEventBus
+from ...database_mode import service as database_mode_service
+from ...database_mode import processing_service as database_mode_processing_service
+from ...broadcast.service import BroadcastService
+from ...broadcast.worker import BroadcastExecutionWorker
+from ...desktop_automation.repository import DesktopAutomationRepository
+from ...desktop_automation.runtime_process import (
+    DesktopRuntimeProcessManager,
+    apply_local_desktop_automation_defaults,
+)
+from ...desktop_automation.client import DesktopRuntimeClient
+from ...desktop_automation.service import DesktopAutomationService
+from ...utils import paths
+from .. import entities as core_entities
+from ..lifecycle import RuntimeState
+from ..local_shutdown_control import build_local_shutdown_watcher_from_env
 
 
 @stage.stage_class('BuildAppStage')
@@ -111,7 +130,61 @@ class BuildAppStage(stage.BootingStage):
 
         persistence_mgr_inst = persistencemgr.PersistenceManager(ap)
         ap.persistence_mgr = persistence_mgr_inst
+        if os.environ.get('CHATBOT_PACKAGED') == '1':
+            http_ctrl = http_controller.HTTPController(ap)
+            await http_ctrl.register_routes()
+            ap.http_ctrl = http_ctrl
+            ap.http_task_wrapper = ap.task_mgr.create_task(
+                http_ctrl.run(),
+                name='http-api-controller',
+                scopes=[core_entities.LifecycleControlScope.APPLICATION],
+            )
+            await http_ctrl.wait_until_listening()
+            ap.set_runtime_state(RuntimeState.HTTP_READY)
+        ap.set_runtime_state(RuntimeState.CORE_INITIALIZING)
         await persistence_mgr_inst.initialize()
+
+        if os.environ.get('CHATBOT_PACKAGED') == '1':
+            await self._initialize_onboarding_core(ap)
+            ap.set_runtime_state(RuntimeState.CORE_READY)
+            ap.startup_task = asyncio.create_task(
+                self._run_packaged_initialization(ap),
+                name='packaged-optional-initialization',
+            )
+            return
+
+        await self._initialize_onboarding_core(ap)
+        await self._initialize_remaining(ap)
+        ap.set_runtime_state(RuntimeState.READY)
+
+    async def _run_packaged_initialization(self, ap: app.Application) -> None:
+        try:
+            await self._initialize_remaining(ap)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            ap.logger.exception('Packaged optional initialization failed.')
+            ap.set_runtime_state(RuntimeState.DEGRADED, failure_code='optional-initialization-failed')
+        else:
+            ap.set_runtime_state(RuntimeState.READY)
+
+    async def _initialize_onboarding_core(self, ap: app.Application) -> None:
+        """Initialize the dependencies required by the first-run wizard."""
+        im_mgr_inst = im_mgr.PlatformManager(ap=ap)
+        await im_mgr_inst.initialize_onboarding()
+        ap.platform_mgr = im_mgr_inst
+
+    async def _initialize_remaining(self, ap: app.Application) -> None:
+        """Initialize components that must not delay packaged HTTP liveness."""
+        if ap.http_ctrl is not None:
+            await ap.http_ctrl.initialize_mcp_mount()
+        await ap.persistence_mgr.write_space_model_providers()
+        await ap.platform_mgr.initialize()
+
+        local_connectors_service_inst = local_connectors_service.LocalConnectorsService(ap)
+        ap.local_connectors_service = local_connectors_service_inst
+        await local_connectors_service_inst.initialize_builtin_mcp_servers()
+        await local_connectors_service_inst.restore_configured_connectors()
 
         # Telemetry manager: attach to app so other components can call via self.ap.telemetry
         telemetry_inst = telemetry_module.TelemetryManager(ap)
@@ -140,12 +213,8 @@ class BuildAppStage(stage.BootingStage):
         ap.box_service = box_service_inst
 
         llm_tool_mgr_inst = llm_tool_mgr.ToolManager(ap)
-        await llm_tool_mgr_inst.initialize()
         ap.tool_mgr = llm_tool_mgr_inst
-
-        im_mgr_inst = im_mgr.PlatformManager(ap=ap)
-        await im_mgr_inst.initialize()
-        ap.platform_mgr = im_mgr_inst
+        await llm_tool_mgr_inst.initialize()
 
         # Initialize webhook pusher
         webhook_pusher_inst = WebhookPusher(ap)
@@ -176,19 +245,84 @@ class BuildAppStage(stage.BootingStage):
         await vectordb_mgr_inst.initialize()
         ap.vector_db_mgr = vectordb_mgr_inst
 
-        http_ctrl = http_controller.HTTPController(ap)
-        await http_ctrl.initialize()
-        ap.http_ctrl = http_ctrl
+        if ap.http_ctrl is None:
+            http_ctrl = http_controller.HTTPController(ap)
+            await http_ctrl.initialize()
+            ap.http_ctrl = http_ctrl
 
         monitoring_service_inst = monitoring_service.MonitoringService(ap)
         ap.monitoring_service = monitoring_service_inst
+
+        ap.database_mode_event_bus = DatabaseModeEventBus()
+        ap.logger.info(
+            f'database_mode_event_bus_created event_bus_instance_id={ap.database_mode_event_bus.instance_id} '
+            f'subscriber_count={ap.database_mode_event_bus.subscriber_count}'
+        )
+
+        database_mode_service_inst = database_mode_service.DatabaseModeService(ap)
+        ap.database_mode_service = database_mode_service_inst
+        ap.database_mode_processing_service = database_mode_processing_service.DatabaseModeProcessingService(ap)
+        await ap.database_mode_processing_service.reconcile_stale_processing_runs()
+        ap.broadcast_service = BroadcastService(ap)
+
+        desktop_automation_config = apply_local_desktop_automation_defaults(
+            ap.instance_config.data.get('desktop_automation', {})
+        )
+        ap.instance_config.data['desktop_automation'] = desktop_automation_config
+        desktop_automation_repository = DesktopAutomationRepository(ap.persistence_mgr)
+        desktop_automation_runtime_process_manager = DesktopRuntimeProcessManager(
+            config=desktop_automation_config,
+            broadcast_config=ap.instance_config.data.get('broadcast', {}),
+        )
+        ap.desktop_automation_service = DesktopAutomationService(
+            ap,
+            repository=desktop_automation_repository,
+            runtime_process_manager=desktop_automation_runtime_process_manager,
+            runtime_client_factory=lambda runtime_info: DesktopRuntimeClient(
+                base_url=f"http://{runtime_info['host']}:{runtime_info['port']}",
+                token=str(runtime_info['token']),
+                expected_protocol_version=str(desktop_automation_config.get('expected_protocol_version') or '1'),
+            ),
+        )
+        await ap.desktop_automation_service.reconcile_stale_runs()
+        ap.broadcast_execution_worker = BroadcastExecutionWorker(
+            service=ap.broadcast_service,
+        )
+        quart_app = ap.http_ctrl.quart_app
+
+        repo_root_text = paths.get_repo_root()
+        repo_root = Path(repo_root_text).resolve() if repo_root_text else None
+        watcher = build_local_shutdown_watcher_from_env(
+            app=ap,
+            repo_root=repo_root,
+        ) if repo_root is not None else None
+        ap.local_shutdown_control_watcher = watcher
+        if watcher is not None:
+            ap.task_mgr.create_task(
+                watcher.watch(),
+                name='local-shutdown-control-watcher',
+                scopes=[core_entities.LifecycleControlScope.APPLICATION],
+            )
+
+        @quart_app.before_serving
+        async def _start_broadcast_execution_worker() -> None:
+            await ap.broadcast_execution_worker.start()
+
+        @quart_app.after_serving
+        async def _stop_broadcast_execution_worker() -> None:
+            await ap.broadcast_execution_worker.stop()
 
         maintenance_service_inst = maintenance_service.MaintenanceService(ap)
         ap.maintenance_service = maintenance_service_inst
 
         async def runtime_disconnect_callback(connector: plugin_connector.PluginRuntimeConnector) -> None:
-            await asyncio.sleep(3)
-            await plugin_connector_inst.initialize()
+            try:
+                await asyncio.sleep(3)
+                await plugin_connector_inst.initialize()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                ap.report_optional_failure('plugin-runtime-reconnect', exc)
 
         plugin_connector_inst = plugin_connector.PluginRuntimeConnector(ap, runtime_disconnect_callback)
         await plugin_connector_inst.initialize()

@@ -28,6 +28,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import { APP_BRAND_NAME } from '@/app/config/brand';
 import langbotIcon from '@/app/assets/langbot-logo.webp';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
@@ -62,7 +63,7 @@ export default function Register() {
       .checkIfInited()
       .then((res) => {
         if (res.initialized) {
-          navigate('/login');
+          navigate('/home/monitoring');
         }
       })
       .catch(() => {});
@@ -77,7 +78,7 @@ export default function Register() {
       .initUser(username, password)
       .then(() => {
         toast.success(t('register.initSuccess'));
-        navigate('/login');
+        navigate('/home/monitoring');
       })
       .catch((err: Error) => {
         toast.error(t('register.initFailed') + (err as CustomApiError).msg);
@@ -114,7 +115,7 @@ export default function Register() {
           </div>
           <img
             src={langbotIcon}
-            alt="LangBot"
+            alt={APP_BRAND_NAME}
             className="w-16 h-16 mb-4 mx-auto"
           />
           <CardTitle className="text-2xl text-center">

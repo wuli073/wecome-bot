@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "buildId": "development",
+  "backend": {
+    "host": "127.0.0.1",
+    "port": 5302,
+    "healthPath": "/healthz",
+    "runtimeStatusPath": "/api/v1/system/runtime/status",
+    "startupTimeoutSeconds": 60
+  }
+}

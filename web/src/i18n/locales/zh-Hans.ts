@@ -10,23 +10,18 @@ const zhHans = {
     pluginPagesTooltip: '由已安装的插件提供的可视化页面',
     quickStart: '快速开始向导',
     scrollToBottom: '滚动到底部',
-    editionCommunity: '社区版',
+    editionCommunity: '开源版',
     editionCloud: 'Cloud',
   },
   common: {
-    login: '登录',
-    logout: '退出登录',
+    logout: '登出',
     accountOptions: '系统设置',
     account: '账户',
     integration: '连接',
     email: '邮箱',
     password: '密码',
-    welcome: '欢迎回到 LangBot 👋',
-    continueToLogin: '登录以继续',
-    loginSuccess: '登录成功',
-    loginFailed: '登录失败，请检查邮箱和密码是否正确',
     loginLoadError: '无法连接到服务器',
-    loginLoadErrorDesc: '无法连接到 LangBot 后端服务，请确认服务已启动后重试。',
+    loginLoadErrorDesc: '无法连接到 Chatbot 后端服务，请确认服务已启动后重试。',
     retry: '重试',
     enterEmail: '输入邮箱地址',
     enterPassword: '输入密码',
@@ -69,7 +64,6 @@ const zhHans = {
     copySuccess: '复制成功',
     copyFailed: '复制失败',
     test: '测试',
-    forgotPassword: '忘记密码？',
     agreementNotice: '继续即表示您同意我们的',
     termsOfService: '服务条款',
     privacyPolicy: '隐私政策',
@@ -79,10 +73,7 @@ const zhHans = {
     loading: '加载中...',
     fieldRequired: '此字段为必填项',
     or: '或',
-    loginWithSpace: '通过 Space 登录',
     spaceLoginRecommended: '推荐：使用官方提供的稳定模型 API 和云服务',
-    loginLocal: '使用本地账号登录',
-    loginWithPassword: '通过密码登录',
     spaceLoginTitle: '通过 Space 登录',
     spaceLoginDescription: '扫描二维码或访问下方链接进行授权',
     spaceLoginUserCode: '您的验证码',
@@ -95,10 +86,9 @@ const zhHans = {
     spaceLoginVisitLink: '访问链接',
     spaceLoginProcessing: '正在通过 Space 登录',
     spaceLoginProcessingDescription: '请稍候，正在完成登录...',
-    spaceLoginSuccessDescription: '正在跳转到 LangBot...',
+    spaceLoginSuccessDescription: '正在跳转到 Chatbot...',
     spaceLoginError: '登录失败',
     spaceLoginNoCode: '缺少授权码',
-    backToLogin: '返回登录',
     backToHome: '返回首页',
     spaceAccountCannotChangePassword: 'Space 账户无法在此修改密码',
     theme: '主题',
@@ -131,10 +121,10 @@ const zhHans = {
     copyApiKey: '复制 API 密钥',
     apiKeyCopied: 'API 密钥已复制到剪贴板',
     noApiKeys: '暂无 API 密钥',
-    apiKeyHint: 'API 密钥允许外部系统访问 LangBot 的 Service API',
+    apiKeyHint: 'API 密钥允许外部系统访问 Chatbot 的 Service API',
     mcpTab: 'MCP',
     mcpHint:
-      'LangBot 提供 MCP（Model Context Protocol）服务，让 AI Agent 管理本实例，复用与 Service API 相同的 API 密钥。',
+      'Chatbot 提供 MCP（Model Context Protocol）服务，让 AI Agent 管理本实例，复用与 Service API 相同的 API 密钥。',
     mcpEndpoint: 'MCP 接入地址',
     mcpAuthTitle: '鉴权方式',
     mcpAuthDesc: '使用「API 密钥」标签页中的任意密钥，通过请求头传入：',
@@ -153,7 +143,7 @@ const zhHans = {
     webhookNameRequired: 'Webhook 名称不能为空',
     webhookUrlRequired: 'Webhook URL 不能为空',
     noWebhooks: '暂无 Webhook',
-    webhookHint: 'Webhook 允许 LangBot 将个人消息和群消息事件推送到外部系统',
+    webhookHint: 'Webhook 允许 Chatbot 将个人消息和群消息事件推送到外部系统',
     actions: '操作',
     apiKeyCreatedMessage: '请复制此 API 密钥，若按钮无效，请手动复制。',
     none: '无',
@@ -262,12 +252,12 @@ const zhHans = {
     requester: '供应商类型',
     selectRequester: '选择供应商类型',
     searchProviders: '搜索供应商...',
-    langbotModelsDescription: 'LangBot Space 提供的云端模型',
+    langbotModelsDescription: 'Chatbot Space 提供的云端模型',
     credits: '积分',
     loginWithSpace: '通过 Space 登录',
     loginToUseModels: '通过 Space 登录以使用云端模型',
     noModels: '暂无模型',
-    langbotModels: 'LangBot 模型',
+    langbotModels: 'Chatbot 模型',
     spaceTrialTooltip:
       '免费试用积分已就绪！通过 Space 登录即可零配置使用云端模型。',
     unlockModels: '登录以使用',
@@ -303,7 +293,7 @@ const zhHans = {
   },
   bots: {
     title: '机器人',
-    description: '创建和管理机器人，这是 LangBot 与各个平台连接的入口',
+    description: '创建和管理机器人，这是 Chatbot 与各个平台连接的入口',
     createBot: '创建机器人',
     selectFromSidebar: '从侧边栏选择一个机器人',
     editBot: '编辑机器人',
@@ -387,8 +377,8 @@ const zhHans = {
       '点击输入框自动全选，然后按 Ctrl+C (Mac: Cmd+C) 复制，或点击右侧按钮',
     webhookUrlHintEither: '以上两个地址任选其一填入平台配置即可',
     webhookSaasHint:
-      'Webhook 需要公网可访问的域名。LangBot Cloud 为你的机器人提供开箱即用的公网地址。',
-    webhookSaasLink: '了解 LangBot Cloud',
+      'Webhook 需要公网可访问的域名。Chatbot Cloud 为你的机器人提供开箱即用的公网地址。',
+    webhookSaasLink: '了解 Chatbot Cloud',
     adapterCategory: {
       popular: '热门',
       china: '中国',
@@ -425,6 +415,151 @@ const zhHans = {
       discarded: '已丢弃',
       userMessage: '用户',
       botMessage: '助手',
+      databaseComposer: {
+        ariaLabel: 'Composer draft',
+        attachmentUnavailable: '附件能力暂未接入',
+        clearedUnsaved: '已清空，尚未保存',
+        clear: '清空',
+        confirmDeleteDescription:
+          '永久删除当前持久化草稿后无法恢复，确认继续吗？',
+        confirmDeleteTitle: '确认删除草稿',
+        copy: '复制',
+        deleteDraft: '删除草稿',
+        deleteError: '删除草稿失败',
+        deleteSuccess: '草稿已删除',
+        emptySaveError: '草稿内容不能为空',
+        generating: '草稿生成中...',
+        meta: '草稿 v{{version}} · {{source}} · {{updatedAt}}',
+        moreActions: '更多草稿操作',
+        noDraftToDelete: '当前没有可删除的草稿',
+        noDraftToSave: '当前没有可保存的草稿',
+        placeholder: '输入回复内容，或使用智能回复生成草稿',
+        regenerate: '重新生成',
+        save: '保存',
+        saveError: '保存草稿失败',
+        saveSuccess: '草稿已保存',
+        send: '发送',
+        sending: '发送中',
+        sendUnavailable: '发送能力暂未接入',
+        sendRealDisabled: '真实发送尚未开放，请使用“桌面验证（Dry Run）”',
+        paste: {
+          button: '粘贴到企业微信输入框',
+          success: '草稿已写入企业微信输入框，请检查后手动发送',
+        },
+        status: {
+          running: '正在发送…',
+          succeeded: '当前会话已人工确认，窗口上下文稳定，输入区域已定位',
+          blocked: '已被安全校验拦截',
+          failed: '发送失败',
+          timed_out: '发送超时',
+          cancelled: '已取消',
+        },
+        stage: {
+          batchStatus: '??',
+          taskStatus: '??',
+          attemptStatus: '??',
+          runtimeState: '???',
+          recoveryAdvice: '??',
+          validating_process: '正在验证企业微信',
+          binding_window: '正在绑定企业微信窗口',
+          activating_window: '正在激活企业微信窗口',
+          waiting_stability: '正在等待窗口稳定',
+          verifying_foreground: '正在确认企业微信位于前台',
+          verifying_conversation: '正在确认当前会话',
+          inspecting_session: '正在校验人工确认与当前会话',
+          locating_input: '正在定位输入框',
+          checking_input: '正在检查输入框',
+          reading_input: '正在记录输入区不可读状态',
+          revalidating_context: '正在重新校验窗口上下文',
+          pasting_draft: '正在填入草稿',
+          pasted_to_input: '草稿已写入企业微信输入框',
+          verifying_paste: '正在校验草稿',
+          committing_send: '正在提交发送',
+          ready_to_send: '当前 dry-run 已达到 ready_to_send',
+        },
+        sendDisabled: {
+          botDisabled: '请先启用 Bot',
+          noPersistedDraft: '当前草稿目标不可用',
+          emptyDraft: '草稿内容不能为空',
+          unsavedChanges: '存在未保存的更改',
+          busy: '请等待当前草稿操作完成',
+          activeRun: '当前已有发送任务在执行',
+          alreadySent: '该草稿已经发送过了',
+          runtimeChecking: '正在检查桌面运行时状态',
+          runtimeDisabled: '桌面自动化已禁用',
+          runtimeNotConfigured: '桌面运行时未配置',
+          runtimeUnsupported: '当前环境不支持桌面自动化',
+          runtimeFailed: '桌面运行时当前不可用',
+          runtimeNotAvailable:
+            'RPA_RUNTIME_NOT_AVAILABLE：Runtime 启动失败，请检查安装包和后端日志',
+        },
+        confirmation: {
+          trigger: '确认当前会话',
+          ready: '已获得一次性会话确认',
+          dialogTitle: '确认当前会话',
+          description:
+            '请核对任务中的目标会话名称与当前标题区域截图，然后确认当前会话正确。',
+          loading: '正在准备当前会话确认截图',
+          draftUnavailable: '当前草稿缺少可用的已保存回复 ID',
+          expectedLabel: '预期会话名称',
+          approve: '确认当前会话正确',
+          prepareError: '准备当前会话确认失败',
+          confirmError: '提交当前会话确认失败',
+          success: '当前会话已确认，可执行 dry-run',
+        },
+        dryRun: {
+          trigger: '桌面验证（Dry Run）',
+          realSendUnavailable: '真实发送尚未开放，请使用“桌面验证（Dry Run）”',
+          confirmationRequired: '请先确认当前会话',
+          confirmationExpired: '一次性会话确认已过期，请重新确认',
+          consumedNotice:
+            '本次会话确认已用于桌面验证，如需再次验证请重新确认当前会话',
+          resultTitle: 'Dry Run 结果',
+          resultSummary: '本次仅完成桌面验证，未发送消息',
+          fieldStatus: 'status',
+          fieldStage: 'stage',
+          fieldInspectionBackend: 'inspectionBackend',
+          fieldConversationVerification: 'conversationVerification',
+          fieldInputTargetSource: 'inputTargetSource',
+          fieldInputContentVerification: 'inputContentVerification',
+          fieldHumanConfirmed: 'humanConfirmed',
+          fieldVisualContextStable: 'visualContextStable',
+          fieldSendAuthorized: 'sendAuthorized',
+          fieldNextAllowedOperation: 'nextAllowedOperation',
+          fieldErrorCode: 'errorCode',
+        },
+        error: {
+          CONVERSATION_MISMATCH: '当前企业微信会话与目标会话不匹配',
+          CONVERSATION_UNVERIFIABLE: '无法可靠验证当前企业微信会话',
+          INPUT_NOT_EMPTY: '企业微信输入框里已有其他未发送内容',
+          INPUT_CONTENT_UNVERIFIABLE: '无法可靠读取企业微信输入框内容',
+          PASTE_VERIFICATION_FAILED: '草稿粘贴后的内容校验失败',
+          WINDOW_NOT_FOREGROUND: '企业微信窗口已不在前台',
+          WINDOW_IDENTITY_CHANGED: '企业微信窗口在校验过程中发生变化',
+          WECOM_PROCESS_NOT_FOUND: '未找到企业微信进程',
+          SEND_FAILED: '执行发送失败',
+          TASK_CONFLICT: '已有发送任务正在执行',
+          DRAFT_ALREADY_SENT: '该草稿已经发送过了',
+          TASK_TIMEOUT: '发送任务超时',
+          REGION_PROFILE_MISSING: '尚未配置企业微信区域，请先校准',
+          REGION_PROFILE_INVALID: '已保存的企业微信区域无效，请重新校准',
+          REGION_PROFILE_STALE: '企业微信窗口布局已变化，请重新校准',
+          HUMAN_CONFIRMATION_REQUIRED: '请先人工确认当前会话',
+          HUMAN_CONFIRMATION_EXPIRED: '当前会话确认已过期，请重新确认',
+          HUMAN_CONFIRMATION_TASK_MISMATCH: '当前会话确认不适用于这条草稿',
+          WINDOW_CONTEXT_CHANGED: '企业微信窗口上下文已变化，请重新确认',
+          CONVERSATION_VISUAL_CHANGED: '当前会话标题区域已变化，请重新确认',
+          INPUT_SAFE_POINT_UNAVAILABLE: '无法在当前输入区域内计算安全点',
+        },
+        source: {
+          pipeline: '智能生成',
+          manual: '手动编辑',
+        },
+        undoEdit: '撤销编辑',
+        unsaved: '未保存编辑',
+        updatedAt: '更新时间 {{time}}',
+        updatedAtUnknown: '更新时间未知',
+      },
     },
   },
   plugins: {
@@ -674,7 +809,7 @@ const zhHans = {
     markAsReadFailed: '标记为已读失败',
     filterByComponent: '插件组件',
     filterByComponentHint:
-      '插件提供的能力类型，如工具（Tool）、命令（Command）、事件监听器（EventListener）等，用于扩展 LangBot 的各项能力。按组件筛选可只看提供对应能力的插件。',
+      '插件提供的能力类型，如工具（Tool）、命令（Command）、事件监听器（EventListener）等，用于扩展 Chatbot 的各项能力。按组件筛选可只看提供对应能力的插件。',
     allComponents: '全部组件',
     componentName: {
       Tool: '工具',
@@ -816,6 +951,54 @@ const zhHans = {
     dangerZoneDescription: '此 MCP 服务器的不可逆操作。',
     deleteMCPAction: '删除此 MCP 服务器',
     deleteMCPHint: '删除后，此 MCP 服务器配置将无法恢复。',
+    builtin: '内置',
+    builtinConnectorDescription:
+      '由 Chatbot 管理的本地连接器，仅支持 Windows 开发机，名称、URL 和模式均已锁定。',
+    builtinLockedHint:
+      '这是 Chatbot 管理的内置连接器。你可以启用或停用它，但不能修改名称、URL、模式，也不能删除。',
+    detectClient: '检测客户端',
+    refreshDatabase: '刷新数据库',
+    oneClickSetup: '一键配置',
+    reconfigure: '重新配置',
+    connectorStatusTitle: '连接器状态',
+    localConnector: '本地连接器状态与 MCP 运行时状态',
+    unsupportedPlatform: '当前平台不支持',
+    unsupportedPlatformHint: '该内置连接器当前仅支持 Windows 开发机。',
+    notConfigured: '未配置',
+    clientNotRunning: '客户端未运行',
+    dataPathNotFound: '未找到数据目录',
+    permissionRequired: '需要管理员授权',
+    portInUse: '端口已被占用',
+    decryptFailed: '解密失败',
+    startFailed: 'Worker 启动失败',
+    runtimeError: '运行时错误',
+    workerStopped: 'Worker 已停止',
+    stageDetecting: '检测中',
+    stageExtractingKey: '提取密钥',
+    stageDecrypting: '解密中',
+    stageStartingMcp: '启动 MCP',
+    stageTestingMcp: '测试 MCP',
+    stageEnablingMcp: '启用 MCP',
+    jobPending: '待处理',
+    jobRunning: '执行中',
+    jobSucceeded: '已成功',
+    jobFailed: '已失败',
+    jobCancelled: '已取消',
+    jobStatus: '任务状态',
+    jobStage: '当前阶段',
+    jobProgress: '进度：{{progress}}%',
+    worker: 'Worker',
+    workerControl: 'Worker 控制',
+    startWorker: '启动 Worker',
+    stopWorker: '停止 Worker',
+    viewLogs: '查看日志',
+    hideLogs: '隐藏日志',
+    localData: '本地数据',
+    detectedDatabase: '检测到的数据库',
+    keyFile: '密钥文件',
+    decryptedDirectory: '解密目录',
+    logs: '日志',
+    noLogs: '暂无日志。',
   },
   pipelines: {
     title: '流水线',
@@ -1062,15 +1245,15 @@ const zhHans = {
     },
   },
   register: {
-    title: '初始化 LangBot 👋',
-    description: '这是您首次启动 LangBot',
+    title: '初始化 Chatbot 👋',
+    description: '这是您首次启动 Chatbot',
     adminAccountNote: '您在此处初始化使用的账号将作为管理员账号',
     register: '注册',
     initWithSpace: '通过 Space 初始化',
     spaceRecommended: '推荐：使用官方提供的稳定模型 API 和云服务',
     spaceInfoTip1: 'Space 提供统一的账户鉴权服务，不会上传您的任何敏感信息。',
     spaceInfoTip2:
-      '使用 Space 账户登录可使用 LangBot Models 等云服务，您将会获得一定的免费模型调用额度帮助您快速起步。',
+      '使用 Space 账户登录可使用 Chatbot Models 等云服务，您将会获得一定的免费模型调用额度帮助您快速起步。',
     spaceInfoTip3:
       '登录方式不会影响其他功能，您在任何情况下都可以配置使用其他来源的模型。',
     registerLocal: '注册本地账号',
@@ -1093,7 +1276,6 @@ const zhHans = {
     resetting: '重置中...',
     resetSuccess: '密码重置成功，请登录',
     resetFailed: '密码重置失败，请检查邮箱和恢复密钥是否正确',
-    backToLogin: '返回登录',
   },
   embedding: {
     description: '管理嵌入模型，用于向量化文本',
@@ -1116,7 +1298,7 @@ const zhHans = {
     noReleaseNotes: '暂无更新日志',
   },
   account: {
-    settings: '账户设置',
+    settings: '账号设置',
     settingsDescription: '管理你的密码和关联账户',
     setPassword: '设置密码',
     passwordSetSuccess: '密码设置成功',
@@ -1137,7 +1319,7 @@ const zhHans = {
       '绑定后，您的登录邮箱将从 {{localEmail}} 更改为 Space 账户的邮箱。',
     bindSpaceSuccess: 'Space 账户绑定成功',
     bindSpaceFailed: '绑定 Space 账户失败',
-    bindSpaceInvalidState: '无效的绑定请求，请从账户设置重新发起',
+    bindSpaceInvalidState: '无效的绑定请求，请从账号设置重新发起',
     setPasswordHint: '设置密码后可使用邮箱密码登录',
     spaceEmailMismatch: 'Space登录账号邮箱与本实例账号邮箱不匹配',
   },
@@ -1509,6 +1691,9 @@ const zhHans = {
     createError: '创建资源失败',
     spaceAuthError: '无法发起 Space 授权',
     skipSaveError: '保存跳过状态失败，请重试。',
+    initializing: '服务正在初始化，请稍候。',
+    platformLoadError: '平台列表加载失败',
+    retry: '重试',
     completeSaveError: '保存完成状态失败，请重试。',
     step: {
       platform: '平台接入',
@@ -1534,7 +1719,7 @@ const zhHans = {
       description: '选择驱动机器人智能的 AI 引擎。',
     },
     spaceBanner: {
-      message: '接入 LangBot Space，获取免费试用模型额度，零配置极速开箱！',
+      message: '接入 Chatbot Space，获取免费试用模型额度，零配置极速开箱！',
       action: '前往授权登录',
     },
     config: {
@@ -1589,7 +1774,6 @@ const zhHans = {
     backendUnavailableStatus: '后端服务不可用',
     goBack: '返回上页',
     backToHome: '返回首页',
-    backToLogin: '返回登录',
     retrying: '正在重试',
     retryFailed: '仍然无法连接后端，请确认服务已启动后再重试。',
   },
@@ -1634,10 +1818,1225 @@ const zhHans = {
     retry: '重试',
     robotNameNote: '机器人名称无法自动获取，请手动填写。',
   },
+  databaseMode: {
+    title: '数据库模式',
+    description: '按会话查看并处理数据库消息',
+    workspaceDescription: '用于处理企业微信准实时数据库消息的工作台。',
+    conversations: '会话',
+    searchPlaceholder: '搜索会话、客户或消息摘要',
+    latestCustomer: '最近客户',
+    totalMessages: '总消息数',
+    noCustomer: '暂无客户',
+    noMessages: '暂无消息',
+    loading: '正在加载数据库模式...',
+    loadFailed: '数据库模式加载失败',
+    operationFailed: '操作失败',
+    emptyTitle: '暂无新消息',
+    emptyDescription: '当前视图下没有待处理的数据库消息。',
+    selectConversationTitle: '选择一个会话',
+    selectConversationDescription: '从左侧选择会话以查看和处理消息。',
+    notConfiguredTitle: '企业微信 Connector 未配置',
+    notConfiguredDescription:
+      '请先完成企业微信本地 Connector 配置，再使用数据库模式。',
+    goToConnector: '前往企业微信 Connector',
+    monitorStoppedTitle: 'Monitor 未启动',
+    monitorStoppedDescription:
+      '启动企业微信 Monitor 后，数据库消息才会进入工作台。',
+    monitorErrorTitle: 'Monitor 异常',
+    monitorErrorDescription:
+      '企业微信 Monitor 出现异常，请前往 Connector 页面查看详情。',
+    warmupTitle: '首次预热中',
+    warmupDescription: 'Monitor 正在记录最近消息，历史消息不会导入工作台。',
+    warmupCompleted: '已完成',
+    warmupPending: '进行中',
+    startMonitor: '启动监控',
+    stopMonitor: '停止监控',
+    restartMonitor: '重启监控',
+    monitorPanelTitle: '消息监控',
+    monitorRunning: '运行中',
+    monitorStopped: '已停止',
+    monitorErrorShort: '异常',
+    monitorPollSeconds: '轮询间隔（秒）',
+    monitorOutboxPending: '待发送 Outbox',
+    monitorLastScan: '最后扫描时间',
+    monitorLastChange: '最后变化时间',
+    monitorLastEvent: '最后事件时间',
+    monitorErrorLabel: '最近错误',
+    selectAllCurrentConversation: '全选当前会话',
+    batchProcess: '批量标记已处理',
+    batchSkip: '批量跳过',
+    batchDelete: '批量删除',
+    confirmBatchDelete: '确认删除选中的消息？该操作只会从工作台移除记录。',
+    generateDraft: '生成 AI 草稿',
+    regenerateDraft: '重新生成草稿',
+    saveDraft: '保存草稿',
+    markProcessed: '标记已处理',
+    skip: '跳过',
+    delete: '删除',
+    confirmDelete: '确认从工作台删除这条消息？',
+    viewDetails: '查看详情',
+    customerMessage: '客户消息',
+    currentDraft: '当前草稿',
+    aiSuggestedReply: 'AI 建议回复',
+    noDraftYet: '暂无草稿',
+    messageDetails: '消息详情',
+    sender: '发送者',
+    receivedAt: '接收时间',
+    messageType: '消息类型',
+    statusLabel: '处理状态',
+    failedShort: '失败',
+    statusPending: '待处理',
+    statusDraftReady: '草稿已生成',
+    statusFailed: '失败',
+    statusProcessed: '已处理',
+    statusSkipped: '已跳过',
+    filter: {
+      all: '全部',
+      pending: '待处理',
+      draft_ready: '草稿已生成',
+      failed: '失败',
+      processed: '已处理',
+      skipped: '已跳过',
+    },
+    status: {
+      pending: '待处理',
+      draft_ready: '草稿已生成',
+      failed: '失败',
+      processed: '已处理',
+      processing: '处理中',
+      skipped: '已跳过',
+    },
+  },
+  broadcast: {
+    title: '群发消息',
+    description: '配置群发规则并审核待处理草稿',
+    workspaceTitle: '群发消息工作台',
+    phaseBadge: '规则已保存',
+    workspaceDescription:
+      '普通用户可在这里配置规则、检查导入结果、审核草稿并查看处理记录，无需了解接口或系统内部术语。',
+    scope: {
+      bot: 'Bot',
+      connector: 'Connector',
+      selectBot: '?? bot',
+      selectConnector: '?? connector',
+    },
+    topTabs: {
+      rules: '规则配置',
+      import: '导入匹配',
+      drafts: '审核发送',
+      logs: '执行日志',
+    },
+    rulesTabs: {
+      variables: '变量对应表',
+      templates: '消息模板',
+      groups: '群匹配',
+    },
+    groupRule: {
+      targetConversationSearchPlaceholder: '搜索目标群聊名称',
+      targetConversationSelectPlaceholder: '请选择带稳定 ID 的目标群聊',
+      targetConversationSelectionRequired: '请先从候选列表中选择目标群聊',
+      targetConversationLegacyReselect:
+        '该历史规则缺少稳定目标群聊 ID，请重新选择。',
+    },
+    summary: {
+      templates: '模板数',
+      variableMappings: '变量映射',
+      reviewQueue: '草稿数',
+      logs: '日志数',
+      groupRules: '群规则',
+    },
+    common: {
+      required: '必填',
+      optional: '可选',
+    },
+    status: {
+      pending: '待审核',
+      pasted: '已粘贴，未发送',
+      failed: '处理失败',
+      completed: '已完成',
+    },
+    fields: {
+      sourceField: '表格字段',
+      variableKey: '消息变量',
+      variable: '变量',
+      mergeMode: '多条数据处理方式',
+      order: '显示顺序',
+      enabled: '启用',
+      templateName: '模板名称',
+      templateBody: '模板内容',
+      groupField: '分组字段',
+      sourceValue: '源值',
+      matchType: '匹配类型',
+      matchExpression: '匹配内容',
+      targetConversationName: '目标群聊',
+      priority: '优先级',
+      groupNames: '群名称',
+      required: '必填',
+      customer: '客户名称',
+      conversation: '群聊名称',
+      template: '模板名称',
+      variables: '变量',
+      matchingRule: '匹配规则',
+      status: '状态',
+      operator: '处理人',
+      timestamp: '时间',
+      action: '动作',
+      message: '消息',
+    },
+    placeholders: {
+      templateName: '输入模板名称',
+      groupField: '例如：客户名称',
+      matchSourceValue: '输入一个客户名称试算匹配结果',
+      groupNames: '每行一个群名称',
+    },
+    labels: {
+      enabled: '已启用',
+      disabled: '已禁用',
+      missing: '缺失',
+      configured: '已配置',
+      noSampleValue: '暂无示例值',
+      noValidValue: '无有效值',
+      ready: '就绪',
+      noMatch: '未匹配到规则',
+    },
+    hints: {
+      templateEnabled: '禁用的模板仍会被保存，但不会在后续匹配流程中使用。',
+    },
+    actions: {
+      newTemplate: '新建模板',
+      editTemplate: '编辑模板',
+      saveTemplate: '保存模板',
+      createTemplate: '创建模板',
+      deleteTemplate: '删除模板',
+      confirmDeleteTemplate: '确认删除模板',
+      addMappingRule: '添加映射规则',
+      saveVariableProfile: '保存变量配置',
+      newGroupRule: '新建群匹配规则',
+      editGroupRule: '编辑群匹配规则',
+      saveGroupRule: '保存群匹配规则',
+      createGroupRule: '创建群匹配规则',
+      deleteGroupRule: '删除群匹配规则',
+      matchPreview: '匹配预览',
+      runMatchPreview: '执行匹配预览',
+      addGroupNames: '添加群名称',
+      refreshGroupNames: '刷新群列表',
+    },
+    rules: {
+      variablePool: '变量池',
+      variablePoolDescription:
+        '这里展示当前可用的消息变量，只有有效规则才会出现在这里。',
+      variablePoolEmpty: '当前还没有可用变量，请先添加有效规则。',
+      preview: '示例消息预览',
+      previewDescription:
+        '根据当前规则自动生成示例消息，方便检查变量替换效果。',
+      templatePreview: '消息预览',
+      templatePreviewHint: '填写模板后，这里会显示替换变量后的示例内容。',
+      availableVariables: '可用变量',
+      availableVariablesDescription: '展示当前模板会用到哪些消息变量。',
+      insertVariableAria: '插入变量 {{name}}',
+      ruleCoverage: '规则覆盖',
+      ruleCoverageDescription: '快速查看当前群聊匹配规则是否覆盖主要客户。',
+      enabledRules: '已启用规则',
+      groupBuckets: '群聊名单',
+      groupBucketsDescription: '集中维护可选群聊，方便规则配置时直接复用。',
+      variableMapping: {
+        title: '变量对应表',
+        description:
+          '先把表格字段和消息变量对应起来，系统才能正确生成群发内容。',
+      },
+      templates: {
+        title: '消息模板',
+        description: '统一维护群发消息模板，随时查看正文与变量是否完整。',
+        editorDescription: '编辑模板时只展示业务内容，技术细节默认收起。',
+      },
+      groupMatching: {
+        title: '群匹配',
+        description: '配置客户名称如何对应到目标群聊，方便导入后自动匹配。',
+        editorDescription: '设置客户和群聊之间的匹配规则，并可先做试算检查。',
+      },
+    },
+    import: {
+      title: '导入匹配',
+      description:
+        '查看导入后的客户、模板和群聊匹配结果，确认哪些记录还需要处理。',
+      uploadButton: '上传 CSV / XLSX',
+      batchSummary: '共 {{totalRows}} 行 / 已匹配 {{matchedRows}}',
+      emptyBatches: '暂无导入批次',
+      detailTitle: '导入详情',
+      detailHint: '上传成功后立即展示真实匹配结果，无需先点击重新匹配。',
+      worksheetName: '工作表：{{name}}',
+      rematchButton: '重新匹配',
+      rematchConfirmTitle: '????',
+      rematchConfirmDescription:
+        '\u5c06\u6309\u6700\u65b0\u7fa4\u5339\u914d\u89c4\u5219\u91cd\u65b0\u8ba1\u7b97\u5f53\u524d\u5bfc\u5165\u6279\u6b21\u7684\u5339\u914d\u7ed3\u679c\u3002',
+      deleteBatchButton: '删除批次',
+      deleteBatchConfirmTitle: '????',
+      deleteBatchConfirmDescription:
+        '?? {{fileName}}????? {{totalRows}} ??{{groupCount}} ???? {{draftCount}} ???????????',
+      templatePlaceholder: '选择消息模板',
+      bulkTemplatePlaceholder: '为选中分组设置模板',
+      applyTemplateButton: '应用到已选',
+      applyTemplateToUnassignedButton: '仅应用到未设置',
+      clearTemplatesButton: '清除已选模板',
+      clearRowTemplateButton: '清除模板',
+      generateDraftsButton: '生成选中草稿',
+      generateDraftsConfirmTitle: '????',
+      generateDraftsConfirmDescription:
+        '?? {{selectedCount}} ?????? {{templatedCount}} ?????{{blockedCount}} ??????',
+      draftsStale: '草稿已过期，请重新生成',
+      emptyRows: '暂无导入明细',
+      selectedGroupCount: '已选择 {{count}} 个分组',
+      clearSelection: '清空选择',
+      templateDisabledLabel: '已停用',
+      selectGroupAria: '选择分组 {{name}}',
+      rawRowCountInline: '{{count}} 条原始行',
+      tableHeaders: {
+        selection: '选择',
+        sourceRowNumber: '行号',
+        groupValue: '客户/分组',
+        orderCount: '订单数',
+        messageTemplate: '消息模板',
+        matchedConversationName: '匹配群聊',
+        matchStatus: '结果',
+        attachments: '附件',
+        errorMessage: '原因',
+        actions: '操作',
+        rowPreview: '原始数据预览',
+      },
+      selectionDisabled: {
+        unmatched: '该分组尚未匹配到群聊。',
+        invalid: '该分组无效，不能生成草稿。',
+        conflict: '该分组对应多个目标群聊。',
+        missingConversation: '匹配群聊为空。',
+      },
+      applyTemplateDisabled: {
+        noBatch: '请先选择导入批次。',
+        noSelection: '请先选择至少一个可操作分组。',
+        noTemplate: '请先选择要应用的消息模板。',
+        noProcessableSelection: '所选分组已使用当前模板。',
+        noUnassignedSelection: '所选分组中没有未设置模板的项。',
+      },
+      clearTemplateDisabled: {
+        noBatch: '请先选择导入批次。',
+        noSelection: '请先选择至少一个分组。',
+        noAssignedSelection: '所选分组中没有已设置模板的项。',
+      },
+      generateDisabled: {
+        noBatch: '请先选择导入批次。',
+        noSelection: '请先选择至少一个可操作分组。',
+        matchUnavailable:
+          '{{count}} 个已选分组尚未匹配到可用群聊，暂时不能生成草稿。',
+        templateMissing: '{{count}} 个已选分组尚未选择消息模板。',
+        templateDisabled: '{{count}} 个已选分组使用了已停用模板。',
+        duplicateConversation: '{{count}} 个已选分组存在重复目标群聊。',
+      },
+      generateWarnings: {
+        duplicateConversation:
+          '选中分组中存在相同目标群聊。草稿仍可生成，批量写入时需拆分处理。',
+      },
+      statusLabels: {
+        matched: '已匹配',
+        unmatched: '未匹配',
+        invalid: '无效',
+        conflict: '冲突',
+      },
+      stats: {
+        totalRows: '总行数',
+        totalGroups: '分组数',
+        matchedGroups: '已匹配分组',
+        unmatchedGroups: '未匹配分组',
+        invalidGroups: '无效/冲突分组',
+      },
+      expandGroup: '展开',
+      collapseGroup: '收起',
+      groupAttachments: '客户分组附件',
+      uploadAttachment: '上传附件',
+      deleteAttachment: '删除',
+      clearTemplatesConfirmTitle: '确认清除分组模板',
+      clearTemplatesConfirmDescription:
+        '将清除 {{count}} 个已选分组的模板，未设置模板的分组会自动跳过。',
+      clearTemplatesConfirmButton: '确认清除',
+      emptyAttachments: '暂无附件',
+      groupRowsTitle: '原始行明细',
+      groupRowsTotal: '共 {{total}} 行',
+      inlineMatch: {
+        selectConversationButton: '选择目标群聊',
+        dialogTitle: '选择目标群聊',
+        dialogDescription:
+          '为“{{groupValue}}”选择目标群聊，并保存精确匹配规则后重新匹配当前批次。',
+        dialogDescriptionFallback: '选择目标群聊并保存精确匹配规则。',
+        currentGroupLabel: '当前客户/分组',
+        searchLabel: '搜索目标群聊',
+        searchPlaceholder: '输入群聊名称',
+        missingStableId: '缺少稳定 external_conversation_id，暂不可选择',
+        emptySearch: '没有符合条件的群聊。',
+        selectionRequired: '请先选择一个可用的目标群聊。',
+        conflictRuleDetected:
+          '当前分组存在多条可能冲突的精确规则，请前往“群匹配”页处理后再保存。',
+        saveButton: '保存并重新匹配',
+      },
+      pagination: {
+        totalItems: '共 {{total}} 条',
+        previous: '上一页',
+        next: '下一页',
+        pageStatus: '第 {{page}} / {{totalPages}} 页',
+      },
+      summary: {
+        rows: '预览行数',
+        ready: '可用',
+        pending: '待确认',
+        attention: '需处理',
+      },
+    },
+
+    drafts: {
+      title: '审核发送',
+      description: '左侧查看待处理草稿，右侧检查内容并按需修改。',
+      batchFilter: '导入批次',
+      allBatches: '全部批次',
+      search: '搜索草稿',
+      searchPlaceholder: '搜索客户、群聊或模板',
+      statusFilter: '状态筛选',
+      allStatuses: '全部状态',
+      batchToolbar: '批量操作',
+      selectAllEligible: '全选当前可执行草稿',
+      batchRunning: '正在批量写入',
+      batchCompleted: '批量写入完成',
+      selectedCount: '已选 {{count}} 条草稿',
+      batchConfirm: '批量确认',
+      createExecutionBatch: '创建执行批次',
+      batchWriteSelected: '仅粘贴至发送框',
+      batchWriteConfirmTitle: '??????',
+      batchWriteConfirmDescription:
+        '?? {{draftCount}} ??{{conversationCount}} ???????? {{attachmentCount}} ??????{{duplicateTargetCount}}????????????',
+      mockPasteSelected: '批量写入已选草稿',
+      editDraft: '编辑草稿',
+      saveDraft: '保存草稿',
+      cancelEdit: '取消编辑',
+      confirmDraft: '确认草稿',
+      revokeConfirm: '撤回确认',
+      markSent: '标记已发送',
+      restorePending: '恢复为待发送',
+      pasteToInput: '仅粘贴至发送框',
+      rewriteToInput: '仅粘贴至发送框',
+      pasteLoading: '写入中...',
+      messageBody: '草稿正文',
+      templateLabel: '模板名称',
+      conversationLabel: '目标群聊',
+      messagePreviewLabel: '草稿预览',
+      statusPending: '待发送',
+      statusSent: '已发送',
+      statusPendingReview: '待审核',
+      statusReady: '已确认',
+      statusInvalid: '无效',
+      selectDraft: '选择草稿 {{id}}',
+      staleBadge: '草稿已过期',
+      attachmentsStaleBadge: '附件已变更',
+      staleWarning: '草稿已过期，请重新生成',
+      attachmentsStaleWarning: '客户分组附件已变更，请重新检查后再写入',
+      attachmentsTitle: '附件',
+      uploadAttachment: '上传附件',
+      deleteAttachment: '删除',
+      emptyAttachments: '暂无附件',
+      pasteUnavailable: '当前执行器不支持写入输入框。',
+      pasteMissingConversation: '目标群聊不能为空。',
+      pasteHint:
+        '系统将自动搜索并进入目标群聊，然后把正文和附件粘贴到输入框。系统不会自动发送，请人工确认后发送。',
+
+      pasteDialogTitle: '确认写入输入框',
+      pasteDialogDescription:
+        '请再次确认目标群聊和草稿内容。本操作仅写入输入框，不会自动发送。',
+      realSend: '直接发送',
+      sendLoading: '发送中...',
+      sendDialogTitle: '确认真实发送',
+      sendDialogDescription:
+        '请再次核对以下信息。最终确认后，系统会按 Enter 真实发送消息。',
+      sendDialogCustomer: '客户：{{customer}}',
+      sendDialogConversation: '目标群聊：{{conversation}}',
+      sendDialogAttachmentCount: '附件数：{{count}}',
+      sendWarning: '本操作会按 Enter 真实发送，发送后无法自动撤回。',
+      sendCountdown: '请等待 {{count}} 秒后再进行最终确认。',
+      sendAcknowledge: '我已确认目标群聊和正文无误，并理解这将真实发送消息。',
+      cancelAction: '取消',
+      confirmPasteAction: '确认写入',
+      confirmSendAction: '确认发送',
+      restorePendingRiskTitle: '确认恢复为待发送',
+      restorePendingRiskDescription:
+        '上一次发送可能已经成功。恢复后再次真实发送可能造成重复消息。',
+      editor: '草稿编辑器',
+      emptyDetail: '请先从左侧队列选择一条草稿查看详情。',
+    },
+    logs: {
+      title: '执行日志',
+      description: '查看每条草稿的处理记录，方便回溯问题和确认状态。',
+      executorCapabilitiesTitle: '执行器能力',
+      executorHealthTitle: '执行器健康状态',
+      capabilityPaste: '支持写入',
+      capabilityPasteVerification: '内容验证',
+      capabilityConversationLocator: '会话定位',
+      conversationLocatorKeyboardSearch: '键盘搜索',
+      conversationLocatorExternalId: '外部会话 ID',
+      conversationLocatorUnknown: '未知',
+      capabilityBooleanYes: '是',
+      capabilityBooleanNo: '否',
+      capabilitySend: '支持真实发送',
+      capabilityCancel: '支持取消',
+      capabilityStatusQuery: '支持状态查询',
+      manualConversationOpenRequired: '会话定位：键盘搜索',
+      pasteVerificationMethod: '验证方式',
+      pasteVerificationMethodWindowsUia: 'Windows UI Automation',
+      pasteVerificationMethodManual: '人工确认',
+      pasteVerificationMethodDisabled: '未启用',
+      pasteVerificationMethodUnknown: '未知',
+      pasteVerificationStatus: '验证状态',
+      pasteVerificationAvailable: '可用',
+      pasteVerificationUnavailable: '未启用',
+      pasteVerificationUnavailableHint: '内容验证：未启用',
+      executorVersion: '执行器版本',
+      runtimeMinVersion: '最低 Runtime 版本',
+      runtimeVersion: 'Runtime 版本',
+      protocolVersion: '协议版本',
+      latestBatchTitle: '最新批次 #{{id}}',
+      batchSummary:
+        '状态 {{status}} · 模式 {{mode}} · 待执行 {{pending}} · 运行中 {{running}} · 成功 {{succeeded}} · 失败 {{failed}} · 已取消 {{cancelled}} · 已中断 {{interrupted}}',
+      startBatch: '启动',
+      pauseBatch: '暂停',
+      resumeBatch: '继续',
+      cancelBatch: '取消剩余',
+      taskId: '任务',
+      attemptCount: '尝试次数',
+      taskActions: '操作',
+      retryTask: '重试',
+      booleanYes: '是',
+      booleanNo: '否',
+      statusDraftWritten: '已粘贴，未发送',
+      statusPasteVerified: '已粘贴，未发送',
+      statusWarning: '已粘贴，未发送',
+      statusUnknown: '待人工确认',
+      statusSendTriggered: '已按一次 Enter 发送',
+      retryFailedTasks: '???',
+      retryFailedTasksConfirmTitle: '???',
+      retryFailedTasksConfirmDescription:
+        '\u5c06\u91cd\u65b0\u63d0\u4ea4 {{count}} \u4e2a\u5df2\u786e\u8ba4\u7684\u5931\u8d25\u4efb\u52a1\u3002',
+      batchStatuses: {
+        created: '???',
+        queued: '??',
+        running: '???',
+        paused: '???',
+        completed: '???',
+        partially_failed: '??',
+        failed: '??',
+        cancelled: '???',
+        interrupted: '??',
+        unknown: '??',
+      },
+      taskStatuses: {
+        pending: '??',
+        queued: '???',
+        running: '??',
+        succeeded: '??',
+        succeeded_with_warning: '??????',
+        blocked: '???',
+        failed: '??',
+        cancelled: '???',
+        timed_out: '??',
+        interrupted: '??',
+        unknown: '??',
+      },
+      fields: {
+        attachmentCount: '附件数量',
+        attachmentNames: '附件名称',
+        textContentVerified: '文本内容已验证',
+        attachmentsPrepared: '附件已准备',
+        attachmentPasteRequested: '已请求粘贴附件',
+        attachmentsVerified: '附件已验证',
+        warning: '警告',
+        errorCode: '错误码',
+        stage: '阶段',
+      },
+      warningCodes: {
+        ATTACHMENTS_REQUIRE_MANUAL_CONFIRMATION: '已写入，请人工确认附件后发送',
+        PASTE_RESULT_NOT_VERIFIED: '已写入，系统未做内容验证',
+        ATTACHMENT_PATH_OUTSIDE_ROOT: '附件文件不在系统允许的存储目录中',
+      },
+
+      errorSuggestions: {
+        TARGET_WINDOW_NOT_FOUND: '???????',
+        TARGET_WINDOW_AMBIGUOUS: '?????????',
+        WINDOW_ACTIVATION_FAILED: '?????????????',
+        SEARCH_ACTIVATION_FAILED: '?????????????',
+        TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE: '?????????????',
+        CONVERSATION_NAME_PASTE_FAILED: '????????',
+        SEARCH_RESULT_CONFIRM_FAILED: '????????',
+        ATTACHMENT_FILE_MISSING: '???????',
+        ATTACHMENT_HASH_MISMATCH: '???????',
+        ATTACHMENT_PATH_OUTSIDE_ROOT: '???????',
+        FILE_CLIPBOARD_HELPER_FAILED: '?? Runtime ????',
+        FILE_CLIPBOARD_HELPER_TIMEOUT: '?? Runtime ????',
+        CLIPBOARD_RESTORE_MISMATCH: '?????????????',
+        PASTE_RESULT_NOT_VERIFIED: '?????????????',
+        __default: '??????????',
+      },
+      errorCodes: {
+        FILE_CLIPBOARD_HELPER_SPAWN_FAILED: '??????',
+        FILE_CLIPBOARD_HELPER_TIMEOUT: '??????',
+        FILE_CLIPBOARD_HELPER_FAILED: '??????',
+        FILE_CLIPBOARD_OUTPUT_INVALID: '?????????',
+        FILE_CLIPBOARD_COUNT_MISMATCH: '?????????',
+        FILE_CLIPBOARD_PATH_MISMATCH: '????????',
+        TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE: '?????????',
+        ATTACHMENT_PASTE_FAILED: '?????',
+      },
+      missingSendTask: '未找到可发送的执行任务',
+      empty: '暂无执行日志。',
+    },
+    contract: {
+      toggle: '查看技术详情',
+      title: '系统执行详情',
+      request: '本次草稿数据',
+      runtimePayload: '系统内部参数',
+    },
+    safety: {
+      pasteOnly: '仅写入输入框',
+      sendKeyCount: '不会自动发送消息',
+      messageSent: '需要人工确认后再继续',
+      noRuntimeCall: '这里只显示说明，不会触发实际发送。',
+    },
+    toasts: {
+      draftSaved: '草稿已保存',
+      batchCompleted: '批量写入已完成',
+      noDraftSelected: '请先选择至少一条草稿',
+      batchWritePendingOnly: '批量写入仅允许选择状态一致且可写入的待发送草稿',
+      batchMarkSentPendingOnly: '标记已发送仅允许选择待发送草稿',
+      batchRestorePendingSentOnly: '恢复为待发送仅允许选择已发送草稿',
+      executionBatchCreated: '执行批次已创建',
+      executionBatchStarted: '执行批次已启动',
+      executionBatchPaused: '执行批次已暂停',
+      executionBatchResumed: '执行批次已继续',
+      executionBatchCancelled: '已取消剩余任务',
+      executionTaskRetried: '执行任务已重新排队',
+      executionFailedTasksRetried:
+        '??? {{successCount}} ???/?????{{failedCount}} ????',
+      executionFailedTasksRetryNoop: '????????',
+      pasteSubmitted: '写入任务已提交',
+
+      sendSubmitted: '真实发送请求已提交',
+      draftsConfirmed: '草稿已确认',
+      draftConfirmationRevoked: '已撤回草稿确认',
+      draftsMarkedSent: '已标记为已发送',
+      draftsRestoredPending: '已恢复为待发送',
+      importUploaded: '已导入 {{fileName}}',
+      importDeleted: '导入批次已删除',
+      importRematched: '已按当前规则重新匹配',
+      draftsGenerated:
+        '已处理 {{count}} 个分组：新建 {{createdCount}} 份，覆盖 {{updatedCount}} 份草稿',
+      groupTemplateAssignmentsApplied:
+        '已为 {{count}} 个分组设置模板，其中替换 {{replacedCount}} 个已有模板。',
+      groupTemplateAssignmentsAppliedToUnassigned:
+        '已为 {{count}} 个未设置模板的分组补充模板。',
+      groupTemplateAssignmentsCleared: '已清除 {{count}} 个分组的模板。',
+      importInlineMatchSaved: '已保存精确匹配规则并重新匹配当前批次。',
+      groupTemplateAssignmentsSaved: '已为选中分组保存消息模板',
+      attachmentUploaded: '附件已上传',
+      attachmentDeleted: '附件已删除',
+      rulesSaved: '变量映射规则已保存',
+      templateSaved: '模板已保存',
+      templateDeleted: '模板已删除',
+      groupRuleSaved: '群匹配规则已保存',
+      groupRuleDeleted: '群匹配规则已删除',
+      groupNamesSaved: '群名称已保存',
+      groupNamesSynced:
+        '群列表已刷新：扫描 {{scanned}}，新增 {{inserted}}，更新 {{updated}}，未变更 {{unchanged}}',
+      groupNameDeleted: '群名称已删除',
+    },
+  },
   pluginPages: {
     selectFromSidebar: '从侧边栏选择一个插件页面',
     invalidPage: '无效的插件页面',
   },
 };
+
+const zhHansTemplateLocale = zhHans.broadcast.rules.templates as Record<
+  string,
+  string
+>;
+zhHansTemplateLocale.deleteConfirmTitle = '??';
+zhHansTemplateLocale.deleteConfirmDescription =
+  '\u5220\u9664\u6a21\u677f\u300c{{name}}\u300d\u540e\u5c06\u65e0\u6cd5\u6062\u590d\uff0c\u8bf7\u786e\u8ba4\u3002';
+zhHans.broadcast.import.rematchConfirmTitle = '????';
+zhHans.broadcast.import.rematchConfirmDescription =
+  '?????????????? ready ?????????????';
+zhHans.broadcast.import.deleteBatchConfirmTitle = '????';
+zhHans.broadcast.import.deleteBatchConfirmDescription =
+  '?? {{fileName}}????? {{totalRows}} ??{{groupCount}} ???? {{draftCount}} ???????????';
+zhHans.broadcast.import.generateDraftsConfirmTitle = '????';
+zhHans.broadcast.import.generateDraftsConfirmDescription =
+  '?? {{selectedCount}} ?????? {{templatedCount}} ?????{{blockedCount}} ??????';
+zhHans.broadcast.drafts.batchWriteConfirmTitle = '??????';
+zhHans.broadcast.drafts.batchWriteConfirmDescription =
+  '?? {{draftCount}} ??{{conversationCount}} ???????? {{attachmentCount}} ??????{{duplicateTargetCount}}????????????';
+zhHans.broadcast.logs.retryFailedTasks = '???';
+zhHans.broadcast.logs.retryFailedTasksConfirmTitle = '???';
+zhHans.broadcast.logs.retryFailedTasksConfirmDescription =
+  '??????? {{count}} ????????????';
+zhHans.broadcast.logs.batchStatuses = {
+  created: '???',
+  queued: '??',
+  running: '???',
+  paused: '???',
+  completed: '???',
+  partially_failed: '??',
+  failed: '??',
+  cancelled: '???',
+  interrupted: '??',
+  unknown: '??',
+};
+zhHans.broadcast.logs.taskStatuses = {
+  pending: '??',
+  queued: '???',
+  running: '??',
+  succeeded: '??',
+  succeeded_with_warning: '??????',
+  blocked: '???',
+  failed: '??',
+  cancelled: '???',
+  timed_out: '??',
+  interrupted: '??',
+  unknown: '??',
+};
+const zhHansLogFieldLocaleLegacy = zhHans.broadcast.logs.fields as Record<
+  string,
+  string
+>;
+zhHansLogFieldLocaleLegacy.batchStatus = '??';
+zhHansLogFieldLocaleLegacy.taskStatus = '??';
+zhHansLogFieldLocaleLegacy.attemptStatus = '??';
+zhHansLogFieldLocaleLegacy.runtimeState = '???';
+zhHansLogFieldLocaleLegacy.recoveryAdvice = '??';
+zhHans.broadcast.logs.errorSuggestions = {
+  TARGET_WINDOW_NOT_FOUND: '???????',
+  TARGET_WINDOW_AMBIGUOUS: '?????????',
+  WINDOW_ACTIVATION_FAILED: '?????????????',
+  SEARCH_ACTIVATION_FAILED: '?????????????',
+  TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE: '?????????????',
+  CONVERSATION_NAME_PASTE_FAILED: '????????',
+  SEARCH_RESULT_CONFIRM_FAILED: '????????',
+  ATTACHMENT_FILE_MISSING: '???????',
+  ATTACHMENT_HASH_MISMATCH: '???????',
+  ATTACHMENT_PATH_OUTSIDE_ROOT: '???????',
+  FILE_CLIPBOARD_HELPER_FAILED: '?? Runtime ????',
+  FILE_CLIPBOARD_HELPER_TIMEOUT: '?? Runtime ????',
+  CLIPBOARD_RESTORE_MISMATCH: '?????????????',
+  PASTE_RESULT_NOT_VERIFIED: '?????????????',
+  __default: '??????????',
+};
+zhHans.broadcast.toasts.executionFailedTasksRetried =
+  '??? {{successCount}} ???/?????{{failedCount}} ????';
+zhHans.broadcast.toasts.executionFailedTasksRetryNoop = '????????';
+
+const zhHansLogStatusLocale = zhHans.broadcast.logs.taskStatuses as Record<
+  string,
+  string
+>;
+zhHansLogStatusLocale.pending = '等待执行';
+zhHansLogStatusLocale.queued = '已排队';
+zhHansLogStatusLocale.running = '正在写入';
+zhHansLogStatusLocale.succeeded = '写入成功';
+zhHansLogStatusLocale.succeeded_with_warning =
+  zhHans.broadcast.logs.statusWarning;
+zhHansLogStatusLocale.blocked = '未执行';
+zhHansLogStatusLocale.failed = '写入失败';
+zhHansLogStatusLocale.cancelled = '已取消';
+zhHansLogStatusLocale.timed_out = '执行超时';
+zhHansLogStatusLocale.interrupted = '执行中断';
+zhHansLogStatusLocale.unknown = '未知状态';
+const zhHansBatchStatusLocale = zhHans.broadcast.logs.batchStatuses as Record<
+  string,
+  string
+>;
+zhHansBatchStatusLocale.created = '待启动';
+zhHansBatchStatusLocale.queued = '等待执行';
+zhHansBatchStatusLocale.running = '执行中';
+zhHansBatchStatusLocale.paused = '已暂停';
+zhHansBatchStatusLocale.completed = '已完成';
+zhHansBatchStatusLocale.partially_failed = '部分失败';
+zhHansBatchStatusLocale.failed = '执行失败';
+zhHansBatchStatusLocale.cancelled = '已取消';
+zhHansBatchStatusLocale.interrupted = '执行中断';
+zhHansBatchStatusLocale.unknown = '未知状态';
+const zhHansLogFieldLocale = zhHans.broadcast.logs.fields as Record<
+  string,
+  string
+>;
+zhHansLogFieldLocale.batchStatus = '批次状态';
+zhHansLogFieldLocale.taskStatus = '任务状态';
+zhHansLogFieldLocale.attemptStatus = '尝试状态';
+zhHansLogFieldLocale.runtimeState = '运行时状态';
+zhHansLogFieldLocale.recoveryAdvice = '处理建议';
+zhHans.broadcast.logs.retryFailedTasks = '重试失败项';
+zhHans.broadcast.logs.retryFailedTasksConfirmTitle = '重试失败项';
+zhHans.broadcast.logs.retryFailedTasksConfirmDescription =
+  '将重新提交最新批次中 {{count}} 个已确认发生在 Enter 之前的失败任务；发送结果待确认的任务不会自动重试。';
+zhHans.broadcast.drafts.batchWriteConfirmTitle = '将选中草稿写入输入框';
+zhHans.broadcast.drafts.batchWriteConfirmDescription =
+  '本次将写入 {{draftCount}} 条草稿，涉及 {{conversationCount}} 个目标群聊，包含 {{attachmentCount}} 个附件；重复目标群聊 {{duplicateTargetCount}} 个。执行期间请勿切换窗口，也不要操作鼠标和键盘。';
+zhHans.broadcast.import.rematchConfirmTitle = '重新匹配当前批次';
+zhHans.broadcast.import.rematchConfirmDescription =
+  '这会按最新规则重新计算当前批次的匹配结果。如果后端因 ready 草稿阻止重新匹配，页面仍会展示后端返回的真实原因。';
+zhHans.broadcast.import.deleteBatchConfirmTitle = '删除导入批次';
+zhHans.broadcast.import.deleteBatchConfirmDescription =
+  '删除 {{fileName}}？当前批次包含 {{totalRows}} 行、{{groupCount}} 个分组，以及 {{draftCount}} 条相关草稿。删除将按后端当前真实语义执行。';
+zhHans.broadcast.import.generateDraftsConfirmTitle = '生成选中草稿';
+zhHans.broadcast.import.generateDraftsConfirmDescription =
+  '将为 {{selectedCount}} 个已选分组生成草稿。其中 {{templatedCount}} 个分组已设置模板，{{blockedCount}} 个分组当前不可生成。';
+const zhHansTemplateLocale2 = zhHans.broadcast.rules.templates as Record<
+  string,
+  string
+>;
+zhHansTemplateLocale2.deleteConfirmTitle = '删除模板';
+zhHansTemplateLocale2.deleteConfirmDescription =
+  '删除“{{name}}”后，现有快照草稿不受影响，但后续新生成草稿将不能再使用该模板。';
+const zhHansErrorSuggestionLocale = zhHans.broadcast.logs
+  .errorSuggestions as Record<string, string>;
+zhHansErrorSuggestionLocale.TARGET_WINDOW_NOT_FOUND =
+  '打开企业微信主窗口后重试。';
+zhHansErrorSuggestionLocale.TARGET_WINDOW_AMBIGUOUS =
+  '关闭多余的企业微信窗口后重试。';
+zhHansErrorSuggestionLocale.WINDOW_ACTIVATION_FAILED =
+  '执行期间不要切换窗口或操作鼠标键盘，然后重试。';
+zhHansErrorSuggestionLocale.SEARCH_ACTIVATION_FAILED =
+  '执行期间不要切换窗口或操作鼠标键盘，然后重试。';
+zhHansErrorSuggestionLocale.TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE =
+  '执行期间不要切换窗口或操作鼠标键盘，然后重试。';
+zhHansErrorSuggestionLocale.CONVERSATION_NAME_PASTE_FAILED =
+  '检查目标群聊名称和匹配规则。';
+zhHansErrorSuggestionLocale.SEARCH_RESULT_CONFIRM_FAILED =
+  '检查目标群聊名称和匹配规则。';
+zhHansErrorSuggestionLocale.ATTACHMENT_FILE_MISSING = '返回草稿重新上传附件。';
+zhHansErrorSuggestionLocale.ATTACHMENT_HASH_MISMATCH = '返回草稿重新上传附件。';
+zhHansErrorSuggestionLocale.ATTACHMENT_PATH_OUTSIDE_ROOT =
+  '返回草稿重新上传附件。';
+zhHansErrorSuggestionLocale.FILE_CLIPBOARD_HELPER_FAILED =
+  '检查 Runtime 状态后重试。';
+zhHansErrorSuggestionLocale.FILE_CLIPBOARD_HELPER_TIMEOUT =
+  '检查 Runtime 状态后重试。';
+zhHansErrorSuggestionLocale.CLIPBOARD_RESTORE_MISMATCH =
+  '写入可能已完成，但剪贴板恢复失败，请人工检查。';
+zhHansErrorSuggestionLocale.PASTE_RESULT_NOT_VERIFIED =
+  '内容已写入，但系统无法自动核对，请人工检查输入框。';
+zhHansErrorSuggestionLocale.__default =
+  '请结合原始错误码和技术详情排查后再重试。';
+const zhHansErrorCodeLocale = zhHans.broadcast.logs.errorCodes as Record<
+  string,
+  string
+>;
+zhHansErrorCodeLocale.BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN =
+  '发送结果无法确认，请人工检查目标会话。';
+zhHansErrorCodeLocale.BROADCAST_SEND_RESULT_UNKNOWN =
+  '发送结果无法确认，请人工检查目标会话。';
+zhHansErrorCodeLocale.BROADCAST_RETRY_SEND_RESULT_UNKNOWN =
+  '仅允许自动重试已明确确认在 Enter 之前失败的任务。';
+zhHans.broadcast.toasts.executionFailedTasksRetried =
+  '已提交 {{successCount}} 个已确认的发送前失败任务重试，{{failedCount}} 个提交失败。';
+zhHans.broadcast.toasts.executionFailedTasksRetryNoop =
+  '当前没有可自动重试的发送前失败任务。';
+
+const zhHansBroadcastImportLocale = zhHans.broadcast.import as Record<
+  string,
+  unknown
+>;
+zhHansBroadcastImportLocale.groupFieldDetected = '???????{{field}}';
+zhHansBroadcastImportLocale.groupFieldDialog = {
+  title: '????',
+  description: '????????? {{fileName}} ????',
+  configuredField: '?????{{field}}',
+  selectLabel: '???????',
+  headersLabel: '??',
+  confirmButton: '??',
+};
+zhHansBroadcastImportLocale.bulkAssign = {
+  openButton: '????{{count}}?',
+  dialogTitle: '?????',
+  dialogDescription: '? {{count}} ????????? exact ???',
+  applyConversationLabel: '?????',
+  searchPlaceholder: '??????? ID',
+  emptySearch: '?????',
+  applyConversationButton: '????{{count}}?',
+  selectionRequired: '??????',
+  noSelection: '??????',
+  missingAssignments: '?? {{count}} ???????',
+  emptyCandidates: '????????',
+  targetConversationPlaceholder: '????',
+  submitButton: '??????{{count}}?',
+  tableHeaders: {
+    selection: '??',
+    customerName: '??',
+    rawRowCount: '??',
+    targetConversation: '??',
+  },
+};
+const zhHansBroadcastToastLocale = zhHans.broadcast.toasts as Record<
+  string,
+  unknown
+>;
+zhHansBroadcastToastLocale.importBulkAssignCompleted =
+  '?? {{count}} ??? exact ??????';
+
+const zhHansBroadcastLocale = zhHans.broadcast as Record<string, unknown>;
+zhHansBroadcastLocale.groupRule = {
+  customerName: '??',
+  preview: {
+    empty: '??????????',
+    matchedBadge: '???',
+    conflictBadge: '??',
+    noMatchBadge: '???',
+    currentRule: '????',
+    noMatch: '????????',
+    conflict: '????????????',
+    candidateRules: '??',
+  },
+};
+
+function deepMergeLocale(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+) {
+  for (const [key, value] of Object.entries(source)) {
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      target[key] &&
+      typeof target[key] === 'object' &&
+      !Array.isArray(target[key])
+    ) {
+      deepMergeLocale(
+        target[key] as Record<string, unknown>,
+        value as Record<string, unknown>,
+      );
+      continue;
+    }
+    target[key] = value;
+  }
+}
+
+deepMergeLocale(zhHans.broadcast as Record<string, unknown>, {
+  contract: {
+    toggle: '\u67e5\u770b\u6280\u672f\u8be6\u60c5',
+  },
+  scope: {
+    selectBot: '\u9009\u62e9 Bot',
+    selectConnector: '\u9009\u62e9 Connector',
+  },
+  fields: {
+    targetConversationName: '\u76ee\u6807\u7fa4\u804a',
+  },
+  groupRule: {
+    customerName: '\u5ba2\u6237\u540d\u79f0',
+    invalidLegacy:
+      '\u65e0\u6548\u5386\u53f2\u89c4\u5219\uff0c\u4e0d\u53c2\u4e0e\u5339\u914d\u3002',
+    matchTypeOptions: {
+      exact: '\u5b8c\u5168\u5339\u914d',
+      contains: '\u5305\u542b\u5173\u952e\u8bcd',
+      regex: '\u6b63\u5219\u5339\u914d',
+    },
+    targetConversationSearchPlaceholder:
+      '\u641c\u7d22\u76ee\u6807\u7fa4\u804a\u540d\u79f0',
+    targetConversationSelectPlaceholder:
+      '\u8bf7\u9009\u62e9\u5e26\u7a33\u5b9a ID \u7684\u76ee\u6807\u7fa4\u804a',
+    targetConversationSelectionRequired:
+      '\u8bf7\u5148\u4ece\u5019\u9009\u5217\u8868\u4e2d\u9009\u62e9\u76ee\u6807\u7fa4\u804a',
+    targetConversationLegacyReselect:
+      '\u8be5\u5386\u53f2\u89c4\u5219\u7f3a\u5c11\u7a33\u5b9a\u76ee\u6807\u7fa4\u804a ID\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9\u3002',
+    targetConversationMissingStableId:
+      '\u8be5\u7fa4\u804a\u7f3a\u5c11\u7a33\u5b9a externalConversationId\uff0c\u6682\u65f6\u4e0d\u53ef\u9009\u62e9\u3002',
+    preview: {
+      empty:
+        '\u8f93\u5165\u5ba2\u6237\u540d\u79f0\u5e76\u6267\u884c\u5339\u914d\u9884\u89c8\u3002',
+      matchedBadge: '\u5df2\u5339\u914d',
+      conflictBadge: '\u51b2\u7a81',
+      noMatchBadge: '\u672a\u5339\u914d',
+      currentRule: '\u5f53\u524d\u547d\u4e2d\u89c4\u5219',
+      noMatch:
+        '\u5f53\u524d\u5ba2\u6237\u503c\u6ca1\u6709\u547d\u4e2d\u4efb\u4f55\u89c4\u5219\u3002',
+      conflict:
+        '\u5f53\u524d\u5ba2\u6237\u503c\u547d\u4e2d\u4e86\u591a\u6761\u89c4\u5219\uff0c\u8bf7\u68c0\u67e5\u89c4\u5219\u4f18\u5148\u7ea7\u3002',
+      candidateRules: '\u5019\u9009\u89c4\u5219',
+    },
+  },
+  groupRuleCandidates: {
+    title: '\u5f85\u914d\u7f6e\u5ba2\u6237',
+    description:
+      '\u9009\u62e9\u5bfc\u5165\u6279\u6b21\uff0c\u67e5\u770b\u65b0\u589e\u5ba2\u6237\u7edf\u8ba1\uff0c\u5e76\u5728\u7fa4\u5339\u914d\u9875\u5b8c\u6210\u7fa4\u804a\u5206\u914d\u3002',
+    selectBatch: '\u5bfc\u5165\u6279\u6b21',
+    selectBatchPlaceholder: '\u8bf7\u9009\u62e9\u5bfc\u5165\u6279\u6b21',
+    fileName: '\u5f53\u524d\u6279\u6b21\u6587\u4ef6',
+    detectedField: '\u672c\u6279\u6b21\u8bc6\u522b\u5b57\u6bb5',
+    rawRowCount: '\u539f\u59cb\u884c\u6570',
+    uniqueCustomerCount: '\u53bb\u91cd\u5ba2\u6237\u6570',
+    newCount: '\u65b0\u589e\u5ba2\u6237\u6570',
+    configuredCount: '\u5df2\u914d\u7f6e\u6570',
+    needsRepairCount: '\u9700\u4fee\u590d\u6570',
+    conflictCount: '\u51b2\u7a81\u6570',
+    noBatches: '\u6682\u65e0\u5bfc\u5165\u6279\u6b21\u3002',
+    noBatchSelected:
+      '\u8bf7\u5148\u9009\u62e9\u4e00\u4e2a\u5bfc\u5165\u6279\u6b21\u3002',
+    bulkAssignButton:
+      '\u6279\u91cf\u5206\u914d\u7fa4\u804a\uff08{{count}}\uff09',
+  },
+  bulkGroupAssignment: {
+    title: '\u6279\u91cf\u5206\u914d\u7fa4\u804a',
+    description:
+      '\u4e3a {{count}} \u4e2a\u65b0\u589e\u5ba2\u6237\u9009\u62e9\u76ee\u6807\u7fa4\u804a\uff0c\u5e76\u4e00\u6b21\u6027\u521b\u5efa exact \u89c4\u5219\u3002',
+    customerName: '\u5ba2\u6237\u540d\u79f0',
+    rawRowCount: '\u539f\u59cb\u884c\u6570',
+    status: '\u72b6\u6001',
+    targetConversation: '\u76ee\u6807\u7fa4\u804a',
+    searchConversation: '\u641c\u7d22\u76ee\u6807\u7fa4\u804a\u540d\u79f0',
+    searchPlaceholder:
+      '\u641c\u7d22\u76ee\u6807\u7fa4\u804a\u540d\u79f0\u6216\u7a33\u5b9a ID',
+    applyToSelected:
+      '\u7edf\u4e00\u5e94\u7528\u5230\u5df2\u9009\u5ba2\u6237\uff08{{count}}\uff09',
+    clearSelected: '\u6e05\u9664\u5df2\u9009\u7fa4\u804a',
+    selectedCount: '\u5df2\u9009 {{count}} \u4e2a\u5ba2\u6237',
+    submit:
+      '\u521b\u5efa\u89c4\u5219\u5e76\u91cd\u65b0\u5339\u914d\uff08{{count}}\uff09',
+    submitting: '\u6b63\u5728\u63d0\u4ea4\u2026',
+    noCandidates:
+      '\u5f53\u524d\u6ca1\u6709\u53ef\u6279\u91cf\u5206\u914d\u7684\u65b0\u589e\u5ba2\u6237\u3002',
+    missingStableId:
+      '\u7f3a\u5c11\u7a33\u5b9a ID\uff0c\u4e0d\u53ef\u9009\u62e9',
+    confirmTitle: '\u786e\u8ba4\u6279\u91cf\u521b\u5efa exact \u89c4\u5219',
+    confirmDescription:
+      '\u5c06\u4e3a {{count}} \u4e2a\u5ba2\u6237\u521b\u5efa\u89c4\u5219\uff0c\u5e76\u91cd\u65b0\u5339\u914d\u5f53\u524d\u5bfc\u5165\u6279\u6b21\u3002',
+    validationError:
+      '\u8bf7\u5148\u4e3a\u5df2\u9009\u5ba2\u6237\u5206\u914d\u76ee\u6807\u7fa4\u804a\u3002',
+    validationErrorWithCount:
+      '\u8fd8\u6709 {{count}} \u4e2a\u5df2\u9009\u5ba2\u6237\u672a\u5206\u914d\u76ee\u6807\u7fa4\u804a\u3002',
+    targetConversationSelectPlaceholder:
+      '\u8bf7\u9009\u62e9\u76ee\u6807\u7fa4\u804a',
+    statusValues: {
+      new: '\u65b0\u589e',
+      configured: '\u5df2\u914d\u7f6e',
+      needs_repair: '\u9700\u4fee\u590d',
+      conflict: '\u51b2\u7a81',
+      invalid: '\u65e0\u6548',
+    },
+  },
+  import: {
+    goToGroupMatching: '\u524d\u5f80\u7fa4\u5339\u914d',
+    generateWarnings: {
+      duplicateConversation:
+        '\u6240\u9009\u5206\u7ec4\u5b58\u5728\u91cd\u590d\u76ee\u6807\u7fa4\u804a\uff0c\u8bf7\u786e\u8ba4\u540e\u518d\u751f\u6210\u8349\u7a3f\u3002',
+    },
+    rematchConfirmTitle: '\u91cd\u65b0\u5339\u914d\u5f53\u524d\u6279\u6b21',
+    rematchConfirmDescription:
+      '\u5c06\u6309\u6700\u65b0\u7fa4\u5339\u914d\u89c4\u5219\u91cd\u65b0\u8ba1\u7b97\u5f53\u524d\u5bfc\u5165\u6279\u6b21\u7684\u5339\u914d\u7ed3\u679c\u3002',
+    deleteBatchConfirmTitle: '\u5220\u9664\u5bfc\u5165\u6279\u6b21',
+    deleteBatchConfirmDescription:
+      '\u5220\u9664 {{fileName}}\uff1f\u5f53\u524d\u6279\u6b21\u5305\u542b {{totalRows}} \u884c\u3001{{groupCount}} \u4e2a\u5206\u7ec4\uff0c\u4ee5\u53ca {{draftCount}} \u6761\u76f8\u5173\u8349\u7a3f\u3002',
+    generateDraftsConfirmTitle: '\u751f\u6210\u9009\u4e2d\u8349\u7a3f',
+    generateDraftsConfirmDescription:
+      '\u5c06\u4e3a {{selectedCount}} \u4e2a\u9009\u4e2d\u5206\u7ec4\u751f\u6210\u8349\u7a3f\uff0c\u5176\u4e2d {{templatedCount}} \u4e2a\u5df2\u914d\u7f6e\u6a21\u677f\uff0c{{blockedCount}} \u4e2a\u5f53\u524d\u4e0d\u53ef\u751f\u6210\u3002',
+  },
+  drafts: {
+    batchWriteNoSelection:
+      '\u8bf7\u5148\u9009\u62e9\u81f3\u5c11\u4e00\u6761\u8349\u7a3f\u3002',
+    noDraftSelectedReason:
+      '\u8bf7\u5148\u9009\u62e9\u4e00\u6761\u8349\u7a3f\u3002',
+    pasteMissingBody: '\u8349\u7a3f\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a\u3002',
+  },
+  rules: {
+    groupMatching: {
+      editorDescription:
+        '\u5728\u6b64\u7ef4\u62a4 exact / contains / regex \u89c4\u5219\uff0c\u5e76\u9884\u89c8\u5f53\u524d\u5339\u914d\u7ed3\u679c\u3002',
+    },
+    templates: {
+      editorDescription:
+        '\u5728\u6b64\u7f16\u8f91\u7fa4\u53d1\u6d88\u606f\u6a21\u677f\u5185\u5bb9\u4e0e\u542f\u7528\u72b6\u6001\u3002',
+    },
+    variablePoolEmpty: '\u5f53\u524d\u6ca1\u6709\u53ef\u7528\u53d8\u91cf\u3002',
+  },
+  toasts: {
+    importBulkAssignCompleted:
+      '\u5df2\u4e3a {{count}} \u4e2a\u5ba2\u6237\u521b\u5efa exact \u89c4\u5219\uff0c\u5e76\u91cd\u65b0\u5339\u914d\u5f53\u524d\u5bfc\u5165\u6279\u6b21\u3002',
+  },
+});
+
+deepMergeLocale(zhHans.broadcast as Record<string, unknown>, {
+  import: {
+    groupFieldDetected:
+      '\u672c\u6279\u6b21\u5df2\u8bc6\u522b\u5ba2\u6237\u5b57\u6bb5\uff1a{{field}}',
+    groupFieldDialog: {
+      title: '\u786e\u8ba4\u5ba2\u6237\u5b57\u6bb5',
+      description:
+        '\u65e0\u6cd5\u552f\u4e00\u786e\u5b9a {{fileName}} \u7684\u5ba2\u6237\u5206\u7ec4\u5b57\u6bb5\uff0c\u8bf7\u9009\u62e9\u540e\u7ee7\u7eed\u5bfc\u5165\u3002',
+      configuredField: '\u5f53\u524d\u914d\u7f6e\u5b57\u6bb5\uff1a{{field}}',
+      selectLabel:
+        '\u672c\u6b21\u5bfc\u5165\u4f7f\u7528\u7684\u5ba2\u6237\u5b57\u6bb5',
+      headersLabel: '\u6587\u4ef6\u8868\u5934',
+      confirmButton: '\u7ee7\u7eed\u5bfc\u5165',
+    },
+    bulkAssign: {
+      openButton: 'Bulk assign new customers ({{count}})',
+      dialogTitle: 'Bulk assign new customers',
+      dialogDescription:
+        'Choose target conversations for {{count}} new customers and create exact rules in one step.',
+      applyConversationLabel: 'Choose a conversation to apply in bulk',
+      searchPlaceholder: 'Search conversation name or stable conversation ID',
+      emptySearch: 'No matching conversations',
+      applyConversationButton: 'Apply to selected customers ({{count}})',
+      selectionRequired: 'Select an available conversation first.',
+      noSelection: 'Select at least one customer.',
+      missingAssignments:
+        '{{count}} selected customer(s) still need a target conversation.',
+      emptyCandidates:
+        'There are no new customers available for bulk assignment.',
+      targetConversationPlaceholder: 'Select target conversation',
+      submitButton: 'Create rules and rematch ({{count}})',
+      tableHeaders: {
+        selection: 'Select',
+        customerName: 'Customer',
+        rawRowCount: 'Raw rows',
+        targetConversation: 'Target conversation',
+      },
+    },
+  },
+  drafts: {
+    batchWriteConfirmTitle:
+      '\u5c06\u9009\u4e2d\u8349\u7a3f\u5199\u5165\u8f93\u5165\u6846',
+    batchWriteConfirmDescription:
+      '\u672c\u6b21\u5c06\u5199\u5165 {{draftCount}} \u6761\u8349\u7a3f\uff0c\u6d89\u53ca {{conversationCount}} \u4e2a\u76ee\u6807\u7fa4\u804a\uff0c\u5305\u542b {{attachmentCount}} \u4e2a\u9644\u4ef6\uff1b\u91cd\u590d\u76ee\u6807\u7fa4\u804a {{duplicateTargetCount}} \u4e2a\u3002\u6267\u884c\u671f\u95f4\u8bf7\u52ff\u5207\u6362\u7a97\u53e3\uff0c\u4e5f\u4e0d\u8981\u64cd\u4f5c\u9f20\u6807\u548c\u952e\u76d8\u3002',
+  },
+  logs: {
+    retryFailedTasks: '重试失败项',
+    retryFailedTasksConfirmTitle: '重试失败项',
+    retryFailedTasksConfirmDescription:
+      '将重新提交最新批次中 {{count}} 个已确认发生在 Enter 之前的失败任务；发送结果待确认的任务不会自动重试。',
+    batchStatuses: {
+      created: 'Waiting to start',
+      queued: 'Queued',
+      running: 'Running',
+      paused: 'Paused',
+      completed: 'Completed',
+      partially_failed: 'Partially failed',
+      failed: 'Failed',
+      cancelled: 'Cancelled',
+      interrupted: 'Interrupted',
+      unknown: 'Unknown',
+    },
+    taskStatuses: {
+      pending: 'Waiting to run',
+      queued: 'Queued',
+      running: 'Writing',
+      succeeded: 'Written successfully',
+      succeeded_with_warning: '已写入，请人工确认后发送',
+      blocked: 'Not executed',
+      failed: 'Write failed',
+      cancelled: 'Cancelled',
+      timed_out: 'Timed out',
+      interrupted: 'Interrupted',
+      unknown: 'Unknown',
+    },
+    fields: {
+      batchStatus: 'batchStatus',
+      taskStatus: 'taskStatus',
+      attemptStatus: 'attemptStatus',
+      runtimeState: 'runtimeState',
+      recoveryAdvice: 'recoveryAdvice',
+    },
+    errorSuggestions: {
+      TARGET_WINDOW_NOT_FOUND: 'Open the WeCom main window and retry.',
+      TARGET_WINDOW_AMBIGUOUS: 'Close extra WeCom windows and retry.',
+      WINDOW_ACTIVATION_FAILED:
+        'Do not switch windows or use the mouse and keyboard during execution, then retry.',
+      SEARCH_ACTIVATION_FAILED:
+        'Do not switch windows or use the mouse and keyboard during execution, then retry.',
+      TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE:
+        'Do not switch windows or use the mouse and keyboard during execution, then retry.',
+      CONVERSATION_NAME_PASTE_FAILED:
+        'Check the target conversation name and matching rules.',
+      SEARCH_RESULT_CONFIRM_FAILED:
+        'Check the target conversation name and matching rules.',
+      ATTACHMENT_FILE_MISSING:
+        'Go back to draft review and upload the attachment again.',
+      ATTACHMENT_HASH_MISMATCH:
+        'Go back to draft review and upload the attachment again.',
+      ATTACHMENT_PATH_OUTSIDE_ROOT:
+        'Go back to draft review and upload the attachment again.',
+      FILE_CLIPBOARD_HELPER_FAILED: 'Check the Runtime status and retry.',
+      FILE_CLIPBOARD_HELPER_TIMEOUT: 'Check the Runtime status and retry.',
+      CLIPBOARD_RESTORE_MISMATCH:
+        'The write may already be finished, but clipboard restore failed. Check manually.',
+      PASTE_RESULT_NOT_VERIFIED:
+        'The content was written, but the system could not verify it automatically. Please check the input box manually.',
+      __default:
+        'Check the raw error code and technical details, then retry if appropriate.',
+    },
+    errorCodes: {
+      FILE_CLIPBOARD_HELPER_SPAWN_FAILED:
+        'Unable to start the attachment clipboard helper.',
+      FILE_CLIPBOARD_HELPER_TIMEOUT:
+        'Timed out while preparing the attachment clipboard.',
+      FILE_CLIPBOARD_HELPER_FAILED:
+        'Unable to prepare the attachment clipboard.',
+      FILE_CLIPBOARD_OUTPUT_INVALID:
+        'The attachment clipboard helper returned an invalid result.',
+      FILE_CLIPBOARD_COUNT_MISMATCH:
+        'The attachment clipboard file count does not match the task.',
+      FILE_CLIPBOARD_PATH_MISMATCH:
+        'The attachment clipboard files do not match the task.',
+      TARGET_WINDOW_LOST_BEFORE_ATTACHMENT_PASTE:
+        'The WeCom window lost focus before attachment paste.',
+      ATTACHMENT_PASTE_FAILED: 'Failed to paste attachments.',
+    },
+  },
+  toasts: {
+    executionFailedTasksRetried:
+      '已提交 {{successCount}} 个已确认的发送前失败任务重试，{{failedCount}} 个提交失败。',
+    executionFailedTasksRetryNoop: '当前没有可自动重试的发送前失败任务。',
+  },
+});
+
+deepMergeLocale(zhHans.broadcast as Record<string, unknown>, {
+  drafts: {
+    statusUnknown: '待人工确认',
+    batchSendSelected: '直接发送',
+    batchSendConfirmTitle: '确认批量发送',
+    batchSendConfirmDescription:
+      '本次将串行真实发送 {{draftCount}} 条草稿到 {{conversationCount}} 个目标群聊，包含 {{attachmentCount}} 个附件；重复目标群聊 {{duplicateTargetCount}} 个（仅提示，不阻止发送）。如单条发送失败或结果未知，系统仍会继续后续草稿。',
+    batchSendNoSelection: '请先选择至少一条草稿。',
+    sendUnavailable: '当前执行器暂不支持真实发送。',
+    sendRequiresReview:
+      '最近一次发送结果仍待确认，请先标记为已发送或恢复为待发送。',
+    sendAlreadySent: '该草稿已标记为已发送。',
+  },
+  toasts: {
+    batchSendPendingOnly: '真实发送仅允许选择可发送的待发送草稿。',
+    batchMarkSentResolvableOnly:
+      '标记已发送仅允许整批选择“待发送”或“待人工确认”草稿。',
+    batchRestorePendingResolvableOnly:
+      '恢复为待发送仅允许整批选择“已发送”或“待人工确认”草稿。',
+    realSendCompleted: '真实发送完成：已发送 {{sentCount}} 条。',
+    realSendCompletedWithFailures:
+      '真实发送已结束：已发送 {{sentCount}} 条，失败 {{failedCount}} 条。',
+    realSendCompletedWithUnknown:
+      '真实发送需要人工确认：已发送 {{sentCount}} 条，失败 {{failedCount}} 条，待确认 {{unknownCount}} 条。',
+  },
+});
+
+deepMergeLocale(zhHans.broadcast as Record<string, unknown>, {
+  executor: {
+    runtimeOwnershipConflict:
+      '\u68c0\u6d4b\u5230\u72ec\u7acb\u8fd0\u884c\u7684 Desktop Runtime\u3002',
+    runtimeUnavailable:
+      '\u5f53\u524d\u6267\u884c\u5668\u672a\u8fde\u63a5\u3002',
+    sendUnsupported:
+      '\u5f53\u524d\u6267\u884c\u5668\u6682\u4e0d\u652f\u6301\u771f\u5b9e\u53d1\u9001\u3002',
+    realSendReady:
+      '\u5f53\u524d\u6267\u884c\u5668\u5df2\u8fde\u63a5\uff0c\u5141\u8bb8\u771f\u5b9e\u53d1\u9001\u3002',
+    recheck: '\u91cd\u65b0\u68c0\u67e5',
+  },
+});
 
 export default zhHans;

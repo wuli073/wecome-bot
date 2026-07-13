@@ -1,0 +1,18 @@
+﻿<Configuration>
+  <Networking>Disable</Networking>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\Users\33031\Desktop\bot\build\release</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\ChatbotTrialRelease</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>C:\Users\33031\Desktop\bot\scripts</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\ChatbotTrialScripts</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "New-Item -ItemType Directory -Force -Path $env:TEMP\ChatbotTrialSandbox | Out-Null; Copy-Item -Recurse -Force C:\Users\WDAGUtilityAccount\Desktop\ChatbotTrialRelease\* $env:TEMP\ChatbotTrialSandbox\; Copy-Item -Force C:\Users\WDAGUtilityAccount\Desktop\ChatbotTrialScripts\verify-trial-release.ps1 $env:TEMP\ChatbotTrialSandbox\; Copy-Item -Force C:\Users\WDAGUtilityAccount\Desktop\ChatbotTrialScripts\test-trial-install.ps1 $env:TEMP\ChatbotTrialSandbox\; Start-Process powershell.exe -ArgumentList '-NoExit','-NoProfile','-ExecutionPolicy','Bypass','-Command','Write-Host "Chatbot Trial Sandbox ready."; Write-Host "1. Confirm no Python/Node/uv/pnpm/Git are installed: where.exe python,node,uv,pnpm,git"; Write-Host "2. Run: cd $env:TEMP\ChatbotTrialSandbox"; Write-Host "3. Run Portable verification with .\verify-trial-release.ps1 -ReleasePath .\Chatbot-Trial-0.1.0-x64 -ZipPath .\Chatbot-Trial-0.1.0-x64.zip -MinimizedPath"; Write-Host "4. Run Installer verification with .\test-trial-install.ps1 -SetupPath .\Chatbot-Setup-0.1.0-x64.exe -ExpectedInstallRoot "$env:TEMP\Chatbot Trial Install" -Silent"; Write-Host "5. Repeat offline, port-conflict, first-launch, Connector dry-run, RPA status, upgrade, uninstall, user-data-retention, no-residual-process checks; record logs under %TEMP%."'"</Command>
+  </LogonCommand>
+</Configuration>

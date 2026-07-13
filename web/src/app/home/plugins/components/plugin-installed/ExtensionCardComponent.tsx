@@ -152,6 +152,14 @@ export default function ExtensionCardComponent({
           {cardVO.label}
         </div>
         {renderTypeBadge('mcp')}
+        {cardVO.builtin && (
+          <Badge
+            variant="outline"
+            className="text-[0.7rem] border-emerald-400 text-emerald-600 dark:text-emerald-300 flex-shrink-0"
+          >
+            {t('mcp.builtin')}
+          </Badge>
+        )}
         {cardVO.mode && (
           <Badge
             variant="outline"
@@ -317,23 +325,25 @@ export default function ExtensionCardComponent({
                         <span>{t('plugins.viewSource')}</span>
                       </DropdownMenuItem>
                     )}
-                  <DropdownMenuItem
-                    className="flex flex-row items-center justify-start gap-[0.4rem] cursor-pointer text-red-600 focus:text-red-600"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteClick(cardVO);
-                      setDropdownOpen(false);
-                    }}
-                  >
-                    <Trash className="w-4 h-4" />
-                    <span>
-                      {cardVO.type === 'mcp'
-                        ? t('mcp.deleteServer')
-                        : cardVO.type === 'skill'
-                          ? t('skills.delete')
-                          : t('plugins.delete')}
-                    </span>
-                  </DropdownMenuItem>
+                  {!(cardVO.type === 'mcp' && cardVO.builtin) && (
+                    <DropdownMenuItem
+                      className="flex flex-row items-center justify-start gap-[0.4rem] cursor-pointer text-red-600 focus:text-red-600"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteClick(cardVO);
+                        setDropdownOpen(false);
+                      }}
+                    >
+                      <Trash className="w-4 h-4" />
+                      <span>
+                        {cardVO.type === 'mcp'
+                          ? t('mcp.deleteServer')
+                          : cardVO.type === 'skill'
+                            ? t('skills.delete')
+                            : t('plugins.delete')}
+                      </span>
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>

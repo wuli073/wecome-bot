@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { KeyRound, Sparkles, Settings, HardDrive } from 'lucide-react';
+import { KeyRound, Sparkles, HardDrive } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -18,24 +18,18 @@ import {
   SidebarProvider,
 } from '@/components/ui/sidebar';
 import { cn } from '@/lib/utils';
-import AccountSettingsPanel from '@/app/home/components/account-settings-dialog/AccountSettingsPanel';
 import ApiIntegrationPanel from '@/app/home/components/api-integration-dialog/ApiIntegrationPanel';
 import ModelsPanel from '@/app/home/components/models-dialog/ModelsPanel';
 import StorageAnalysisPanel from '@/app/home/components/storage-analysis-dialog/StorageAnalysisPanel';
 
 // The set of settings sections shown in the unified dialog. The string values
 // are also reused as the ?action= query param suffix so deep links keep working.
-export type SettingsSection =
-  | 'account'
-  | 'apiIntegration'
-  | 'models'
-  | 'storageAnalysis';
+export type SettingsSection = 'apiIntegration' | 'models' | 'storageAnalysis';
 
 // Map between a section id and its ?action= query value, so existing deep links
-// (showAccountSettings, showApiIntegrationSettings, showModelSettings,
-// showStorageAnalysis) continue to resolve to the right section.
+// (showApiIntegrationSettings, showModelSettings, showStorageAnalysis)
+// continue to resolve to the right section.
 export const SETTINGS_ACTION_BY_SECTION: Record<SettingsSection, string> = {
-  account: 'showAccountSettings',
   apiIntegration: 'showApiIntegrationSettings',
   models: 'showModelSettings',
   storageAnalysis: 'showStorageAnalysis',
@@ -103,13 +97,6 @@ export default function SettingsDialog({
       title: t('storageAnalysis.title'),
       description: t('storageAnalysis.description'),
       icon: <HardDrive className="size-4" />,
-    },
-    {
-      id: 'account',
-      label: t('settingsDialog.nav.account'),
-      title: t('account.settings'),
-      description: t('account.settingsDescription'),
-      icon: <Settings className="size-4" />,
     },
   ];
 
@@ -216,9 +203,6 @@ export default function SettingsDialog({
                 <StorageAnalysisPanel
                   active={open && section === 'storageAnalysis'}
                 />
-              )}
-              {section === 'account' && (
-                <AccountSettingsPanel active={open && section === 'account'} />
               )}
             </div>
           </main>

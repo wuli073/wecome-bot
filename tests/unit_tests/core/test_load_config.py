@@ -179,7 +179,7 @@ class TestApplyEnvOverridesToConfig:
         cfg = {'system': {'name': 'default'}}
         env = {'system__name': 'should_not_apply'}
 
-        with patch.dict(os.environ, env, clear=True):
+        with patch.object(load_config.os, 'environ', env):
             result = load_config._apply_env_overrides_to_config(cfg)
 
         assert result['system']['name'] == 'default'

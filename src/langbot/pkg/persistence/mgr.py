@@ -79,8 +79,6 @@ class PersistenceManager:
         # Run Alembic migrations (new migration system)
         await self._run_alembic_migrations()
 
-        await self.write_space_model_providers()
-
     async def create_tables(self):
         # create tables
         async with self.get_db_engine().connect() as conn:
@@ -161,6 +159,10 @@ class PersistenceManager:
             raise
 
     async def execute_async(self, *args, **kwargs) -> sqlalchemy.engine.cursor.CursorResult:
+        conn = kwargs.pop('conn', None)
+        if conn is not None:
+            return await conn.execute(*args, **kwargs)
+
         async with self.get_db_engine().connect() as conn:
             result = await conn.execute(*args, **kwargs)
             await conn.commit()

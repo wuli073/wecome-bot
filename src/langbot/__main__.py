@@ -4,6 +4,7 @@ import asyncio
 import argparse
 import sys
 import os
+from typing import TextIO
 
 from langbot.pkg.utils import paths
 
@@ -18,6 +19,17 @@ asciiart = r"""
 ⭐️ Open Source 开源地址: https://github.com/langbot-app/LangBot
 📖 Documentation 文档地址: https://docs.langbot.app
 """
+
+
+def print_text_safe(text: str, stream: TextIO | None = None) -> None:
+    """Print text even when the active console encoding cannot represent it."""
+    target = stream or sys.stdout
+    try:
+        print(text, file=target)
+    except UnicodeEncodeError:
+        encoding = getattr(target, 'encoding', None) or 'utf-8'
+        fallback = text.encode(encoding, errors='replace').decode(encoding, errors='replace')
+        print(fallback, file=target)
 
 
 async def main_entry(loop: asyncio.AbstractEventLoop):
@@ -53,7 +65,7 @@ async def main_entry(loop: asyncio.AbstractEventLoop):
 
         constants.debug_mode = True
 
-    print(asciiart)
+    print_text_safe(asciiart)
 
     # Check dependencies
     from langbot.pkg.core.bootutils import deps
@@ -83,34 +95,34 @@ async def main_entry(loop: asyncio.AbstractEventLoop):
         for file in generated_files:
             print('-', file)
 
+    return await boot_main(loop)
+
+
+async def boot_main(loop: asyncio.AbstractEventLoop) -> int:
     from langbot.pkg.core import boot
 
-    await boot.main(loop)
+    return await boot.main(loop)
 
 
 def main():
     """Main function to be called by console script entry point"""
-    # Check Python version
     if sys.version_info < (3, 10, 1):
-        print('需要 Python 3.10.1 及以上版本，当前 Python 版本为：', sys.version)
-        print('Your Python version is not supported.')
         print('Python 3.10.1 or higher is required. Current version:', sys.version)
         sys.exit(1)
 
-    # Set up the working directory
-    # When installed as a package, we need to handle the working directory differently
-    # We'll create data directory in current working directory if not exists
     os.makedirs(paths.get_data_root(), exist_ok=True)
 
     loop = asyncio.new_event_loop()
 
     try:
-        loop.run_until_complete(main_entry(loop))
+        exit_code = loop.run_until_complete(main_entry(loop))
     except KeyboardInterrupt:
-        print('\n正在退出...')
         print('Exiting...')
+        exit_code = 0
     finally:
         loop.close()
+
+    raise SystemExit(exit_code)
 
 
 if __name__ == '__main__':

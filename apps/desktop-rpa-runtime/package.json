@@ -1,0 +1,35 @@
+{
+  "name": "desktop-rpa-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron + TypeScript headless desktop automation runtime for LangBot",
+  "main": "out/main/index.js",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "node ./scripts/lint.mjs",
+    "test": "tsx --test tests/**/*.test.ts",
+    "build": "npm run typecheck && electron-vite build",
+    "rebuild:native": "electron-builder install-app-deps",
+    "package:win": "node ./scripts/package-win.mjs",
+    "package:win:dir": "node ./scripts/package-win.mjs --dir-only"
+  },
+  "dependencies": {
+    "@hurdlegroup/robotjs": "0.12.3",
+    "active-win": "8.2.1",
+    "node-window-manager": "2.2.4",
+    "pixelmatch": "7.1.0",
+    "pngjs": "7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.1",
+    "electron": "39.2.6",
+    "electron-builder": "26.0.12",
+    "electron-vite": "5.0.0",
+    "tsx": "4.20.3",
+    "typescript": "5.9.3"
+  }
+}

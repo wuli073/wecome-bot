@@ -48,6 +48,10 @@ coverage.xml
 .coverage
 src/langbot/web/
 testsdk/
+.playwright-cli/
+.tmp-codex/
+.tmp-pytest/
+.tmp/
 
 # Build artifacts
 /dist
@@ -56,3 +60,20 @@ testsdk/
 
 # Next.js build cache (legacy)
 web/.next/
+
+# Vendored connector runtime outputs
+vendor/wechat_decrypt/config.json
+vendor/wechat_decrypt/all_keys.json
+vendor/wechat_decrypt/wxwork_keys.json
+vendor/wechat_decrypt/decrypted/
+vendor/wechat_decrypt/wxwork_decrypted/
+vendor/wechat_decrypt/wxwork_export/
+vendor/wechat_decrypt/decoded_images/
+
+# Local connector runtime outputs
+all_keys.json
+wxwork_keys.json
+monitor_state.db
+monitor.log
+*.db-wal
+*.db-shm
