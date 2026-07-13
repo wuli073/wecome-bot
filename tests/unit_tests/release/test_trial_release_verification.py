@@ -595,7 +595,8 @@ def test_install_script_retries_onboarding_api_requests_with_a_deadline() -> Non
 
     assert "function Invoke-HttpWithRetry" in install_script
     assert "[int]$DeadlineSeconds = 60" in install_script
-    assert "Invoke-HttpWithRetry -Request" in install_script
+    assert "[scriptblock]$Action" in install_script
+    assert "Invoke-HttpWithRetry -Action" in install_script
 
 
 def test_verify_script_validates_zip_sha256_sidecar() -> None:

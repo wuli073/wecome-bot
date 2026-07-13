@@ -308,14 +308,14 @@ function Wait-ForHttpReady {
 
 function Invoke-HttpWithRetry {
     param(
-        [Parameter(Mandatory = $true)][scriptblock]$Request,
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
         [int]$DeadlineSeconds = 60,
         [int]$SleepMilliseconds = 500
     )
     $deadline = (Get-Date).AddSeconds($DeadlineSeconds)
     $lastError = ""
     while ((Get-Date) -lt $deadline) {
-        try { return & $Request }
+        try { return & $Action }
         catch {
             $lastError = $_.Exception.Message
             Start-Sleep -Milliseconds $SleepMilliseconds
@@ -505,7 +505,7 @@ function Stage-OnboardingApi {
         @{ Path = "/api/v1/system/wizard/progress"; Method = "PUT" },
         @{ Path = "/api/v1/system/wizard/completed"; Method = "POST" }
     )) {
-        $preflight = Invoke-HttpWithRetry -Request { Invoke-WebRequest -UseBasicParsing -Method OPTIONS -Uri ($baseUri + $request.Path) -Headers @{
+        $preflight = Invoke-HttpWithRetry -Action { Invoke-WebRequest -UseBasicParsing -Method OPTIONS -Uri ($baseUri + $request.Path) -Headers @{
             Origin = $origin
             "Access-Control-Request-Method" = $request.Method
             "Access-Control-Request-Headers" = "content-type"
@@ -526,29 +526,29 @@ function Stage-OnboardingApi {
         }
     }
 
-    $ready = Invoke-HttpWithRetry -Request { Invoke-WebRequest -UseBasicParsing -Uri "$baseUri/readyz" -Headers $corsHeaders -TimeoutSec 10 -ErrorAction Stop }
+    $ready = Invoke-HttpWithRetry -Action { Invoke-WebRequest -UseBasicParsing -Uri "$baseUri/readyz" -Headers $corsHeaders -TimeoutSec 10 -ErrorAction Stop }
     $readyBody = $ready.Content | ConvertFrom-Json
     if ($readyBody.status -ne "ready") { throw "readyz did not report ready" }
 
-    $platform = Invoke-HttpWithRetry -Request { Invoke-WebRequest -UseBasicParsing -Uri "$baseUri/api/v1/platform/adapters" -Headers $corsHeaders -TimeoutSec 10 -ErrorAction Stop }
+    $platform = Invoke-HttpWithRetry -Action { Invoke-WebRequest -UseBasicParsing -Uri "$baseUri/api/v1/platform/adapters" -Headers $corsHeaders -TimeoutSec 10 -ErrorAction Stop }
     $platformBody = $platform.Content | ConvertFrom-Json
     $platformCount = @($platformBody.data.adapters).Count
     if ($platformBody.code -ne 0 -or $platformCount -lt 1) { throw "platform adapter catalog is unavailable" }
 
     $progressPayload = @{ step = 0; selected_adapter = $null; created_bot_uuid = $null; bot_saved = $false; selected_runner = $null } | ConvertTo-Json -Compress
-    $progress = Invoke-HttpWithRetry -Request { Invoke-WebRequest -UseBasicParsing -Method PUT -Uri "$baseUri/api/v1/system/wizard/progress" -Headers $corsHeaders -ContentType "application/json" -Body $progressPayload -TimeoutSec 10 -ErrorAction Stop }
+    $progress = Invoke-HttpWithRetry -Action { Invoke-WebRequest -UseBasicParsing -Method PUT -Uri "$baseUri/api/v1/system/wizard/progress" -Headers $corsHeaders -ContentType "application/json" -Body $progressPayload -TimeoutSec 10 -ErrorAction Stop }
     $progressBody = $progress.Content | ConvertFrom-Json
     if ($progressBody.code -ne 0) { throw "wizard progress update failed" }
 
     $completedPayload = @{ status = "skipped" } | ConvertTo-Json -Compress
-    $completed = Invoke-HttpWithRetry -Request { Invoke-WebRequest -UseBasicParsing -Method POST -Uri "$baseUri/api/v1/system/wizard/completed" -Headers $corsHeaders -ContentType "application/json" -Body $completedPayload -TimeoutSec 10 -ErrorAction Stop }
+    $completed = Invoke-HttpWithRetry -Action { Invoke-WebRequest -UseBasicParsing -Method POST -Uri "$baseUri/api/v1/system/wizard/completed" -Headers $corsHeaders -ContentType "application/json" -Body $completedPayload -TimeoutSec 10 -ErrorAction Stop }
     $completedBody = $completed.Content | ConvertFrom-Json
     if ($completedBody.code -ne 0) { throw "wizard completed update failed" }
-    $completedRepeat = Invoke-HttpWithRetry -Request { Invoke-WebRequest -UseBasicParsing -Method POST -Uri "$baseUri/api/v1/system/wizard/completed" -Headers $corsHeaders -ContentType "application/json" -Body $completedPayload -TimeoutSec 10 -ErrorAction Stop }
+    $completedRepeat = Invoke-HttpWithRetry -Action { Invoke-WebRequest -UseBasicParsing -Method POST -Uri "$baseUri/api/v1/system/wizard/completed" -Headers $corsHeaders -ContentType "application/json" -Body $completedPayload -TimeoutSec 10 -ErrorAction Stop }
     $completedRepeatBody = $completedRepeat.Content | ConvertFrom-Json
     if ($completedRepeatBody.code -ne 0) { throw "wizard completed update is not idempotent" }
 
-    $systemInfo = Invoke-HttpWithRetry -Request { Invoke-WebRequest -UseBasicParsing -Uri "$baseUri/api/v1/system/info" -Headers $corsHeaders -TimeoutSec 10 -ErrorAction Stop }
+    $systemInfo = Invoke-HttpWithRetry -Action { Invoke-WebRequest -UseBasicParsing -Uri "$baseUri/api/v1/system/info" -Headers $corsHeaders -TimeoutSec 10 -ErrorAction Stop }
     $systemInfoBody = $systemInfo.Content | ConvertFrom-Json
     if ($systemInfoBody.data.wizard_status -ne "skipped" -or $null -ne $systemInfoBody.data.wizard_progress) {
         throw "wizard state was not persisted"
