@@ -44,7 +44,7 @@ Describe 'source startup state status' {
         $status.webPid | Should Be $null
     }
 
-    It 'returns running JSON for complete current-repository process records' {
+    It 'returns degraded JSON for legacy state records without a runtime record' {
         $backend = New-CurrentRepoProcessRecord 'backend'
         $web = New-CurrentRepoProcessRecord 'web'
         try {
@@ -56,9 +56,10 @@ Describe 'source startup state status' {
             })
 
             $status = Invoke-SourceStatusForTest -UserDataRoot $userDataRoot
-            $status.status | Should Be 'running'
+            $status.status | Should Be 'degraded'
             $status.backendPid | Should Be $backend.process.Id
             $status.webPid | Should Be $web.process.Id
+            $status.runtimePid | Should Be $null
         }
         finally {
             Stop-TestProcess $backend.process
@@ -217,6 +218,8 @@ Describe 'source process record validation' {
         foreach ($record in $invalidRecords) {
             { Test-ProcessRecord $record } | Should Not Throw
             (Test-ProcessRecord $record) | Should Be $false
+            { Test-DesktopRuntimeRecord $record } | Should Not Throw
+            (Test-DesktopRuntimeRecord $record) | Should Be $false
         }
     }
 
@@ -238,6 +241,31 @@ Describe 'source process record validation' {
             Stop-TestProcess $current.process
             Stop-TestProcess $foreign
         }
+    }
+}
+
+Describe 'desktop runtime readiness evaluation' {
+    BeforeAll {
+        $functionTestRoot = Join-Path $TestDrive 'runtime-health'
+        . $scriptPath -Action Status -UserDataRoot $functionTestRoot -NoBrowser | Out-Null
+    }
+
+    It 'returns true only when the runtime status is ready with reachability, paste, and send enabled' {
+        $readyStatus = [pscustomobject]@{
+            status = 'ready'
+            runtime_reachable = $true
+            inputAvailable = $true
+            send_enabled = $true
+        }
+        $degradedStatus = [pscustomobject]@{
+            status = 'ready'
+            runtime_reachable = $true
+            inputAvailable = $true
+            send_enabled = $false
+        }
+
+        (Test-DesktopRuntimeHealthy $readyStatus) | Should Be $true
+        (Test-DesktopRuntimeHealthy $degradedStatus) | Should Be $false
     }
 }
 
