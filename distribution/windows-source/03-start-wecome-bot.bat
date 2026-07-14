@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 chcp 65001 >nul
 if errorlevel 1 goto :failed
 setlocal EnableExtensions DisableDelayedExpansion
