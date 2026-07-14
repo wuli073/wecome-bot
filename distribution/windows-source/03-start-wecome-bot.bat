@@ -18,25 +18,31 @@ if errorlevel 1 goto :failed
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=[IO.Path]::GetFullPath($env:LB_REPO_ROOT); $scriptPath=$env:LB_DOCTOR_SCRIPT; Set-Location -LiteralPath $root; & $scriptPath; if (-not $?) { throw 'scripts\\doctor-source.ps1 failed.' }"
 if errorlevel 1 goto :failed
 
+start "" "http://127.0.0.1:3000"
+
 endlocal
 exit /b 0
 
 :powershell_missing
 echo PowerShell was not found on PATH.
+pause
 endlocal
 exit /b 1
 
 :start_missing
 echo Missing scripts\start-source.ps1.
+pause
 endlocal
 exit /b 1
 
 :doctor_missing
 echo Missing scripts\doctor-source.ps1.
+pause
 endlocal
 exit /b 1
 
 :failed
 echo Start or doctor check failed.
+pause
 endlocal
 exit /b 1

@@ -186,7 +186,7 @@ Describe 'source startup state status' {
                 $ErrorActionPreference = $previousErrorActionPreference
             }
             $exitCode | Should Not Be 0
-            ($output -join [Environment]::NewLine) | Should Match 'Port 5300 is already listening \(PID \d+\)'
+            ($output -join [Environment]::NewLine) | Should Match 'Port 5300 is already listening \(PID \d+'
             ($output -join [Environment]::NewLine) | Should Not Match "The property 'pid' cannot be found"
         }
         finally {
@@ -233,6 +233,29 @@ Describe 'source process record validation' {
             $foreignCim = Get-CimInstance Win32_Process -Filter "ProcessId = $($foreign.Id)" -ErrorAction Stop
             $foreignRecord = [ordered]@{ role='foreign'; pid=$foreign.Id; startTicks=$foreignProcess.StartTime.ToUniversalTime().Ticks; executable=[string]$foreignCim.ExecutablePath; commandLine=[string]$foreignCim.CommandLine }
             (Test-ProcessRecord $foreignRecord) | Should Be $false
+        }
+        finally {
+            Stop-TestProcess $current.process
+            Stop-TestProcess $foreign
+        }
+    }
+}
+
+Describe 'source listener ownership recovery' {
+    BeforeAll {
+        $functionTestRoot = Join-Path $TestDrive 'listener-recovery'
+        . $scriptPath -Action Status -UserDataRoot $functionTestRoot -NoBrowser | Out-Null
+    }
+
+    It 'accepts a healthy listener only when its live process belongs to this repository' {
+        $current = New-CurrentRepoProcessRecord 'backend'
+        $foreign = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/s', '/c', 'ping -n 30 127.0.0.1 >nul') -WindowStyle Hidden -PassThru
+        try {
+            $currentListener = Get-ListenerProcessRecord -Port 5300 -ProcessId $current.process.Id
+            $foreignListener = Get-ListenerProcessRecord -Port 5300 -ProcessId $foreign.Id
+
+            (Test-CurrentRepoListener $currentListener) | Should Be $true
+            (Test-CurrentRepoListener $foreignListener) | Should Be $false
         }
         finally {
             Stop-TestProcess $current.process

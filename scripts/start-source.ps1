@@ -107,11 +107,70 @@ function Get-PortOwner([int]$Port) {
     if ($null -eq $listener) { return $null }
     return [int]$listener.OwningProcess
 }
+function Get-ListenerProcessRecord([int]$Port, [int]$ProcessId = 0) {
+    $owner = if ($ProcessId -gt 0) { $ProcessId } else { Get-PortOwner $Port }
+    if ($null -eq $owner -or $owner -le 0) { return $null }
+    try {
+        $record = Get-ProcessRecord $owner "listener-$Port"
+        $record.port = $Port
+        return $record
+    }
+    catch { return $null }
+}
+function Test-CurrentRepoListener($Record) {
+    return Test-ProcessRecord $Record
+}
 function Assert-PortFree([int]$Port) {
     $owner = Get-PortOwner $Port
-    if ($null -ne $owner) { throw "Port $Port is already listening (PID $owner). Stop that process or choose another port." }
+    if ($null -ne $owner) {
+        $record = Get-ListenerProcessRecord -Port $Port -ProcessId $owner
+        if ($null -ne $record) {
+            throw "Port $Port is already listening (PID $owner, process $($record.executable), command $($record.commandLine)). Stop that process or choose another port."
+        }
+        throw "Port $Port is already listening (PID $owner). Stop that process or choose another port."
+    }
 }
 function Invoke-JsonGet([string]$Url) { return Invoke-RestMethod -Uri $Url -Method Get -TimeoutSec 5 }
+function Test-BackendHealthy {
+    try {
+        $health = Invoke-JsonGet "$script:BaseUrl/healthz"
+        $runtime = Invoke-JsonGet "$script:BaseUrl/api/v1/system/runtime/status"
+        $ready = Invoke-JsonGet "$script:BaseUrl/readyz"
+        return $health.code -eq 0 -and $runtime.state -in @('CORE_READY', 'READY', 'DEGRADED') -and $ready.state -in @('CORE_READY', 'READY', 'DEGRADED')
+    }
+    catch { return $false }
+}
+function Test-WebHealthy {
+    try { return (Invoke-WebRequest -Uri $script:WebUrl -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200 }
+    catch { return $false }
+}
+function Start-WebSourceProcess {
+    $vite = Join-Path $script:RepoRoot 'web\node_modules\vite\bin\vite.js'
+    $webEnvironment = @{ VITE_API_BASE_URL=$script:BaseUrl }
+    $savedWeb = @{}
+    foreach ($key in $webEnvironment.Keys) {
+        $savedWeb[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+        [Environment]::SetEnvironmentVariable($key, $webEnvironment[$key], 'Process')
+    }
+    try {
+        $web = Start-LoggedProcess `
+            -FilePath (Get-Command node.exe -ErrorAction Stop).Source `
+            -ArgumentList @($vite, '--host', '127.0.0.1', '--port', $WebPort, '--strictPort') `
+            -WorkingDirectory (Join-Path $script:RepoRoot 'web') `
+            -StdoutLogPath (Join-Path $script:LogsRoot 'web.stdout.log') `
+            -StderrLogPath (Join-Path $script:LogsRoot 'web.stderr.log')
+    }
+    finally { foreach ($key in $webEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $savedWeb[$key], 'Process') } }
+    Wait-ForWeb 45
+    return Get-ProcessRecord $web.Id 'web'
+}
+function New-RecoveredSourceState($BackendRecord, $WebRecord) {
+    return [ordered]@{
+        schema=1; sessionId=[guid]::NewGuid().ToString('N'); repoRoot=$script:RepoRoot; userDataRoot=$script:UserDataRoot
+        backendPort=$BackendPort; webPort=$WebPort; logsRoot=$script:LogsRoot; shutdownPath=$null
+        backend=$BackendRecord; backendListener=$BackendRecord; web=$WebRecord
+    }
+}
 function Wait-ForBackend([string]$Path, [int]$Timeout) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Timeout)
     $lastError = ''
@@ -141,16 +200,30 @@ function Wait-ForWeb([int]$Timeout) {
 function Start-Source {
     $existing = Read-ManagedSourceState $script:StatePath
     if ($existing -and -not (Test-CurrentRepoState $existing)) { throw 'Refusing to replace a managed source state owned by a different repository.' }
-    $existingRecords = @()
-    if ($existing) {
-        foreach ($recordName in @('backend', 'web', 'backendListener')) {
-            $record = Get-ManagedSourceStateProperty -Object $existing -Name $recordName
-            if (Test-ProcessRecord $record) { $existingRecords += $record }
+    Ensure-Directory $script:UserDataRoot; Ensure-Directory $script:LogsRoot; Ensure-Directory $script:ControlRoot
+    $backendListener = Get-ListenerProcessRecord -Port $BackendPort
+    $webListener = Get-ListenerProcessRecord -Port $WebPort
+    $backendOwned = Test-CurrentRepoListener $backendListener
+    $webOwned = Test-CurrentRepoListener $webListener
+    if ($backendOwned -and (Test-BackendHealthy)) {
+        if ($webOwned -and (Test-WebHealthy)) {
+            $recovered = New-RecoveredSourceState $backendListener $webListener
+            Write-ManagedSourceState $script:StatePath $recovered
+            $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=$backendListener.pid; webPid=$webListener.pid; backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='enabled'; runtimeState='recovered' }
+            if (-not $NoBrowser) { Start-Process $script:WebUrl }
+            return $result
         }
+        if ($webOwned) { [void](Stop-VerifiedProcess $webListener) }
+        Assert-PortFree $WebPort
+        $recoveredWeb = Start-WebSourceProcess
+        $recovered = New-RecoveredSourceState $backendListener $recoveredWeb
+        Write-ManagedSourceState $script:StatePath $recovered
+        $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=$backendListener.pid; webPid=$recoveredWeb.pid; backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='enabled'; runtimeState='recovered' }
+        if (-not $NoBrowser) { Start-Process $script:WebUrl }
+        return $result
     }
-    if ($existingRecords.Count -gt 0) {
-        $pids = @($existingRecords | ForEach-Object { Get-ProcessRecordId $_ }) -join ', '
-        throw "A managed source stack is already running (PID $pids). Use stop-source.ps1 first."
+    foreach ($record in @($backendListener, $webListener)) {
+        if ($null -ne $record -and (Test-CurrentRepoListener $record)) { [void](Stop-VerifiedProcess $record) }
     }
     Assert-PortFree $BackendPort; Assert-PortFree $WebPort
     $python = Join-Path $script:RepoRoot '.venv\Scripts\python.exe'
@@ -158,7 +231,6 @@ function Start-Source {
     foreach ($path in @($python, $vite, (Join-Path $script:RepoRoot 'vendor\wechat_decrypt\mcp_wxwork_http_server.py'))) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Source setup is incomplete: $path. Run .\scripts\setup-source.ps1." }
     }
-    Ensure-Directory $script:UserDataRoot; Ensure-Directory $script:LogsRoot; Ensure-Directory $script:ControlRoot
     $sessionId = [guid]::NewGuid().ToString('N')
     $shutdownPath = Join-Path $script:ControlRoot "source-$sessionId.shutdown.json"
     $environment = @{ PYTHONPATH=(Join-Path $script:RepoRoot 'src'); CHATBOT_USER_DATA_ROOT=$script:UserDataRoot; LANGBOT_DATA_ROOT=$script:UserDataRoot; API__PORT=[string]$BackendPort; API__WEBHOOK_PREFIX=$script:BaseUrl; LANGBOT_RPA_FORCE_DISABLE_SEND='0'; LANGBOT_RPA_ALLOW_AUTO_SEND='1'; LANGBOT_BROADCAST_SEND_ENABLED='1'; LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS='*'; LANGBOT_LOCAL_STACK_SESSION_ID=$sessionId; LANGBOT_LOCAL_SHUTDOWN_REQUEST_PATH=$shutdownPath }
@@ -180,18 +252,7 @@ function Start-Source {
         if ($null -eq $backendListenerPid) { throw "Backend health succeeded but port $BackendPort has no listener." }
         $state.backendListener = Get-ProcessRecord $backendListenerPid 'backend-listener'
         Write-ManagedSourceState $script:StatePath $state
-        $webEnvironment = @{ VITE_API_BASE_URL=$script:BaseUrl }
-        $savedWeb = @{}; foreach ($key in $webEnvironment.Keys) { $savedWeb[$key] = [Environment]::GetEnvironmentVariable($key, 'Process'); [Environment]::SetEnvironmentVariable($key, $webEnvironment[$key], 'Process') }
-        try {
-            $web = Start-LoggedProcess `
-                -FilePath (Get-Command node.exe -ErrorAction Stop).Source `
-                -ArgumentList @($vite, '--host', '127.0.0.1', '--port', $WebPort, '--strictPort') `
-                -WorkingDirectory (Join-Path $script:RepoRoot 'web') `
-                -StdoutLogPath (Join-Path $script:LogsRoot 'web.stdout.log') `
-                -StderrLogPath (Join-Path $script:LogsRoot 'web.stderr.log')
-        }
-        finally { foreach ($key in $webEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $savedWeb[$key], 'Process') } }
-        $state.web = Get-ProcessRecord $web.Id 'web'; Write-ManagedSourceState $script:StatePath $state; Wait-ForWeb 45
+        $state.web = Start-WebSourceProcess; Write-ManagedSourceState $script:StatePath $state
         $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=(Get-ProcessRecordId (Get-ManagedSourceStateProperty -Object $state -Name 'backend')); webPid=(Get-ProcessRecordId (Get-ManagedSourceStateProperty -Object $state -Name 'web')); backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='enabled'; runtimeState=$readiness.runtime.state }
         if (-not $NoBrowser) { Start-Process $script:WebUrl }
         return $result
