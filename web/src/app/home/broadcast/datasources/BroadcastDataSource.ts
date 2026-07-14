@@ -151,6 +151,7 @@ function fromApiGroupRule(rule: ApiBroadcastGroupRule): BroadcastGroupRule {
     enabled: rule.enabled,
     invalidLegacy: rule.invalid_legacy ?? false,
     invalidReason: rule.invalid_reason ?? null,
+    targetResolutionStatus: rule.target_resolution_status ?? 'unresolved',
     updatedAt: rule.updated_at,
   };
 }

@@ -151,10 +151,6 @@ export default function GroupMatchingPanel({
   }, [activeRule]);
 
   const enabledRules = rules.filter((rule) => rule.enabled);
-  const requiresTargetConversationReselect =
-    Boolean(activeRule) &&
-    !draft.targetConversationId.trim() &&
-    Boolean(draft.targetConversationName.trim());
   const pendingCustomerStats = groupRuleCandidates?.stats ?? null;
   const selectableGroupNames = groupNames;
   const matchTypeOptions = useMemo(
@@ -176,18 +172,24 @@ export default function GroupMatchingPanel({
   );
 
   const handleSaveRule = async () => {
-    if (!draft.targetConversationId.trim()) {
+    const normalizedTargetName = draft.targetConversationName.trim();
+    if (!normalizedTargetName) {
       setSelectionError(
-        t('broadcast.groupRule.targetConversationSelectionRequired'),
+        t('broadcast.groupRule.targetConversationNameRequired'),
       );
       return;
     }
+    const normalizedDraft = {
+      ...draft,
+      targetConversationId: draft.targetConversationId.trim(),
+      targetConversationName: normalizedTargetName,
+    };
     setSelectionError(null);
     if (activeRule) {
-      await onUpdateRule(activeRule.id, draft);
+      await onUpdateRule(activeRule.id, normalizedDraft);
       return;
     }
-    await onCreateRule(draft);
+    await onCreateRule(normalizedDraft);
   };
 
   return (
@@ -365,6 +367,13 @@ export default function GroupMatchingPanel({
                 <div className="mt-1 text-xs text-muted-foreground">
                   {rule.targetConversationName}
                 </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {rule.targetConversationId
+                    ? rule.targetConversationId
+                    : t(
+                        `broadcast.groupRule.targetResolution.${rule.targetResolutionStatus ?? 'unresolved'}`,
+                      )}
+                </div>
                 {rule.invalidLegacy ? (
                   <div className="mt-1 text-xs text-amber-600">
                     {rule.invalidReason ||
@@ -487,6 +496,18 @@ export default function GroupMatchingPanel({
                       targetConversationName: nextValue,
                     }));
                   }}
+                  onManualConfirm={(value) => {
+                    const normalizedValue = value.trim();
+                    setTargetConversationKeyword(normalizedValue);
+                    setDraft((current) => ({
+                      ...current,
+                      targetConversationId:
+                        normalizedValue === current.targetConversationName
+                          ? current.targetConversationId
+                          : '',
+                      targetConversationName: normalizedValue,
+                    }));
+                  }}
                   onChange={(conversation) => {
                     setSelectionError(null);
                     setDraft((current) => ({
@@ -513,11 +534,6 @@ export default function GroupMatchingPanel({
                   searchInputTestId="broadcast-group-rule-target-conversation-search"
                   listTestId="broadcast-group-rule-target-conversation-select"
                 />
-                {requiresTargetConversationReselect ? (
-                  <div className="text-xs text-amber-700">
-                    {t('broadcast.groupRule.targetConversationLegacyReselect')}
-                  </div>
-                ) : null}
               </div>
 
               <div className="space-y-2">

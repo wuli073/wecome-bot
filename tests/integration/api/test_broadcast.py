@@ -608,6 +608,285 @@ async def _create_send_execution_task_with_attempt(
 @pytest.mark.usefixtures('mock_circular_import_chain')
 class TestBroadcastApi:
     @pytest.mark.asyncio
+    async def test_group_rule_allows_a_manual_target_name_without_a_stable_id(
+        self,
+        quart_test_client,
+    ):
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': '  Acme Manual Group  ',
+                'target_conversation_id': '',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 200
+        assert payload['data']['target_conversation_name'] == 'Acme Manual Group'
+        assert payload['data']['target_conversation_id'] is None
+        assert payload['data']['target_resolution_status'] == 'unresolved'
+
+    @pytest.mark.asyncio
+    async def test_group_rule_binds_a_unique_manual_target_name_to_its_stable_id(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        await _insert_group_name(
+            fake_broadcast_app,
+            external_conversation_id='group-acme-manual',
+            name='Acme Manual Group',
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': '  Acme Manual Group  ',
+                'target_conversation_id': '',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 200
+        assert payload['data']['target_conversation_name'] == 'Acme Manual Group'
+        assert payload['data']['target_conversation_id'] == 'group-acme-manual'
+        assert payload['data']['target_resolution_status'] == 'resolved'
+
+    @pytest.mark.asyncio
+    async def test_group_rule_marks_a_manual_target_name_as_ambiguous_when_multiple_groups_share_it(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        await _insert_group_name(
+            fake_broadcast_app,
+            external_conversation_id='group-acme-1',
+            name='Acme Manual Group',
+        )
+        await _insert_group_name(
+            fake_broadcast_app,
+            external_conversation_id='group-acme-2',
+            name='Acme Manual Group',
+        )
+
+        response = await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Acme Manual Group',
+                'target_conversation_id': '',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        payload = await response.get_json()
+
+        assert response.status_code == 200
+        assert payload['data']['target_conversation_name'] == 'Acme Manual Group'
+        assert payload['data']['target_conversation_id'] is None
+        assert payload['data']['target_resolution_status'] == 'ambiguous'
+
+    @pytest.mark.asyncio
+    async def test_generate_selected_group_drafts_rejects_unresolved_manual_target_name(
+        self,
+        quart_test_client,
+    ):
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '瀹㈡埛鍚嶇О',
+                'mapping_rules': [
+                    {
+                        'source_field': '瀹㈡埛鍚嶇О',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Acme Manual Group',
+                'target_conversation_id': '',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('瀹㈡埛鍚嶇О\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        template_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Manual Target Template',
+                'content': 'Hello {{customer_name}}',
+                'enabled': True,
+            },
+        )
+        template_id = (await template_response.get_json())['data']['id']
+        group_key = await _get_import_group_key(
+            quart_test_client,
+            import_id,
+            group_value='Acme',
+        )
+
+        generate_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_keys': [group_key],
+                'template_id': template_id,
+                'overwrite_existing': False,
+            },
+        )
+        payload = await generate_response.get_json()
+
+        assert generate_response.status_code == 400
+        assert payload['msg'] == 'TARGET_GROUP_NOT_FOUND'
+        assert 'Acme Manual Group' in payload['message']
+
+    @pytest.mark.asyncio
+    async def test_generate_selected_group_drafts_rejects_ambiguous_manual_target_name(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        await _insert_group_name(
+            fake_broadcast_app,
+            external_conversation_id='group-acme-1',
+            name='Acme Manual Group',
+        )
+        await _insert_group_name(
+            fake_broadcast_app,
+            external_conversation_id='group-acme-2',
+            name='Acme Manual Group',
+        )
+        await quart_test_client.put(
+            '/api/v1/broadcast/variable-profile',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_field': '瀹㈡埛鍚嶇О',
+                'mapping_rules': [
+                    {
+                        'source_field': '瀹㈡埛鍚嶇О',
+                        'variable_key': 'customer_name',
+                        'merge_mode': 'first',
+                        'order': 1,
+                    }
+                ],
+            },
+        )
+        await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Acme',
+                'match_type': 'exact',
+                'match_expression': 'Acme',
+                'target_conversation_name': 'Acme Manual Group',
+                'target_conversation_id': '',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        upload_response = await quart_test_client.post(
+            '/api/v1/broadcast/imports',
+            headers=_auth_headers(),
+            form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+            files={
+                'file': FileStorage(
+                    stream=BytesIO('瀹㈡埛鍚嶇О\nAcme\n'.encode('utf-8')),
+                    filename='customers.csv',
+                ),
+            },
+        )
+        import_id = (await upload_response.get_json())['data']['id']
+        template_response = await quart_test_client.post(
+            '/api/v1/broadcast/templates',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'name': 'Ambiguous Manual Target Template',
+                'content': 'Hello {{customer_name}}',
+                'enabled': True,
+            },
+        )
+        template_id = (await template_response.get_json())['data']['id']
+        group_key = await _get_import_group_key(
+            quart_test_client,
+            import_id,
+            group_value='Acme',
+        )
+
+        generate_response = await quart_test_client.post(
+            f'/api/v1/broadcast/imports/{import_id}/generate-drafts',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_keys': [group_key],
+                'template_id': template_id,
+                'overwrite_existing': False,
+            },
+        )
+        payload = await generate_response.get_json()
+
+        assert generate_response.status_code == 400
+        assert payload['msg'] == 'TARGET_GROUP_AMBIGUOUS'
+        assert 'Acme Manual Group' in payload['message']
+
+    @pytest.mark.asyncio
     async def test_variable_profile_get_returns_empty_default(self, quart_test_client):
         response = await quart_test_client.get(
             f'/api/v1/broadcast/variable-profile?{_query_scope()}',

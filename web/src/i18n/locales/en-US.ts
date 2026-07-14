@@ -2703,6 +2703,12 @@ deepMergeLocale(enUS.broadcast as Record<string, unknown>, {
       'Select a target conversation with a stable ID',
     targetConversationSelectionRequired:
       'Select a target conversation from the candidate list first.',
+    targetConversationNameRequired: 'Enter a target conversation name.',
+    targetResolution: {
+      resolved: 'Conversation resolved',
+      unresolved: 'Conversation not resolved',
+      ambiguous: 'Multiple conversations share this name. Select one from the list.',
+    },
     targetConversationLegacyReselect:
       'This legacy rule is missing a stable target conversation ID. Please reselect it.',
     targetConversationMissingStableId:

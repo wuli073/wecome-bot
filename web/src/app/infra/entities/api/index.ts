@@ -792,6 +792,7 @@ export interface ApiBroadcastGroupRule {
   enabled: boolean;
   invalid_legacy?: boolean;
   invalid_reason?: string | null;
+  target_resolution_status?: 'resolved' | 'unresolved' | 'ambiguous';
   created_at: string;
   updated_at: string;
 }

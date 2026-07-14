@@ -2746,6 +2746,12 @@ deepMergeLocale(zhHans.broadcast as Record<string, unknown>, {
       '\u8bf7\u9009\u62e9\u5e26\u7a33\u5b9a ID \u7684\u76ee\u6807\u7fa4\u804a',
     targetConversationSelectionRequired:
       '\u8bf7\u5148\u4ece\u5019\u9009\u5217\u8868\u4e2d\u9009\u62e9\u76ee\u6807\u7fa4\u804a',
+    targetConversationNameRequired: '\u8bf7\u8f93\u5165\u76ee\u6807\u7fa4\u804a\u540d\u79f0',
+    targetResolution: {
+      resolved: '\u5df2\u5339\u914d\u7fa4\u804a',
+      unresolved: '\u5c1a\u672a\u5339\u914d\u5230\u5b9e\u9645\u7fa4\u804a',
+      ambiguous: '\u5b58\u5728\u591a\u4e2a\u540c\u540d\u7fa4\u804a\uff0c\u8bf7\u4ece\u5019\u9009\u5217\u8868\u9009\u62e9',
+    },
     targetConversationLegacyReselect:
       '\u8be5\u5386\u53f2\u89c4\u5219\u7f3a\u5c11\u7a33\u5b9a\u76ee\u6807\u7fa4\u804a ID\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9\u3002',
     targetConversationMissingStableId:

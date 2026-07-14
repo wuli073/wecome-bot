@@ -11,6 +11,7 @@ interface GroupConversationSelectorProps {
   keyword: string;
   onKeywordChange: (value: string) => void;
   onChange: (conversation: BroadcastGroupName | null) => void;
+  onManualConfirm?: (value: string) => void;
   disabled?: boolean;
   searchLabel: string;
   searchPlaceholder: string;
@@ -26,6 +27,7 @@ export default function GroupConversationSelector({
   keyword,
   onKeywordChange,
   onChange,
+  onManualConfirm,
   disabled = false,
   searchLabel,
   searchPlaceholder,
@@ -57,6 +59,12 @@ export default function GroupConversationSelector({
       <Input
         value={keyword}
         onChange={(event) => onKeywordChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            onManualConfirm?.(keyword);
+          }
+        }}
         placeholder={searchPlaceholder}
         disabled={disabled}
         data-testid={searchInputTestId}

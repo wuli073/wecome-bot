@@ -98,6 +98,7 @@ export interface BroadcastGroupRule {
   enabled: boolean;
   invalidLegacy?: boolean;
   invalidReason?: string | null;
+  targetResolutionStatus?: 'resolved' | 'unresolved' | 'ambiguous';
   updatedAt: string;
 }
 

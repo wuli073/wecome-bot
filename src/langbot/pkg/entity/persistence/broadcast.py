@@ -95,12 +95,6 @@ class BroadcastGroupName(Base):
         sqlalchemy.UniqueConstraint(
             'bot_uuid',
             'connector_id',
-            'name',
-            name='uq_broadcast_group_names_scope_name',
-        ),
-        sqlalchemy.UniqueConstraint(
-            'bot_uuid',
-            'connector_id',
             'external_conversation_id',
             name='uq_broadcast_group_names_scope_external_id',
         ),

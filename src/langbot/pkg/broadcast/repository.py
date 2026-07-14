@@ -448,6 +448,26 @@ class BroadcastRepository:
         )
         return self._first_model(result)
 
+    async def list_group_names_by_name(
+        self,
+        *,
+        bot_uuid: str,
+        connector_id: str,
+        name: str,
+        conn=None,
+    ):
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_broadcast.BroadcastGroupName)
+            .where(
+                persistence_broadcast.BroadcastGroupName.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastGroupName.connector_id == connector_id,
+                persistence_broadcast.BroadcastGroupName.name == name,
+            )
+            .order_by(persistence_broadcast.BroadcastGroupName.id.asc()),
+            conn=conn,
+        )
+        return self._all_models(result)
+
     async def update_group_name(
         self,
         group_name_id: int,

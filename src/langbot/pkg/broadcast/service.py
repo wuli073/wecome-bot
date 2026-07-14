@@ -91,6 +91,8 @@ from .errors import (
     BROADCAST_GROUP_NAME_NOT_FOUND,
     BROADCAST_GROUP_RULE_DUPLICATE,
     BROADCAST_GROUP_RULE_NOT_FOUND,
+    BROADCAST_TARGET_GROUP_AMBIGUOUS,
+    BROADCAST_TARGET_GROUP_NOT_FOUND,
     BROADCAST_GROUP_RULE_REGEX_INVALID,
     BROADCAST_TEMPLATE_CONTENT_REQUIRED,
     BROADCAST_TEMPLATE_NAME_DUPLICATE,
@@ -315,13 +317,19 @@ class BroadcastService:
     async def list_group_rules(self, scope: dict[str, Any]) -> list[dict[str, Any]]:
         validated_scope = await self.validate_scope(scope)
         rows = await self.repository.list_group_rules(**validated_scope)
-        return [self._serialize_group_rule(row) for row in rows]
+        group_names = await self.repository.list_group_names(**validated_scope)
+        return [self._serialize_group_rule(row, group_names=group_names) for row in rows]
 
     async def create_group_rule(self, scope: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         validated_scope = await self.validate_scope(scope)
         normalized = self._normalize_group_rule_payload(payload)
         try:
             async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+                normalized = await self._resolve_group_rule_target(
+                    scope=validated_scope,
+                    payload=normalized,
+                    conn=conn,
+                )
                 await self.validate_exact_rule_uniqueness(
                     scope=validated_scope,
                     payload=normalized,
@@ -337,7 +345,8 @@ class BroadcastService:
         except IntegrityError as exc:
             raise self._map_integrity_error(exc) from exc
         rule = await self.repository.get_group_rule(rule_id, **validated_scope)
-        return self._serialize_group_rule(rule)
+        group_names = await self.repository.list_group_names(**validated_scope)
+        return self._serialize_group_rule(rule, group_names=group_names)
 
     async def update_group_rule(
         self,
@@ -349,6 +358,11 @@ class BroadcastService:
         normalized = self._normalize_group_rule_payload(payload)
         try:
             async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+                normalized = await self._resolve_group_rule_target(
+                    scope=validated_scope,
+                    payload=normalized,
+                    conn=conn,
+                )
                 existing = await self.repository.get_group_rule(
                     rule_id,
                     bot_uuid=validated_scope['bot_uuid'],
@@ -375,7 +389,8 @@ class BroadcastService:
             raise self._map_integrity_error(exc) from exc
         if updated is None:
             raise BroadcastError(BROADCAST_GROUP_RULE_NOT_FOUND)
-        return self._serialize_group_rule(updated)
+        group_names = await self.repository.list_group_names(**validated_scope)
+        return self._serialize_group_rule(updated, group_names=group_names)
 
     async def delete_group_rule(self, rule_id: int, scope: dict[str, Any]) -> dict[str, bool]:
         validated_scope = await self.validate_scope(scope)
@@ -397,6 +412,7 @@ class BroadcastService:
             return self._build_group_rule_match_preview(source_value=source_value, candidate_rules=[])
 
         rows = await self.repository.list_group_rules(**validated_scope)
+        group_names = await self.repository.list_group_names(**validated_scope)
         candidate_rows = [
             row
             for row in self._iter_group_rules_in_formal_match_order(rows)
@@ -407,7 +423,7 @@ class BroadcastService:
                 source_value,
             )
         ]
-        candidate_rules = [self._serialize_group_rule(row) for row in candidate_rows]
+        candidate_rules = [self._serialize_group_rule(row, group_names=group_names) for row in candidate_rows]
         return self._build_group_rule_match_preview(
             source_value=source_value,
             candidate_rules=candidate_rules,
@@ -444,6 +460,17 @@ class BroadcastService:
         try:
             async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
                 for name in normalized_names:
+                    existing_rows = await self.repository.list_group_names_by_name(
+                        bot_uuid=validated_scope['bot_uuid'],
+                        connector_id=validated_scope['connector_id'],
+                        name=name,
+                        conn=conn,
+                    )
+                    if any(
+                        not str(row.external_conversation_id or '').strip()
+                        for row in existing_rows
+                    ):
+                        raise BroadcastError(BROADCAST_GROUP_NAME_DUPLICATE)
                     await self.repository.create_group_name(
                         conn,
                         {
@@ -1464,8 +1491,21 @@ class BroadcastService:
                 validation_errors.append(f'{display_group_value}: 未匹配到群聊')
                 continue
             if not matched_conversation_id:
-                validation_errors.append(f'{display_group_value}: 未选择稳定目标群聊 ID')
-                continue
+                resolution = await self._resolve_target_conversation_name(
+                    scope=validated_scope,
+                    target_name=matched_conversation_name,
+                )
+                if resolution['status'] == 'unresolved':
+                    raise BroadcastError(
+                        BROADCAST_TARGET_GROUP_NOT_FOUND,
+                        f'{display_group_value}: 未找到目标群聊“{matched_conversation_name}”',
+                    )
+                if resolution['status'] == 'ambiguous':
+                    raise BroadcastError(
+                        BROADCAST_TARGET_GROUP_AMBIGUOUS,
+                        f'{display_group_value}: 存在多个同名目标群聊“{matched_conversation_name}”',
+                    )
+                matched_conversation_id = str(resolution['target_conversation_id'])
 
             template_id = fallback_template_id
             if template_id is None:
@@ -3685,7 +3725,6 @@ class BroadcastService:
         if (
             match_type not in VALID_MATCH_TYPES
             or not source_value
-            or not target_conversation_id
             or not target_conversation_name
         ):
             raise BroadcastError(BROADCAST_GROUP_RULE_REGEX_INVALID)
@@ -3714,7 +3753,7 @@ class BroadcastService:
             'source_value': source_value,
             'match_type': match_type,
             'match_expression': expression,
-            'target_conversation_id': target_conversation_id,
+            'target_conversation_id': target_conversation_id or None,
             'target_conversation_name': target_conversation_name,
             'priority': priority,
             'enabled': bool(payload.get('enabled', True)),
@@ -3781,7 +3820,52 @@ class BroadcastService:
             'reason': reason,
         }
 
-    def _serialize_group_rule(self, row) -> dict[str, Any]:
+    async def _resolve_group_rule_target(
+        self,
+        *,
+        scope: dict[str, str],
+        payload: dict[str, Any],
+        conn=None,
+    ) -> dict[str, Any]:
+        target_id = str(payload.get('target_conversation_id') or '').strip()
+        if target_id:
+            return {**payload, 'target_conversation_id': target_id}
+        resolution = await self._resolve_target_conversation_name(
+            scope=scope,
+            target_name=str(payload.get('target_conversation_name') or ''),
+            conn=conn,
+        )
+        return {
+            **payload,
+            'target_conversation_id': resolution['target_conversation_id'],
+        }
+
+    async def _resolve_target_conversation_name(
+        self,
+        *,
+        scope: dict[str, str],
+        target_name: str,
+        conn=None,
+    ) -> dict[str, Any]:
+        normalized_name = str(target_name or '').strip()
+        rows = await self.repository.list_group_names_by_name(
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            name=normalized_name,
+            conn=conn,
+        )
+        target_ids = [
+            str(row.external_conversation_id or '').strip()
+            for row in rows
+            if str(row.external_conversation_id or '').strip()
+        ]
+        if len(target_ids) == 1:
+            return {'status': 'resolved', 'target_conversation_id': target_ids[0]}
+        if len(target_ids) > 1:
+            return {'status': 'ambiguous', 'target_conversation_id': None}
+        return {'status': 'unresolved', 'target_conversation_id': None}
+
+    def _serialize_group_rule(self, row, *, group_names: list[Any] | None = None) -> dict[str, Any]:
         payload = self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupRule, row)
         invalid_legacy = self._is_placeholder_group_rule(
             source_value=str(row.source_value or ''),
@@ -3789,6 +3873,22 @@ class BroadcastService:
         )
         payload['invalid_legacy'] = invalid_legacy
         payload['invalid_reason'] = '无效历史规则，不参与匹配。' if invalid_legacy else None
+        target_id = str(row.target_conversation_id or '').strip()
+        if target_id:
+            payload['target_resolution_status'] = 'resolved'
+        elif group_names is None:
+            payload['target_resolution_status'] = 'unresolved'
+        else:
+            target_name = str(row.target_conversation_name or '').strip()
+            matching_ids = [
+                str(item.external_conversation_id or '').strip()
+                for item in group_names
+                if str(item.name or '').strip() == target_name
+                and str(item.external_conversation_id or '').strip()
+            ]
+            payload['target_resolution_status'] = (
+                'resolved' if len(matching_ids) == 1 else 'ambiguous' if len(matching_ids) > 1 else 'unresolved'
+            )
         return payload
 
     def _is_placeholder_group_rule(self, *, source_value: str, target_conversation_name: str) -> bool:
@@ -4235,10 +4335,24 @@ class BroadcastService:
         if not str(draft.target_conversation_name or '').strip():
             raise BroadcastError(BROADCAST_DRAFT_NOT_SENDABLE if mode == 'send' else BROADCAST_EXECUTION_DRAFT_NOT_READY, '目标群聊不能为空')
         if not str(draft.target_conversation_id or '').strip():
-            raise BroadcastError(
-                BROADCAST_DRAFT_NOT_SENDABLE if mode == 'send' else BROADCAST_EXECUTION_DRAFT_NOT_READY,
-                '目标群聊稳定 ID 不能为空',
+            resolution = await self._resolve_target_conversation_name(
+                scope=scope,
+                target_name=str(draft.target_conversation_name),
             )
+            if resolution['status'] == 'unresolved':
+                raise BroadcastError(BROADCAST_TARGET_GROUP_NOT_FOUND, '未找到目标群聊')
+            if resolution['status'] == 'ambiguous':
+                raise BroadcastError(BROADCAST_TARGET_GROUP_AMBIGUOUS, '存在多个同名目标群聊')
+            target_id = str(resolution['target_conversation_id'])
+            async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+                await self.repository.update_draft(
+                    int(draft.id),
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                    updates={'target_conversation_id': target_id},
+                    conn=conn,
+                )
+            draft.target_conversation_id = target_id
         if not str(draft.draft_text or '').strip():
             raise BroadcastError(BROADCAST_DRAFT_NOT_SENDABLE if mode == 'send' else BROADCAST_EXECUTION_DRAFT_NOT_READY, '草稿正文不能为空')
         batch = await self.repository.get_import_batch(int(draft.import_batch_id), **scope)

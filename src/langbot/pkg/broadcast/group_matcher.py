@@ -28,17 +28,20 @@ def match_groups(
 ) -> list[dict[str, Any]]:
     regex_compiler = compile_regex or re.compile
     regex_cache: dict[str, re.Pattern[str]] = {}
-    normalized_group_names: dict[str, str | None] = {}
+    normalized_group_names: dict[str, list[str]] = {}
     for item in group_names:
         if isinstance(item, dict):
             name = str(item.get('name') or '').strip()
             if not name:
                 continue
-            normalized_group_names[name] = str(item.get('external_conversation_id') or '').strip() or None
+            normalized_group_names.setdefault(name, [])
+            external_id = str(item.get('external_conversation_id') or '').strip()
+            if external_id:
+                normalized_group_names[name].append(external_id)
             continue
         name = str(item).strip()
         if name:
-            normalized_group_names[name] = None
+            normalized_group_names.setdefault(name, [])
     ordered_rules = sorted(
         (rule for rule in rules if bool(rule.get('enabled'))),
         key=lambda item: (-int(item.get('priority') or 0), int(item.get('id') or 0)),
@@ -52,29 +55,58 @@ def match_groups(
             'matched_conversation_id': None,
             'matched_conversation_name': None,
             'matched_rule_id': None,
+            'target_resolution_status': None,
         }
 
         for rule in ordered_rules:
             if _rule_matches(group_value, rule, regex_cache, regex_compiler):
+                target_id, resolution_status = _resolve_target_conversation(
+                    target_name=str(rule.get('target_conversation_name') or '').strip(),
+                    target_id=str(rule.get('target_conversation_id') or '').strip(),
+                    group_names=normalized_group_names,
+                )
                 matched = {
                     'matched': True,
-                    'matched_conversation_id': rule.get('target_conversation_id'),
+                    'matched_conversation_id': target_id,
                     'matched_conversation_name': rule.get('target_conversation_name'),
                     'matched_rule_id': rule.get('id'),
+                    'target_resolution_status': resolution_status,
                 }
                 break
 
         if not matched['matched'] and group_value in normalized_group_names:
+            target_id, resolution_status = _resolve_target_conversation(
+                target_name=group_value,
+                target_id='',
+                group_names=normalized_group_names,
+            )
             matched = {
                 'matched': True,
-                'matched_conversation_id': normalized_group_names[group_value],
+                'matched_conversation_id': target_id,
                 'matched_conversation_name': group_value,
                 'matched_rule_id': None,
+                'target_resolution_status': resolution_status,
             }
 
         results.append(matched)
 
     return results
+
+
+def _resolve_target_conversation(
+    *,
+    target_name: str,
+    target_id: str,
+    group_names: dict[str, list[str]],
+) -> tuple[str | None, str]:
+    if target_id:
+        return target_id, 'resolved'
+    candidates = group_names.get(target_name, [])
+    if len(candidates) == 1:
+        return candidates[0], 'resolved'
+    if len(candidates) > 1:
+        return None, 'ambiguous'
+    return None, 'unresolved'
 
 
 def _rule_matches(
