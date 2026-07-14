@@ -156,15 +156,161 @@ Describe 'source installer batch contract' {
                 $_.Exception.Message | Should Match 'Refusing to update because the working tree contains tracked or untracked files\.'
             }
         }
+
+        function New-TestInstallerOrigin([string]$Path, [string]$SetupScriptContent) {
+            $worktreePath = Join-Path $Path 'origin-worktree'
+            $bareRepoPath = Join-Path $Path 'origin.git'
+            New-Item -ItemType Directory -Path (Join-Path $worktreePath 'scripts') -Force | Out-Null
+
+            & $git.Source init --quiet --initial-branch=main $worktreePath
+            if ($LASTEXITCODE -ne 0) { throw 'git init --initial-branch=main failed.' }
+
+            & $git.Source -C $worktreePath config user.name 'Test User'
+            if ($LASTEXITCODE -ne 0) { throw 'git config user.name failed for origin.' }
+
+            & $git.Source -C $worktreePath config user.email 'test@example.com'
+            if ($LASTEXITCODE -ne 0) { throw 'git config user.email failed for origin.' }
+
+            Set-Content -LiteralPath (Join-Path $worktreePath 'scripts\setup-source.ps1') -Value $SetupScriptContent -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $worktreePath 'README.md') -Value 'test repo' -Encoding utf8
+
+            & $git.Source -C $worktreePath add .
+            if ($LASTEXITCODE -ne 0) { throw 'git add failed for origin.' }
+
+            & $git.Source -C $worktreePath commit --quiet -m 'test: setup source'
+            if ($LASTEXITCODE -ne 0) { throw 'git commit failed for origin.' }
+
+            & $git.Source clone --quiet --bare $worktreePath $bareRepoPath
+            if ($LASTEXITCODE -ne 0) { throw 'git clone --bare failed.' }
+
+            [pscustomobject]@{
+                WorktreePath = $worktreePath
+                BareRepoPath = $bareRepoPath
+            }
+        }
+
+        function Invoke-TestInstallerBatch([string]$SetupScriptContent) {
+            $scenarioRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+            $sourceDir = Join-Path $scenarioRoot '中文 空格 source'
+            $targetDir = Join-Path $scenarioRoot '中文 空格 install'
+            $origin = New-TestInstallerOrigin $scenarioRoot $SetupScriptContent
+            $homeDir = Join-Path $scenarioRoot 'home'
+            $gitConfig = Join-Path $scenarioRoot 'gitconfig'
+            $stdoutPath = Join-Path $scenarioRoot 'stdout.log'
+            $stderrPath = Join-Path $scenarioRoot 'stderr.log'
+
+            New-Item -ItemType Directory -Path $sourceDir, $homeDir -Force | Out-Null
+            Copy-Item -LiteralPath $installerPath -Destination (Join-Path $sourceDir '02-install-wecome-bot.bat')
+            Set-Content -LiteralPath (Join-Path $sourceDir '01-check-environment.bat') -Value '@echo off' -Encoding ascii
+            Set-Content -LiteralPath (Join-Path $sourceDir '03-start-wecome-bot.bat') -Value '@echo off' -Encoding ascii
+
+            $originUri = [Uri]::new($origin.BareRepoPath).AbsoluteUri
+            & $git.Source config --file $gitConfig "url.$originUri.insteadOf" 'https://github.com/wuli073/wecome-bot.git'
+            if ($LASTEXITCODE -ne 0) { throw 'git config url.*.insteadOf failed.' }
+            $batchPath = Join-Path $sourceDir '02-install-wecome-bot.bat'
+            $cmdCommand = "echo.| call `"$batchPath`" `"$targetDir`""
+
+            $previousEnv = @{
+                HOME = [Environment]::GetEnvironmentVariable('HOME', 'Process')
+                USERPROFILE = [Environment]::GetEnvironmentVariable('USERPROFILE', 'Process')
+                GIT_CONFIG_GLOBAL = [Environment]::GetEnvironmentVariable('GIT_CONFIG_GLOBAL', 'Process')
+                GIT_TERMINAL_PROMPT = [Environment]::GetEnvironmentVariable('GIT_TERMINAL_PROMPT', 'Process')
+            }
+
+            try {
+                [Environment]::SetEnvironmentVariable('HOME', $homeDir, 'Process')
+                [Environment]::SetEnvironmentVariable('USERPROFILE', $homeDir, 'Process')
+                [Environment]::SetEnvironmentVariable('GIT_CONFIG_GLOBAL', $gitConfig, 'Process')
+                [Environment]::SetEnvironmentVariable('GIT_TERMINAL_PROMPT', '0', 'Process')
+
+                $process = Start-Process -FilePath 'cmd.exe' -ArgumentList '/u', '/d', '/c', $cmdCommand -WorkingDirectory $scenarioRoot -PassThru -Wait -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+            }
+            finally {
+                foreach ($name in $previousEnv.Keys) {
+                    [Environment]::SetEnvironmentVariable($name, $previousEnv[$name], 'Process')
+                }
+            }
+
+            $stdout = if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) { [IO.File]::ReadAllText($stdoutPath) } else { '' }
+            $stderr = if (Test-Path -LiteralPath $stderrPath -PathType Leaf) { [IO.File]::ReadAllText($stderrPath) } else { '' }
+            $setupLog = Join-Path $targetDir 'setup-source.log'
+
+            [pscustomobject]@{
+                ExitCode = $process.ExitCode
+                Output = $stdout
+                ErrorOutput = $stderr
+                CombinedOutput = $stdout + $stderr
+                TargetDir = $targetDir
+                SetupLog = $setupLog
+            }
+        }
     }
 
-    It 'keeps setup-source output in setup-source.log' {
+    It 'records setup-source output with a transcript and does not tee merged streams' {
         $content | Should Match 'setup-source\.log'
-        $content | Should Match 'Tee-Object -FilePath \$setupLog -Append'
+        $content | Should Match 'Start-Transcript -LiteralPath \$setupLog -Force'
+        $content | Should Match '& \$setupScript; \$setupExit=\$LASTEXITCODE'
+        $content | Should Match 'Stop-Transcript'
+        $content | Should Match 'Failed to start setup log transcript'
+        $content | Should Not Match '\*>\&1\s*\|\s*Tee-Object'
     }
 
     It 'pauses before exit when installation fails' {
         $content | Should Match ':failed\s+echo Installation failed\.\s+echo Review the error above or setup-source\.log\.\s+pause\s+endlocal\s+exit /b 1'
+    }
+
+    It 'continues when setup writes native stderr but exits with zero and creates setup-source.log' {
+        $result = Invoke-TestInstallerBatch @'
+$ErrorActionPreference = 'Stop'
+Write-Host '[1/6] Checking source prerequisites...'
+Write-Host '[2/6] Preparing managed Python 3.12...'
+& cmd.exe /d /c "echo Python 3.12 is already installed 1>&2 & exit /b 0"
+Write-Host '[3/6] Installing Python dependencies...'
+Write-Host '[4/6] Installing Web dependencies...'
+Write-Host '[5/6] Installing Desktop Runtime dependencies...'
+Write-Host '[6/6] Verifying environment...'
+[ordered]@{
+    status = 'ok'
+}
+'@
+
+        $result.ExitCode | Should Be 0
+        $result.CombinedOutput | Should Match 'Python 3\.12 is already installed'
+        $result.CombinedOutput | Should Match '\[3/6\] Installing Python dependencies\.{3}'
+        $result.CombinedOutput | Should Match '\[6/6\] Verifying environment\.{3}'
+        $result.CombinedOutput | Should Match 'status\s+ok'
+        $result.CombinedOutput | Should Match 'Installed or updated: '
+        $result.CombinedOutput | Should Not Match 'NativeCommandError'
+        (Test-Path -LiteralPath $result.SetupLog -PathType Leaf) | Should Be $true
+        [IO.File]::ReadAllText($result.SetupLog) | Should Match 'Windows PowerShell transcript start'
+    }
+
+    It 'fails and pauses when setup returns a non-zero native exit code' {
+        $result = Invoke-TestInstallerBatch @'
+$ErrorActionPreference = 'Stop'
+Write-Host '[1/6] Checking source prerequisites...'
+& cmd.exe /d /c "echo native failure 1>&2 & exit /b 23"
+'@
+
+        $result.ExitCode | Should Be 1
+        $result.CombinedOutput | Should Match 'Dependency installation failed with exit code 23'
+        $result.CombinedOutput | Should Match 'Installation failed\.'
+        $result.CombinedOutput | Should Match 'Review the error above or setup-source\.log\.'
+        $result.CombinedOutput | Should Match 'Press any key to continue \. \. \.'
+    }
+
+    It 'fails and keeps setup-source.log when setup throws' {
+        $result = Invoke-TestInstallerBatch @'
+$ErrorActionPreference = 'Stop'
+Write-Host '[1/6] Checking source prerequisites...'
+throw 'setup exploded'
+'@
+
+        $result.ExitCode | Should Be 1
+        $result.CombinedOutput | Should Match 'setup exploded'
+        $result.CombinedOutput | Should Match 'Installation failed\.'
+        (Test-Path -LiteralPath $result.SetupLog -PathType Leaf) | Should Be $true
+        [IO.File]::ReadAllText($result.SetupLog) | Should Match 'setup exploded'
     }
 
     It 'allows updates when only managed generated artifacts exist in a Chinese and spaced path' {
