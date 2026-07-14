@@ -3,7 +3,6 @@ from __future__ import annotations
 import quart
 
 from .. import group
-from .....utils import paths
 from .....desktop_automation.errors import (
     BOT_ADAPTER_UNSUPPORTED,
     BOT_CHANNEL_UNBOUND,
@@ -670,7 +669,9 @@ class DesktopAutomationRouterGroup(group.RouterGroup):
         async def cancel_run(run_id: int) -> str:
             return self.http_status(404, -1, 'Use bot-scoped desktop automation run endpoints')
 
-        runtime_status_auth_type = group.AuthType.NONE if paths.is_packaged_mode() else group.AuthType.USER_TOKEN
+        # The Source Starter uses this read-only, token-free status contract to
+        # wait for its backend-owned local runtime before opening the browser.
+        runtime_status_auth_type = group.AuthType.NONE
 
         @self.route('/runtime/status', methods=['GET'], auth_type=runtime_status_auth_type)
         async def runtime_status() -> str:

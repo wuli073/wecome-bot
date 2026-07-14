@@ -21,9 +21,25 @@ $script:LogsRoot = Join-Path $script:UserDataRoot 'logs\source'
 $script:ControlRoot = Join-Path $script:RepoRoot '.tmp\local-stack\control'
 $script:BaseUrl = "http://127.0.0.1:$BackendPort"
 $script:WebUrl = "http://127.0.0.1:$WebPort"
+$script:RuntimeRoot = Join-Path $script:RepoRoot 'apps\desktop-rpa-runtime'
+$script:RuntimeExecutable = [IO.Path]::GetFullPath((Join-Path $script:RuntimeRoot 'dist-phase2-official\win-dir\win-unpacked\LangBot Desktop RPA Runtime.exe'))
+$script:RuntimeUserDataRoot = Join-Path $script:UserDataRoot 'desktop-runtime'
 . (Join-Path $PSScriptRoot 'source-state.ps1')
 
 function Ensure-Directory([string]$Path) { New-Item -ItemType Directory -Force -Path $Path | Out-Null }
+function Write-DesktopRuntimeEvent([string]$EventName, $RuntimeRecord, [string]$Status = '') {
+    $logPath = Join-Path $script:LogsRoot 'desktop-runtime.stdout.log'
+    $payload = [ordered]@{
+        event = $EventName
+        status = $Status
+        pid = if ($null -ne $RuntimeRecord) { Get-ManagedSourceStateProperty -Object $RuntimeRecord -Name 'pid' } else { $null }
+        endpoint = if ($null -ne $RuntimeRecord) { Get-ManagedSourceStateProperty -Object $RuntimeRecord -Name 'endpoint' } else { $null }
+        paste = if ($null -ne $RuntimeRecord) { Get-ManagedSourceStateProperty -Object (Get-ManagedSourceStateProperty -Object $RuntimeRecord -Name 'capabilities') -Name 'paste' } else { $null }
+        send = if ($null -ne $RuntimeRecord) { Get-ManagedSourceStateProperty -Object (Get-ManagedSourceStateProperty -Object $RuntimeRecord -Name 'capabilities') -Name 'send' } else { $null }
+        runtimeVersion = if ($null -ne $RuntimeRecord) { Get-ManagedSourceStateProperty -Object (Get-ManagedSourceStateProperty -Object $RuntimeRecord -Name 'capabilities') -Name 'version' } else { $null }
+    }
+    Add-Content -LiteralPath $logPath -Value (($payload | ConvertTo-Json -Compress)) -Encoding utf8
+}
 function Start-LoggedProcess([string]$FilePath, [string[]]$ArgumentList, [string]$WorkingDirectory, [string]$StdoutLogPath, [string]$StderrLogPath) {
     Ensure-Directory (Split-Path -Parent $StdoutLogPath)
     Ensure-Directory (Split-Path -Parent $StderrLogPath)
@@ -144,6 +160,94 @@ function Test-WebHealthy {
     try { return (Invoke-WebRequest -Uri $script:WebUrl -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200 }
     catch { return $false }
 }
+function Get-DesktopRuntimeStatus {
+    try {
+        $response = Invoke-JsonGet "$script:BaseUrl/api/v1/desktop-automation/runtime/status"
+        $data = Get-ManagedSourceStateProperty -Object $response -Name 'data'
+        if ($null -ne $data) { return $data }
+        return $response
+    }
+    catch { return $null }
+}
+function Test-DesktopRuntimeHealthy($RuntimeStatus) {
+    if ($null -eq $RuntimeStatus) { return $false }
+    $runtimePhase = [string](Get-ManagedSourceStateProperty -Object $RuntimeStatus -Name 'status')
+    $reachable = Get-ManagedSourceStateProperty -Object $RuntimeStatus -Name 'runtime_reachable'
+    $inputAvailable = Get-ManagedSourceStateProperty -Object $RuntimeStatus -Name 'inputAvailable'
+    $sendEnabled = Get-ManagedSourceStateProperty -Object $RuntimeStatus -Name 'send_enabled'
+    $isReady = ($runtimePhase -eq 'ready')
+    $hasReachability = ($reachable -eq $true)
+    $hasInput = ($inputAvailable -eq $true)
+    $hasSend = ($sendEnabled -eq $true)
+    return ($isReady -and $hasReachability -and $hasInput -and $hasSend)
+}
+function Get-DesktopRuntimeProcessRecord($Status) {
+    if (-not (Test-Path -LiteralPath $script:RuntimeExecutable -PathType Leaf)) { return $null }
+    $process = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.ExecutablePath -and
+        [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath([string]$_.ExecutablePath), $script:RuntimeExecutable) -and
+        ([string]$_.CommandLine) -notmatch '\s--type='
+    } | Select-Object -First 1
+    if ($null -eq $process) { return $null }
+    try {
+        $record = Get-ProcessRecord ([int]$process.ProcessId) 'desktop-runtime'
+        $record.repoRoot = $script:RepoRoot
+        $record.logPath = Join-Path $script:LogsRoot 'desktop-runtime.stderr.log'
+        $record.endpoint = "http://127.0.0.1:$([string](Get-ManagedSourceStateProperty -Object $Status -Name 'port'))"
+        $record.status = [string](Get-ManagedSourceStateProperty -Object $Status -Name 'status')
+        $record.capabilities = [ordered]@{
+            paste = (Get-ManagedSourceStateProperty -Object $Status -Name 'inputAvailable') -eq $true
+            send = (Get-ManagedSourceStateProperty -Object $Status -Name 'send_enabled') -eq $true
+            version = Get-ManagedSourceStateProperty -Object $Status -Name 'runtimeVersion'
+        }
+        return $record
+    }
+    catch { return $null }
+}
+function Test-DesktopRuntimeRecord($Record) {
+    if ($null -eq $Record) { return $false }
+    foreach ($name in @('pid', 'startTicks', 'executable')) {
+        if (-not (Test-ManagedSourceStateProperty -Object $Record -Name $name)) { return $false }
+    }
+    $processId = 0
+    $startTicks = [int64]0
+    $pidValue = Get-ManagedSourceStateProperty -Object $Record -Name 'pid'
+    $startTicksValue = Get-ManagedSourceStateProperty -Object $Record -Name 'startTicks'
+    $executable = [string](Get-ManagedSourceStateProperty -Object $Record -Name 'executable')
+    if ($null -eq $pidValue -or $null -eq $startTicksValue -or [string]::IsNullOrWhiteSpace($executable)) { return $false }
+    if (-not [int]::TryParse([string]$pidValue, [ref]$processId) -or $processId -le 0) { return $false }
+    if (-not [int64]::TryParse([string]$startTicksValue, [ref]$startTicks) -or $startTicks -le 0) { return $false }
+    try {
+        $process = Get-Process -Id $processId -ErrorAction Stop
+        if ($process.StartTime.ToUniversalTime().Ticks -ne $startTicks) { return $false }
+        if (-not [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($executable), $script:RuntimeExecutable)) { return $false }
+        $repoRoot = [string](Get-ManagedSourceStateProperty -Object $Record -Name 'repoRoot')
+        if (-not [string]::IsNullOrWhiteSpace($repoRoot)) {
+            if (-not [IO.Path]::GetFullPath($repoRoot).Equals($script:RepoRoot, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        }
+        return $true
+    }
+    catch { return $false }
+}
+function Wait-ForDesktopRuntime([int]$Timeout) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($Timeout)
+    $lastDetail = 'runtime status endpoint unavailable'
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $status = Get-DesktopRuntimeStatus
+        if (Test-DesktopRuntimeHealthy $status) {
+            $record = Get-DesktopRuntimeProcessRecord $status
+            if ($null -ne $record -and (Test-DesktopRuntimeRecord $record)) {
+                return [ordered]@{ status=$status; record=$record }
+            }
+            $lastDetail = 'runtime reported ready but its owned process record was not found'
+        }
+        elseif ($null -ne $status) {
+            $lastDetail = "status=$([string](Get-ManagedSourceStateProperty -Object $status -Name 'status')); errorCode=$([string](Get-ManagedSourceStateProperty -Object $status -Name 'errorCode'))"
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "Desktop Runtime did not become ready with paste/send capabilities within $Timeout seconds: $lastDetail. Logs: $script:LogsRoot"
+}
 function Start-WebSourceProcess {
     $vite = Join-Path $script:RepoRoot 'web\node_modules\vite\bin\vite.js'
     $webEnvironment = @{ VITE_API_BASE_URL=$script:BaseUrl }
@@ -162,13 +266,15 @@ function Start-WebSourceProcess {
     }
     finally { foreach ($key in $webEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $savedWeb[$key], 'Process') } }
     Wait-ForWeb 45
-    return Get-ProcessRecord $web.Id 'web'
+    $webListenerPid = Get-PortOwner $WebPort
+    if ($null -eq $webListenerPid) { throw "Web server reported ready but port $WebPort has no listener." }
+    return Get-ProcessRecord $webListenerPid 'web'
 }
-function New-RecoveredSourceState($BackendRecord, $WebRecord) {
+function New-RecoveredSourceState($BackendRecord, $WebRecord, $RuntimeRecord) {
     return [ordered]@{
-        schema=1; sessionId=[guid]::NewGuid().ToString('N'); repoRoot=$script:RepoRoot; userDataRoot=$script:UserDataRoot
+        schema=2; sessionId=[guid]::NewGuid().ToString('N'); repoRoot=$script:RepoRoot; userDataRoot=$script:UserDataRoot
         backendPort=$BackendPort; webPort=$WebPort; logsRoot=$script:LogsRoot; shutdownPath=$null
-        backend=$BackendRecord; backendListener=$BackendRecord; web=$WebRecord
+        backend=$BackendRecord; backendListener=$BackendRecord; web=$WebRecord; runtime=$RuntimeRecord
     }
 }
 function Wait-ForBackend([string]$Path, [int]$Timeout) {
@@ -200,25 +306,29 @@ function Wait-ForWeb([int]$Timeout) {
 function Start-Source {
     $existing = Read-ManagedSourceState $script:StatePath
     if ($existing -and -not (Test-CurrentRepoState $existing)) { throw 'Refusing to replace a managed source state owned by a different repository.' }
-    Ensure-Directory $script:UserDataRoot; Ensure-Directory $script:LogsRoot; Ensure-Directory $script:ControlRoot
+    Ensure-Directory $script:UserDataRoot; Ensure-Directory $script:LogsRoot; Ensure-Directory $script:ControlRoot; Ensure-Directory $script:RuntimeUserDataRoot
     $backendListener = Get-ListenerProcessRecord -Port $BackendPort
     $webListener = Get-ListenerProcessRecord -Port $WebPort
     $backendOwned = Test-CurrentRepoListener $backendListener
     $webOwned = Test-CurrentRepoListener $webListener
     if ($backendOwned -and (Test-BackendHealthy)) {
         if ($webOwned -and (Test-WebHealthy)) {
-            $recovered = New-RecoveredSourceState $backendListener $webListener
+            $runtimeReady = Wait-ForDesktopRuntime $StartupTimeoutSeconds
+            $recovered = New-RecoveredSourceState $backendListener $webListener $runtimeReady.record
             Write-ManagedSourceState $script:StatePath $recovered
-            $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=$backendListener.pid; webPid=$webListener.pid; backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='enabled'; runtimeState='recovered' }
+            Write-DesktopRuntimeEvent -EventName 'runtime_recovered' -RuntimeRecord $runtimeReady.record -Status $runtimeReady.status.status
+            $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=$backendListener.pid; webPid=$webListener.pid; runtimePid=$runtimeReady.record.pid; backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='enabled'; runtimeState='recovered' }
             if (-not $NoBrowser) { Start-Process $script:WebUrl }
             return $result
         }
         if ($webOwned) { [void](Stop-VerifiedProcess $webListener) }
         Assert-PortFree $WebPort
         $recoveredWeb = Start-WebSourceProcess
-        $recovered = New-RecoveredSourceState $backendListener $recoveredWeb
+        $runtimeReady = Wait-ForDesktopRuntime $StartupTimeoutSeconds
+        $recovered = New-RecoveredSourceState $backendListener $recoveredWeb $runtimeReady.record
         Write-ManagedSourceState $script:StatePath $recovered
-        $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=$backendListener.pid; webPid=$recoveredWeb.pid; backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='enabled'; runtimeState='recovered' }
+        Write-DesktopRuntimeEvent -EventName 'runtime_recovered' -RuntimeRecord $runtimeReady.record -Status $runtimeReady.status.status
+        $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=$backendListener.pid; webPid=$recoveredWeb.pid; runtimePid=$runtimeReady.record.pid; backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='enabled'; runtimeState='recovered' }
         if (-not $NoBrowser) { Start-Process $script:WebUrl }
         return $result
     }
@@ -228,12 +338,12 @@ function Start-Source {
     Assert-PortFree $BackendPort; Assert-PortFree $WebPort
     $python = Join-Path $script:RepoRoot '.venv\Scripts\python.exe'
     $vite = Join-Path $script:RepoRoot 'web\node_modules\vite\bin\vite.js'
-    foreach ($path in @($python, $vite, (Join-Path $script:RepoRoot 'vendor\wechat_decrypt\mcp_wxwork_http_server.py'))) {
+    foreach ($path in @($python, $vite, $script:RuntimeExecutable, (Join-Path $script:RepoRoot 'vendor\wechat_decrypt\mcp_wxwork_http_server.py'))) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Source setup is incomplete: $path. Run .\scripts\setup-source.ps1." }
     }
     $sessionId = [guid]::NewGuid().ToString('N')
     $shutdownPath = Join-Path $script:ControlRoot "source-$sessionId.shutdown.json"
-    $environment = @{ PYTHONPATH=(Join-Path $script:RepoRoot 'src'); CHATBOT_USER_DATA_ROOT=$script:UserDataRoot; LANGBOT_DATA_ROOT=$script:UserDataRoot; API__PORT=[string]$BackendPort; API__WEBHOOK_PREFIX=$script:BaseUrl; LANGBOT_RPA_FORCE_DISABLE_SEND='0'; LANGBOT_RPA_ALLOW_AUTO_SEND='1'; LANGBOT_BROADCAST_SEND_ENABLED='1'; LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS='*'; LANGBOT_LOCAL_STACK_SESSION_ID=$sessionId; LANGBOT_LOCAL_SHUTDOWN_REQUEST_PATH=$shutdownPath }
+    $environment = @{ PYTHONPATH=(Join-Path $script:RepoRoot 'src'); CHATBOT_USER_DATA_ROOT=$script:UserDataRoot; LANGBOT_DATA_ROOT=$script:UserDataRoot; API__PORT=[string]$BackendPort; API__WEBHOOK_PREFIX=$script:BaseUrl; DESKTOP_AUTOMATION__ENABLED='true'; LANGBOT_RPA_LOG_DIR=$script:LogsRoot; LANGBOT_RPA_USER_DATA_DIR=$script:RuntimeUserDataRoot; LANGBOT_RPA_FORCE_DISABLE_SEND='0'; LANGBOT_RPA_ALLOW_AUTO_SEND='1'; LANGBOT_BROADCAST_SEND_ENABLED='1'; LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS='*'; LANGBOT_LOCAL_STACK_SESSION_ID=$sessionId; LANGBOT_LOCAL_SHUTDOWN_REQUEST_PATH=$shutdownPath }
     $saved = @{}; foreach ($key in $environment.Keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process'); [Environment]::SetEnvironmentVariable($key, $environment[$key], 'Process') }
     try {
         $backend = Start-LoggedProcess `
@@ -244,16 +354,22 @@ function Start-Source {
             -StderrLogPath (Join-Path $script:LogsRoot 'backend.stderr.log')
     }
     finally { foreach ($key in $environment.Keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key], 'Process') } }
-    $state = [ordered]@{ schema=1; sessionId=$sessionId; repoRoot=$script:RepoRoot; userDataRoot=$script:UserDataRoot; backendPort=$BackendPort; webPort=$WebPort; logsRoot=$script:LogsRoot; shutdownPath=$shutdownPath; backend=(Get-ProcessRecord $backend.Id 'backend'); backendListener=$null; web=$null }
+    Set-Content -LiteralPath (Join-Path $script:LogsRoot 'desktop-runtime.stdout.log') -Value 'runtime launch managed by backend' -Encoding utf8
+    if (-not (Test-Path -LiteralPath (Join-Path $script:LogsRoot 'desktop-runtime.stderr.log'))) { New-Item -ItemType File -Path (Join-Path $script:LogsRoot 'desktop-runtime.stderr.log') -Force | Out-Null }
+    $state = [ordered]@{ schema=2; sessionId=$sessionId; repoRoot=$script:RepoRoot; userDataRoot=$script:UserDataRoot; backendPort=$BackendPort; webPort=$WebPort; logsRoot=$script:LogsRoot; shutdownPath=$shutdownPath; backend=(Get-ProcessRecord $backend.Id 'backend'); backendListener=$null; web=$null; runtime=$null }
     Write-ManagedSourceState $script:StatePath $state
     try {
         $readiness = Wait-ForBackend (Join-Path $script:LogsRoot 'backend.stderr.log') $StartupTimeoutSeconds
         $backendListenerPid = Get-PortOwner $BackendPort
         if ($null -eq $backendListenerPid) { throw "Backend health succeeded but port $BackendPort has no listener." }
+        $state.backend = Get-ProcessRecord $backendListenerPid 'backend'
         $state.backendListener = Get-ProcessRecord $backendListenerPid 'backend-listener'
         Write-ManagedSourceState $script:StatePath $state
         $state.web = Start-WebSourceProcess; Write-ManagedSourceState $script:StatePath $state
-        $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=(Get-ProcessRecordId (Get-ManagedSourceStateProperty -Object $state -Name 'backend')); webPid=(Get-ProcessRecordId (Get-ManagedSourceStateProperty -Object $state -Name 'web')); backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='enabled'; runtimeState=$readiness.runtime.state }
+        $runtimeReady = Wait-ForDesktopRuntime $StartupTimeoutSeconds
+        $state.runtime = $runtimeReady.record; Write-ManagedSourceState $script:StatePath $state
+        Write-DesktopRuntimeEvent -EventName 'runtime_ready' -RuntimeRecord $runtimeReady.record -Status $runtimeReady.status.status
+        $result = [ordered]@{ status='running'; url=$script:WebUrl; api=$script:BaseUrl; backendPid=(Get-ProcessRecordId (Get-ManagedSourceStateProperty -Object $state -Name 'backend')); webPid=(Get-ProcessRecordId (Get-ManagedSourceStateProperty -Object $state -Name 'web')); runtimePid=$runtimeReady.record.pid; backendPort=$BackendPort; webPort=$WebPort; logs=$script:LogsRoot; userData=$script:UserDataRoot; realSend='enabled'; runtimeState=$runtimeReady.status.status }
         if (-not $NoBrowser) { Start-Process $script:WebUrl }
         return $result
     }
@@ -265,10 +381,14 @@ function Stop-Source {
     if (-not (Test-CurrentRepoState $state)) { throw 'Refusing to stop a source stack owned by a different repository.' }
     $backend = Get-ManagedSourceStateProperty -Object $state -Name 'backend'
     $web = Get-ManagedSourceStateProperty -Object $state -Name 'web'
+    $runtime = Get-ManagedSourceStateProperty -Object $state -Name 'runtime'
     $backendListener = Get-ManagedSourceStateProperty -Object $state -Name 'backendListener'
     $shutdownPath = Get-ManagedSourceStateProperty -Object $state -Name 'shutdownPath'
     $sessionId = Get-ManagedSourceStateProperty -Object $state -Name 'sessionId'
     if ((Test-ControlPath $shutdownPath) -and (Test-ProcessRecord $backend)) { Write-ManagedSourceState $shutdownPath ([ordered]@{ sessionId=$sessionId; action='shutdown'; reason='source-stop'; requestedAt=[DateTime]::UtcNow.ToString('o') }); Start-Sleep -Seconds 2 }
+    # Backend shutdown closes task admission and asks its owned runtime to exit.
+    # The explicit runtime fallback is limited to the exact packaged executable.
+    if (Test-DesktopRuntimeRecord $runtime) { [void](Stop-VerifiedProcess $runtime) }
     foreach ($record in @($web, $backend, $backendListener)) { [void](Stop-VerifiedProcess $record) }
     $backendPort = Get-StatePort $state 'backendPort'
     $webPort = Get-StatePort $state 'webPort'
@@ -278,17 +398,20 @@ function Stop-Source {
 }
 function Get-SourceStatus {
     $state = Read-ManagedSourceState $script:StatePath -Quiet
-    if ($null -eq $state) { return [ordered]@{ status='stopped'; detail='no-managed-source-state'; backendPid=$null; webPid=$null; userData=$script:UserDataRoot } }
-    if (-not (Test-CurrentRepoState $state)) { return [ordered]@{ status='stopped'; detail='foreign-managed-source-state'; backendPid=$null; webPid=$null; userData=$script:UserDataRoot } }
+    if ($null -eq $state) { return [ordered]@{ status='stopped'; detail='no-managed-source-state'; backendPid=$null; webPid=$null; runtimePid=$null; userData=$script:UserDataRoot } }
+    if (-not (Test-CurrentRepoState $state)) { return [ordered]@{ status='stopped'; detail='foreign-managed-source-state'; backendPid=$null; webPid=$null; runtimePid=$null; userData=$script:UserDataRoot } }
     $backend = Get-ManagedSourceStateProperty -Object $state -Name 'backend'
     $web = Get-ManagedSourceStateProperty -Object $state -Name 'web'
+    $runtime = Get-ManagedSourceStateProperty -Object $state -Name 'runtime'
     $backendValid = Test-ProcessRecord $backend
     $webValid = Test-ProcessRecord $web
+    $runtimeValid = Test-DesktopRuntimeRecord $runtime
     $backendPid = if ($backendValid) { Get-ProcessRecordId $backend } else { $null }
     $webPid = if ($webValid) { Get-ProcessRecordId $web } else { $null }
-    $detail = if ($backendValid -and $webValid) { 'running' } elseif ($backendValid -or $webValid) { 'partial-managed-source-state' } elseif ($null -eq $backend -and $null -eq $web) { 'partial-managed-source-state' } else { 'stale-managed-source-state' }
-    $status = if ($backendValid -and $webValid) { 'running' } elseif ($backendValid -or $webValid) { 'degraded' } else { 'stopped' }
-    return [ordered]@{ status=$status; detail=$detail; backendPid=$backendPid; webPid=$webPid; backendPort=(Get-StatePort $state 'backendPort'); webPort=(Get-StatePort $state 'webPort'); logs=(Get-ManagedSourceStateProperty -Object $state -Name 'logsRoot'); userData=(Get-ManagedSourceStateProperty -Object $state -Name 'userDataRoot') }
+    $runtimePid = if ($runtimeValid) { Get-ProcessRecordId $runtime } else { $null }
+    $detail = if ($backendValid -and $webValid -and $runtimeValid) { 'running' } elseif ($backendValid -or $webValid -or $runtimeValid) { 'partial-managed-source-state' } else { 'stale-managed-source-state' }
+    $status = if ($backendValid -and $webValid -and $runtimeValid) { 'running' } elseif ($backendValid -or $webValid -or $runtimeValid) { 'degraded' } else { 'stopped' }
+    return [ordered]@{ status=$status; detail=$detail; backendPid=$backendPid; webPid=$webPid; runtimePid=$runtimePid; backendPort=(Get-StatePort $state 'backendPort'); webPort=(Get-StatePort $state 'webPort'); logs=(Get-ManagedSourceStateProperty -Object $state -Name 'logsRoot'); userData=(Get-ManagedSourceStateProperty -Object $state -Name 'userDataRoot') }
 }
 
 try {

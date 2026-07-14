@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul
 if errorlevel 1 goto :failed
 setlocal EnableExtensions DisableDelayedExpansion
@@ -43,6 +43,7 @@ exit /b 1
 
 :failed
 echo Start or doctor check failed.
+echo Logs: %LB_REPO_ROOT%.tmp\source-runtime\user-data\logs\source
 pause
 endlocal
 exit /b 1

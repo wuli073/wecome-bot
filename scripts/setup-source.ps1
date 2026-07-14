@@ -7,6 +7,8 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $webRoot = Join-Path $repoRoot 'web'
+$desktopRuntimeRoot = Join-Path $repoRoot 'apps\desktop-rpa-runtime'
+$desktopRuntimeExecutable = Join-Path $desktopRuntimeRoot 'dist-phase2-official\win-dir\win-unpacked\LangBot Desktop RPA Runtime.exe'
 $venvPath = [IO.Path]::GetFullPath((Join-Path $repoRoot '.venv'))
 
 function Require-Command([string]$Name) {
@@ -58,7 +60,7 @@ if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) {
     throw 'This source distribution supports Windows x64 only.'
 }
 
-Write-Host '[1/5] Checking source prerequisites...'
+Write-Host '[1/6] Checking source prerequisites...'
 $git = Require-Command 'git.exe'
 $node = Require-Command 'node.exe'
 $npm = Require-Command 'npm.cmd'
@@ -69,23 +71,25 @@ if ($nodeVersion -notmatch '^v22\.') { throw "Node.js 22.x is required; found $n
 foreach ($path in @(
     (Join-Path $repoRoot 'uv.lock'),
     (Join-Path $webRoot 'package-lock.json'),
+    (Join-Path $desktopRuntimeRoot 'package.json'),
+    (Join-Path $desktopRuntimeRoot 'package-lock.json'),
     (Join-Path $repoRoot 'vendor\wechat_decrypt\connector_runtime.py'),
     (Join-Path $repoRoot 'vendor\wechat_decrypt\mcp_wxwork_http_server.py')
 )) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required source entry or lock file is missing: $path" }
 }
 
-$lockFiles = @((Join-Path $repoRoot 'uv.lock'), (Join-Path $webRoot 'package-lock.json'), (Join-Path $webRoot 'pnpm-lock.yaml')) |
+$lockFiles = @((Join-Path $repoRoot 'uv.lock'), (Join-Path $webRoot 'package-lock.json'), (Join-Path $webRoot 'pnpm-lock.yaml'), (Join-Path $desktopRuntimeRoot 'package-lock.json')) |
     Where-Object { Test-Path -LiteralPath $_ }
 $before = @{}
 foreach ($lockFile in $lockFiles) { $before[$lockFile] = (Get-FileHash -LiteralPath $lockFile -Algorithm SHA256).Hash }
 
-Write-Host '[2/5] Preparing managed Python 3.12...'
+Write-Host '[2/6] Preparing managed Python 3.12...'
 & $uv python install 3.12
 if ($LASTEXITCODE -ne 0) { throw 'uv python install 3.12 failed.' }
 
 $existingVenvPython = Get-ExistingVenvPythonVersion $venvPath
-Write-Host '[3/5] Installing Python dependencies...'
+Write-Host '[3/6] Installing Python dependencies...'
 Push-Location $repoRoot
 try {
     $syncExitCode = Invoke-ManagedPythonSync $uv
@@ -98,20 +102,40 @@ try {
 }
 finally { Pop-Location }
 
-Write-Host '[4/5] Verifying Python environment...'
-$venvPython = Join-Path $venvPath 'Scripts\python.exe'
-if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) { throw "Project Python executable is missing: $venvPython" }
-$pythonVersion = Get-TextCommand $venvPython @('--version')
-if ($pythonVersion -notmatch '^Python 3\.12\.') { throw "Expected Python 3.12 in .venv; found $pythonVersion." }
-$onnxruntimeVersion = Get-TextCommand $venvPython @('-c', 'import onnxruntime; print(onnxruntime.__version__)')
-
-Write-Host '[5/5] Installing Web dependencies...'
+Write-Host '[4/6] Installing Web dependencies...'
 Push-Location $webRoot
 try {
     & $npm ci
     if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' }
 }
 finally { Pop-Location }
+
+Write-Host '[5/6] Installing Desktop Runtime dependencies...'
+Push-Location $desktopRuntimeRoot
+try {
+    & $npm ci
+    if ($LASTEXITCODE -ne 0) { throw 'Desktop Runtime dependency installation failed.' }
+    & $npm run rebuild:native
+    if ($LASTEXITCODE -ne 0) { throw 'Desktop Runtime native dependency rebuild failed.' }
+    & $npm run package:win:dir
+    if ($LASTEXITCODE -ne 0) { throw 'Desktop Runtime package build failed.' }
+}
+catch {
+    Write-Error 'Desktop Runtime dependency installation failed.'
+    throw
+}
+finally { Pop-Location }
+
+if (-not (Test-Path -LiteralPath $desktopRuntimeExecutable -PathType Leaf)) {
+    throw "Desktop Runtime entry is missing after installation: $desktopRuntimeExecutable"
+}
+
+Write-Host '[6/6] Verifying environment...'
+$venvPython = Join-Path $venvPath 'Scripts\python.exe'
+if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) { throw "Project Python executable is missing: $venvPython" }
+$pythonVersion = Get-TextCommand $venvPython @('--version')
+if ($pythonVersion -notmatch '^Python 3\.12\.') { throw "Expected Python 3.12 in .venv; found $pythonVersion." }
+$onnxruntimeVersion = Get-TextCommand $venvPython @('-c', 'import onnxruntime; print(onnxruntime.__version__)')
 
 foreach ($lockFile in $lockFiles) {
     $after = (Get-FileHash -LiteralPath $lockFile -Algorithm SHA256).Hash
@@ -129,6 +153,7 @@ $envStatus = if (Test-Path -LiteralPath (Join-Path $webRoot '.env')) { 'preserve
     npm = (Get-TextCommand $npm @('--version'))
     uv = (Get-TextCommand $uv @('--version'))
     environmentFile = $envStatus
+    desktopRuntime = $desktopRuntimeExecutable
     locks = 'verified-unchanged'
     wechatDecrypt = 'vendor/wechat_decrypt/mcp_wxwork_http_server.py'
 } | ConvertTo-Json

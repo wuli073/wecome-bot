@@ -269,6 +269,7 @@ class DesktopRuntimeProcessManager:
         self._selected_runtime_executable: Path | None = None
         self._manager_session_id = secrets.token_hex(8)
         self._stopping = False
+        self._runtime_log_dir = _normalize_path(os.environ.get('LANGBOT_RPA_LOG_DIR'))
 
     async def ensure_started(self) -> dict[str, Any]:
         async with self._lock:
@@ -739,8 +740,12 @@ class DesktopRuntimeProcessManager:
         return payload
 
     async def _spawn_runtime(self, runtime_executable: Path, *, env: dict[str, str], cwd: Path):
+        command = [str(runtime_executable)]
+        runtime_user_data_dir = str(env.get('LANGBOT_RPA_USER_DATA_DIR', '')).strip()
+        if runtime_user_data_dir:
+            command.append(f'--user-data-dir={runtime_user_data_dir}')
         return await asyncio.create_subprocess_exec(
-            str(runtime_executable),
+            *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(cwd),
@@ -752,6 +757,29 @@ class DesktopRuntimeProcessManager:
             line = await stream.readline()
             if not line:
                 return
+            self._write_runtime_stderr_event(line)
+
+    def _write_runtime_stderr_event(self, line: bytes) -> None:
+        """Record a sanitized runtime stderr event without persisting user content."""
+        if self._runtime_log_dir is None:
+            return
+        try:
+            self._runtime_log_dir.mkdir(parents=True, exist_ok=True)
+            raw = line.decode('utf-8', errors='replace').strip()
+            code_match = re.search(r'\b([A-Z][A-Z0-9_]{2,})\b', raw)
+            code = code_match.group(1) if code_match else 'RUNTIME_STDERR'
+            entry = json.dumps(
+                {
+                    'event': 'runtime_stderr',
+                    'code': code,
+                    'session': self._manager_session_id,
+                },
+                ensure_ascii=True,
+            )
+            with (self._runtime_log_dir / 'desktop-runtime.stderr.log').open('a', encoding='utf-8') as file:
+                file.write(entry + '\n')
+        except OSError:
+            logger.debug('Unable to write desktop runtime stderr event', exc_info=True)
 
     def _build_owned_snapshot(self) -> OwnedRuntimeSnapshot | None:
         process = self.process

@@ -13,6 +13,7 @@ if (-not $UserDataRoot) { $UserDataRoot = Join-Path $repoRoot '.tmp\source-runti
 $userDataRoot = [IO.Path]::GetFullPath($UserDataRoot)
 $statePath = Join-Path $userDataRoot 'runtime\source-stack-state.json'
 $baseUrl = "http://127.0.0.1:$BackendPort"
+$runtimeExecutable = Join-Path $repoRoot 'apps\desktop-rpa-runtime\dist-phase2-official\win-dir\win-unpacked\LangBot Desktop RPA Runtime.exe'
 $results = [System.Collections.Generic.List[object]]::new()
 . (Join-Path $PSScriptRoot 'source-state.ps1')
 
@@ -42,6 +43,9 @@ foreach ($path in @(
     (Join-Path $repoRoot 'web\package-lock.json'),
     (Join-Path $repoRoot '.venv\Scripts\python.exe'),
     (Join-Path $repoRoot 'web\node_modules\vite\bin\vite.js'),
+    (Join-Path $repoRoot 'apps\desktop-rpa-runtime\package.json'),
+    (Join-Path $repoRoot 'apps\desktop-rpa-runtime\package-lock.json'),
+    $runtimeExecutable,
     (Join-Path $repoRoot 'vendor\wechat_decrypt\connector_runtime.py'),
     (Join-Path $repoRoot 'vendor\wechat_decrypt\mcp_wxwork_http_server.py'),
     (Join-Path $repoRoot 'vendor\wechat_decrypt\wxwork_message_monitor.py')
@@ -56,12 +60,39 @@ foreach ($port in @($BackendPort, $WebPort, 5681)) {
 
 $state = Read-ManagedSourceState $statePath
 if ($null -eq $state) { Add-Result 'managed-source-stack' 'warn' "not started; state=$statePath" }
-else { Add-Result 'managed-source-stack' 'pass' "backend PID $($state.backend.pid), web PID $($state.web.pid), logs $($state.logsRoot)" }
+else {
+    $backend = Get-ManagedSourceStateProperty -Object $state -Name 'backend'
+    $web = Get-ManagedSourceStateProperty -Object $state -Name 'web'
+    $runtime = Get-ManagedSourceStateProperty -Object $state -Name 'runtime'
+    Add-Result 'managed-source-stack' 'pass' "backend PID $(Get-ManagedSourceStateProperty -Object $backend -Name 'pid'), web PID $(Get-ManagedSourceStateProperty -Object $web -Name 'pid'), runtime PID $(Get-ManagedSourceStateProperty -Object $runtime -Name 'pid'), logs $(Get-ManagedSourceStateProperty -Object $state -Name 'logsRoot')"
+}
 
 $health = Test-HttpJson '/healthz'; $runtime = Test-HttpJson '/api/v1/system/runtime/status'; $ready = Test-HttpJson '/readyz'
 Add-Result 'health' $(if ($health -and $health.code -eq 0) {'pass'} else {'fail'}) $(if ($health) { "state=$($health.state)" } else { 'endpoint unavailable' })
 Add-Result 'runtime' $(if ($runtime -and $runtime.state -in @('CORE_READY', 'READY', 'DEGRADED')) {'pass'} else {'fail'}) $(if ($runtime) { "state=$($runtime.state)" } else { 'endpoint unavailable' })
 Add-Result 'ready' $(if ($ready -and $ready.state -in @('CORE_READY', 'READY', 'DEGRADED')) {'pass'} else {'fail'}) $(if ($ready) { "state=$($ready.state)" } else { 'endpoint unavailable' })
+
+$desktopRuntimeResponse = Test-HttpJson '/api/v1/desktop-automation/runtime/status'
+$runtimeData = Get-ManagedSourceStateProperty -Object $desktopRuntimeResponse -Name 'data'
+$desktopRuntime = if ($null -ne $runtimeData) { $runtimeData } else { $desktopRuntimeResponse }
+if ($null -eq $desktopRuntime) {
+    Add-Result 'desktop-runtime' 'fail' 'RUNTIME_CONNECTION_FAILED: status endpoint unavailable'
+    Add-Result 'desktop-runtime-paste' 'fail' 'RUNTIME_CONNECTION_FAILED'
+    Add-Result 'desktop-runtime-send' 'fail' 'RUNTIME_CONNECTION_FAILED'
+}
+else {
+    $runtimeCode = [string](Get-ManagedSourceStateProperty -Object $desktopRuntime -Name 'errorCode')
+    $runtimeStatus = [string](Get-ManagedSourceStateProperty -Object $desktopRuntime -Name 'status')
+    $runtimeReachable = Get-ManagedSourceStateProperty -Object $desktopRuntime -Name 'runtime_reachable'
+    $runtimeVersion = Get-ManagedSourceStateProperty -Object $desktopRuntime -Name 'runtimeVersion'
+    $runtimeReady = $runtimeStatus -eq 'ready' -and $runtimeReachable -eq $true
+    $runtimeDetail = "status=$runtimeStatus; code=$runtimeCode; version=$runtimeVersion; logs=$(Join-Path $userDataRoot 'logs\source')"
+    Add-Result 'desktop-runtime' $(if ($runtimeReady) {'pass'} else {'fail'}) $(if ($runtimeReady) { $runtimeDetail } elseif ($runtimeCode) { $runtimeDetail } elseif (-not (Test-Path -LiteralPath $runtimeExecutable)) { 'RUNTIME_NOT_INSTALLED: runtime executable is missing' } else { 'RUNTIME_CONNECTION_FAILED: runtime is not reachable' })
+    $pasteReady = $runtimeReady -and (Get-ManagedSourceStateProperty -Object $desktopRuntime -Name 'inputAvailable') -eq $true
+    $sendReady = $runtimeReady -and (Get-ManagedSourceStateProperty -Object $desktopRuntime -Name 'send_enabled') -eq $true
+    Add-Result 'desktop-runtime-paste' $(if ($pasteReady) {'pass'} else {'fail'}) $(if ($pasteReady) {'Paste: enabled'} else {'RUNTIME_CAPABILITY_UNAVAILABLE: paste capability is unavailable'})
+    Add-Result 'desktop-runtime-send' $(if ($sendReady) {'pass'} else {'fail'}) $(if ($sendReady) {'Send: enabled'} else {'RUNTIME_CAPABILITY_UNAVAILABLE: send capability is unavailable'})
+}
 
 $adapters = Test-HttpJson '/api/v1/platform/adapters'
 if ($adapters -and $adapters.code -eq 0 -and @($adapters.data.adapters).Count -gt 0) { Add-Result 'platform-list' 'pass' "adapters=$(@($adapters.data.adapters).Count)" } else { Add-Result 'platform-list' 'fail' 'platform adapter API unavailable or empty' }

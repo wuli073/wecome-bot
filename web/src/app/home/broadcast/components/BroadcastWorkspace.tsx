@@ -1365,6 +1365,16 @@ export default function BroadcastWorkspace() {
   }, [refreshExecutionState, scope, topTab]);
 
   useEffect(() => {
+    const timer = window.setInterval(() => {
+      void refreshExecutorState(scope);
+    }, 5000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [refreshExecutorState, scope]);
+
+  useEffect(() => {
     if (
       topTab !== 'logs' ||
       !latestExecutionBatch ||
