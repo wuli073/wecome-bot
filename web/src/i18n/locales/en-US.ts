@@ -2705,6 +2705,7 @@ deepMergeLocale(enUS.broadcast as Record<string, unknown>, {
       'Select a target conversation from the candidate list first.',
     targetConversationNameRequired: 'Enter a target conversation name.',
     targetResolution: {
+      deferred: 'Resolved when sending',
       resolved: 'Conversation resolved',
       unresolved: 'Conversation not resolved',
       ambiguous: 'Multiple conversations share this name. Select one from the list.',

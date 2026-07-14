@@ -632,7 +632,7 @@ class TestBroadcastApi:
         assert response.status_code == 200
         assert payload['data']['target_conversation_name'] == 'Acme Manual Group'
         assert payload['data']['target_conversation_id'] is None
-        assert payload['data']['target_resolution_status'] == 'unresolved'
+        assert payload['data']['target_resolution_status'] == 'deferred'
 
     @pytest.mark.asyncio
     async def test_group_rule_binds_a_unique_manual_target_name_to_its_stable_id(
@@ -665,8 +665,8 @@ class TestBroadcastApi:
 
         assert response.status_code == 200
         assert payload['data']['target_conversation_name'] == 'Acme Manual Group'
-        assert payload['data']['target_conversation_id'] == 'group-acme-manual'
-        assert payload['data']['target_resolution_status'] == 'resolved'
+        assert payload['data']['target_conversation_id'] is None
+        assert payload['data']['target_resolution_status'] == 'deferred'
 
     @pytest.mark.asyncio
     async def test_group_rule_marks_a_manual_target_name_as_ambiguous_when_multiple_groups_share_it(
@@ -705,7 +705,7 @@ class TestBroadcastApi:
         assert response.status_code == 200
         assert payload['data']['target_conversation_name'] == 'Acme Manual Group'
         assert payload['data']['target_conversation_id'] is None
-        assert payload['data']['target_resolution_status'] == 'ambiguous'
+        assert payload['data']['target_resolution_status'] == 'deferred'
 
     @pytest.mark.asyncio
     async def test_generate_selected_group_drafts_rejects_unresolved_manual_target_name(
@@ -787,9 +787,9 @@ class TestBroadcastApi:
         )
         payload = await generate_response.get_json()
 
-        assert generate_response.status_code == 400
-        assert payload['msg'] == 'TARGET_GROUP_NOT_FOUND'
-        assert 'Acme Manual Group' in payload['message']
+        assert generate_response.status_code == 200
+        assert payload['code'] == 0
+        assert int(payload['data']['created_count']) == 1
 
     @pytest.mark.asyncio
     async def test_generate_selected_group_drafts_rejects_ambiguous_manual_target_name(
@@ -882,9 +882,9 @@ class TestBroadcastApi:
         )
         payload = await generate_response.get_json()
 
-        assert generate_response.status_code == 400
-        assert payload['msg'] == 'TARGET_GROUP_AMBIGUOUS'
-        assert 'Acme Manual Group' in payload['message']
+        assert generate_response.status_code == 200
+        assert payload['code'] == 0
+        assert int(payload['data']['created_count']) == 1
 
     @pytest.mark.asyncio
     async def test_variable_profile_get_returns_empty_default(self, quart_test_client):
@@ -2390,8 +2390,8 @@ class TestBroadcastApi:
         upload_payload = await upload_response.get_json()
 
         assert upload_response.status_code == 200
-        assert upload_payload['data']['matched_rows'] == 2
-        assert upload_payload['data']['unmatched_rows'] == 0
+        assert upload_payload['data']['matched_rows'] == 1
+        assert upload_payload['data']['unmatched_rows'] == 1
         assert upload_payload['data']['invalid_rows'] == 1
         assert 'rows' not in upload_payload['data']
         assert (
@@ -2418,9 +2418,9 @@ class TestBroadcastApi:
         assert detail_payload['data']['page_size'] == 50
         assert detail_payload['data']['total'] == 3
         assert detail_payload['data']['total_pages'] == 1
-        assert [row['match_status'] for row in detail_payload['data']['rows']] == ['matched', 'matched', 'invalid']
+        assert [row['match_status'] for row in detail_payload['data']['rows']] == ['matched', 'unmatched', 'invalid']
         assert detail_payload['data']['rows'][0]['matched_conversation_name'] == 'Acme Group'
-        assert detail_payload['data']['rows'][1]['matched_conversation_name'] == 'Northwind Team'
+        assert detail_payload['data']['rows'][1]['matched_conversation_name'] is None
         assert detail_payload['data']['rows'][1]['matched_rule_id'] is None
 
         second_page_response = await quart_test_client.get(

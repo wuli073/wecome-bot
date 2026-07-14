@@ -368,11 +368,9 @@ export default function GroupMatchingPanel({
                   {rule.targetConversationName}
                 </div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  {rule.targetConversationId
-                    ? rule.targetConversationId
-                    : t(
-                        `broadcast.groupRule.targetResolution.${rule.targetResolutionStatus ?? 'unresolved'}`,
-                      )}
+                  {t(
+                    `broadcast.groupRule.targetResolution.${rule.targetResolutionStatus ?? 'deferred'}`,
+                  )}
                 </div>
                 {rule.invalidLegacy ? (
                   <div className="mt-1 text-xs text-amber-600">

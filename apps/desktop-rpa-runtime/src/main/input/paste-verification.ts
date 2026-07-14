@@ -42,6 +42,8 @@ export interface PasteInputObservationResult {
   inputLocated: boolean
   draftWritten: boolean
   contentVerified: boolean
+  conversationCandidates?: string[]
+  observedConversation?: string | null
   providerInstanceId?: string
   observationAvailable?: boolean
   runtimeState?: string
@@ -65,6 +67,8 @@ export interface PasteVerificationResult {
   inputLocated: boolean
   draftWritten: boolean
   contentVerified: boolean
+  conversationCandidates?: string[]
+  observedConversation?: string | null
   providerInstanceId?: string
   observationAvailable?: boolean
   runtimeState?: string

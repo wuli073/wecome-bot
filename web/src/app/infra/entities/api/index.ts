@@ -792,7 +792,7 @@ export interface ApiBroadcastGroupRule {
   enabled: boolean;
   invalid_legacy?: boolean;
   invalid_reason?: string | null;
-  target_resolution_status?: 'resolved' | 'unresolved' | 'ambiguous';
+  target_resolution_status?: 'deferred' | 'resolved' | 'unresolved' | 'ambiguous';
   created_at: string;
   updated_at: string;
 }
@@ -804,6 +804,7 @@ export interface ApiBroadcastGroupMatchResult {
   source_value?: string;
   target_conversation_id?: string | null;
   target_conversation_name: string | null;
+  target_resolution_status?: 'deferred';
   match_type: 'exact' | 'contains' | 'regex' | null;
   candidate_count?: number;
   candidate_rules?: ApiBroadcastGroupRule[];

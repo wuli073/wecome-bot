@@ -1144,7 +1144,7 @@ async def test_create_paste_only_batch_accepts_unverified_terminal_success(
     service_fixture,
     monkeypatch,
 ):
-    service, _ = service_fixture
+    service, persistence_mgr = service_fixture
     monkeypatch.setenv('LANGBOT_RPA_FORCE_DISABLE_SEND', '1')
 
     class _PasteOnlyRuntimeClient:
@@ -1523,7 +1523,7 @@ async def test_create_send_batch_allows_duplicate_target_conversations_and_keeps
     service_fixture,
     monkeypatch,
 ):
-    service, _ = service_fixture
+    service, persistence_mgr = service_fixture
     monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ENABLED', '1')
     monkeypatch.setenv('LANGBOT_BROADCAST_SEND_ALLOW_CONNECTORS', 'wxwork-local')
 
@@ -1560,6 +1560,14 @@ async def test_create_send_batch_allows_duplicate_target_conversations_and_keeps
         draft_specs=[('Acme', 'Shared Group'), ('Bravo', 'Shared Group')],
     )
     drafts = prepared['drafts']
+    async with persistence_mgr.engine.begin() as conn:
+        for draft in drafts:
+            await service.repository.update_draft(
+                draft['id'],
+                **_scope(),
+                updates={'target_conversation_id': None},
+                conn=conn,
+            )
 
     batch = await service.create_execution_batch(
         _scope(),
@@ -1916,7 +1924,7 @@ async def test_list_group_rule_candidates_supports_status_filter_pagination_and_
     assert keyword_filtered['items'][0]['status'] == 'needs_repair'
 
 
-async def test_list_group_rule_candidates_keeps_group_name_fallback_as_new_when_no_rule_conflict(
+async def test_list_group_rule_candidates_ignores_group_name_cache_when_no_rule_matches(
     service_fixture,
 ):
     service, _ = service_fixture
@@ -1964,8 +1972,8 @@ async def test_list_group_rule_candidates_keeps_group_name_fallback_as_new_when_
     assert result['items'][0]['customer_name'] == 'Fallback Co'
     assert result['items'][0]['status'] == 'new'
     assert result['items'][0]['current_matched_rule'] is None
-    assert result['items'][0]['current_match_type'] == 'group_name_fallback'
-    assert result['items'][0]['current_target_conversation_name'] == 'Fallback Co'
+    assert result['items'][0]['current_match_type'] is None
+    assert result['items'][0]['current_target_conversation_name'] is None
 
 
 async def test_list_group_rule_candidates_uses_runtime_legacy_fallback_without_persisting_batch(
@@ -2662,8 +2670,8 @@ async def test_match_group_rule_ignores_invalid_placeholder_history_rule(service
     rows = {row['group_value']: row for row in detail['rows']}
     assert rows['??']['match_status'] == 'unmatched'
     assert rows['??']['matched_conversation_name'] is None
-    assert rows['小满']['match_status'] == 'matched'
-    assert rows['小满']['matched_conversation_name'] == '小满'
+    assert rows['小满']['match_status'] == 'unmatched'
+    assert rows['小满']['matched_conversation_name'] is None
 
 
 async def test_create_group_rule_rejects_duplicate_exact_rule_after_normalization(service_fixture):
@@ -2881,7 +2889,7 @@ async def test_match_group_rule_does_not_trim_historical_exact_match_expression(
     assert preview['reason'] == 'no_matching_rule'
 
 
-async def test_create_group_rule_rejects_placeholder_and_requires_target_conversation_id(service_fixture):
+async def test_create_group_rule_rejects_placeholder_and_allows_missing_target_conversation_id(service_fixture):
     service, persistence_mgr = service_fixture
 
     async with persistence_mgr.engine.begin() as conn:
@@ -2928,20 +2936,20 @@ async def test_create_group_rule_rejects_placeholder_and_requires_target_convers
     assert created['target_conversation_name'] == '不存在的群'
     assert created['target_conversation_id'] == 'conversation-stable-id'
 
-    with pytest.raises(BroadcastError) as missing_id_error:
-        await service.create_group_rule(
-            _scope(),
-            {
-                'source_value': '小满',
-                'match_type': 'exact',
-                'match_expression': '小满',
-                'target_conversation_id': '',
-                'target_conversation_name': '不存在的群',
-                'priority': 1,
-                'enabled': True,
-            },
-        )
-    assert missing_id_error.value.code == BROADCAST_GROUP_RULE_REGEX_INVALID
+    created_without_id = await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': '小满（延迟解析）',
+            'match_type': 'exact',
+            'match_expression': '小满（延迟解析）',
+            'target_conversation_id': '',
+            'target_conversation_name': '不存在的群',
+            'priority': 1,
+            'enabled': True,
+        },
+    )
+    assert created_without_id['target_conversation_id'] is None
+    assert created_without_id['target_resolution_status'] == 'deferred'
 
 
 async def test_validate_scope_accepts_an_unrestricted_connector(service_fixture):

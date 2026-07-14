@@ -31,6 +31,8 @@ const SUPPORTED_ERROR_CODES = [
   'PASTE_CONTENT_MISMATCH',
   'UIA_TASK_SCRIPT_FAILED',
   PASTE_VERIFICATION_UNAVAILABLE,
+  'TARGET_GROUP_NOT_FOUND',
+  'TARGET_GROUP_AMBIGUOUS',
 ] as const
 const DEFAULT_PROBE_TTL_MS = 30_000
 const DEFAULT_COMMAND_TIMEOUT_MS = 8_000
@@ -288,10 +290,6 @@ function Get-ConversationCandidates([System.Windows.Automation.AutomationElement
     return @()
   }
 
-  foreach ($text in Get-ElementText $root) {
-    [void]$results.Add([string]$text)
-  }
-
   $controls = $root.FindAll(
     [System.Windows.Automation.TreeScope]::Descendants,
     [System.Windows.Automation.Condition]::TrueCondition
@@ -302,7 +300,7 @@ function Get-ConversationCandidates([System.Windows.Automation.AutomationElement
     try {
       $controlType = $control.Current.ControlType
     } catch {}
-    if ($controlType -ne [System.Windows.Automation.ControlType]::Text -and $controlType -ne [System.Windows.Automation.ControlType]::Document -and $controlType -ne [System.Windows.Automation.ControlType]::Edit) {
+    if ($controlType -ne [System.Windows.Automation.ControlType]::Text -and $controlType -ne [System.Windows.Automation.ControlType]::Document) {
       continue
     }
     foreach ($text in Get-ElementText $control) {
@@ -312,7 +310,7 @@ function Get-ConversationCandidates([System.Windows.Automation.AutomationElement
     }
   }
 
-  return @($results | Select-Object -Unique)
+  return @($results)
 }
 
 try {
@@ -1029,6 +1027,11 @@ export function createWindowsPasteVerificationProvider(
           inputLocated: true,
           draftWritten: false,
           contentVerified: false,
+          conversationCandidates: Array.isArray(raw.conversationCandidates)
+            ? raw.conversationCandidates
+              .filter((candidate): candidate is string => typeof candidate === 'string')
+            : [],
+          observedConversation: raw.activeRootOwnerWindowTitle ?? raw.activeWindowTitle ?? null,
           providerInstanceId,
           observationAvailable: false,
           verificationMethod: VERIFICATION_METHOD,
@@ -1065,6 +1068,11 @@ export function createWindowsPasteVerificationProvider(
           inputLocated: true,
           draftWritten: false,
           contentVerified: true,
+          conversationCandidates: Array.isArray(raw.conversationCandidates)
+            ? raw.conversationCandidates
+              .filter((candidate): candidate is string => typeof candidate === 'string')
+            : [],
+          observedConversation: raw.activeRootOwnerWindowTitle ?? raw.activeWindowTitle ?? null,
           providerInstanceId,
           observationAvailable: true,
           runtimeState: 'post_send_input_cleared',
@@ -1110,6 +1118,11 @@ export function createWindowsPasteVerificationProvider(
         inputLocated: true,
         draftWritten: true,
         contentVerified: true,
+        conversationCandidates: Array.isArray(raw.conversationCandidates)
+          ? raw.conversationCandidates
+            .filter((candidate): candidate is string => typeof candidate === 'string')
+          : [],
+        observedConversation: raw.activeRootOwnerWindowTitle ?? raw.activeWindowTitle ?? null,
         providerInstanceId,
         observationAvailable: true,
         verificationMethod: VERIFICATION_METHOD,

@@ -41,7 +41,7 @@ def test_match_group_prefers_priority_desc_then_id_asc_for_exact_contains_and_re
 
         'matched_conversation_id': None,
         'matched_rule_id': 5,
-        'target_resolution_status': 'unresolved',
+        'target_resolution_status': 'deferred',
     }
 
 
@@ -77,11 +77,11 @@ def test_match_group_skips_disabled_rules():
 
         'matched_conversation_id': None,
         'matched_rule_id': 2,
-        'target_resolution_status': 'unresolved',
+        'target_resolution_status': 'deferred',
     }
 
 
-def test_match_group_falls_back_to_same_name_group_when_no_rule_matches():
+def test_match_group_does_not_fall_back_to_cached_group_names_when_no_rule_matches():
     from langbot.pkg.broadcast.group_matcher import match_group
 
     result = match_group(
@@ -103,16 +103,15 @@ def test_match_group_falls_back_to_same_name_group_when_no_rule_matches():
     )
 
     assert result == {
-        'matched': True,
-        'matched_conversation_name': 'Northwind Team',
-
+        'matched': False,
+        'matched_conversation_name': None,
         'matched_conversation_id': None,
         'matched_rule_id': None,
-        'target_resolution_status': 'unresolved',
+        'target_resolution_status': None,
     }
 
 
-def test_match_group_marks_same_name_fallback_as_ambiguous_when_multiple_ids_exist():
+def test_match_group_ignores_cached_duplicate_names_when_no_rule_matches():
     from langbot.pkg.broadcast.group_matcher import match_group
 
     result = match_group(
@@ -125,11 +124,11 @@ def test_match_group_marks_same_name_fallback_as_ambiguous_when_multiple_ids_exi
     )
 
     assert result == {
-        'matched': True,
-        'matched_conversation_name': 'Northwind Team',
+        'matched': False,
+        'matched_conversation_name': None,
         'matched_conversation_id': None,
         'matched_rule_id': None,
-        'target_resolution_status': 'ambiguous',
+        'target_resolution_status': None,
     }
 
 

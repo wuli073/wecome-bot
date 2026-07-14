@@ -16,6 +16,7 @@ import {
 } from './file-clipboard-controller'
 import type { InputDriver } from './mouse-controller'
 import type { PasteVerificationProvider } from './paste-verification'
+import { normalizeConversationName, verifyConversationName } from '../vision/session-verifier'
 
 export const CONVERSATION_OPEN_DELAY_MS = 800
 export const PASTE_SETTLE_DELAY_MS = 150
@@ -53,6 +54,14 @@ interface TextDiagnostics {
   lineCount: number
   crCount: number
   lfCount: number
+}
+
+interface ConversationResolutionResult {
+  ok: boolean
+  errorCode?: string
+  errorMessage?: string
+  stage?: string
+  evidence?: Record<string, unknown>
 }
 
 export async function runPasteOnlyTask(request: RuntimeTaskRequest, deps: PasteTaskDeps): Promise<Record<string, unknown>> {
@@ -157,6 +166,7 @@ export async function prepareDraftInput(
   let targetWindowDiagnostics: WxWorkWindowSelectionDiagnostics | undefined
   let verificationMethod: string | undefined
   const evidence: Array<Record<string, unknown>> = []
+  const requireLiveConversationResolution = request.action === 'send_draft' || request.action === 'send_message'
 
   try {
     throwIfCancelled(isCancelled)
@@ -201,6 +211,25 @@ export async function prepareDraftInput(
     throwIfCancelled(isCancelled)
     await ensureWindowStillActive(getActiveWindow, activeWindow, 'CONVERSATION_NAME_INPUT_FAILED')
 
+    if (requireLiveConversationResolution) {
+      const searchResolution = await resolveConversationBySearchResult({
+        conversationName,
+        draftText,
+        activeWindow: activeWindow as WindowDescriptor,
+        provider: deps.pasteVerificationProvider,
+      })
+      if (searchResolution.evidence) {
+        evidence.push(searchResolution.evidence)
+      }
+      if (!searchResolution.ok) {
+        status = 'failed'
+        stage = searchResolution.stage ?? 'resolving_conversation'
+        errorCode = searchResolution.errorCode ?? 'SEARCH_RESULT_CONFIRM_FAILED'
+        errorMessage = searchResolution.errorMessage ?? errorCode
+        return { activeWindow, runtimeResult: result() }
+      }
+    }
+
     stage = 'confirming_search_result'
     throwIfCancelled(isCancelled)
     conversationConfirmEnterCount += 1
@@ -210,6 +239,25 @@ export async function prepareDraftInput(
     await sleep(CONVERSATION_OPEN_DELAY_MS)
     throwIfCancelled(isCancelled)
     await ensureWindowStillActive(getActiveWindow, activeWindow, 'SEARCH_RESULT_CONFIRM_FAILED')
+
+    if (requireLiveConversationResolution) {
+      const openedConversationConfirmation = await confirmOpenedConversation({
+        conversationName,
+        draftText,
+        activeWindow: activeWindow as WindowDescriptor,
+        provider: deps.pasteVerificationProvider,
+      })
+      if (openedConversationConfirmation.evidence) {
+        evidence.push(openedConversationConfirmation.evidence)
+      }
+      if (!openedConversationConfirmation.ok) {
+        status = 'failed'
+        stage = openedConversationConfirmation.stage ?? 'resolving_conversation'
+        errorCode = openedConversationConfirmation.errorCode ?? 'SEARCH_RESULT_CONFIRM_FAILED'
+        errorMessage = openedConversationConfirmation.errorMessage ?? errorCode
+        return { activeWindow, runtimeResult: result() }
+      }
+    }
 
     stage = 'pasting_text'
     throwIfCancelled(isCancelled)
@@ -535,5 +583,183 @@ function classifyPasteOnlyFailure(stage: string, error: unknown): string {
 function throwIfCancelled(isCancelled: () => boolean): void {
   if (isCancelled()) {
     throw new Error('TASK_CANCELLED')
+  }
+}
+
+async function resolveConversationBySearchResult(args: {
+  conversationName: string
+  draftText: string
+  activeWindow: WindowDescriptor
+  provider?: PasteVerificationProvider
+}): Promise<ConversationResolutionResult> {
+  const provider = args.provider
+  if (!provider?.verifyInputContent || provider.getCapability?.().available === false) {
+    return { ok: true }
+  }
+
+  const observation = await provider.verifyInputContent({
+    conversationName: args.conversationName,
+    draftText: args.draftText,
+    window: args.activeWindow,
+    phase: 'before_paste',
+  })
+  if (!observation.ok) {
+    return {
+      ok: false,
+      errorCode: observation.errorCode ?? observation.verificationErrorCode ?? 'SEARCH_RESULT_CONFIRM_FAILED',
+      errorMessage: observation.sanitizedMessage ?? observation.errorCode ?? observation.verificationErrorCode,
+      stage: 'resolving_conversation',
+      evidence: {
+        step: 'resolve_failed',
+        ok: false,
+        error_code: observation.errorCode ?? observation.verificationErrorCode ?? 'SEARCH_RESULT_CONFIRM_FAILED',
+      },
+    }
+  }
+
+  return buildConversationResolutionResult(
+    args.conversationName,
+    observation.conversationCandidates,
+    observation.observedConversation,
+  )
+}
+
+async function confirmOpenedConversation(args: {
+  conversationName: string
+  draftText: string
+  activeWindow: WindowDescriptor
+  provider?: PasteVerificationProvider
+}): Promise<ConversationResolutionResult> {
+  const provider = args.provider
+  if (!provider?.verifyInputContent || provider.getCapability?.().available === false) {
+    return { ok: true }
+  }
+
+  const observation = await provider.verifyInputContent({
+    conversationName: args.conversationName,
+    draftText: args.draftText,
+    window: args.activeWindow,
+    phase: 'before_paste',
+  })
+  if (!observation.ok) {
+    return {
+      ok: false,
+      errorCode: observation.errorCode ?? observation.verificationErrorCode ?? 'SEARCH_RESULT_CONFIRM_FAILED',
+      errorMessage: observation.sanitizedMessage ?? observation.errorCode ?? observation.verificationErrorCode,
+      stage: 'resolving_conversation',
+      evidence: {
+        step: 'resolve_failed',
+        ok: false,
+        error_code: observation.errorCode ?? observation.verificationErrorCode ?? 'SEARCH_RESULT_CONFIRM_FAILED',
+      },
+    }
+  }
+
+  const observedConversation = normalizeConversationName(String(observation.observedConversation ?? ''))
+  if (!observedConversation) {
+    return {
+      ok: true,
+      evidence: {
+        step: 'resolve_succeeded',
+        ok: true,
+        observed_conversation: null,
+      },
+    }
+  }
+
+  const verification = verifyConversationName(args.conversationName, observedConversation)
+  if (!verification.ok) {
+    return {
+      ok: false,
+      errorCode: 'TARGET_GROUP_NOT_FOUND',
+      errorMessage: `未找到目标群聊“${args.conversationName}”，请确认企业微信中存在完全同名的群聊。`,
+      stage: 'resolve_not_found',
+      evidence: {
+        step: 'resolve_not_found',
+        ok: false,
+        observed_conversation: observedConversation,
+        normalized_expected: verification.normalizedExpected,
+        normalized_observed: verification.normalizedObserved,
+      },
+    }
+  }
+
+  return {
+    ok: true,
+    evidence: {
+      step: 'resolve_succeeded',
+      ok: true,
+      observed_conversation: observedConversation,
+      normalized_expected: verification.normalizedExpected,
+      normalized_observed: verification.normalizedObserved,
+    },
+  }
+}
+
+function buildConversationResolutionResult(
+  conversationName: string,
+  candidates: string[] | undefined,
+  observedConversation: string | null | undefined,
+): ConversationResolutionResult {
+  const normalizedTarget = normalizeConversationName(conversationName)
+  const rawCandidates = Array.isArray(candidates)
+    ? candidates
+      .filter((candidate): candidate is string => typeof candidate === 'string')
+      .map((candidate) => candidate.trim())
+      .filter((candidate) => candidate.length > 0)
+    : []
+  const normalizedCandidates = rawCandidates
+    .map((candidate) => normalizeConversationName(candidate))
+    .filter((candidate) => candidate.length > 0)
+  const normalizedObservedConversation = normalizeConversationName(String(observedConversation ?? ''))
+  const rawExactMatches = normalizedCandidates.filter((candidate) => candidate === normalizedTarget)
+  const effectiveExactMatchCount = Math.max(
+    0,
+    rawExactMatches.length - (normalizedObservedConversation === normalizedTarget && rawExactMatches.length > 0 ? 1 : 0),
+  )
+  const evidenceBase = {
+    candidate_count_before_filter: rawCandidates.length,
+    candidate_count_after_filter: normalizedCandidates.length,
+    canonical_candidate_count: effectiveExactMatchCount,
+    rejected_candidate_count: Math.max(0, normalizedCandidates.length - effectiveExactMatchCount),
+    conversation_candidates: rawCandidates,
+    observed_conversation: normalizedObservedConversation || null,
+  }
+
+  if (effectiveExactMatchCount === 0) {
+    return {
+      ok: false,
+      errorCode: 'TARGET_GROUP_NOT_FOUND',
+      errorMessage: `未找到目标群聊“${conversationName}”，请确认企业微信中存在完全同名的群聊。`,
+      stage: 'resolve_not_found',
+      evidence: {
+        step: 'resolve_not_found',
+        ok: false,
+        ...evidenceBase,
+      },
+    }
+  }
+
+  if (effectiveExactMatchCount > 1) {
+    return {
+      ok: false,
+      errorCode: 'TARGET_GROUP_AMBIGUOUS',
+      errorMessage: `存在多个名为“${conversationName}”的群聊，无法安全确定发送目标。`,
+      stage: 'resolve_ambiguous',
+      evidence: {
+        step: 'resolve_ambiguous',
+        ok: false,
+        ...evidenceBase,
+      },
+    }
+  }
+
+  return {
+    ok: true,
+    evidence: {
+      step: 'resolve_started',
+      ok: true,
+      ...evidenceBase,
+    },
   }
 }

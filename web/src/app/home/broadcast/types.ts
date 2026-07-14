@@ -98,7 +98,7 @@ export interface BroadcastGroupRule {
   enabled: boolean;
   invalidLegacy?: boolean;
   invalidReason?: string | null;
-  targetResolutionStatus?: 'resolved' | 'unresolved' | 'ambiguous';
+  targetResolutionStatus?: 'deferred' | 'resolved' | 'unresolved' | 'ambiguous';
   updatedAt: string;
 }
 
@@ -157,6 +157,7 @@ export interface BroadcastImportPreviewRow {
   customerName: string;
   conversationId?: string | null;
   conversationName: string;
+  targetResolutionStatus?: 'deferred';
   templateName: string;
   variableSummary: string;
   status: BroadcastStatus;
