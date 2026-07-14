@@ -93,6 +93,69 @@ Describe 'source setup Desktop Runtime contract' {
 Describe 'source installer batch contract' {
     BeforeAll {
         $content = [IO.File]::ReadAllText($installerPath)
+        $setExclusionsDefinition = [regex]::Match(
+            $content,
+            'function Set-DistributionExclusions\(\[string\]\$RepoRoot\) \{.*?\}(?=; function Assert-CleanWorkingTree)',
+            [Text.RegularExpressions.RegexOptions]::Singleline
+        ).Value
+        $assertCleanDefinition = [regex]::Match(
+            $content,
+            'function Assert-CleanWorkingTree\(\[string\]\$RepoRoot\) \{.*?\}(?=; if \(Test-Path -LiteralPath \$target\))',
+            [Text.RegularExpressions.RegexOptions]::Singleline
+        ).Value
+
+        if ([string]::IsNullOrWhiteSpace($setExclusionsDefinition)) {
+            throw 'Failed to extract Set-DistributionExclusions from 02-install-wecome-bot.bat.'
+        }
+
+        if ([string]::IsNullOrWhiteSpace($assertCleanDefinition)) {
+            throw 'Failed to extract Assert-CleanWorkingTree from 02-install-wecome-bot.bat.'
+        }
+
+        Invoke-Expression $setExclusionsDefinition
+        Invoke-Expression $assertCleanDefinition
+        $git = Get-Command git.exe -ErrorAction Stop
+        $managedArtifacts = @(
+            '/01-check-environment.bat'
+            '/02-install-wecome-bot.bat'
+            '/03-start-wecome-bot.bat'
+            '/setup-source.log'
+            '/apps/desktop-rpa-runtime/node_modules/'
+            '/apps/desktop-rpa-runtime/out/'
+            '/apps/desktop-rpa-runtime/dist-phase2-official/'
+            '/distribution/packages/'
+            '/runtime/'
+        )
+    }
+
+    BeforeEach {
+        function New-TestInstallerRepo([string]$Path) {
+            New-Item -ItemType Directory -Path $Path -Force | Out-Null
+            & $git.Source init --quiet $Path
+            if ($LASTEXITCODE -ne 0) { throw 'git init failed.' }
+
+            & $git.Source -C $Path config user.name 'Test User'
+            if ($LASTEXITCODE -ne 0) { throw 'git config user.name failed.' }
+
+            & $git.Source -C $Path config user.email 'test@example.com'
+            if ($LASTEXITCODE -ne 0) { throw 'git config user.email failed.' }
+
+            Set-Content -LiteralPath (Join-Path $Path 'tracked.txt') -Value 'baseline' -Encoding utf8
+            & $git.Source -C $Path add tracked.txt
+            if ($LASTEXITCODE -ne 0) { throw 'git add tracked.txt failed.' }
+
+            & $git.Source -C $Path commit --quiet -m 'test: baseline'
+            if ($LASTEXITCODE -ne 0) { throw 'git commit failed.' }
+        }
+
+        function Assert-InstallerRejectsWorkingTree([string]$RepoRoot) {
+            try {
+                Assert-CleanWorkingTree $RepoRoot
+                throw 'Expected Assert-CleanWorkingTree to reject the working tree.'
+            } catch {
+                $_.Exception.Message | Should Match 'Refusing to update because the working tree contains tracked or untracked files\.'
+            }
+        }
     }
 
     It 'keeps setup-source output in setup-source.log' {
@@ -102,5 +165,62 @@ Describe 'source installer batch contract' {
 
     It 'pauses before exit when installation fails' {
         $content | Should Match ':failed\s+echo Installation failed\.\s+echo Review the error above or setup-source\.log\.\s+pause\s+endlocal\s+exit /b 1'
+    }
+
+    It 'allows updates when only managed generated artifacts exist in a Chinese and spaced path' {
+        $repoRoot = Join-Path $TestDrive '中文 空格 repo'
+        New-TestInstallerRepo $repoRoot
+
+        Set-Content -LiteralPath (Join-Path $repoRoot 'setup-source.log') -Value 'log' -Encoding utf8
+
+        foreach ($relativePath in @(
+            'apps\desktop-rpa-runtime\node_modules\placeholder.txt'
+            'apps\desktop-rpa-runtime\out\placeholder.txt'
+            'apps\desktop-rpa-runtime\dist-phase2-official\placeholder.txt'
+            'distribution\packages\placeholder.txt'
+            'runtime\placeholder.txt'
+        )) {
+            $targetPath = Join-Path $repoRoot $relativePath
+            New-Item -ItemType Directory -Path (Split-Path -Parent $targetPath) -Force | Out-Null
+            Set-Content -LiteralPath $targetPath -Value 'generated' -Encoding utf8
+        }
+
+        Set-DistributionExclusions $repoRoot
+        { Assert-CleanWorkingTree $repoRoot } | Should Not Throw
+    }
+
+    It 'still rejects updates when a tracked file is modified' {
+        $repoRoot = Join-Path $TestDrive 'tracked-modified'
+        New-TestInstallerRepo $repoRoot
+        Set-DistributionExclusions $repoRoot
+
+        Set-Content -LiteralPath (Join-Path $repoRoot 'tracked.txt') -Value 'changed' -Encoding utf8
+
+        Assert-InstallerRejectsWorkingTree $repoRoot
+    }
+
+    It 'still rejects updates when an unknown untracked file exists' {
+        $repoRoot = Join-Path $TestDrive 'unknown-untracked'
+        New-TestInstallerRepo $repoRoot
+        Set-DistributionExclusions $repoRoot
+
+        Set-Content -LiteralPath (Join-Path $repoRoot 'unexpected.txt') -Value 'surprise' -Encoding utf8
+
+        Assert-InstallerRejectsWorkingTree $repoRoot
+    }
+
+    It 'does not append duplicate exclude entries across repeated runs' {
+        $repoRoot = Join-Path $TestDrive 'repeat-exclude'
+        New-TestInstallerRepo $repoRoot
+
+        Set-DistributionExclusions $repoRoot
+        Set-DistributionExclusions $repoRoot
+
+        $excludePath = Join-Path $repoRoot '.git\info\exclude'
+        $excludeLines = [IO.File]::ReadAllLines($excludePath)
+
+        foreach ($entry in $managedArtifacts) {
+            (@($excludeLines | Where-Object { $_ -eq $entry })).Count | Should Be 1
+        }
     }
 }
