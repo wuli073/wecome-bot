@@ -271,6 +271,157 @@ test.describe('broadcast workflow', () => {
     ).toContainText(zhHansBroadcastLogs.executorHealthTitle);
   });
 
+  test('polls desktop runtime readiness every 5 seconds and updates action buttons without reloading', async ({
+    page,
+  }) => {
+    await installLangBotApiMocks(page, {
+      authenticated: true,
+      storage: {
+        langbot_language: 'zh-Hans',
+      },
+      broadcastSendEnabled: true,
+    });
+
+    const healthRequestTimes: number[] = [];
+    let runtimePhase: 'unavailable' | 'ready' = 'unavailable';
+    await page.route('**/api/v1/broadcast/executors/health*', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.fallback();
+        return;
+      }
+      healthRequestTimes.push(Date.now());
+      if (runtimePhase === 'ready') {
+        await fulfillOk(route, {
+          available: true,
+          channel: 'wxwork_database',
+          status: 'ready',
+          protocol_version: '1.0.0',
+          runtime_version: '1.0.0',
+          error_code: null,
+          error_message: null,
+          capability: {
+            channel: 'wxwork_database',
+            supports_paste: true,
+            supports_paste_verification: true,
+            requires_manual_conversation_open: true,
+            conversation_locator: 'keyboard_search',
+            content_verification: 'windows_uia',
+            supports_send: true,
+            supports_cancel: true,
+            supports_status_query: true,
+            supports_clipboard_restore: true,
+            supports_evidence: true,
+            executor_version: 'fixture-phase7',
+            runtime_min_version: '1.0.0',
+          },
+          runtime_status: {
+            pasteVerification: {
+              available: true,
+              reason: null,
+              method: 'windows_uia',
+              requiresManualConversationOpen: true,
+            },
+          },
+        });
+        return;
+      }
+
+      await fulfillOk(route, {
+        available: false,
+        channel: 'wxwork_database',
+        status: 'unavailable',
+        protocol_version: null,
+        runtime_version: null,
+        error_code: null,
+        error_message: zhHansBroadcastExecutor.runtimeUnavailable,
+        capability: {
+          channel: 'wxwork_database',
+          supports_paste: true,
+          supports_paste_verification: true,
+          requires_manual_conversation_open: true,
+          conversation_locator: 'keyboard_search',
+          content_verification: 'windows_uia',
+          supports_send: true,
+          supports_cancel: true,
+          supports_status_query: true,
+          supports_clipboard_restore: true,
+          supports_evidence: true,
+          executor_version: 'fixture-phase7',
+          runtime_min_version: '1.0.0',
+        },
+        runtime_status: null,
+      });
+    });
+
+    await prepareDraftReview(page);
+    await expect(page.getByTestId('broadcast-draft-paste-button')).toBeDisabled();
+    await expect(page.getByTestId('broadcast-draft-send-button')).toBeDisabled();
+
+    const baselineRequestCount = healthRequestTimes.length;
+    runtimePhase = 'ready';
+    await expect
+      .poll(() => healthRequestTimes.length, {
+        timeout: 10_000,
+      })
+      .toBeGreaterThan(baselineRequestCount);
+    await expect(page.getByTestId('broadcast-draft-paste-button')).toBeEnabled();
+    await expect(page.getByTestId('broadcast-draft-send-button')).toBeEnabled();
+
+    const readyRequestCount = healthRequestTimes.length;
+    runtimePhase = 'unavailable';
+    await expect
+      .poll(() => healthRequestTimes.length, {
+        timeout: 10_000,
+      })
+      .toBeGreaterThan(readyRequestCount);
+    await expect(page.getByTestId('broadcast-draft-paste-button')).toBeDisabled();
+    await expect(page.getByTestId('broadcast-draft-send-button')).toBeDisabled();
+    await expect(page.getByTestId('broadcast-draft-detail')).toContainText(
+      zhHansBroadcastExecutor.runtimeUnavailable,
+    );
+
+    const pollIntervals = healthRequestTimes
+      .slice(1)
+      .map((value, index) => value - healthRequestTimes[index]);
+    expect(pollIntervals.some((intervalMs) => intervalMs >= 4_500)).toBeTruthy();
+  });
+
+  test('shows a clear runtime-unavailable message when runtime status refresh fails', async ({
+    page,
+  }) => {
+    await installLangBotApiMocks(page, {
+      authenticated: true,
+      storage: {
+        langbot_language: 'zh-Hans',
+      },
+      broadcastSendEnabled: true,
+    });
+
+    await page.route('**/api/v1/broadcast/executors/health*', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: 500,
+          message: 'runtime status fixture failed',
+          data: null,
+          timestamp: Date.now(),
+        }),
+      });
+    });
+
+    await prepareDraftReview(page);
+    await expect(page.getByTestId('broadcast-draft-detail')).toContainText(
+      zhHansBroadcastExecutor.runtimeUnavailable,
+    );
+    await expect(page.getByTestId('broadcast-draft-paste-button')).toBeDisabled();
+    await expect(page.getByTestId('broadcast-draft-send-button')).toBeDisabled();
+  });
+
   test('moves new-customer assignment from import matching to group matching', async ({
     page,
   }) => {
