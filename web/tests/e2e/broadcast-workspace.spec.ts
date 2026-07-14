@@ -5,6 +5,14 @@ import { installLangBotApiMocks } from './fixtures/langbot-api';
 
 const zhHansBroadcastDrafts = zhHans.broadcast.drafts as Record<string, string>;
 const zhHansBroadcastToasts = zhHans.broadcast.toasts as Record<string, string>;
+const zhHansBroadcastActions = zhHans.broadcast.actions as Record<string, string>;
+const zhHansBroadcastGroupRule = ((zhHans.broadcast as Record<string, unknown>)
+  .groupRule ?? {}) as {
+  targetConversationSelectPlaceholder: string;
+  targetResolution: {
+    deferred: string;
+  };
+};
 const zhHansBroadcastLogs = zhHans.broadcast.logs as unknown as {
   executorHealthTitle: string;
 };
@@ -40,6 +48,22 @@ async function prepareDraftReview(page: Page) {
   await page.locator('[role="tab"]').nth(2).click();
   await expect(page.getByTestId('broadcast-draft-queue')).toBeVisible();
   await expect(page.getByTestId('broadcast-draft-detail')).toBeVisible();
+}
+
+async function fulfillOk(
+  route: import('@playwright/test').Route,
+  data: unknown,
+) {
+  await route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      code: 0,
+      message: 'ok',
+      data,
+      timestamp: Date.now(),
+    }),
+  });
 }
 
 test.describe('broadcast workflow', () => {
@@ -741,6 +765,463 @@ test.describe('broadcast workflow', () => {
       draft_ids: [1, 2],
       mode: 'send',
     });
+  });
+
+  test('accepts manually entered deferred target groups and keeps candidate selection working', async ({
+    page,
+  }) => {
+    await installLangBotApiMocks(page, {
+      authenticated: true,
+      storage: {
+        langbot_language: 'zh-Hans',
+      },
+      broadcastSendEnabled: true,
+    });
+
+    const timestamp = new Date().toISOString();
+    const currentRules: Array<Record<string, unknown>> = [
+      {
+        id: 1,
+        bot_uuid: 'bot-1',
+        connector_id: 'wxwork-local',
+        source_value: 'Acme Freight',
+        match_type: 'exact',
+        match_expression: 'Acme Freight',
+        target_conversation_id: 'acme-freight-ops',
+        target_conversation_name: 'Acme Freight Ops',
+        target_resolution_status: 'resolved',
+        priority: 30,
+        enabled: true,
+        created_at: timestamp,
+        updated_at: timestamp,
+      },
+    ];
+    let updatedRuleBody:
+      | {
+          source_value?: string;
+          match_expression?: string;
+          target_conversation_id?: string;
+          target_conversation_name?: string;
+        }
+      | undefined;
+    let createdRuleBody:
+      | {
+          source_value?: string;
+          target_conversation_id?: string;
+          target_conversation_name?: string;
+        }
+      | undefined;
+
+    await page.route('**/api/v1/broadcast/group-rules**', async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (
+        request.method() === 'GET' &&
+        url.pathname === '/api/v1/broadcast/group-rules'
+      ) {
+        await fulfillOk(route, currentRules);
+        return;
+      }
+      if (
+        request.method() === 'PUT' &&
+        /^\/api\/v1\/broadcast\/group-rules\/\d+$/.test(url.pathname)
+      ) {
+        updatedRuleBody = request.postDataJSON() as typeof updatedRuleBody;
+        currentRules[0] = {
+          ...currentRules[0],
+          source_value: updatedRuleBody?.source_value ?? currentRules[0].source_value,
+          match_expression:
+            updatedRuleBody?.match_expression ?? currentRules[0].match_expression,
+          target_conversation_id:
+            updatedRuleBody?.target_conversation_id?.trim() || null,
+          target_conversation_name:
+            updatedRuleBody?.target_conversation_name ??
+            currentRules[0].target_conversation_name,
+          target_resolution_status:
+            updatedRuleBody?.target_conversation_id?.trim()?.length
+              ? 'resolved'
+              : 'deferred',
+          updated_at: new Date().toISOString(),
+        };
+      }
+      if (
+        request.method() === 'POST' &&
+        url.pathname === '/api/v1/broadcast/group-rules'
+      ) {
+        createdRuleBody = request.postDataJSON() as typeof createdRuleBody;
+        currentRules.push({
+          id: 99,
+          bot_uuid: 'bot-1',
+          connector_id: 'wxwork-local',
+          source_value: createdRuleBody?.source_value ?? 'Northwind Candidate',
+          match_type: 'exact',
+          match_expression:
+            createdRuleBody?.source_value ?? 'Northwind Candidate',
+          target_conversation_id:
+            createdRuleBody?.target_conversation_id?.trim() || null,
+          target_conversation_name:
+            createdRuleBody?.target_conversation_name ??
+            'Northwind Service Group',
+          target_resolution_status:
+            createdRuleBody?.target_conversation_id?.trim()?.length
+              ? 'resolved'
+              : 'deferred',
+          priority: 0,
+          enabled: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      }
+      await route.fallback();
+    });
+
+    await page.goto('/home/broadcast');
+    await page.locator('[role="tab"]').first().click();
+    await page
+      .getByTestId('broadcast-secondary-tabs')
+      .locator('[role="tab"]')
+      .nth(2)
+      .click();
+    await expect(
+      page.getByTestId('broadcast-group-matching-panel'),
+    ).toBeVisible();
+
+    const manualConversationName = '发送时查找群聊';
+    const targetConversationInput = page.getByTestId(
+      'broadcast-group-rule-target-conversation-search',
+    );
+    await targetConversationInput.fill(manualConversationName);
+    await expect(
+      page.getByTestId('broadcast-group-rule-target-conversation-select'),
+    ).toContainText(zhHansBroadcastGroupRule.targetConversationSelectPlaceholder);
+    await targetConversationInput.press('Enter');
+    await page.locator('#broadcast-group-rule-source-value').click();
+    await expect(targetConversationInput).toHaveValue(manualConversationName);
+
+    await page
+      .getByRole('button', { name: zhHansBroadcastActions.saveGroupRule })
+      .click();
+    await expect
+      .poll(() => updatedRuleBody ?? null)
+      .not.toBeNull();
+    expect(updatedRuleBody).toMatchObject({
+      target_conversation_id: '',
+      target_conversation_name: manualConversationName,
+    });
+    await expect(page.locator('body')).toContainText(
+      zhHansBroadcastGroupRule.targetResolution.deferred,
+    );
+
+    await page
+      .getByRole('button', { name: zhHansBroadcastActions.newGroupRule })
+      .click();
+    await page.locator('#broadcast-group-rule-source-value').fill(
+      'Northwind Candidate',
+    );
+    await targetConversationInput.fill('Northwind');
+    await page
+      .getByTestId('broadcast-group-rule-target-conversation-select')
+      .getByRole('button', { name: 'Northwind Service Group' })
+      .click();
+    await page
+      .getByRole('button', { name: zhHansBroadcastActions.createGroupRule })
+      .click();
+    await expect
+      .poll(() => createdRuleBody ?? null)
+      .not.toBeNull();
+    expect(createdRuleBody).toMatchObject({
+      source_value: 'Northwind Candidate',
+      target_conversation_id: 'northwind-service-group',
+      target_conversation_name: 'Northwind Service Group',
+    });
+  });
+
+  test('keeps deferred target-group failures hidden until real send reports them', async ({
+    page,
+  }) => {
+    await installLangBotApiMocks(page, {
+      authenticated: true,
+      storage: {
+        langbot_language: 'zh-Hans',
+      },
+      broadcastSendEnabled: true,
+    });
+
+    const timestamp = new Date().toISOString();
+    const currentRules: Array<Record<string, unknown>> = [
+      {
+        id: 1,
+        bot_uuid: 'bot-1',
+        connector_id: 'wxwork-local',
+        source_value: 'Acme Freight',
+        match_type: 'exact',
+        match_expression: 'Acme Freight',
+        target_conversation_id: 'acme-freight-ops',
+        target_conversation_name: 'Acme Freight Ops',
+        target_resolution_status: 'resolved',
+        priority: 30,
+        enabled: true,
+        created_at: timestamp,
+        updated_at: timestamp,
+      },
+    ];
+    let deferredRuleSaved = false;
+    let capturedExecutionBody:
+      | {
+          draft_ids?: number[];
+          mode?: string;
+        }
+      | undefined;
+    let customSendBatch: Record<string, unknown> | null = null;
+    const customTaskIds = new Set<number>();
+
+    await page.route('**/api/v1/broadcast/group-rules**', async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (
+        request.method() === 'GET' &&
+        url.pathname === '/api/v1/broadcast/group-rules'
+      ) {
+        await fulfillOk(route, currentRules);
+        return;
+      }
+      if (
+        request.method() === 'PUT' &&
+        /^\/api\/v1\/broadcast\/group-rules\/\d+$/.test(url.pathname)
+      ) {
+        const body = request.postDataJSON() as {
+          target_conversation_id?: string;
+          target_conversation_name?: string;
+        };
+        currentRules[0] = {
+          ...currentRules[0],
+          target_conversation_id: body.target_conversation_id?.trim() || null,
+          target_conversation_name:
+            body.target_conversation_name ?? '发送时查找群聊',
+          target_resolution_status:
+            body.target_conversation_id?.trim()?.length ? 'resolved' : 'deferred',
+          updated_at: new Date().toISOString(),
+        };
+        deferredRuleSaved = true;
+      }
+      await route.fallback();
+    });
+
+    await page.route('**/api/v1/broadcast/executions**', async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (
+        request.method() === 'POST' &&
+        url.pathname === '/api/v1/broadcast/executions'
+      ) {
+        const body =
+          (request.postDataJSON() as typeof capturedExecutionBody) ?? {};
+        if (body.mode === 'send') {
+          capturedExecutionBody = body;
+          const draftIds = (body.draft_ids ?? []).map(Number);
+          const taskDefinitions = [
+            {
+              taskId: 9101,
+              draftId: draftIds[0] ?? 1,
+              targetConversationSnapshot: '发送时查找群聊',
+              errorCode: 'TARGET_GROUP_NOT_FOUND',
+              errorMessage: '群聊未找到，请检查名称后重试',
+            },
+            {
+              taskId: 9102,
+              draftId: draftIds[1] ?? 2,
+              targetConversationSnapshot: 'Northwind Service Group',
+              errorCode: 'TARGET_GROUP_AMBIGUOUS',
+              errorMessage: '存在多个同名群聊，请从候选列表中选择',
+            },
+          ];
+          customTaskIds.clear();
+          for (const definition of taskDefinitions) {
+            customTaskIds.add(definition.taskId);
+          }
+          customSendBatch = {
+            id: 901,
+            bot_uuid: 'bot-1',
+            connector_id: 'wxwork-local',
+            channel: 'wxwork_database',
+            mode: 'send',
+            status: 'failed',
+            total_tasks: taskDefinitions.length,
+            pending_tasks: 0,
+            running_tasks: 0,
+            succeeded_tasks: 0,
+            failed_tasks: taskDefinitions.length,
+            cancelled_tasks: 0,
+            interrupted_tasks: 0,
+            created_by: 'tester@example.com',
+            last_action_by: 'tester@example.com',
+            error_message: null,
+            version: 1,
+            created_at: new Date().toISOString(),
+            started_at: new Date().toISOString(),
+            paused_at: null,
+            finished_at: new Date().toISOString(),
+            cancelled_at: null,
+            total_count: taskDefinitions.length,
+            sent_count: 0,
+            failed_count: taskDefinitions.length,
+            unknown_count: 0,
+            skipped_count: 0,
+            duplicate_target_count: 0,
+            items: taskDefinitions.map((definition) => ({
+              draft_id: definition.draftId,
+              outcome: 'failed',
+              error_code: definition.errorCode,
+              error_message: definition.errorMessage,
+              enter_dispatched: false,
+              message_sent: false,
+              terminal_confirmed: true,
+              terminal_source: 'runtime',
+              started_at: new Date().toISOString(),
+              completed_at: new Date().toISOString(),
+            })),
+            tasks: taskDefinitions.map((definition, index) => ({
+              id: definition.taskId,
+              execution_batch_id: 901,
+              draft_id: definition.draftId,
+              draft_text_snapshot: `Draft ${definition.draftId}`,
+              target_conversation_snapshot: definition.targetConversationSnapshot,
+              channel: 'wxwork_database',
+              action: 'send_message',
+              status: 'failed',
+              sequence_no: index + 1,
+              attempt_count: 1,
+              max_attempts: 1,
+              idempotency_key: `broadcast:${definition.taskId}:1`,
+              request_digest: `fixture-digest-${definition.taskId}`,
+              runtime_task_id: `runtime-${definition.taskId}`,
+              error_code: definition.errorCode,
+              error_message: definition.errorMessage,
+              operator_note: null,
+              created_at: new Date().toISOString(),
+              started_at: new Date().toISOString(),
+              finished_at: new Date().toISOString(),
+              cancelled_at: null,
+              updated_at: new Date().toISOString(),
+              retry_allowed: false,
+              send_outcome: 'failed',
+              enter_dispatched: false,
+              message_sent: false,
+              terminal_confirmed: true,
+              terminal_source: 'runtime',
+              attachments: [],
+            })),
+          };
+          await fulfillOk(route, customSendBatch);
+          return;
+        }
+      }
+      if (
+        request.method() === 'GET' &&
+        url.pathname === '/api/v1/broadcast/executions' &&
+        customSendBatch
+      ) {
+        await fulfillOk(route, [customSendBatch]);
+        return;
+      }
+      if (
+        request.method() === 'GET' &&
+        url.pathname === '/api/v1/broadcast/executions/901' &&
+        customSendBatch
+      ) {
+        await fulfillOk(route, customSendBatch);
+        return;
+      }
+      await route.fallback();
+    });
+
+    await page.route(
+      '**/api/v1/broadcast/execution-tasks/*/attempts**',
+      async (route) => {
+        const taskId = Number(route.request().url().split('/').slice(-2)[0]);
+        if (customTaskIds.has(taskId)) {
+          await fulfillOk(route, []);
+          return;
+        }
+        await route.fallback();
+      },
+    );
+
+    await page.goto('/home/broadcast');
+    await page.locator('[role="tab"]').first().click();
+    await page
+      .getByTestId('broadcast-secondary-tabs')
+      .locator('[role="tab"]')
+      .nth(2)
+      .click();
+    await page
+      .getByTestId('broadcast-group-rule-target-conversation-search')
+      .fill('发送时查找群聊');
+    await page
+      .getByTestId('broadcast-group-rule-target-conversation-search')
+      .press('Enter');
+    await page
+      .getByRole('button', { name: zhHansBroadcastActions.saveGroupRule })
+      .click();
+    await expect.poll(() => deferredRuleSaved).toBeTruthy();
+    await expect(page.locator('body')).toContainText(
+      zhHansBroadcastGroupRule.targetResolution.deferred,
+    );
+
+    await page.locator('[role="tab"]').nth(1).click();
+    await page.getByTestId('broadcast-import-upload-input').setInputFiles({
+      name: 'customers.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from('customers', 'utf-8'),
+    });
+    await expect(page.locator('body')).toContainText('已匹配');
+    await expect(page.locator('body')).not.toContainText(
+      'TARGET_GROUP_NOT_FOUND',
+    );
+    await expect(page.locator('body')).not.toContainText(
+      'TARGET_GROUP_AMBIGUOUS',
+    );
+
+    await page
+      .getByTestId('broadcast-import-template-select')
+      .selectOption({ label: 'Arrival Reminder' });
+    await page.getByTestId('broadcast-import-select-all-checkbox').click();
+    await page.getByTestId('broadcast-import-apply-template-button').click();
+    await page.getByTestId('broadcast-import-generate-drafts-button').click();
+    await page
+      .getByTestId('broadcast-import-generate-drafts-confirm-button')
+      .click();
+
+    await page.locator('[role="tab"]').nth(2).click();
+    await expect(page.getByTestId('broadcast-draft-detail')).toContainText(
+      '发送时查找群聊',
+    );
+    await expect(page.locator('body')).not.toContainText(
+      'TARGET_GROUP_NOT_FOUND',
+    );
+    await expect(page.locator('body')).not.toContainText(
+      'TARGET_GROUP_AMBIGUOUS',
+    );
+
+    await page.getByTestId('broadcast-draft-select-all-checkbox').click();
+    await page.getByTestId('broadcast-draft-batch-send-button').click();
+    await page
+      .getByTestId('broadcast-draft-batch-send-confirm-button')
+      .click();
+
+    await expect
+      .poll(() => capturedExecutionBody ?? null)
+      .not.toBeNull();
+    expect(capturedExecutionBody).toMatchObject({
+      mode: 'send',
+      draft_ids: [1, 2],
+    });
+    await expect(
+      page.getByTestId('broadcast-execution-task-row-9101'),
+    ).toContainText('TARGET_GROUP_NOT_FOUND');
+    await expect(
+      page.getByTestId('broadcast-execution-task-row-9102'),
+    ).toContainText('TARGET_GROUP_AMBIGUOUS');
   });
 
   test('shows confirmation dialogs and sticky action areas for high-impact actions', async ({
