@@ -44,6 +44,7 @@ Describe 'desktop runtime Release descriptor and cache contract' {
         (Get-DesktopRuntimeReleaseUri $descriptor $descriptor.asset_name).AbsoluteUri | Should Be 'https://github.com/wuli073/wecome-bot/releases/download/desktop-runtime-v0.1.0/desktop-runtime-win-x64.zip'
         (Get-DesktopRuntimeReleaseUri $descriptor $descriptor.manifest_asset_name).AbsoluteUri | Should Be 'https://github.com/wuli073/wecome-bot/releases/download/desktop-runtime-v0.1.0/runtime-manifest.json'
         (Test-ApprovedDesktopRuntimeDownloadUri ([Uri]'https://objects.githubusercontent.com/asset')) | Should Be $true
+        (Test-ApprovedDesktopRuntimeDownloadUri ([Uri]'https://release-assets.githubusercontent.com/asset')) | Should Be $true
         (Test-ApprovedDesktopRuntimeDownloadUri ([Uri]'http://github.com/wuli073/wecome-bot')) | Should Be $false
         (Test-ApprovedDesktopRuntimeDownloadUri ([Uri]'https://example.invalid/asset')) | Should Be $false
     }

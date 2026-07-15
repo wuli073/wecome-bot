@@ -297,7 +297,7 @@ function Get-DesktopRuntimeReleaseUri([object]$Descriptor, [string]$AssetName) {
 
 function Test-ApprovedDesktopRuntimeDownloadUri([Uri]$Uri) {
     if ($null -eq $Uri -or -not $Uri.IsAbsoluteUri -or $Uri.Scheme -ne 'https') { return $false }
-    return @('github.com', 'objects.githubusercontent.com', 'github-releases.githubusercontent.com') -contains $Uri.DnsSafeHost.ToLowerInvariant()
+    return @('github.com', 'objects.githubusercontent.com', 'github-releases.githubusercontent.com', 'release-assets.githubusercontent.com') -contains $Uri.DnsSafeHost.ToLowerInvariant()
 }
 
 function Remove-SafeDesktopRuntimePartialFile([string]$Path) {
