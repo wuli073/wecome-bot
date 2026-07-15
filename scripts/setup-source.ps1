@@ -385,6 +385,7 @@ function Invoke-ApprovedDesktopRuntimeDownload([Uri]$InitialUri, [string]$Partia
     $response = $null
     try {
         $currentUri = $InitialUri
+        $resolvedUri = $null
         for ($redirects = 0; $redirects -le 5; $redirects++) {
             $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $currentUri)
             $request.Headers.UserAgent.ParseAdd('wecome-bot-desktop-runtime-installer/1.0')
@@ -401,15 +402,42 @@ function Invoke-ApprovedDesktopRuntimeDownload([Uri]$InitialUri, [string]$Partia
             }
             if (-not $response.IsSuccessStatusCode) { throw "${FailureCode}: HTTP $statusCode $($response.ReasonPhrase) for $currentUri" }
             if (-not (Test-ApprovedDesktopRuntimeDownloadUri $currentUri)) { throw "DESKTOP_RUNTIME_RELEASE_REDIRECT_REJECTED: final URL $currentUri was rejected." }
-            Write-Host ("Downloading Desktop Runtime: {0}" -f $currentUri)
-            $input = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-            try {
-                $output = [IO.File]::Open($PartialPath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
-                try { $input.CopyTo($output) } finally { $output.Dispose() }
-            } finally { $input.Dispose() }
-            return
+            $resolvedUri = $currentUri
+            $response.Dispose(); $response = $null
+            break
         }
-        throw 'DESKTOP_RUNTIME_RELEASE_REDIRECT_REJECTED: redirect limit exceeded.'
+        if ($null -eq $resolvedUri) { throw 'DESKTOP_RUNTIME_RELEASE_REDIRECT_REJECTED: redirect limit exceeded.' }
+
+        # Release assets are read in bounded byte ranges. This keeps long proxy
+        # transfers resumable at chunk boundaries and never publishes a partial file.
+        $chunkSize = 8MB
+        $offset = [Int64]0
+        $totalLength = $null
+        $output = [IO.File]::Open($PartialPath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            while ($null -eq $totalLength -or $offset -lt $totalLength) {
+                $end = if ($null -eq $totalLength) { $offset + $chunkSize - 1 } else { [Math]::Min($offset + $chunkSize - 1, $totalLength - 1) }
+                $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $resolvedUri)
+                $request.Headers.UserAgent.ParseAdd('wecome-bot-desktop-runtime-installer/1.0')
+                $request.Headers.Range = [System.Net.Http.Headers.RangeHeaderValue]::new($offset, $end)
+                try {
+                    $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+                    if ([int]$response.StatusCode -ne 206) { throw "${FailureCode}: expected HTTP 206 for byte range $offset-$end from $resolvedUri; got HTTP $([int]$response.StatusCode)." }
+                    $range = $response.Content.Headers.ContentRange
+                    if ($null -eq $range -or $null -eq $range.From -or $null -eq $range.To -or $null -eq $range.Length -or [Int64]$range.From -ne $offset) { throw "${FailureCode}: invalid Content-Range for byte range $offset-$end." }
+                    if ($null -eq $totalLength) { $totalLength = [Int64]$range.Length }
+                    if ([Int64]$range.Length -ne $totalLength -or [Int64]$range.To -ge $totalLength) { throw "${FailureCode}: inconsistent Content-Range length." }
+                    $expectedLength = [Int64]$range.To - [Int64]$range.From + 1
+                    $input = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+                    try { $input.CopyTo($output) } finally { $input.Dispose() }
+                    if ($null -ne $response.Content.Headers.ContentLength -and [Int64]$response.Content.Headers.ContentLength -ne $expectedLength) { throw "${FailureCode}: unexpected byte range length." }
+                    $offset += $expectedLength
+                } finally {
+                    if ($null -ne $response) { $response.Dispose(); $response = $null }
+                    $request.Dispose()
+                }
+            }
+        } finally { $output.Dispose() }
     } catch [Threading.Tasks.TaskCanceledException] { throw "${FailureCode}: network timeout for $InitialUri" }
     catch { throw $_ }
     finally { if ($null -ne $response) { $response.Dispose() }; $client.Dispose(); $handler.Dispose() }
