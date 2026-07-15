@@ -301,7 +301,7 @@ function Test-ApprovedDesktopRuntimeDownloadUri([Uri]$Uri) {
 }
 
 function Remove-SafeDesktopRuntimePartialFile([string]$Path) {
-    $safePath = Assert-SafeCleanupDirectory $Path $repoRoot @($desktopRuntimeCacheRoot) '^(?:desktop-runtime-win-x64\.zip|runtime-manifest\.json|release-descriptor\.json)\.partial$'
+    $safePath = Assert-SafeCleanupDirectory $Path $repoRoot @($desktopRuntimeCacheRoot) '^(?:desktop-runtime-win-x64\.zip|runtime-manifest\.json|release-descriptor\.json)\.partial(?:\.range)?$'
     if (Test-Path -LiteralPath $safePath -PathType Leaf) { [IO.File]::Delete($safePath) }
 }
 
@@ -383,6 +383,7 @@ function Invoke-ApprovedDesktopRuntimeDownload([Uri]$InitialUri, [string]$Partia
     $handler = [System.Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect = $false
     $client = [System.Net.Http.HttpClient]::new($handler); $client.Timeout = [TimeSpan]::FromSeconds(60)
     $response = $null
+    $chunkPath = $null
     try {
         $currentUri = $InitialUri
         $resolvedUri = $null
@@ -414,6 +415,7 @@ function Invoke-ApprovedDesktopRuntimeDownload([Uri]$InitialUri, [string]$Partia
         # transfers resumable at chunk boundaries and never publishes a partial file.
         $curl = Require-Command 'curl.exe'
         $chunkSize = 1MB
+        $chunkPath = "$PartialPath.range"
         $totalLength = [Int64]$expectedLength
         $offset = if (Test-Path -LiteralPath $PartialPath -PathType Leaf) { [Int64](Get-Item -LiteralPath $PartialPath).Length } else { [Int64]0 }
         if ($offset -gt $totalLength) { throw "${FailureCode}: partial download is larger than the release asset." }
@@ -422,9 +424,9 @@ function Invoke-ApprovedDesktopRuntimeDownload([Uri]$InitialUri, [string]$Partia
             $newOffset = $offset
             $output = @()
             for ($attempt = 1; $attempt -le 3 -and $newOffset -le $offset; $attempt++) {
+                Remove-SafeDesktopRuntimePartialFile $chunkPath
                 $arguments = @('--fail', '--silent', '--show-error', '--proto', '=https', '--connect-timeout', '30', '--max-time', '90', '--retry', '2', '--retry-all-errors', '--range', "$offset-$end")
-                if ($offset -gt 0) { $arguments += '--append' }
-                $arguments += @('--output', $PartialPath)
+                $arguments += @('--output', $chunkPath)
                 $arguments += $resolvedUri.AbsoluteUri
                 try {
                     $output += @(& $curl @arguments 2>&1)
@@ -434,6 +436,21 @@ function Invoke-ApprovedDesktopRuntimeDownload([Uri]$InitialUri, [string]$Partia
                     # Keep the range retry loop in control and inspect progress.
                     $output += $_.Exception.Message
                 }
+                $expectedChunkLength = [Int64]($end - $offset + 1)
+                $chunkLength = if (Test-Path -LiteralPath $chunkPath -PathType Leaf) { [Int64](Get-Item -LiteralPath $chunkPath).Length } else { [Int64]0 }
+                if ($chunkLength -eq $expectedChunkLength) {
+                    $source = $null; $destination = $null
+                    try {
+                        $source = [IO.File]::OpenRead($chunkPath)
+                        $destination = [IO.File]::Open($PartialPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                        [void]$destination.Seek(0, [IO.SeekOrigin]::End)
+                        $source.CopyTo($destination)
+                    } finally {
+                        if ($null -ne $destination) { $destination.Dispose() }
+                        if ($null -ne $source) { $source.Dispose() }
+                    }
+                }
+                Remove-SafeDesktopRuntimePartialFile $chunkPath
                 $newOffset = if (Test-Path -LiteralPath $PartialPath -PathType Leaf) { [Int64](Get-Item -LiteralPath $PartialPath).Length } else { [Int64]0 }
                 if ($newOffset -le $offset -and $attempt -lt 3) { Start-Sleep -Seconds $attempt }
             }
@@ -442,7 +459,10 @@ function Invoke-ApprovedDesktopRuntimeDownload([Uri]$InitialUri, [string]$Partia
         }
     } catch [Threading.Tasks.TaskCanceledException] { throw "${FailureCode}: network timeout for $InitialUri" }
     catch { throw $_ }
-    finally { if ($null -ne $response) { $response.Dispose() }; $client.Dispose(); $handler.Dispose() }
+    finally {
+        if ($null -ne $chunkPath -and (Test-Path -LiteralPath $chunkPath -PathType Leaf)) { Remove-SafeDesktopRuntimePartialFile $chunkPath }
+        if ($null -ne $response) { $response.Dispose() }; $client.Dispose(); $handler.Dispose()
+    }
 }
 
 function Download-DesktopRuntimeReleaseToCache([object]$Descriptor, [object]$Metadata) {
