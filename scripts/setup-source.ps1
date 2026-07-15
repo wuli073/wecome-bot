@@ -413,7 +413,7 @@ function Invoke-ApprovedDesktopRuntimeDownload([Uri]$InitialUri, [string]$Partia
         # Release assets are read in bounded byte ranges. This keeps long proxy
         # transfers resumable at chunk boundaries and never publishes a partial file.
         $curl = Require-Command 'curl.exe'
-        $chunkSize = 8MB
+        $chunkSize = 1MB
         $totalLength = [Int64]$expectedLength
         $offset = if (Test-Path -LiteralPath $PartialPath -PathType Leaf) { [Int64](Get-Item -LiteralPath $PartialPath).Length } else { [Int64]0 }
         if ($offset -gt $totalLength) { throw "${FailureCode}: partial download is larger than the release asset." }
