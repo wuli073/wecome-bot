@@ -93,6 +93,17 @@ Describe 'Windows Source Starter package' {
         $installer | Should Not Match 'releases/download'
     }
 
+    It 'creates a missing installation parent without pre-creating the Git target' {
+        $installer = Read-Utf8 (Join-Path $sourceDirectory '02-install-wecome-bot.bat')
+        $installer | Should Match '\[IO\.Path\]::GetDirectoryName\(\$target\)'
+        $installer | Should Match '\[IO\.Directory\]::CreateDirectory\(\$parent\)'
+        $installer | Should Match 'Installation parent directory creation failed:'
+        $installer | Should Match 'Installation parent path is a file:'
+        $installer | Should Match 'Git clone failed for'
+        $installer | Should Not Match 'Installation parent directory does not exist'
+        $installer | Should Not Match 'New-Item -ItemType Directory -Path \$target'
+    }
+
     It 'prints the non-blocking real sending notice without an interactive confirmation' {
         $starter = Get-Content -LiteralPath (Join-Path $sourceDirectory '03-start-wecome-bot.bat') -Raw
         $starter | Should Match 'NOTICE: Real message sending is enabled by default\.'

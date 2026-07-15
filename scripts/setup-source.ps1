@@ -500,9 +500,95 @@ function Assert-SafeZipEntry([string]$EntryName, [string]$DestinationRoot) {
     return $target
 }
 
+function ConvertTo-ExtendedWindowsPath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Extended-length path is empty.' }
+    if ($Path.StartsWith('\\?\')) {
+        if ($Path -notmatch '^\\\\\?\\(?:[A-Za-z]:\\|UNC\\[^\\]+\\[^\\]+\\)') { throw "Extended-length path must be absolute: $Path" }
+        return $Path
+    }
+    if (-not [IO.Path]::IsPathRooted($Path)) { throw "Extended-length path must be absolute: $Path" }
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if ($fullPath.StartsWith('\\?\')) { return $fullPath }
+    if ($fullPath.StartsWith('\\')) { return '\\?\UNC\' + $fullPath.TrimStart('\') }
+    return '\\?\' + $fullPath
+}
+
+function New-LongPathDirectory([string]$LogicalPath) {
+    [void][IO.Directory]::CreateDirectory((ConvertTo-ExtendedWindowsPath $LogicalPath))
+}
+
+function Test-LongPathFile([string]$LogicalPath) {
+    return [IO.File]::Exists((ConvertTo-ExtendedWindowsPath $LogicalPath))
+}
+
+function Test-LongPathDirectory([string]$LogicalPath) {
+    return [IO.Directory]::Exists((ConvertTo-ExtendedWindowsPath $LogicalPath))
+}
+
+function Write-ZipEntryToLongPath([IO.Compression.ZipArchiveEntry]$Entry, [string]$LogicalTarget) {
+    $parent = [IO.Path]::GetDirectoryName($LogicalTarget)
+    if ([string]::IsNullOrWhiteSpace($parent)) { throw 'ZIP target has no parent directory.' }
+    New-LongPathDirectory $parent
+    $input = $null
+    $output = $null
+    try {
+        $input = $Entry.Open()
+        $output = [IO.FileStream]::new((ConvertTo-ExtendedWindowsPath $LogicalTarget), [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $input.CopyTo($output)
+    } finally {
+        if ($null -ne $output) { $output.Dispose() }
+        if ($null -ne $input) { $input.Dispose() }
+    }
+}
+
+function Get-LongPathSha256([string]$LogicalPath) {
+    $stream = $null
+    $sha256 = $null
+    try {
+        $stream = [IO.File]::OpenRead((ConvertTo-ExtendedWindowsPath $LogicalPath))
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        return ($sha256.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) -join ''
+    } finally {
+        if ($null -ne $sha256) { $sha256.Dispose() }
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+function Get-DesktopRuntimeDeepFileEntry([IO.Compression.ZipArchive]$Zip) {
+    $robotRecipe = @($Zip.Entries | Where-Object { $_.FullName -match '(?i)(?:^|[\\/])robotjs\.node\.recipe$' } | Select-Object -First 1)
+    if ($robotRecipe.Count -eq 1) { return $robotRecipe[0] }
+    return @($Zip.Entries | Where-Object { -not [string]::IsNullOrEmpty($_.Name) } | Sort-Object { $_.FullName.Length } -Descending | Select-Object -First 1)[0]
+}
+
+function Assert-DesktopRuntimeDeepFileIntegrity([string]$ArchivePath, [string]$Root) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = $null
+    $entryStream = $null
+    $sha256 = $null
+    try {
+        $zip = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
+        $entry = Get-DesktopRuntimeDeepFileEntry $zip
+        if ($null -eq $entry) { throw 'PREBUILT_RUNTIME_PAYLOAD_INVALID: archive contains no file entries.' }
+        $logicalTarget = Assert-SafeZipEntry $entry.FullName $Root
+        if (-not (Test-LongPathFile $logicalTarget)) { throw "PREBUILT_RUNTIME_PAYLOAD_INVALID: deep file missing $($entry.FullName) at $logicalTarget" }
+        $actualLength = ([IO.FileInfo](ConvertTo-ExtendedWindowsPath $logicalTarget)).Length
+        if ($actualLength -ne $entry.Length) { throw "PREBUILT_RUNTIME_PAYLOAD_INVALID: deep file size mismatch $($entry.FullName); expected $($entry.Length); actual $actualLength" }
+        $entryStream = $entry.Open(); $sha256 = [Security.Cryptography.SHA256]::Create()
+        $expectedHash = ($sha256.ComputeHash($entryStream) | ForEach-Object { $_.ToString('x2') }) -join ''
+        $actualHash = Get-LongPathSha256 $logicalTarget
+        if ($actualHash -ne $expectedHash) { throw "PREBUILT_RUNTIME_PAYLOAD_INVALID: deep file SHA-256 mismatch $($entry.FullName)" }
+        return [pscustomobject]@{ EntryName = $entry.FullName; LogicalPath = $logicalTarget; Length = $entry.Length; Sha256 = $expectedHash }
+    } finally {
+        if ($null -ne $sha256) { $sha256.Dispose() }
+        if ($null -ne $entryStream) { $entryStream.Dispose() }
+        if ($null -ne $zip) { $zip.Dispose() }
+    }
+}
+
 function Test-DesktopRuntimePayload([string]$Root) {
     foreach ($relativePath in @('LangBot Desktop RPA Runtime.exe', 'resources\app.asar', 'chrome_100_percent.pak', 'icudtl.dat', 'resources.pak', 'libEGL.dll', 'libGLESv2.dll', 'ffmpeg.dll', 'resources\app.asar.unpacked\node_modules\@hurdlegroup', 'resources\app.asar.unpacked\node_modules\active-win', 'resources\app.asar.unpacked\node_modules\node-window-manager')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $Root $relativePath))) { throw "PREBUILT_RUNTIME_PAYLOAD_INVALID: missing $relativePath" }
+        $target = [IO.Path]::GetFullPath((Join-Path $Root $relativePath))
+        if (-not (Test-LongPathFile $target) -and -not (Test-LongPathDirectory $target)) { throw "PREBUILT_RUNTIME_PAYLOAD_INVALID: missing $relativePath" }
     }
 }
 
@@ -563,16 +649,21 @@ function Expand-DesktopRuntimeArchiveSafely([string]$ArchivePath, [string]$Stagi
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = $null
     try {
+        New-LongPathDirectory $StagingPath
         $zip = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
         foreach ($entry in $zip.Entries) {
             $target = Assert-SafeZipEntry $entry.FullName $StagingPath
-            if ([string]::IsNullOrEmpty($entry.Name)) { New-Item -ItemType Directory -Path $target -Force | Out-Null; continue }
-            New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($target)) -Force | Out-Null
-            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
+            try {
+                if ([string]::IsNullOrEmpty($entry.Name)) { New-LongPathDirectory $target; continue }
+                Write-ZipEntryToLongPath $entry $target
+            } catch {
+                throw "Entry: $($entry.FullName); target: $target; path length: $($target.Length); $($_.Exception.Message)"
+            }
         }
     } catch { throw "PREBUILT_RUNTIME_ZIP_INVALID: $($_.Exception.Message)" }
     finally { if ($null -ne $zip) { $zip.Dispose() } }
     Test-DesktopRuntimePayload $StagingPath
+    Assert-DesktopRuntimeDeepFileIntegrity $ArchivePath $StagingPath | Out-Null
 }
 
 function Install-PrebuiltDesktopRuntime([object]$Metadata) {
@@ -586,21 +677,22 @@ function Install-PrebuiltDesktopRuntime([object]$Metadata) {
         if ($null -eq $artifact) { $artifact = Download-DesktopRuntimeReleaseToCache $descriptor $Metadata }
         Assert-DesktopRuntimeArtifact $artifact.Archive $artifact.Manifest $Metadata $descriptor | Out-Null
     }
-    New-Item -ItemType Directory -Path $desktopRuntimeWinDir -Force | Out-Null
+    New-LongPathDirectory $desktopRuntimeWinDir
     Recover-DesktopRuntimeTransactions $desktopRuntimeWinDir $desktopRuntimeUnpackedPath
-    # Keep extraction short enough for legacy Windows path limits; the final
-    # move into win-unpacked remains transactional inside the Runtime output.
-    $staging = Join-Path $desktopRuntimeCacheRoot ('.desktop-runtime-staging-' + [guid]::NewGuid().ToString('N'))
+    # Keep staging beside the final Runtime so every archive entry is written through
+    # the same extended-length I/O path used by a deeply installed project.
+    $staging = Join-Path $desktopRuntimeWinDir ('.desktop-runtime-staging-' + [guid]::NewGuid().ToString('N'))
     $backup = Join-Path $desktopRuntimeWinDir ('.desktop-runtime-backup-' + [guid]::NewGuid().ToString('N'))
     $installationError = $null
     try {
-        New-Item -ItemType Directory -Path $staging -Force | Out-Null
+        New-LongPathDirectory $staging
         Expand-DesktopRuntimeArchiveSafely $artifact.Archive $staging
         Stop-ExistingDesktopRuntimeProcesses $desktopRuntimeRoot $desktopRuntimeExecutable
         if (Test-Path -LiteralPath $desktopRuntimeUnpackedPath) { Move-Item -LiteralPath $desktopRuntimeUnpackedPath -Destination $backup -ErrorAction Stop }
         try {
             Move-Item -LiteralPath $staging -Destination $desktopRuntimeUnpackedPath -ErrorAction Stop
             Test-DesktopRuntimePayload $desktopRuntimeUnpackedPath
+            Assert-DesktopRuntimeDeepFileIntegrity $artifact.Archive $desktopRuntimeUnpackedPath | Out-Null
         } catch {
             $replacementFailure = $_.Exception
             try {

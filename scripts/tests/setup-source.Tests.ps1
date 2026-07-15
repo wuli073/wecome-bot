@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $scriptPath = Join-Path $repoRoot 'scripts\setup-source.ps1'
 $bundleScriptPath = Join-Path $repoRoot 'scripts\build-desktop-runtime-bundle.ps1'
+Add-Type -AssemblyName System.IO.Compression
 
 Describe 'source setup Desktop Runtime contract' {
     BeforeAll {
@@ -53,6 +54,77 @@ Describe 'source setup Desktop Runtime contract' {
         { Assert-SafeZipEntry 'C:\outside.txt' $root } | Should Throw
         { Assert-SafeZipEntry '\\server\share\outside.txt' $root } | Should Throw
         (Assert-SafeZipEntry 'resources/app.asar' $root) | Should Match 'resources\\app\.asar$'
+        $logical = [IO.Path]::GetFullPath((Join-Path $root 'physical-io'))
+        (ConvertTo-ExtendedWindowsPath $logical) | Should Be ('\\?\' + $logical)
+        (ConvertTo-ExtendedWindowsPath ('\\?\' + $logical)) | Should Be ('\\?\' + $logical)
+        { ConvertTo-ExtendedWindowsPath '' } | Should Throw
+        { ConvertTo-ExtendedWindowsPath 'relative\path' } | Should Throw
+    }
+
+    It 'extracts deep Runtime entries through extended-length paths without weakening ZIP safety' {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archivePath = Join-Path $TestDrive 'deep-runtime.zip'
+        $archive = [IO.Compression.ZipFile]::Open($archivePath, [System.IO.Compression.ZipArchiveMode]::Create)
+        try {
+            $requiredFiles = @('LangBot Desktop RPA Runtime.exe', 'resources/app.asar', 'chrome_100_percent.pak', 'icudtl.dat', 'resources.pak', 'libEGL.dll', 'libGLESv2.dll', 'ffmpeg.dll')
+            foreach ($name in $requiredFiles) {
+                $entry = $archive.CreateEntry($name)
+                $writer = [IO.StreamWriter]::new($entry.Open(), [Text.UTF8Encoding]::new($false))
+                try { $writer.Write("fixture:$name") } finally { $writer.Dispose() }
+            }
+            foreach ($name in @('resources/app.asar.unpacked/node_modules/@hurdlegroup/', 'resources/app.asar.unpacked/node_modules/active-win/', 'resources/app.asar.unpacked/node_modules/node-window-manager/')) {
+                [void]$archive.CreateEntry($name)
+            }
+            $deepEntryName = 'resources/app.asar.unpacked/node_modules/@hurdlegroup/robotjs/build/Release/obj/robotjs/robotjs.node.recipe'
+            $deepEntry = $archive.CreateEntry($deepEntryName)
+            $deepWriter = [IO.StreamWriter]::new($deepEntry.Open(), [Text.UTF8Encoding]::new($false))
+            try { $deepWriter.Write('deep-runtime-fixture') } finally { $deepWriter.Dispose() }
+        } finally { $archive.Dispose() }
+
+        $longRoot = Join-Path $TestDrive ('long-segment-' + ('x' * 80))
+        $staging = Join-Path $longRoot (('nested-segment-' + ('y' * 80)) + '\staging')
+        $expectedPath = [IO.Path]::GetFullPath((Join-Path $staging $deepEntryName.Replace('/', '\')))
+        $expectedPath.Length | Should BeGreaterThan 260
+        { Expand-DesktopRuntimeArchiveSafely $archivePath $staging } | Should Not Throw
+        (Test-LongPathFile $expectedPath) | Should Be $true
+        ([IO.File]::ReadAllText((ConvertTo-ExtendedWindowsPath $expectedPath), [Text.UTF8Encoding]::new($false))) | Should Be 'deep-runtime-fixture'
+        $proof = Assert-DesktopRuntimeDeepFileIntegrity $archivePath $staging
+        $proof.EntryName | Should Be $deepEntryName
+        $proof.Length | Should Be ([Text.UTF8Encoding]::new($false).GetByteCount('deep-runtime-fixture'))
+        $proof.Sha256 | Should Be (Get-LongPathSha256 $expectedPath)
+        [IO.Directory]::Delete((ConvertTo-ExtendedWindowsPath $longRoot), $true)
+
+        $outside = Join-Path $TestDrive 'zip-slip-outside.txt'
+        $unsafeArchivePath = Join-Path $TestDrive 'unsafe-runtime.zip'
+        $unsafeArchive = [IO.Compression.ZipFile]::Open($unsafeArchivePath, [System.IO.Compression.ZipArchiveMode]::Create)
+        try {
+            $unsafeEntry = $unsafeArchive.CreateEntry('../zip-slip-outside.txt')
+            $unsafeWriter = [IO.StreamWriter]::new($unsafeEntry.Open())
+            try { $unsafeWriter.Write('blocked') } finally { $unsafeWriter.Dispose() }
+        } finally { $unsafeArchive.Dispose() }
+        try {
+            Expand-DesktopRuntimeArchiveSafely $unsafeArchivePath (Join-Path $TestDrive 'unsafe-staging')
+            throw 'unsafe ZIP fixture was unexpectedly extracted'
+        } catch {
+            $_.Exception.Message | Should Match '^PREBUILT_RUNTIME_ZIP_INVALID:'
+        }
+        (Test-Path -LiteralPath $outside) | Should Be $false
+
+        $writeFailureArchivePath = Join-Path $TestDrive 'write-failure-runtime.zip'
+        $writeFailureArchive = [IO.Compression.ZipFile]::Open($writeFailureArchivePath, [System.IO.Compression.ZipArchiveMode]::Create)
+        try {
+            $writeFailureEntry = $writeFailureArchive.CreateEntry('resources/write-failure.bin')
+            $writeFailureWriter = [IO.StreamWriter]::new($writeFailureEntry.Open())
+            try { $writeFailureWriter.Write('must fail') } finally { $writeFailureWriter.Dispose() }
+        } finally { $writeFailureArchive.Dispose() }
+        Mock Write-ZipEntryToLongPath { throw [IO.IOException]::new('forced write failure') }
+        try {
+            Expand-DesktopRuntimeArchiveSafely $writeFailureArchivePath (Join-Path $TestDrive 'write-failure-staging')
+            throw 'write failure fixture was unexpectedly extracted'
+        } catch {
+            $_.Exception.Message | Should Match '^PREBUILT_RUNTIME_ZIP_INVALID: Entry: resources/write-failure\.bin; target:'
+            $_.Exception.Message | Should Match 'path length: [0-9]+'
+        }
     }
 
     It 'uses staging, transactional replacement, and rollback for the current repository runtime only' {
