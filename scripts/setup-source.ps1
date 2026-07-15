@@ -419,12 +419,17 @@ function Invoke-ApprovedDesktopRuntimeDownload([Uri]$InitialUri, [string]$Partia
         if ($offset -gt $totalLength) { throw "${FailureCode}: partial download is larger than the release asset." }
         while ($offset -lt $totalLength) {
             $end = [Math]::Min($offset + $chunkSize - 1, $totalLength - 1)
-            $arguments = @('--fail', '--silent', '--show-error', '--proto', '=https', '--connect-timeout', '30', '--max-time', '90', '--retry', '2', '--retry-all-errors', '--range', "$offset-$end")
-            if ($offset -gt 0) { $arguments += '--append' }
-            $arguments += @('--output', $PartialPath)
-            $arguments += $resolvedUri.AbsoluteUri
-            $output = @(& $curl @arguments 2>&1)
-            $newOffset = if (Test-Path -LiteralPath $PartialPath -PathType Leaf) { [Int64](Get-Item -LiteralPath $PartialPath).Length } else { [Int64]0 }
+            $newOffset = $offset
+            $output = @()
+            for ($attempt = 1; $attempt -le 3 -and $newOffset -le $offset; $attempt++) {
+                $arguments = @('--fail', '--silent', '--show-error', '--proto', '=https', '--connect-timeout', '30', '--max-time', '90', '--retry', '2', '--retry-all-errors', '--range', "$offset-$end")
+                if ($offset -gt 0) { $arguments += '--append' }
+                $arguments += @('--output', $PartialPath)
+                $arguments += $resolvedUri.AbsoluteUri
+                $output += @(& $curl @arguments 2>&1)
+                $newOffset = if (Test-Path -LiteralPath $PartialPath -PathType Leaf) { [Int64](Get-Item -LiteralPath $PartialPath).Length } else { [Int64]0 }
+                if ($newOffset -le $offset -and $attempt -lt 3) { Start-Sleep -Seconds $attempt }
+            }
             if ($newOffset -le $offset -or $newOffset -gt $totalLength) { throw "${FailureCode}: byte range $offset-$end failed: $($output -join [Environment]::NewLine)" }
             $offset = $newOffset
         }
