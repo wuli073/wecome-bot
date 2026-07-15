@@ -402,6 +402,8 @@ function Invoke-ApprovedDesktopRuntimeDownload([Uri]$InitialUri, [string]$Partia
             }
             if (-not $response.IsSuccessStatusCode) { throw "${FailureCode}: HTTP $statusCode $($response.ReasonPhrase) for $currentUri" }
             if (-not (Test-ApprovedDesktopRuntimeDownloadUri $currentUri)) { throw "DESKTOP_RUNTIME_RELEASE_REDIRECT_REJECTED: final URL $currentUri was rejected." }
+            $expectedLength = $response.Content.Headers.ContentLength
+            if ($null -eq $expectedLength -or [Int64]$expectedLength -le 0) { throw "${FailureCode}: final download did not include a valid Content-Length." }
             $resolvedUri = $currentUri
             $response.Dispose(); $response = $null
             break
@@ -410,34 +412,21 @@ function Invoke-ApprovedDesktopRuntimeDownload([Uri]$InitialUri, [string]$Partia
 
         # Release assets are read in bounded byte ranges. This keeps long proxy
         # transfers resumable at chunk boundaries and never publishes a partial file.
+        $curl = Require-Command 'curl.exe'
         $chunkSize = 8MB
-        $offset = [Int64]0
-        $totalLength = $null
-        $output = [IO.File]::Open($PartialPath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
-        try {
-            while ($null -eq $totalLength -or $offset -lt $totalLength) {
-                $end = if ($null -eq $totalLength) { $offset + $chunkSize - 1 } else { [Math]::Min($offset + $chunkSize - 1, $totalLength - 1) }
-                $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $resolvedUri)
-                $request.Headers.UserAgent.ParseAdd('wecome-bot-desktop-runtime-installer/1.0')
-                $request.Headers.Range = [System.Net.Http.Headers.RangeHeaderValue]::new($offset, $end)
-                try {
-                    $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-                    if ([int]$response.StatusCode -ne 206) { throw "${FailureCode}: expected HTTP 206 for byte range $offset-$end from $resolvedUri; got HTTP $([int]$response.StatusCode)." }
-                    $range = $response.Content.Headers.ContentRange
-                    if ($null -eq $range -or $null -eq $range.From -or $null -eq $range.To -or $null -eq $range.Length -or [Int64]$range.From -ne $offset) { throw "${FailureCode}: invalid Content-Range for byte range $offset-$end." }
-                    if ($null -eq $totalLength) { $totalLength = [Int64]$range.Length }
-                    if ([Int64]$range.Length -ne $totalLength -or [Int64]$range.To -ge $totalLength) { throw "${FailureCode}: inconsistent Content-Range length." }
-                    $expectedLength = [Int64]$range.To - [Int64]$range.From + 1
-                    $input = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-                    try { $input.CopyTo($output) } finally { $input.Dispose() }
-                    if ($null -ne $response.Content.Headers.ContentLength -and [Int64]$response.Content.Headers.ContentLength -ne $expectedLength) { throw "${FailureCode}: unexpected byte range length." }
-                    $offset += $expectedLength
-                } finally {
-                    if ($null -ne $response) { $response.Dispose(); $response = $null }
-                    $request.Dispose()
-                }
-            }
-        } finally { $output.Dispose() }
+        $totalLength = [Int64]$expectedLength
+        $offset = if (Test-Path -LiteralPath $PartialPath -PathType Leaf) { [Int64](Get-Item -LiteralPath $PartialPath).Length } else { [Int64]0 }
+        if ($offset -gt $totalLength) { throw "${FailureCode}: partial download is larger than the release asset." }
+        while ($offset -lt $totalLength) {
+            $end = [Math]::Min($offset + $chunkSize - 1, $totalLength - 1)
+            $arguments = @('--fail', '--silent', '--show-error', '--proto', '=https', '--connect-timeout', '30', '--max-time', '90', '--retry', '2', '--retry-all-errors', '--range', "$offset-$end", '--output', $PartialPath)
+            if ($offset -gt 0) { $arguments += '--append' }
+            $arguments += $resolvedUri.AbsoluteUri
+            $output = @(& $curl @arguments 2>&1)
+            $newOffset = if (Test-Path -LiteralPath $PartialPath -PathType Leaf) { [Int64](Get-Item -LiteralPath $PartialPath).Length } else { [Int64]0 }
+            if ($newOffset -le $offset -or $newOffset -gt $totalLength) { throw "${FailureCode}: byte range $offset-$end failed: $($output -join [Environment]::NewLine)" }
+            $offset = $newOffset
+        }
     } catch [Threading.Tasks.TaskCanceledException] { throw "${FailureCode}: network timeout for $InitialUri" }
     catch { throw $_ }
     finally { if ($null -ne $response) { $response.Dispose() }; $client.Dispose(); $handler.Dispose() }

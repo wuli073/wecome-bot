@@ -119,6 +119,7 @@ Describe 'desktop runtime Release descriptor and cache contract' {
 
     It 'reports an unpublished descriptor instead of attempting an unconfigured Release URL' {
         $descriptor = Read-DesktopRuntimeReleaseDescriptor $script:metadata $descriptorPath
+        $descriptor.release_available = $false
         { Download-DesktopRuntimeReleaseToCache $descriptor $script:metadata } | Should Throw
     }
 
