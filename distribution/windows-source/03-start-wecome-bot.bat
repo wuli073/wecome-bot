@@ -12,6 +12,9 @@ if errorlevel 1 goto :powershell_missing
 if not exist "%LB_START_SCRIPT%" goto :start_missing
 if not exist "%LB_DOCTOR_SCRIPT%" goto :doctor_missing
 
+echo NOTICE: Real message sending is enabled by default.
+echo Verify the configured account, connector, recipients, and message content before sending.
+
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=[IO.Path]::GetFullPath($env:LB_REPO_ROOT); $scriptPath=$env:LB_START_SCRIPT; Set-Location -LiteralPath $root; $statusOutput=& $scriptPath -Action Status; if (-not $?) { throw 'scripts\\start-source.ps1 -Action Status failed.' }; $status=$statusOutput | ConvertFrom-Json; if ($status.status -ne 'running') { & $scriptPath -Action Start; if (-not $?) { throw 'scripts\\start-source.ps1 failed.' } }"
 if errorlevel 1 goto :failed
 
