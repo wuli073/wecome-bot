@@ -379,15 +379,16 @@ function Get-VerifiedCachedDesktopRuntimeArtifact([object]$Descriptor, [object]$
 
 function Invoke-ApprovedDesktopRuntimeDownload([Uri]$InitialUri, [string]$PartialPath, [string]$FailureCode) {
     if (-not (Test-ApprovedDesktopRuntimeDownloadUri $InitialUri)) { throw 'DESKTOP_RUNTIME_RELEASE_REDIRECT_REJECTED: initial URL is not an approved HTTPS GitHub URL.' }
-    $handler = [Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect = $false
-    $client = [Net.Http.HttpClient]::new($handler); $client.Timeout = [TimeSpan]::FromSeconds(60)
+    Add-Type -AssemblyName System.Net.Http
+    $handler = [System.Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect = $false
+    $client = [System.Net.Http.HttpClient]::new($handler); $client.Timeout = [TimeSpan]::FromSeconds(60)
     $response = $null
     try {
         $currentUri = $InitialUri
         for ($redirects = 0; $redirects -le 5; $redirects++) {
-            $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, $currentUri)
+            $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $currentUri)
             $request.Headers.UserAgent.ParseAdd('wecome-bot-desktop-runtime-installer/1.0')
-            $response = $client.SendAsync($request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+            $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
             $statusCode = [int]$response.StatusCode
             if ($statusCode -in @(301, 302, 303, 307, 308)) {
                 $location = $response.Headers.Location
