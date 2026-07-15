@@ -11,5 +11,5 @@
   "manifest_asset_name": "runtime-manifest.json",
   "asset_sha256": "225BD50CF1B09D18A3FB78BFE1E0189D4E02C3260717EE403DB8CE0EB0F91165",
   "package_lock_sha256": "E5534688D710620A18493923386C031A345A16BA778985E1F08E70C61AABC2FE",
-  "release_available": false
+  "release_available": true
 }
