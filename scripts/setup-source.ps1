@@ -426,7 +426,14 @@ function Invoke-ApprovedDesktopRuntimeDownload([Uri]$InitialUri, [string]$Partia
                 if ($offset -gt 0) { $arguments += '--append' }
                 $arguments += @('--output', $PartialPath)
                 $arguments += $resolvedUri.AbsoluteUri
-                $output += @(& $curl @arguments 2>&1)
+                try {
+                    $output += @(& $curl @arguments 2>&1)
+                } catch {
+                    # PowerShell 5.1 can promote curl stderr to a terminating
+                    # error when the remote end closes TLS without close_notify.
+                    # Keep the range retry loop in control and inspect progress.
+                    $output += $_.Exception.Message
+                }
                 $newOffset = if (Test-Path -LiteralPath $PartialPath -PathType Leaf) { [Int64](Get-Item -LiteralPath $PartialPath).Length } else { [Int64]0 }
                 if ($newOffset -le $offset -and $attempt -lt 3) { Start-Sleep -Seconds $attempt }
             }
