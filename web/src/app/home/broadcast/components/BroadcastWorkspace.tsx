@@ -2348,6 +2348,7 @@ export default function BroadcastWorkspace() {
               if (!selectedImportIdRef.current) {
                 return;
               }
+              const requestGeneration = ++importRequestGenerationRef.current;
               ++importDetailGenerationRef.current;
               const releaseImportBusy = beginImportBusy();
               setImportError(null);
@@ -2356,7 +2357,7 @@ export default function BroadcastWorkspace() {
                   scope,
                   selectedImportIdRef.current,
                   page,
-                  { requestGeneration: importRequestGenerationRef.current },
+                  { requestGeneration },
                 );
               } catch (error) {
                 const message = getErrorMessage(error, t('common.error'));

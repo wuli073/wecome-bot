@@ -676,9 +676,7 @@ test.describe('broadcast import feedback', () => {
     await expect(
       page.locator('[data-testid="broadcast-import-table"]'),
     ).toContainText('user-1');
-    await expect(
-      page.locator('[data-testid="broadcast-import-table"]'),
-    ).not.toContainText('user-151');
+    await expect(page.getByText('user-151', { exact: true })).toHaveCount(0);
 
     expect(postCount).toBe(1);
     expect(deleteCount).toBe(0);

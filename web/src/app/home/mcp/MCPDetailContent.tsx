@@ -116,6 +116,21 @@ export default function MCPDetailContent({ id }: { id: string }) {
     disconnected: 'bg-muted-foreground/50',
   };
 
+  const handleEnableToggle = useCallback(
+    async (checked: boolean) => {
+      const prev = serverEnabled;
+      setServerEnabled(checked);
+      try {
+        await httpClient.toggleMCPServer(id, checked);
+        refreshMCPServers();
+      } catch {
+        setServerEnabled(prev);
+        toast.error(t('mcp.modifyFailed'));
+      }
+    },
+    [id, serverEnabled, refreshMCPServers, t],
+  );
+
   // Fetch server enable state
   useEffect(() => {
     if (!isCreateMode) {
@@ -150,21 +165,6 @@ export default function MCPDetailContent({ id }: { id: string }) {
       />
     );
   }
-
-  const handleEnableToggle = useCallback(
-    async (checked: boolean) => {
-      const prev = serverEnabled;
-      setServerEnabled(checked);
-      try {
-        await httpClient.toggleMCPServer(id, checked);
-        refreshMCPServers();
-      } catch {
-        setServerEnabled(prev);
-        toast.error(t('mcp.modifyFailed'));
-      }
-    },
-    [id, serverEnabled, refreshMCPServers, t],
-  );
 
   function handleFormSubmit() {
     // Re-sync enable state after form save

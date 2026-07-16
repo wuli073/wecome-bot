@@ -199,9 +199,10 @@ function scheduleReconnect(
   attempt: DatabaseModeConnectionAttempt | null = sharedAttempt,
 ) {
   const retryGeneration = attempt?.generation ?? sharedConnectionGeneration;
+  const hadPendingDispose = sharedDisposeTimer != null;
   cleanupSharedSource(closeReason, attempt);
   emitState('disconnected');
-  if (sharedListeners.size === 0) {
+  if (sharedListeners.size === 0 && !hadPendingDispose) {
     emitState('idle');
     return;
   }
@@ -251,7 +252,7 @@ async function ensureConnection() {
   }
   recordLifecycleLog('handshake_completed', attempt);
 
-  if (sharedListeners.size === 0) {
+  if (sharedListeners.size === 0 && sharedDisposeTimer == null) {
     cleanupSharedSource('no_listeners_after_handshake', attempt);
     emitState('idle');
     return;
@@ -389,7 +390,7 @@ export function useDatabaseModeEvents({
           if (sharedConnectionGeneration !== cleanupGeneration) {
             return;
           }
-          if (sharedSource !== cleanupSource) {
+          if (cleanupSource != null && sharedSource !== cleanupSource) {
             return;
           }
           cleanupSharedSource('last_listener_removed');

@@ -239,6 +239,7 @@ test.describe('bot advanced flows', () => {
     await page.getByRole('combobox').click();
     await page.getByRole('option', { name: 'Playwright Adapter' }).click();
     await submit(page);
+    await expect(page).toHaveURL(/\/home\/bots\?id=bot-1$/);
 
     // Verify we're on the Configuration tab
     await expect(

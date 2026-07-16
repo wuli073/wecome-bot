@@ -73,9 +73,25 @@ test.describe('quick start wizard readiness', () => {
   }) => {
     await installLangBotApiMocks(page);
     await installReadyWizardRoutes(page);
+    let wizardStatus: 'none' | 'skipped' = 'none';
     let completedRequests = 0;
+    await page.route('**/api/v1/system/info', async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: 0,
+          message: 'ok',
+          data: {
+            wizard_status: wizardStatus,
+            wizard_progress: null,
+            cloud_service_url: '',
+          },
+        }),
+      });
+    });
     await page.route('**/api/v1/system/wizard/completed', async (route) => {
       completedRequests += 1;
+      wizardStatus = 'skipped';
       await route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify({ code: 0, message: 'ok', data: {} }),
@@ -93,7 +109,7 @@ test.describe('quick start wizard readiness', () => {
     await page.getByRole('button', { name: 'Skip' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'OK' }).click();
 
-    await expect(page).toHaveURL(/\/home$/);
+    await expect(page).toHaveURL(/\/home\/monitoring$/);
     expect(completedRequests).toBe(1);
   });
 });

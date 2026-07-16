@@ -119,6 +119,8 @@ const PROCESSING_POLL_INTERVAL_MS = 1_500;
 const PROCESSING_RECOVERY_TIMEOUT_MS = 90_000;
 const DESKTOP_RUN_POLL_INTERVAL_MS = 1_500;
 const DESKTOP_RUN_POLL_TIMEOUT_MS = 130_000;
+const REFRESH_DEBOUNCE_MS = 200;
+const FALLBACK_POLL_INTERVAL_MS = 15_000;
 const STATUS_OPTIONS: MessageStatusFilter[] = [
   'all',
   'pending',
@@ -444,6 +446,9 @@ export const DatabaseBotSessionMonitor = forwardRef<
   const [composerStatusText, setComposerStatusText] = useState<string | null>(
     null,
   );
+  const [isPageVisible, setIsPageVisible] = useState(
+    () => document.visibilityState === 'visible',
+  );
 
   const messagesScrollAreaRef = useRef<HTMLDivElement | null>(null);
   const currentDraftRef = useRef<DraftEditorState | null>(null);
@@ -454,6 +459,14 @@ export const DatabaseBotSessionMonitor = forwardRef<
   const previousConversationIdRef = useRef<number | null>(null);
   const previousLastMessageIdRef = useRef<number | null>(null);
   const processingRecoveryRef = useRef<ProcessingRecoveryState | null>(null);
+  const refreshTimerRef = useRef<number | null>(null);
+  const refreshInFlightRef = useRef(false);
+  const rerunRefreshRef = useRef(false);
+  const refreshConversationDataRef = useRef<() => Promise<void>>(
+    async () => undefined,
+  );
+  const lastRealtimeEventIdRef = useRef<string | null>(null);
+  const isMountedRef = useRef(true);
 
   const dataSource = useMemo(
     () => createDataSource(botAdapter, botId),
@@ -508,12 +521,18 @@ export const DatabaseBotSessionMonitor = forwardRef<
   );
 
   const loadConversations = useCallback(async () => {
+    if (!isMountedRef.current) {
+      return;
+    }
     setLoading(true);
     try {
       const response = await dataSource.listConversations({
         keyword: appliedKeyword || undefined,
         status: statusFilter === 'all' ? undefined : statusFilter,
       });
+      if (!isMountedRef.current) {
+        return;
+      }
       setConversations(response.conversations);
       setSelectedConversationId((currentId) => {
         if (response.conversations.length === 0) {
@@ -530,10 +549,15 @@ export const DatabaseBotSessionMonitor = forwardRef<
         return response.conversations[0]?.id ?? null;
       });
     } catch (error) {
+      if (!isMountedRef.current) {
+        return;
+      }
       console.error('Failed to load conversations:', error);
       toast.error('加载会话失败');
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   }, [appliedKeyword, dataSource, statusFilter]);
 
@@ -548,23 +572,37 @@ export const DatabaseBotSessionMonitor = forwardRef<
 
   const loadMessages = useCallback(
     async (conversationId: number, _options?: LoadMessagesOptions) => {
+      if (!isMountedRef.current) {
+        return;
+      }
       setMessagesLoading(true);
       try {
         const response = await dataSource.listMessages(
           conversationId.toString(),
         );
+        if (!isMountedRef.current) {
+          return;
+        }
         setMessages(response.messages);
       } catch (error) {
+        if (!isMountedRef.current) {
+          return;
+        }
         console.error('Failed to load messages:', error);
         toast.error('加载消息失败');
       } finally {
-        setMessagesLoading(false);
+        if (isMountedRef.current) {
+          setMessagesLoading(false);
+        }
       }
     },
     [dataSource],
   );
 
   const refreshConversationData = useCallback(async () => {
+    if (!isMountedRef.current) {
+      return;
+    }
     const conversationId = selectedConversationIdRef.current;
     if (conversationId === null) {
       await loadConversations();
@@ -576,6 +614,7 @@ export const DatabaseBotSessionMonitor = forwardRef<
       loadMessages(conversationId, { preserveDraftText: true }),
     ]);
   }, [loadConversations, loadMessages]);
+  refreshConversationDataRef.current = refreshConversationData;
 
   useImperativeHandle(
     ref,
@@ -586,15 +625,26 @@ export const DatabaseBotSessionMonitor = forwardRef<
   );
 
   const loadDesktopRuntimeStatus = useCallback(async () => {
+    if (!isMountedRef.current) {
+      return;
+    }
     setDesktopRuntimeStatusLoading(true);
     try {
       const status = await dataSource.getDesktopRuntimeStatus();
+      if (!isMountedRef.current) {
+        return;
+      }
       setDesktopRuntimeStatus(status);
     } catch (error) {
+      if (!isMountedRef.current) {
+        return;
+      }
       console.error('Failed to load desktop runtime status:', error);
       setDesktopRuntimeStatus({ status: 'failed' });
     } finally {
-      setDesktopRuntimeStatusLoading(false);
+      if (isMountedRef.current) {
+        setDesktopRuntimeStatusLoading(false);
+      }
     }
   }, [dataSource]);
 
@@ -605,6 +655,50 @@ export const DatabaseBotSessionMonitor = forwardRef<
   useEffect(() => {
     void loadConversations();
   }, [loadConversations]);
+
+  const runRealtimeRefresh = useCallback(async () => {
+    if (refreshInFlightRef.current) {
+      rerunRefreshRef.current = true;
+      return;
+    }
+
+    refreshInFlightRef.current = true;
+    try {
+      do {
+        rerunRefreshRef.current = false;
+        await refreshConversationDataRef.current();
+      } while (isMountedRef.current && rerunRefreshRef.current);
+    } finally {
+      refreshInFlightRef.current = false;
+    }
+  }, []);
+
+  const scheduleRealtimeRefresh = useCallback(() => {
+    if (refreshInFlightRef.current) {
+      rerunRefreshRef.current = true;
+      return;
+    }
+
+    if (refreshTimerRef.current != null) {
+      window.clearTimeout(refreshTimerRef.current);
+    }
+
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void runRealtimeRefresh();
+    }, REFRESH_DEBOUNCE_MS);
+  }, [runRealtimeRefresh]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (refreshTimerRef.current != null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (selectedConversationId === null) {
@@ -693,15 +787,22 @@ export const DatabaseBotSessionMonitor = forwardRef<
     previousLastMessageIdRef.current = lastMessageId;
   }, [scrollToBottom, selectedConversationId, sortedMessages]);
 
-  useBotDatabaseEvents({
+  const { connectionState } = useBotDatabaseEvents({
     enabled: botEnabled,
-    onMessageCreated: () => {
-      void loadConversations();
-      if (selectedConversationIdRef.current !== null) {
-        void loadMessages(selectedConversationIdRef.current, {
-          preserveDraftText: true,
-        });
+    onEvent: (event) => {
+      if (event.type === 'ready') {
+        scheduleRealtimeRefresh();
+        return;
       }
+
+      if (event.type === 'database-message-created' && event.event_id) {
+        if (lastRealtimeEventIdRef.current === event.event_id) {
+          return;
+        }
+        lastRealtimeEventIdRef.current = event.event_id;
+      }
+
+      scheduleRealtimeRefresh();
     },
     onMessageUpdated: (event) => {
       const currentDraftState = currentDraftRef.current;
@@ -750,25 +851,33 @@ export const DatabaseBotSessionMonitor = forwardRef<
           setDesktopRunPollingStartedAt((value) => value ?? Date.now());
         }
       }
-      void loadConversations();
-      if (selectedConversationIdRef.current !== null) {
-        void loadMessages(selectedConversationIdRef.current, {
-          preserveDraftText: true,
-        });
-      }
-    },
-    onMessageDeleted: () => {
-      void loadConversations();
-      if (selectedConversationIdRef.current !== null) {
-        void loadMessages(selectedConversationIdRef.current, {
-          preserveDraftText: false,
-        });
-      }
-    },
-    onConversationUpdated: () => {
-      void loadConversations();
     },
   });
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      setIsPageVisible(document.visibilityState === 'visible');
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () =>
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  useEffect(() => {
+    const shouldRunFallback =
+      connectionState === 'disconnected' || connectionState === 'retrying';
+    if (!botEnabled || !shouldRunFallback || !isPageVisible) {
+      return;
+    }
+
+    scheduleRealtimeRefresh();
+    const timer = window.setInterval(() => {
+      scheduleRealtimeRefresh();
+    }, FALLBACK_POLL_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
+  }, [botEnabled, connectionState, isPageVisible, scheduleRealtimeRefresh]);
 
   const defaultActionMessage = useMemo(
     () => findDefaultActionMessage(sortedMessages),
@@ -1278,9 +1387,11 @@ export const DatabaseBotSessionMonitor = forwardRef<
             nextRun.status === 'succeeded' ||
             nextRun.status === 'succeeded_with_warning'
           ) {
-            toast.success(
-              t('bots.sessionMonitor.databaseComposer.paste.success'),
+            const successMessage = t(
+              'bots.sessionMonitor.databaseComposer.paste.success',
             );
+            setComposerStatusText(successMessage);
+            toast.success(successMessage);
           } else if (nextRun.last_error_code) {
             toast.error(
               t(
@@ -1343,9 +1454,11 @@ export const DatabaseBotSessionMonitor = forwardRef<
             response.run.status === 'succeeded' ||
             response.run.status === 'succeeded_with_warning'
           ) {
-            toast.success(
-              t('bots.sessionMonitor.databaseComposer.paste.success'),
+            const successMessage = t(
+              'bots.sessionMonitor.databaseComposer.paste.success',
             );
+            setComposerStatusText(successMessage);
+            toast.success(successMessage);
           }
         }
       } catch (error: any) {

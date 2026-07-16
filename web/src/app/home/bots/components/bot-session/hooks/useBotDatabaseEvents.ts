@@ -8,6 +8,7 @@ import type { DatabaseModeRealtimeEvent } from '@/app/infra/entities/api';
 
 interface UseBotDatabaseEventsProps {
   enabled: boolean;
+  onEvent?: (event: DatabaseModeRealtimeEvent) => void;
   onMessageCreated?: (event: DatabaseModeRealtimeEvent) => void;
   onMessageUpdated?: (event: DatabaseModeRealtimeEvent) => void;
   onConversationUpdated?: (event: DatabaseModeRealtimeEvent) => void;
@@ -20,12 +21,15 @@ interface UseBotDatabaseEventsProps {
  */
 export function useBotDatabaseEvents({
   enabled,
+  onEvent,
   onMessageCreated,
   onMessageUpdated,
   onConversationUpdated,
   onMessageDeleted,
 }: UseBotDatabaseEventsProps) {
   const handleEvent = (event: DatabaseModeRealtimeEvent) => {
+    onEvent?.(event);
+
     // Filter events by bot if needed (for now, all database mode events are global)
     switch (event.type) {
       case 'database-message-created':

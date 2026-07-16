@@ -360,7 +360,7 @@ test.describe('broadcast execution phase 4', () => {
 
     await expect(
       page.getByTestId('broadcast-execution-task-status-9003'),
-    ).toContainText(zhHans.broadcast.logs.statusWarning);
+    ).toContainText(zhHans.broadcast.logs.taskStatuses.succeeded_with_warning);
     await expect(page.locator('body')).toContainText(
       zhHans.broadcast.logs.errorSuggestions.TARGET_WINDOW_NOT_FOUND,
     );
@@ -571,7 +571,7 @@ test.describe('broadcast execution phase 4', () => {
     expect(zhHans.broadcast.logs.pasteVerificationUnavailableHint).toBe(
       '内容验证：未启用',
     );
-    expect(zhHans.broadcast.logs.statusPasteVerified).toBe('???????');
+    expect(zhHans.broadcast.logs.statusPasteVerified).toBe('已粘贴，未发送');
     expect(zhHans.broadcast.toasts.pasteSubmitted).toBe('写入任务已提交');
 
     await installLangBotApiMocks(page, {

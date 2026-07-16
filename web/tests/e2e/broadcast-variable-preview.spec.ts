@@ -759,6 +759,9 @@ test.describe('broadcast variable preview', () => {
     await page.getByRole('tab', { name: '导入匹配' }).click();
     await page.getByTestId('broadcast-import-select-all-checkbox').click();
     await page.getByTestId('broadcast-import-generate-drafts-button').click();
+    await page
+      .getByTestId('broadcast-import-generate-drafts-confirm-button')
+      .click();
 
     await page.getByRole('tab', { name: '审核发送' }).click();
     await expect(page.locator('body')).toContainText('TEST-20260704-001');
