@@ -14,7 +14,7 @@ Describe 'desktop runtime Release descriptor and cache contract' {
 
     It 'contains calculated archive and package-lock SHA-256 values' {
         $descriptor = Read-DesktopRuntimeReleaseDescriptor $script:metadata $descriptorPath
-        $descriptor.asset_sha256 | Should Be 'E81DCECC0F64A92E685619EF2CFF4B2627986A537DD7AE196FD0A4D5B654A75D'
+        $descriptor.asset_sha256 | Should Be '797B2DA0E4C42FB9C1E68B6F5D41438255BFDC589105749C51E0EF9F79A61292'
         $descriptor.package_lock_sha256 | Should Be (Get-Sha256 (Join-Path $repoRoot 'apps\desktop-rpa-runtime\package-lock.json'))
         $archive = Join-Path $repoRoot 'distribution\packages\desktop-runtime\desktop-runtime-win-x64.zip'
         (Get-Sha256 $archive) | Should Be $descriptor.asset_sha256
@@ -41,8 +41,8 @@ Describe 'desktop runtime Release descriptor and cache contract' {
 
     It 'constructs fixed HTTPS GitHub Release URLs and restricts redirect hosts' {
         $descriptor = Read-DesktopRuntimeReleaseDescriptor $script:metadata $descriptorPath
-        (Get-DesktopRuntimeReleaseUri $descriptor $descriptor.asset_name).AbsoluteUri | Should Be 'https://github.com/wuli073/wecome-bot/releases/download/desktop-runtime-v0.1.1/desktop-runtime-win-x64.zip'
-        (Get-DesktopRuntimeReleaseUri $descriptor $descriptor.manifest_asset_name).AbsoluteUri | Should Be 'https://github.com/wuli073/wecome-bot/releases/download/desktop-runtime-v0.1.1/runtime-manifest.json'
+        (Get-DesktopRuntimeReleaseUri $descriptor $descriptor.asset_name).AbsoluteUri | Should Be 'https://github.com/wuli073/wecome-bot/releases/download/desktop-runtime-v0.1.2/desktop-runtime-win-x64.zip'
+        (Get-DesktopRuntimeReleaseUri $descriptor $descriptor.manifest_asset_name).AbsoluteUri | Should Be 'https://github.com/wuli073/wecome-bot/releases/download/desktop-runtime-v0.1.2/runtime-manifest.json'
         (Test-ApprovedDesktopRuntimeDownloadUri ([Uri]'https://objects.githubusercontent.com/asset')) | Should Be $true
         (Test-ApprovedDesktopRuntimeDownloadUri ([Uri]'https://release-assets.githubusercontent.com/asset')) | Should Be $true
         (Test-ApprovedDesktopRuntimeDownloadUri ([Uri]'http://github.com/wuli073/wecome-bot')) | Should Be $false
