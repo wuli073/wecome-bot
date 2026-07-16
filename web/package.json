@@ -8,6 +8,7 @@
     "preview": "vite preview",
     "test": "playwright test",
     "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
@@ -18,15 +19,17 @@
     ]
   },
   "overrides": {
+    "ajv@>=6.0.0 <6.14.0": "6.14.0",
     "js-yaml": ">=4.2.0 <5",
     "form-data": ">=4.0.6",
     "@radix-ui/react-focus-scope": "1.1.7",
     "flatted": ">=3.4.2",
     "follow-redirects": ">=1.16.0",
-    "minimatch@>=3.0.0 <3.1.3": "3.1.3",
+    "minimatch@>=3.0.0 <3.1.4": "3.1.4",
     "minimatch@>=9.0.0 <9.0.7": "9.0.7",
     "picomatch@>=2.0.0 <2.3.2": "2.3.2",
-    "picomatch@>=4.0.0 <4.0.4": "4.0.4"
+    "picomatch@>=4.0.0 <4.0.4": "4.0.4",
+    "yaml": "2.8.3"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -118,14 +121,16 @@
   "packageManager": "pnpm@9.15.4",
   "pnpm": {
     "overrides": {
+      "ajv@>=6.0.0 <6.14.0": "6.14.0",
       "js-yaml": ">=4.2.0 <5",
       "form-data": ">=4.0.6",
-      "minimatch@>=3.0.0 <3.1.3": "3.1.3",
+      "minimatch@>=3.0.0 <3.1.4": "3.1.4",
       "minimatch@>=9.0.0 <9.0.7": "9.0.7",
       "picomatch@>=2.0.0 <2.3.2": "2.3.2",
       "picomatch@>=4.0.0 <4.0.4": "4.0.4",
       "flatted": ">=3.4.2",
-      "follow-redirects": ">=1.16.0"
+      "follow-redirects": ">=1.16.0",
+      "yaml": "2.8.3"
     }
   }
 }
