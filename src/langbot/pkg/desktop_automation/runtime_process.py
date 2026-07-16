@@ -26,6 +26,8 @@ from .errors import (
     RUNTIME_START_FAILED,
     RUNTIME_UNAVAILABLE,
 )
+from .config_migration import remove_legacy_runtime_version_fields
+from .runtime_contract import RuntimeContract, load_runtime_contract
 
 logger = logging.getLogger(__name__)
 
@@ -237,13 +239,12 @@ def _default_runtime_root() -> Path:
 
 def apply_local_desktop_automation_defaults(config: dict[str, Any] | None) -> dict[str, Any]:
     normalized = dict(config or {})
+    remove_legacy_runtime_version_fields({'desktop_automation': normalized})
     normalized.setdefault('enabled', False)
     normalized.setdefault('runtime_executable', '')
     normalized.setdefault('startup_timeout_seconds', 30)
     normalized.setdefault('task_timeout_seconds', 120)
     normalized.setdefault('stale_run_seconds', 300)
-    normalized.setdefault('expected_protocol_version', '2')
-    normalized.setdefault('runtime_version', '0.1.2')
     return normalized
 
 
@@ -271,9 +272,12 @@ class DesktopRuntimeProcessManager:
         self._manager_session_id = secrets.token_hex(8)
         self._stopping = False
         self._runtime_log_dir = _normalize_path(os.environ.get('LANGBOT_RPA_LOG_DIR'))
+        self.runtime_contract: RuntimeContract | None = None
 
     async def ensure_started(self) -> dict[str, Any]:
         async with self._lock:
+            contract = load_runtime_contract(self.runtime_root)
+            self.runtime_contract = contract
             runtime_candidates = list_runtime_candidates(repo_root=self.runtime_root)
             for candidate in runtime_candidates:
                 logger.info(
@@ -336,17 +340,15 @@ class DesktopRuntimeProcessManager:
                 spawn_pid = int(getattr(self.process, 'pid'))
                 if int(handshake['pid']) != spawn_pid:
                     raise DesktopAutomationError(RUNTIME_START_FAILED, 'Desktop runtime handshake pid mismatch')
-                expected_protocol_version = str(self.config.get('expected_protocol_version') or '2')
-                if str(handshake['protocolVersion']) != expected_protocol_version:
+                if str(handshake['protocolVersion']) != contract.protocol_version:
                     raise DesktopAutomationError(
                         RUNTIME_PROTOCOL_MISMATCH,
-                        f'Runtime protocol mismatch: expected {expected_protocol_version}, got {handshake["protocolVersion"]}',
+                        f'Runtime protocol mismatch: expected {contract.protocol_version}, got {handshake["protocolVersion"]}',
                     )
-                expected_runtime_version = str(self.config.get('runtime_version') or '0.1.2')
-                if str(handshake['runtimeVersion']) != expected_runtime_version:
+                if str(handshake['runtimeVersion']) != contract.runtime_version:
                     raise DesktopAutomationError(
                         RUNTIME_PROTOCOL_MISMATCH,
-                        f'Runtime version mismatch: expected {expected_runtime_version}, got {handshake["runtimeVersion"]}',
+                        f'Runtime version mismatch: expected {contract.runtime_version}, got {handshake["runtimeVersion"]}',
                     )
 
                 runtime_info = {
@@ -486,10 +488,12 @@ class DesktopRuntimeProcessManager:
         )
 
     def _build_client(self, runtime_info: dict[str, Any]) -> DesktopRuntimeClient:
+        if self.runtime_contract is None:
+            raise DesktopAutomationError(RUNTIME_START_FAILED, 'Desktop Runtime contract was not loaded before client creation')
         return DesktopRuntimeClient(
             base_url=f'http://{runtime_info["host"]}:{runtime_info["port"]}',
             token=str(runtime_info['token']),
-            expected_protocol_version=str(self.config.get('expected_protocol_version') or '2'),
+            expected_protocol_version=self.runtime_contract.protocol_version,
         )
 
     async def _can_reuse_running_runtime(self, target_runtime: Path) -> bool:

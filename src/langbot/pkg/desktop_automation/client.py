@@ -33,7 +33,7 @@ class DesktopRuntimeClient:
         *,
         base_url: str,
         token: str,
-        expected_protocol_version: str = '2',
+        expected_protocol_version: str | None = None,
         transport=None,
         timeout: aiohttp.ClientTimeout | None = None,
     ) -> None:
@@ -107,7 +107,7 @@ class DesktopRuntimeClient:
 
     def _assert_protocol(self, payload: dict[str, Any]) -> None:
         protocol_version = payload.get('protocolVersion')
-        if protocol_version is None:
+        if protocol_version is None or self.expected_protocol_version is None:
             return
         if str(protocol_version) != str(self.expected_protocol_version):
             raise RuntimeProtocolError(

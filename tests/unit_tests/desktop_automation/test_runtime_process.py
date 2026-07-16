@@ -12,6 +12,8 @@ import pytest
 
 from langbot.pkg.desktop_automation.errors import (
     RPA_RUNTIME_NOT_AVAILABLE,
+    RUNTIME_CONTRACT_INVALID,
+    RUNTIME_CONTRACT_UNAVAILABLE,
     RUNTIME_HANDSHAKE_TOKEN_INVALID,
     RUNTIME_OWNERSHIP_CONFLICT,
     RUNTIME_PROTOCOL_MISMATCH,
@@ -26,6 +28,7 @@ from langbot.pkg.desktop_automation.runtime_process import (
     resolve_latest_runtime_executable,
     resolve_runtime_executable_path,
 )
+from langbot.pkg.desktop_automation.runtime_contract import load_runtime_contract
 
 
 pytestmark = pytest.mark.asyncio
@@ -179,6 +182,7 @@ def _official_runtime_executable(root: Path, build_dir: str) -> Path:
 
 
 def _write_official_runtime(root: Path, build_dir: str) -> Path:
+    _write_runtime_contract(root)
     executable = _official_runtime_executable(root, build_dir)
     executable.parent.mkdir(parents=True, exist_ok=True)
     executable.write_text(build_dir, encoding='utf-8')
@@ -186,6 +190,7 @@ def _write_official_runtime(root: Path, build_dir: str) -> Path:
 
 
 def _write_deterministic_runtime(root: Path) -> Path:
+    _write_runtime_contract(root)
     executable = (
         root
         / 'apps'
@@ -200,7 +205,30 @@ def _write_deterministic_runtime(root: Path) -> Path:
     return executable
 
 
-def test_defaults_keep_runtime_configuration_in_phase2():
+def _write_runtime_contract(
+    root: Path,
+    *,
+    protocol_version: str = '2',
+    runtime_version: str = '0.1.2',
+    release_available: bool = True,
+) -> Path:
+    descriptor = root / 'distribution' / 'runtime' / 'desktop-runtime-release.json'
+    descriptor.parent.mkdir(parents=True, exist_ok=True)
+    descriptor.write_text(
+        json.dumps(
+            {
+                'protocol_version': protocol_version,
+                'runtime_version': runtime_version,
+                'tag': f'desktop-runtime-v{runtime_version}',
+                'release_available': release_available,
+            }
+        ),
+        encoding='utf-8',
+    )
+    return descriptor
+
+
+def test_defaults_remove_retired_runtime_version_configuration():
     config = apply_local_desktop_automation_defaults(
         {
             'enabled': True,
@@ -210,7 +238,43 @@ def test_defaults_keep_runtime_configuration_in_phase2():
 
     assert config['enabled'] is True
     assert config['runtime_executable'] == 'C:/runtime/runtime.exe'
-    assert config['expected_protocol_version'] == '2'
+    assert 'expected_protocol_version' not in config
+    assert 'runtime_version' not in config
+
+
+def test_runtime_contract_reads_the_local_descriptor():
+    with TemporaryDirectory() as temp_dir:
+        tmp_path = Path(temp_dir)
+        _write_runtime_contract(tmp_path, protocol_version='2', runtime_version='0.1.2')
+
+        contract = load_runtime_contract(tmp_path)
+
+    assert contract.protocol_version == '2'
+    assert contract.runtime_version == '0.1.2'
+    assert contract.tag == 'desktop-runtime-v0.1.2'
+
+
+@pytest.mark.parametrize(
+    ('descriptor_content', 'error_code'),
+    [
+        (None, RUNTIME_CONTRACT_UNAVAILABLE),
+        ('not-json', RUNTIME_CONTRACT_INVALID),
+        ('{"release_available": false}', RUNTIME_CONTRACT_UNAVAILABLE),
+        ('{"release_available": true, "runtime_version": "0.1.2", "tag": "tag"}', RUNTIME_CONTRACT_INVALID),
+    ],
+)
+def test_runtime_contract_reports_missing_or_invalid_descriptors(descriptor_content, error_code):
+    with TemporaryDirectory() as temp_dir:
+        tmp_path = Path(temp_dir)
+        if descriptor_content is not None:
+            descriptor = tmp_path / 'distribution' / 'runtime' / 'desktop-runtime-release.json'
+            descriptor.parent.mkdir(parents=True, exist_ok=True)
+            descriptor.write_text(descriptor_content, encoding='utf-8')
+
+        with pytest.raises(DesktopAutomationError) as exc_info:
+            load_runtime_contract(tmp_path)
+
+    assert exc_info.value.code == error_code
 
 
 def test_runtime_executable_resolution_ignores_configured_old_path_and_selects_latest_official_runtime():
@@ -444,6 +508,48 @@ async def test_runtime_process_manager_starts_and_returns_runtime_info(monkeypat
         assert runtime_info['runtimeVersion'] == '0.1.2'
         assert runtime_info['token']
         assert isinstance(manager.client, object)
+
+
+async def test_legacy_runtime_versions_do_not_override_descriptor_handshake(monkeypatch):
+    with TemporaryDirectory() as temp_dir:
+        tmp_path = Path(temp_dir)
+        runtime_executable = _write_official_runtime(tmp_path, '2026-06-30T04-24-26-368Z')
+        monkeypatch.setattr(
+            'langbot.pkg.desktop_automation.runtime_process.psutil.Process',
+            lambda _pid: _FakePsutilProcess(4321, str(runtime_executable), create_time=12.5),
+        )
+        monkeypatch.setattr('langbot.pkg.desktop_automation.runtime_process.psutil.process_iter', lambda attrs=None: iter(()))
+
+        async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
+            assert path == runtime_executable
+            return _FakeProcess(
+                ['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n']
+            )
+
+        fake_client = SimpleNamespace(
+            health=AsyncMock(return_value={'status': 'ready'}),
+            capabilities=AsyncMock(return_value={'inputAvailable': True, 'sendEnabled': True}),
+        )
+        manager = DesktopRuntimeProcessManager(
+            config={
+                'enabled': True,
+                'runtime_executable': str(runtime_executable),
+                'expected_protocol_version': '1',
+                'runtime_version': '0.1.1',
+            },
+            spawn_runtime=spawn_runtime,
+            client_factory=lambda _runtime_info: fake_client,
+            runtime_root=tmp_path,
+        )
+
+        status = await manager.get_status()
+
+    assert 'expected_protocol_version' not in manager.config
+    assert 'runtime_version' not in manager.config
+    assert status['status'] == 'ready', status
+    assert status['runtime_reachable'] is True
+    assert status['send_enabled'] is True
+    assert 'token' not in status
 
 
 async def test_runtime_process_manager_propagates_enabled_broadcast_send_to_runtime(monkeypatch):

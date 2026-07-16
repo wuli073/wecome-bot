@@ -52,7 +52,6 @@ from ...desktop_automation.runtime_process import (
     DesktopRuntimeProcessManager,
     apply_local_desktop_automation_defaults,
 )
-from ...desktop_automation.client import DesktopRuntimeClient
 from ...desktop_automation.service import DesktopAutomationService
 from ...utils import paths
 from .. import entities as core_entities
@@ -278,11 +277,6 @@ class BuildAppStage(stage.BootingStage):
             ap,
             repository=desktop_automation_repository,
             runtime_process_manager=desktop_automation_runtime_process_manager,
-            runtime_client_factory=lambda runtime_info: DesktopRuntimeClient(
-                base_url=f"http://{runtime_info['host']}:{runtime_info['port']}",
-                token=str(runtime_info['token']),
-                expected_protocol_version=str(desktop_automation_config.get('expected_protocol_version') or '2'),
-            ),
         )
         await ap.desktop_automation_service.reconcile_stale_runs()
         ap.broadcast_execution_worker = BroadcastExecutionWorker(

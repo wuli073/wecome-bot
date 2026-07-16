@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import copy
+import logging
 from typing import Any
 from langbot.pkg.utils import constants
 import yaml
@@ -10,6 +12,10 @@ import time
 
 from .. import stage, app
 from ..bootutils import config
+from ...desktop_automation.config_migration import migrate_legacy_runtime_version_fields
+
+
+logger = logging.getLogger(__name__)
 
 
 def _apply_env_overrides_to_config(cfg: dict) -> dict:
@@ -148,12 +154,16 @@ class LoadConfigStage(stage.BootingStage):
 
         # # ======= deprecated =======
 
+        if migrate_legacy_runtime_version_fields('data/config.yaml'):
+            logger.info('Migrated legacy Desktop Runtime version settings.')
+
         ap.instance_config = await config.load_yaml_config('data/config.yaml', 'config.yaml', completion=False)
 
         # Apply environment variable overrides to data/config.yaml
+        original_config = copy.deepcopy(ap.instance_config.data)
         ap.instance_config.data = _apply_env_overrides_to_config(ap.instance_config.data)
-
-        await ap.instance_config.dump_config()
+        if ap.instance_config.data != original_config:
+            await ap.instance_config.dump_config()
 
         # load or generate instance id
         # Priority:
