@@ -10,6 +10,6 @@
   "asset_name": "desktop-runtime-win-x64.zip",
   "manifest_asset_name": "runtime-manifest.json",
   "asset_sha256": "E81DCECC0F64A92E685619EF2CFF4B2627986A537DD7AE196FD0A4D5B654A75D",
-  "package_lock_sha256": "4BB81D96B0DE9FAC32786C3ADD3BD74D7AE7C39E174317793090939568C7FAFF",
+  "package_lock_sha256": "52FA05301A499D2E3FF58789828E29E9149A80DE7DDCB508757E5672CFA7C6BD",
   "release_available": true
 }
