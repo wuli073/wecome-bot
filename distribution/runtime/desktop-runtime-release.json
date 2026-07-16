@@ -2,14 +2,14 @@
   "schema_version": 1,
   "provider": "github-release",
   "repository": "wuli073/wecome-bot",
-  "tag": "desktop-runtime-v0.1.0",
-  "runtime_version": "0.1.0",
+  "tag": "desktop-runtime-v0.1.1",
+  "runtime_version": "0.1.1",
   "protocol_version": 1,
   "platform": "win32",
   "architecture": "x64",
   "asset_name": "desktop-runtime-win-x64.zip",
   "manifest_asset_name": "runtime-manifest.json",
-  "asset_sha256": "225BD50CF1B09D18A3FB78BFE1E0189D4E02C3260717EE403DB8CE0EB0F91165",
-  "package_lock_sha256": "E5534688D710620A18493923386C031A345A16BA778985E1F08E70C61AABC2FE",
+  "asset_sha256": "E81DCECC0F64A92E685619EF2CFF4B2627986A537DD7AE196FD0A4D5B654A75D",
+  "package_lock_sha256": "4BB81D96B0DE9FAC32786C3ADD3BD74D7AE7C39E174317793090939568C7FAFF",
   "release_available": true
 }
