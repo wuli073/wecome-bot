@@ -101,7 +101,7 @@ export async function runSendMessageTask(
   const verification = await verify(request, prepared, deps)
   const baseEvidence = [
     ...normalizeEvidence(prepareResult.evidence),
-    { step: 'enter', ok: true, key: 'Enter' },
+    { phase: 'message_send_enter_sent', ok: true, key: 'Enter' },
     ...normalizeEvidence(verification.evidence),
   ]
 

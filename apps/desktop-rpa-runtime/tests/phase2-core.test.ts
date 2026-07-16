@@ -348,7 +348,7 @@ test('paste_only blocks on ambiguous windows without writing draft or attachment
   }
 })
 
-test('paste_only searches conversation by keyboard and pastes draft without verifier or send Enter reuse', async () => {
+test('paste_only follows the search-to-input state machine and does not send the draft', async () => {
   const input = new RecordingInputDriver()
   const sleeps: number[] = []
   const clipboardWrites: string[] = []
@@ -391,25 +391,40 @@ test('paste_only searches conversation by keyboard and pastes draft without veri
   assert.equal(result.actualCodePointCount, null)
   assert.equal(result.actualDigest, null)
   assert.equal(result.actualLineCount, null)
-  assert.equal(clipboardWrites.length, 1)
-  assert.equal(clipboardWrites[0], 'First line\nSecond line')
+  assert.deepEqual(clipboardWrites, ['Customer A', 'First line\nSecond line'])
   assert.equal(sleeps.length, 4)
-  assert.deepEqual(sleeps, [300, 200, 300, 800])
+  assert.deepEqual(sleeps, [300, 200, 800, 800])
   assert.deepEqual(input.events, [
     { type: 'hotkey', payload: ['Control', 'F'] },
     { type: 'hotkey', payload: ['Control', 'A'] },
-    { type: 'typeText', payload: 'Customer A' },
+    { type: 'hotkey', payload: ['Control', 'V'] },
     { type: 'hotkey', payload: ['Enter'] },
+    { type: 'hotkey', payload: ['Control', 'A'] },
     { type: 'hotkey', payload: ['Control', 'V'] },
   ])
   assert.equal(result.searchShortcutCount, 1)
   assert.equal(result.conversationInputCount, 1)
-  assert.equal(result.conversationPasteCount, 0)
+  assert.equal(result.conversationPasteCount, 1)
   assert.equal(result.conversationConfirmEnterCount, 1)
   assert.equal(result.draftPasteCount, 1)
   assert.equal(result.sendKeyCount, 0)
   assert.equal(result.messageSent, false)
   assert.equal(result.draftWritten, true)
+  assert.deepEqual(
+    (result.evidence as Array<Record<string, unknown>>).map((item) => item.phase),
+    [
+      'wechat_activated',
+      'search_focused',
+      'search_cleared',
+      'conversation_name_pasted',
+      'conversation_search_waiting',
+      'conversation_enter_sent',
+      'conversation_input_waiting',
+      'conversation_input_cleared',
+      'message_pasted',
+      'prepare',
+    ],
+  )
   assert.equal(clipboard.currentText(), 'old clipboard')
   assert.equal(result.conversationName, undefined)
   assert.equal(result.draftText, undefined)
@@ -682,8 +697,9 @@ test('paste_only only returns succeeded after explicit content verification pass
   assert.deepEqual(input.events, [
     { type: 'hotkey', payload: ['Control', 'F'] },
     { type: 'hotkey', payload: ['Control', 'A'] },
-    { type: 'typeText', payload: 'Customer A' },
+    { type: 'hotkey', payload: ['Control', 'V'] },
     { type: 'hotkey', payload: ['Enter'] },
+    { type: 'hotkey', payload: ['Control', 'A'] },
     { type: 'hotkey', payload: ['Control', 'V'] },
   ])
 })
@@ -749,7 +765,7 @@ test('runtime host reuses idempotency key and does not repeat paste task', async
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   assert.equal(host.getTask(first.id)?.status, 'succeeded')
-  assert.equal(input.events.filter((event) => event.type === 'hotkey').length, 4)
+  assert.equal(input.events.filter((event) => event.type === 'hotkey').length, 6)
 })
 
 test('paste-draft tasks share one execution lane and run in FIFO order', async () => {
@@ -952,8 +968,9 @@ test('paste_only appends attachments after verified text and never presses Enter
     assert.deepEqual(input.events, [
       { type: 'hotkey', payload: ['Control', 'F'] },
       { type: 'hotkey', payload: ['Control', 'A'] },
-      { type: 'typeText', payload: 'Customer A' },
+      { type: 'hotkey', payload: ['Control', 'V'] },
       { type: 'hotkey', payload: ['Enter'] },
+      { type: 'hotkey', payload: ['Control', 'A'] },
       { type: 'hotkey', payload: ['Control', 'V'] },
       { type: 'hotkey', payload: ['Control', 'V'] },
     ])
@@ -1215,8 +1232,9 @@ test('paste_only fails before attachment Ctrl+V when target window loses foregro
     assert.deepEqual(input.events, [
       { type: 'hotkey', payload: ['Control', 'F'] },
       { type: 'hotkey', payload: ['Control', 'A'] },
-      { type: 'typeText', payload: 'Customer A' },
+      { type: 'hotkey', payload: ['Control', 'V'] },
       { type: 'hotkey', payload: ['Enter'] },
+      { type: 'hotkey', payload: ['Control', 'A'] },
       { type: 'hotkey', payload: ['Control', 'V'] },
     ])
   } finally {

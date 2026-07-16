@@ -214,7 +214,7 @@ test('paste_only aborts before draft Ctrl+V when clipboard roundtrip mutates uni
   assert.equal(result.stage, 'text_pasted_unverified')
   assert.equal(result.errorCode, undefined)
   assert.equal(result.draftPasteCount, 1)
-  assert.deepEqual(input.events, [['Control', 'F'], ['Control', 'A'], ['typeText', '小满'], ['Enter'], ['Control', 'V']])
+  assert.deepEqual(input.events, [['Control', 'F'], ['Control', 'A'], ['Control', 'V'], ['Enter'], ['Control', 'A'], ['Control', 'V']])
 })
 
 test('paste_only distinguishes unavailable verification from content mismatch', async () => {
@@ -315,7 +315,7 @@ test('paste_only still pastes once when legacy verifier fields are injected on d
   assert.equal(result.status, 'succeeded')
   assert.equal(result.errorCode, undefined)
   assert.equal(result.draftPasteCount, 1)
-  assert.deepEqual(input.events, [['Control', 'F'], ['Control', 'A'], ['typeText', '小满'], ['Enter'], ['Control', 'V']])
+  assert.deepEqual(input.events, [['Control', 'F'], ['Control', 'A'], ['Control', 'V'], ['Enter'], ['Control', 'A'], ['Control', 'V']])
 })
 
 test('paste_only keeps selected window diagnostics when input inspection fails after activation', async () => {

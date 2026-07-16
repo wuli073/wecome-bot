@@ -311,11 +311,10 @@ test('send_draft presses Enter at most once', async () => {
   assert.deepEqual(input.events[0], { type: 'hotkey', payload: ['Enter'] })
 })
 
-test('send_message resolves the conversation by exact name, pastes once, waits fixed delays, and dispatches the final Enter exactly once', async () => {
+test('send_message follows the search-to-input state machine and dispatches the final Enter once', async () => {
   const input = new RecordingInputDriver()
   const sleeps: number[] = []
   const clipboardWrites: string[] = []
-  const verifierPhases: string[] = []
   const clipboard = new ClipboardController(undefined, {
     ...fakeClipboardAdapter(['text/plain'], { text: 'old clipboard' }),
     writeText(text: string) {
@@ -340,21 +339,6 @@ test('send_message resolves the conversation by exact name, pastes once, waits f
     activateTargetWindow: async () => ({ ok: true, window: wxworkWindow }),
     getActiveWindow: async () => wxworkWindow,
     sleep: async (ms: number) => { sleeps.push(ms) },
-    pasteVerificationProvider: {
-      getCapability: () => ({
-        available: true,
-        reason: null,
-        method: 'windows_uia',
-        requiresManualConversationOpen: true,
-        supportedErrorCodes: ['TARGET_GROUP_NOT_FOUND', 'TARGET_GROUP_AMBIGUOUS'],
-      }),
-      verifyInputContent: async ({ phase }: { phase: 'before_paste' | 'after_paste' | 'after_send' }) => {
-        verifierPhases.push(phase)
-        return buildVerifierObservation({
-          observedConversation: verifierPhases.length >= 2 ? 'Customer A' : null,
-        })
-      },
-    } as never,
   } as never)
 
   assert.equal(result.status, 'succeeded_with_warning')
@@ -365,22 +349,39 @@ test('send_message resolves the conversation by exact name, pastes once, waits f
   assert.equal(result.messageSent, null)
   assert.equal(result.terminal_confirmed, false)
   assert.equal(result.retry_allowed, false)
-  assert.deepEqual(verifierPhases, ['before_paste', 'before_paste'])
-  assert.deepEqual(sleeps, [300, 200, 300, 800, 150])
-  assert.deepEqual(clipboardWrites, ['hello'])
+  assert.deepEqual(sleeps, [300, 200, 800, 800, 150])
+  assert.deepEqual(clipboardWrites, ['Customer A', 'hello'])
   assert.deepEqual(input.events, [
     { type: 'hotkey', payload: ['Control', 'F'] },
     { type: 'hotkey', payload: ['Control', 'A'] },
-    { type: 'typeText', payload: 'Customer A' },
+    { type: 'hotkey', payload: ['Control', 'V'] },
     { type: 'hotkey', payload: ['Enter'] },
+    { type: 'hotkey', payload: ['Control', 'A'] },
     { type: 'hotkey', payload: ['Control', 'V'] },
     { type: 'hotkey', payload: ['Enter'] },
   ])
+  assert.deepEqual(
+    (result.evidence as Array<Record<string, unknown>>).map((item) => item.phase),
+    [
+      'wechat_activated',
+      'search_focused',
+      'search_cleared',
+      'conversation_name_pasted',
+      'conversation_search_waiting',
+      'conversation_enter_sent',
+      'conversation_input_waiting',
+      'conversation_input_cleared',
+      'message_pasted',
+      'prepare',
+      'message_send_enter_sent',
+      undefined,
+    ],
+  )
 })
 
-test('send_message returns TARGET_GROUP_NOT_FOUND and does not dispatch the final Enter when no exact match exists', async () => {
+test('send_message does not inspect missing search results before the search Enter', async () => {
   const input = new RecordingInputDriver()
-  const clipboard = new ClipboardController(undefined, fakeClipboardAdapter(['text/plain'], { text: 'old clipboard' }))
+  let verificationCalls = 0
 
   const result = await runSendMessageTask({
     action: 'send_message',
@@ -390,7 +391,7 @@ test('send_message returns TARGET_GROUP_NOT_FOUND and does not dispatch the fina
     messageText: 'hello',
   }, {
     input: input as never,
-    clipboard,
+    clipboard: new ClipboardController(undefined, fakeClipboardAdapter(['text/plain'], { text: 'old clipboard' })),
     runtimeAutoSendEnabled: true,
     sendDriverForceDisabled: false,
     findTargetWindow: async () => ({ ok: true, window: wxworkWindow }),
@@ -398,32 +399,31 @@ test('send_message returns TARGET_GROUP_NOT_FOUND and does not dispatch the fina
     getActiveWindow: async () => wxworkWindow,
     sleep: async () => undefined,
     pasteVerificationProvider: {
-      getCapability: () => ({
-        available: true,
-        reason: null,
-        method: 'windows_uia',
-        requiresManualConversationOpen: true,
-        supportedErrorCodes: ['TARGET_GROUP_NOT_FOUND', 'TARGET_GROUP_AMBIGUOUS'],
-      }),
-      verifyInputContent: async () => buildVerifierObservation({
-        conversationCandidates: ['Customer B', 'Customer C'],
-      }),
-    } as never,
+      verifyInputContent: async () => {
+        verificationCalls += 1
+        return buildVerifierObservation({ conversationCandidates: ['Customer B', 'Customer C'] })
+      },
+    },
+    postSendVerify: async () => buildPostVerifyResult(),
   } as never)
 
-  assert.equal(result.status, 'failed')
-  assert.equal(result.stage, 'resolve_not_found')
-  assert.equal(result.error_code, 'TARGET_GROUP_NOT_FOUND')
+  assert.equal(result.status, 'succeeded')
+  assert.equal(result.error_code, undefined)
+  assert.equal(verificationCalls, 0)
   assert.deepEqual(input.events, [
     { type: 'hotkey', payload: ['Control', 'F'] },
     { type: 'hotkey', payload: ['Control', 'A'] },
-    { type: 'typeText', payload: 'Customer A' },
+    { type: 'hotkey', payload: ['Control', 'V'] },
+    { type: 'hotkey', payload: ['Enter'] },
+    { type: 'hotkey', payload: ['Control', 'A'] },
+    { type: 'hotkey', payload: ['Control', 'V'] },
+    { type: 'hotkey', payload: ['Enter'] },
   ])
 })
 
-test('send_message returns TARGET_GROUP_AMBIGUOUS and does not dispatch the final Enter when multiple exact matches exist', async () => {
+test('send_message does not inspect ambiguous search results before the search Enter', async () => {
   const input = new RecordingInputDriver()
-  const clipboard = new ClipboardController(undefined, fakeClipboardAdapter(['text/plain'], { text: 'old clipboard' }))
+  let verificationCalls = 0
 
   const result = await runSendMessageTask({
     action: 'send_message',
@@ -433,7 +433,7 @@ test('send_message returns TARGET_GROUP_AMBIGUOUS and does not dispatch the fina
     messageText: 'hello',
   }, {
     input: input as never,
-    clipboard,
+    clipboard: new ClipboardController(undefined, fakeClipboardAdapter(['text/plain'], { text: 'old clipboard' })),
     runtimeAutoSendEnabled: true,
     sendDriverForceDisabled: false,
     findTargetWindow: async () => ({ ok: true, window: wxworkWindow }),
@@ -441,32 +441,26 @@ test('send_message returns TARGET_GROUP_AMBIGUOUS and does not dispatch the fina
     getActiveWindow: async () => wxworkWindow,
     sleep: async () => undefined,
     pasteVerificationProvider: {
-      getCapability: () => ({
-        available: true,
-        reason: null,
-        method: 'windows_uia',
-        requiresManualConversationOpen: true,
-        supportedErrorCodes: ['TARGET_GROUP_NOT_FOUND', 'TARGET_GROUP_AMBIGUOUS'],
-      }),
-      verifyInputContent: async () => buildVerifierObservation({
-        conversationCandidates: ['Customer A', 'Customer A'],
-      }),
-    } as never,
+      verifyInputContent: async () => {
+        verificationCalls += 1
+        return buildVerifierObservation({ conversationCandidates: ['Customer A', 'Customer A'] })
+      },
+    },
+    postSendVerify: async () => buildPostVerifyResult(),
   } as never)
 
-  assert.equal(result.status, 'failed')
-  assert.equal(result.stage, 'resolve_ambiguous')
-  assert.equal(result.error_code, 'TARGET_GROUP_AMBIGUOUS')
-  assert.deepEqual(input.events, [
-    { type: 'hotkey', payload: ['Control', 'F'] },
-    { type: 'hotkey', payload: ['Control', 'A'] },
-    { type: 'typeText', payload: 'Customer A' },
+  assert.equal(result.status, 'succeeded')
+  assert.equal(result.error_code, undefined)
+  assert.equal(verificationCalls, 0)
+  assert.deepEqual(input.events.filter((event) => event.type === 'hotkey' && Array.isArray(event.payload) && event.payload[0] === 'Enter'), [
+    { type: 'hotkey', payload: ['Enter'] },
+    { type: 'hotkey', payload: ['Enter'] },
   ])
 })
 
-test('send_message ignores the already-open conversation title when exactly one search result matches the target name', async () => {
+test('send_message does not inspect an already-open conversation title before the search Enter', async () => {
   const input = new RecordingInputDriver()
-  let observationCount = 0
+  let verificationCalls = 0
 
   const result = await runSendMessageTask({
     action: 'send_message',
@@ -484,32 +478,26 @@ test('send_message ignores the already-open conversation title when exactly one 
     getActiveWindow: async () => wxworkWindow,
     sleep: async () => undefined,
     pasteVerificationProvider: {
-      getCapability: () => ({
-        available: true,
-        reason: null,
-        method: 'windows_uia',
-        requiresManualConversationOpen: true,
-        supportedErrorCodes: ['TARGET_GROUP_NOT_FOUND', 'TARGET_GROUP_AMBIGUOUS'],
-      }),
       verifyInputContent: async () => {
-        observationCount += 1
+        verificationCalls += 1
         return buildVerifierObservation({
           conversationCandidates: ['Customer A', 'Customer A'],
           observedConversation: 'Customer A',
         })
       },
-    } as never,
+    },
     postSendVerify: async () => buildPostVerifyResult(),
   } as never)
 
   assert.equal(result.status, 'succeeded')
   assert.equal(result.error_code, undefined)
-  assert.equal(observationCount, 2)
+  assert.equal(verificationCalls, 0)
   assert.deepEqual(input.events, [
     { type: 'hotkey', payload: ['Control', 'F'] },
     { type: 'hotkey', payload: ['Control', 'A'] },
-    { type: 'typeText', payload: 'Customer A' },
+    { type: 'hotkey', payload: ['Control', 'V'] },
     { type: 'hotkey', payload: ['Enter'] },
+    { type: 'hotkey', payload: ['Control', 'A'] },
     { type: 'hotkey', payload: ['Control', 'V'] },
     { type: 'hotkey', payload: ['Enter'] },
   ])

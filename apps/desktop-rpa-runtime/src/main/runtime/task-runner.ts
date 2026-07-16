@@ -100,7 +100,6 @@ export class TaskRunner {
         fileClipboard: this.fileClipboard,
         getActiveWindow: this.getActiveWindow,
         isCancelled: options?.isCancelled,
-        pasteVerificationProvider: this.pasteVerificationProvider,
       })
     }
     if (request.action === 'send_draft' || request.action === 'send_message') {
@@ -115,7 +114,6 @@ export class TaskRunner {
         fileClipboard: this.fileClipboard,
         getActiveWindow: this.getActiveWindow,
         isCancelled: options?.isCancelled,
-        pasteVerificationProvider: this.pasteVerificationProvider,
       })
     }
     return { status: 'blocked', stage: `${request.action}_disabled`, errorCode: 'UNSUPPORTED_TASK_ACTION', messageSent: false }
