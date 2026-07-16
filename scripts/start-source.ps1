@@ -12,6 +12,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'console-mode.ps1')
+Disable-ConsoleQuickEdit | Out-Null
 
 $script:RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if (-not $UserDataRoot) { $UserDataRoot = Join-Path $script:RepoRoot '.tmp\source-runtime\user-data' }
@@ -246,7 +248,7 @@ function Wait-ForDesktopRuntime([int]$Timeout) {
         }
         Start-Sleep -Milliseconds 500
     }
-    throw "Desktop Runtime did not become ready with paste/send capabilities within $Timeout seconds: $lastDetail. Logs: $script:LogsRoot"
+    throw "Desktop Runtime did not become ready with paste/send capabilities within $Timeout seconds: $lastDetail. Logs: $script:LogsRoot.$(Get-ConsoleSelectionModeHint)"
 }
 function Start-WebSourceProcess {
     $vite = Join-Path $script:RepoRoot 'web\node_modules\vite\bin\vite.js'
@@ -293,7 +295,7 @@ function Wait-ForBackend([string]$Path, [int]$Timeout) {
         catch { $lastError = $_.Exception.Message }
         Start-Sleep -Milliseconds 500
     }
-    throw "Backend did not reach health/runtime/ready within $Timeout seconds: $lastError. See $Path"
+    throw "Backend did not reach health/runtime/ready within $Timeout seconds: $lastError. See $Path.$(Get-ConsoleSelectionModeHint)"
 }
 function Wait-ForWeb([int]$Timeout) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Timeout)
@@ -301,7 +303,7 @@ function Wait-ForWeb([int]$Timeout) {
         try { if ((Invoke-WebRequest -Uri $script:WebUrl -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200) { return } } catch {}
         Start-Sleep -Milliseconds 500
     }
-    throw "Web server did not become ready: $script:WebUrl"
+    throw "Web server did not become ready: $script:WebUrl.$(Get-ConsoleSelectionModeHint)"
 }
 function Start-Source {
     $existing = Read-ManagedSourceState $script:StatePath

@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $scriptPath = Join-Path $repoRoot 'scripts\start-source.ps1'
+$consoleModePath = Join-Path $repoRoot 'scripts\console-mode.ps1'
 . (Join-Path $repoRoot 'scripts\source-state.ps1')
 
 function Invoke-SourceStatusForTest([string]$UserDataRoot) {
@@ -11,8 +12,8 @@ function Invoke-SourceStatusForTest([string]$UserDataRoot) {
 }
 
 function New-CurrentRepoProcessRecord([string]$Role) {
-    $command = "cd /d `"$repoRoot`" & ping -n 30 127.0.0.1 >nul"
-    $process = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/s', '/c', $command) -WindowStyle Hidden -PassThru
+    $command = "Set-Location -LiteralPath '$($repoRoot.Replace("'", "''"))'; Start-Sleep -Seconds 30"
+    $process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', $command) -WindowStyle Hidden -PassThru
     Start-Sleep -Milliseconds 100
     $liveProcess = Get-Process -Id $process.Id -ErrorAction Stop
     $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $($process.Id)" -ErrorAction Stop
@@ -30,7 +31,21 @@ function New-CurrentRepoProcessRecord([string]$Role) {
 
 function Stop-TestProcess($Process) {
     if ($null -ne $Process -and -not $Process.HasExited) {
-        & taskkill.exe /PID $Process.Id /T /F | Out-Null
+        Stop-Process -Id $Process.Id -Force -ErrorAction Stop
+        [void]$Process.WaitForExit(5000)
+    }
+}
+
+Describe 'console selection mode handling' {
+    It 'disables QuickEdit before startup and includes a timeout recovery hint' {
+        $content = [IO.File]::ReadAllText($scriptPath)
+        $consoleContent = [IO.File]::ReadAllText($consoleModePath)
+        $content | Should Match "console-mode\.ps1"
+        $content | Should Match 'Disable-ConsoleQuickEdit \| Out-Null'
+        $content | Should Match 'Get-ConsoleSelectionModeHint'
+        $consoleContent | Should Match 'STD_INPUT_HANDLE = -10'
+        $consoleContent | Should Match 'ENABLE_QUICK_EDIT_MODE = 0x0040'
+        $consoleContent | Should Match 'ENABLE_EXTENDED_FLAGS = 0x0080'
     }
 }
 
@@ -187,8 +202,8 @@ Describe 'source startup state status' {
                 $ErrorActionPreference = $previousErrorActionPreference
             }
             $exitCode | Should Not Be 0
-            ($output -join [Environment]::NewLine) | Should Match 'Port 5300 is already listening \(PID \d+'
-            ($output -join [Environment]::NewLine) | Should Not Match "The property 'pid' cannot be found"
+            (($output -join [Environment]::NewLine) -match 'Port 5300 is already listening \(PID \d+') | Should Be $true
+            (($output -join [Environment]::NewLine) -match "The property 'pid' cannot be found") | Should Be $false
         }
         finally {
             if ($createdListener) { $listener.Stop() }
@@ -225,7 +240,7 @@ Describe 'source process record validation' {
 
     It 'rejects a process record when start time or repository command line does not match' {
         $current = New-CurrentRepoProcessRecord 'backend'
-        $foreign = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/s', '/c', 'ping -n 30 127.0.0.1 >nul') -WindowStyle Hidden -PassThru
+        $foreign = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru
         try {
             (Test-ProcessRecord $current.record) | Should Be $true
             $wrongStart = [ordered]@{} + $current.record
@@ -277,7 +292,7 @@ Describe 'source listener ownership recovery' {
 
     It 'accepts a healthy listener only when its live process belongs to this repository' {
         $current = New-CurrentRepoProcessRecord 'backend'
-        $foreign = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/s', '/c', 'ping -n 30 127.0.0.1 >nul') -WindowStyle Hidden -PassThru
+        $foreign = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru
         try {
             $currentListener = Get-ListenerProcessRecord -Port 5300 -ProcessId $current.process.Id
             $foreignListener = Get-ListenerProcessRecord -Port 5300 -ProcessId $foreign.Id

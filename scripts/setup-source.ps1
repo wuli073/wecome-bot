@@ -8,6 +8,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'console-mode.ps1')
+Disable-ConsoleQuickEdit | Out-Null
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $webRoot = Join-Path $repoRoot 'web'
@@ -761,7 +763,7 @@ function Invoke-SetupSource {
     $script:setupStage = 'python-dependencies'
     Write-Host '[3/6] Installing Python dependencies...'; Push-Location $repoRoot; try { $syncExitCode = Invoke-ManagedPythonSync $uv; if ($syncExitCode -ne 0 -and $existingVenvPython -and $existingVenvPython -notmatch '^Python 3\.12\.') { Remove-IncompatibleProjectVenv $venvPath; $syncExitCode = Invoke-ManagedPythonSync $uv }; if ($syncExitCode -ne 0) { throw 'uv sync --frozen --dev --python 3.12 --managed-python failed.' } } finally { Pop-Location }
     $script:setupStage = 'web-dependencies'
-    Write-Host '[4/6] Installing Web dependencies...'; Push-Location $webRoot; try { & $npm ci; if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' } } finally { Pop-Location }
+    Write-Host '[4/6] Installing Web dependencies...'; Push-Location $webRoot; try { & $npm ci --no-audit --fund=false; if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' } } finally { Pop-Location }
     $script:setupStage = 'desktop-runtime-install'
     $desktopRuntime = if ($BuildDesktopRuntimeFromSource) { Write-Host '[5/6] Building Desktop Runtime from source...'; Install-DesktopRuntimeFromSource $npm (Get-RequiredProjectPython $repoRoot) } else { Write-Host '[5/6] Installing prebuilt Desktop Runtime...'; Install-PrebuiltDesktopRuntime $metadata }
     $script:setupStage = 'environment-verification'

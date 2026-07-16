@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $scriptPath = Join-Path $repoRoot 'scripts\setup-source.ps1'
+$consoleModePath = Join-Path $repoRoot 'scripts\console-mode.ps1'
 $bundleScriptPath = Join-Path $repoRoot 'scripts\build-desktop-runtime-bundle.ps1'
 Add-Type -AssemblyName System.IO.Compression
 
@@ -16,6 +17,19 @@ Describe 'source setup Desktop Runtime contract' {
         $content | Should Match '\[switch\]\$BuildDesktopRuntimeFromSource'
         $content | Should Match '\[string\]\$DesktopRuntimeArchivePath'
         $content | Should Match '\[string\]\$DesktopRuntimeManifestPath'
+    }
+
+    It 'disables QuickEdit before setup and installs web dependencies without audit or funding output' {
+        $consoleContent = [IO.File]::ReadAllText($consoleModePath)
+        $content | Should Match "console-mode\.ps1"
+        $content | Should Match 'Disable-ConsoleQuickEdit \| Out-Null'
+        $content | Should Match '& \$npm ci --no-audit --fund=false'
+        $content | Should Not Match 'npm audit fix'
+        $consoleContent | Should Match 'GetStdHandle'
+        $consoleContent | Should Match 'GetConsoleMode'
+        $consoleContent | Should Match 'SetConsoleMode'
+        $consoleContent | Should Match 'ENABLE_QUICK_EDIT_MODE = 0x0040'
+        $consoleContent | Should Match 'ENABLE_EXTENDED_FLAGS = 0x0080'
     }
 
     It 'uses descriptor, verified cache, then fixed Release download without source fallback' {
