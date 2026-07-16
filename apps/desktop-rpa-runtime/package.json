@@ -1,6 +1,6 @@
 {
   "name": "desktop-rpa-runtime",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Electron + TypeScript headless desktop automation runtime for LangBot",
   "main": "out/main/index.js",

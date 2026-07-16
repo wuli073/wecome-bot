@@ -37,7 +37,7 @@ test('local runtime HTTP server accepts the handshake token', async () => {
     host: '127.0.0.1',
     port: 0,
     token: 'a'.repeat(64),
-    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    stateStore: new RuntimeStateStore('2', '0.1.2'),
     runtimeHost: new RuntimeHost(),
   })
   try {
@@ -55,7 +55,7 @@ test('local runtime HTTP server rejects missing and wrong tokens', async () => {
     host: '127.0.0.1',
     port: 0,
     token: 'a'.repeat(64),
-    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    stateStore: new RuntimeStateStore('2', '0.1.2'),
     runtimeHost: new RuntimeHost(),
   })
   try {
@@ -75,7 +75,7 @@ test('runtime calibration and context-confirmation routes are removed', async ()
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    stateStore: new RuntimeStateStore('2', '0.1.2'),
     runtimeHost: new RuntimeHost(),
   })
   try {
@@ -93,7 +93,7 @@ test('runtime status returns broadcast send diagnostics without enabling auto-se
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('2', '0.1.1', {
+    stateStore: new RuntimeStateStore('2', '0.1.2', {
       broadcastSendEnabled: true,
       allowedConnectorCount: 1,
       allowedConnectors: ['wxwork-local'],
@@ -119,7 +119,7 @@ test('runtime paste-draft rejects forbidden calibration and confirmation fields'
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    stateStore: new RuntimeStateStore('2', '0.1.2'),
     runtimeHost: new RuntimeHost(),
   })
   try {
@@ -152,7 +152,7 @@ test('runtime POST creates a task envelope immediately and GET returns the final
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    stateStore: new RuntimeStateStore('2', '0.1.2'),
     runtimeHost,
   })
   try {
@@ -187,7 +187,7 @@ test('runtime returns idempotency conflict when the same key is reused with a di
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    stateStore: new RuntimeStateStore('2', '0.1.2'),
     runtimeHost,
   })
   try {
@@ -221,7 +221,7 @@ test('runtime returns idempotency conflict when the same key is reused with a di
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    stateStore: new RuntimeStateStore('2', '0.1.2'),
     runtimeHost,
   })
   try {
@@ -269,7 +269,7 @@ test('server close rejects concurrent task POSTs with 503 and no task residue', 
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    stateStore: new RuntimeStateStore('2', '0.1.2'),
     runtimeHost,
   })
 

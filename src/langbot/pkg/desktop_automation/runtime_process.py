@@ -243,7 +243,7 @@ def apply_local_desktop_automation_defaults(config: dict[str, Any] | None) -> di
     normalized.setdefault('task_timeout_seconds', 120)
     normalized.setdefault('stale_run_seconds', 300)
     normalized.setdefault('expected_protocol_version', '2')
-    normalized.setdefault('runtime_version', '0.1.1')
+    normalized.setdefault('runtime_version', '0.1.2')
     return normalized
 
 
@@ -342,7 +342,7 @@ class DesktopRuntimeProcessManager:
                         RUNTIME_PROTOCOL_MISMATCH,
                         f'Runtime protocol mismatch: expected {expected_protocol_version}, got {handshake["protocolVersion"]}',
                     )
-                expected_runtime_version = str(self.config.get('runtime_version') or '0.1.1')
+                expected_runtime_version = str(self.config.get('runtime_version') or '0.1.2')
                 if str(handshake['runtimeVersion']) != expected_runtime_version:
                     raise DesktopAutomationError(
                         RUNTIME_PROTOCOL_MISMATCH,

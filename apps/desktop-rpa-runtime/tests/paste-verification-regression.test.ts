@@ -118,7 +118,7 @@ test('runtime paste-draft preserves UTF-8 unicode and newline payloads end-to-en
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    stateStore: new RuntimeStateStore('2', '0.1.2'),
     runtimeHost,
   })
 
@@ -427,7 +427,7 @@ test('runtime status reports paste-only keyboard capability without manual-open 
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    stateStore: new RuntimeStateStore('2', '0.1.2'),
     runtimeHost: new RuntimeHost({
       input: new NoopInput(),
       clipboard: new ClipboardController(undefined, fakeClipboardAdapter(['text/plain'], { text: 'old clipboard' })),
@@ -461,7 +461,7 @@ test('runtime status can surface technical diagnostic code while remaining avail
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    stateStore: new RuntimeStateStore('2', '0.1.2'),
     runtimeHost: new RuntimeHost({
       input: new NoopInput(),
       clipboard: new ClipboardController(undefined, fakeClipboardAdapter(['text/plain'], { text: 'old clipboard' })),
@@ -833,7 +833,7 @@ test('runtime status warm cache is reused by paste task without spawning another
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    stateStore: new RuntimeStateStore('2', '0.1.2'),
     runtimeHost: new RuntimeHost({
       input: new NoopInput(),
       clipboard: new ClipboardController(undefined, fakeClipboardAdapter(['text/plain'], { text: 'old clipboard' })),
@@ -896,7 +896,7 @@ test('expired capability cache refreshes once per task instead of re-probing bef
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    stateStore: new RuntimeStateStore('2', '0.1.2'),
     runtimeHost: new RuntimeHost({
       input: new NoopInput(),
       clipboard: new ClipboardController(undefined, fakeClipboardAdapter(['text/plain'], { text: 'old clipboard' })),

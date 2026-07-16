@@ -423,7 +423,7 @@ async def test_runtime_process_manager_starts_and_returns_runtime_info(monkeypat
             assert env['LANGBOT_RPA_FORCE_DISABLE_SEND'] == '0'
             assert env['LANGBOT_RPA_ALLOW_AUTO_SEND'] == '1'
             assert cwd == runtime_executable.parent
-            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'])
+            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'])
 
         fake_client = SimpleNamespace(
             health=AsyncMock(return_value={'status': 'ready'}), capabilities=AsyncMock(return_value={})
@@ -441,7 +441,7 @@ async def test_runtime_process_manager_starts_and_returns_runtime_info(monkeypat
         assert runtime_info['host'] == '127.0.0.1'
         assert runtime_info['port'] == 55123
         assert runtime_info['protocolVersion'] == '2'
-        assert runtime_info['runtimeVersion'] == '0.1.1'
+        assert runtime_info['runtimeVersion'] == '0.1.2'
         assert runtime_info['token']
         assert isinstance(manager.client, object)
 
@@ -462,7 +462,7 @@ async def test_runtime_process_manager_propagates_enabled_broadcast_send_to_runt
             assert env['LANGBOT_RPA_FORCE_DISABLE_SEND'] == '0'
             assert env['LANGBOT_RPA_ALLOW_AUTO_SEND'] == '1'
             assert cwd == runtime_executable.parent
-            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'])
+            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'])
 
         fake_client = SimpleNamespace(
             health=AsyncMock(return_value={'status': 'ready'}),
@@ -489,7 +489,7 @@ async def test_runtime_process_manager_reports_ownership_conflict_for_other_offi
 
         async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
             spawn_calls.append(path)
-            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'])
+            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'])
 
         monkeypatch.setattr('langbot.pkg.desktop_automation.runtime_process.psutil', fake_psutil)
         manager = DesktopRuntimeProcessManager(
@@ -535,7 +535,7 @@ async def test_runtime_process_manager_reuses_owned_runtime_before_conflict_scan
             'host': '127.0.0.1',
             'port': 55123,
             'protocolVersion': '2',
-            'runtimeVersion': '0.1.1',
+            'runtimeVersion': '0.1.2',
             'token': 'memory-only-token',
             'executablePath': str(target),
         }
@@ -562,7 +562,7 @@ async def test_runtime_process_manager_stop_terminates_child(monkeypatch):
     with TemporaryDirectory(dir=r'C:\Users\33031\Desktop\bot\.tmp-pytest') as temp_dir:
         tmp_path = Path(temp_dir)
         runtime_executable = _write_official_runtime(tmp_path, '2026-06-30T04-24-26-368Z')
-        process = _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'])
+        process = _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'])
         owned_process = _FakePsutilProcess(4321, str(runtime_executable), create_time=10.0)
 
         async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
@@ -602,7 +602,7 @@ async def test_runtime_restart_replaces_the_in_memory_handshake_token(monkeypatc
                     'port': 55123,
                     'token': token,
                     'protocolVersion': '2',
-                    'runtimeVersion': '0.1.1',
+                    'runtimeVersion': '0.1.2',
                 }) + '\n'
             ])
 
@@ -630,7 +630,7 @@ async def test_runtime_restart_replaces_the_in_memory_handshake_token(monkeypatc
 async def test_runtime_process_manager_allows_only_blank_stdout_before_handshake():
     manager = DesktopRuntimeProcessManager(config={'enabled': True}, runtime_root=Path('C:/missing'))
     process = _FakeProcess(
-        ['\r\n', '   \n', '{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n']
+        ['\r\n', '   \n', '{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n']
     )
 
     handshake = await manager._read_handshake(process)
@@ -641,7 +641,7 @@ async def test_runtime_process_manager_allows_only_blank_stdout_before_handshake
 async def test_runtime_process_manager_rejects_non_empty_stdout_before_handshake():
     manager = DesktopRuntimeProcessManager(config={'enabled': True}, runtime_root=Path('C:/missing'))
     process = _FakeProcess(
-        ['not-json\n', '{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n']
+        ['not-json\n', '{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n']
     )
 
     with pytest.raises(DesktopAutomationError) as exc_info:
@@ -692,7 +692,7 @@ async def test_runtime_process_manager_rejects_empty_or_malformed_handshake_toke
             'port': 55123,
             'token': token,
             'protocolVersion': '2',
-            'runtimeVersion': '0.1.1',
+            'runtimeVersion': '0.1.2',
         }) + '\n'
     ])
 
@@ -705,7 +705,7 @@ async def test_runtime_process_manager_rejects_empty_or_malformed_handshake_toke
 async def test_runtime_process_manager_rejects_invalid_handshake_port():
     manager = DesktopRuntimeProcessManager(config={'enabled': True}, runtime_root=Path('C:/missing'))
     process = _FakeProcess([
-        '{"pid": 4321, "port": 0, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'
+        '{"pid": 4321, "port": 0, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'
     ])
 
     with pytest.raises(DesktopAutomationError) as exc_info:
@@ -723,7 +723,7 @@ async def test_runtime_token_is_never_written_to_auth_token_file():
         async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
             assert f'LANGBOT_RPA_{"TOKEN"}' not in env
             assert not token_file.exists()
-            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'])
+            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'])
 
         fake_client = SimpleNamespace(
             health=AsyncMock(return_value={'status': 'ready'}), capabilities=AsyncMock(return_value={})
@@ -768,7 +768,7 @@ async def test_runtime_process_manager_reuses_matching_project_runtime_process(m
             'host': '127.0.0.1',
             'port': 55123,
             'protocolVersion': '2',
-            'runtimeVersion': '0.1.1',
+            'runtimeVersion': '0.1.2',
             'token': 'memory-only-token',
             'executablePath': str(target),
         }
@@ -863,7 +863,7 @@ async def test_runtime_process_manager_new_python_process_reports_ownership_conf
             selected_paths.append(path)
             tokens.append('spawned')
             return _FakeProcess(
-                ['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'],
+                ['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'],
                 pid=4321,
             )
 
@@ -901,7 +901,7 @@ async def test_runtime_process_manager_ensure_started_selects_latest_runtime_and
         async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
             selected_paths.append(path)
             assert cwd == target.parent
-            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'])
+            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'])
 
         monkeypatch.setattr('langbot.pkg.desktop_automation.runtime_process.psutil', fake_psutil)
         caplog.set_level(logging.INFO)
@@ -932,7 +932,7 @@ async def test_runtime_process_manager_get_status_bootstraps_runtime_when_starta
             assert f'LANGBOT_RPA_{"MANAGED"}' not in env
             assert f'LANGBOT_RPA_{"TOKEN"}' not in env
             assert cwd == runtime_executable.parent
-            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'])
+            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'])
 
         fake_client = SimpleNamespace(
             health=AsyncMock(return_value={'status': 'ready'}),
@@ -984,7 +984,7 @@ async def test_runtime_process_manager_get_status_restarts_after_lost_runtime():
             token = 'a' * 64 if spawn_count == 1 else 'b' * 64
             return _FakeProcess(
                 [
-                    '{"pid": %s, "port": %s, "token": "%s", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'
+                    '{"pid": %s, "port": %s, "token": "%s", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'
                     % (4320 + spawn_count, 55122 + spawn_count, token)
                 ],
                 pid=4320 + spawn_count,
@@ -1032,7 +1032,7 @@ async def test_runtime_process_manager_get_status_reports_unrestricted_send():
 
         async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
             assert path == runtime_executable
-            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'])
+            return _FakeProcess(['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'])
 
         fake_client = SimpleNamespace(
             health=AsyncMock(return_value={'status': 'ready'}),
@@ -1076,7 +1076,7 @@ async def test_runtime_stop_uses_owned_snapshot_and_clears_fields_in_finally(mon
             'host': '127.0.0.1',
             'port': 55123,
             'protocolVersion': '2',
-            'runtimeVersion': '0.1.1',
+            'runtimeVersion': '0.1.2',
             'token': 'memory-only-token',
             'executablePath': str(target),
         }
@@ -1145,7 +1145,7 @@ def test_runtime_stop_does_not_kill_reused_pid_when_create_time_differs(monkeypa
             'host': '127.0.0.1',
             'port': 55123,
             'protocolVersion': '2',
-            'runtimeVersion': '0.1.1',
+            'runtimeVersion': '0.1.2',
             'token': 'memory-only-token',
             'executablePath': str(target),
         }
@@ -1168,7 +1168,7 @@ async def test_runtime_spawn_records_pid_create_time(monkeypatch):
 
         async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
             return _FakeProcess(
-                ['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'],
+                ['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'],
                 pid=4321,
             )
 
@@ -1208,7 +1208,7 @@ async def test_runtime_handshake_pid_mismatch_stops_spawned_process_and_fails(mo
 
         async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
             return _FakeProcess(
-                ['{"pid": 9999, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'],
+                ['{"pid": 9999, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'],
                 pid=4321,
             )
 
@@ -1245,7 +1245,7 @@ async def test_runtime_handshake_protocol_mismatch_stops_spawned_process_and_fai
 
         async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
             return _FakeProcess(
-                ['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "999", "runtimeVersion": "0.1.1"}\n'],
+                ['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "999", "runtimeVersion": "0.1.2"}\n'],
                 pid=4321,
             )
 
@@ -1295,7 +1295,7 @@ async def test_runtime_handshake_runtime_version_mismatch_stops_spawned_process_
             await manager.ensure_started()
 
         assert exc_info.value.code == RUNTIME_PROTOCOL_MISMATCH
-        assert 'expected 0.1.1, got 999' in str(exc_info.value)
+        assert 'expected 0.1.2, got 999' in str(exc_info.value)
         assert owned_process.terminated is True
         assert manager.runtime_info is None
         assert manager.client is None
@@ -1311,7 +1311,7 @@ async def test_runtime_readiness_timeout_stops_spawned_process_and_clears_state(
 
         async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
             return _FakeProcess(
-                ['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'],
+                ['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'],
                 pid=4321,
             )
 
@@ -1347,7 +1347,7 @@ async def test_runtime_readiness_health_exception_stops_spawned_process_and_pres
 
         async def spawn_runtime(path: Path, *, env: dict[str, str], cwd: Path):
             return _FakeProcess(
-                ['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'],
+                ['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'],
                 pid=4321,
             )
 
@@ -1385,7 +1385,7 @@ async def test_runtime_readiness_child_exits_early_stops_spawned_process(monkeyp
         class _ExitedProcess(_FakeProcess):
             def __init__(self):
                 super().__init__(
-                    ['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.1"}\n'],
+                    ['{"pid": 4321, "port": 55123, "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocolVersion": "2", "runtimeVersion": "0.1.2"}\n'],
                     pid=4321,
                 )
                 self.returncode = 1
@@ -1460,7 +1460,7 @@ async def test_runtime_stop_terminates_children_before_parent_and_kills_remainin
             'host': '127.0.0.1',
             'port': 55123,
             'protocolVersion': '2',
-            'runtimeVersion': '0.1.1',
+            'runtimeVersion': '0.1.2',
             'token': 'memory-only-token',
             'executablePath': str(target),
         }
