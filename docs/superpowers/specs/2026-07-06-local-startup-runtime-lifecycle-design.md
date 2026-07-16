@@ -1,8 +1,8 @@
-# Windows Local Startup and Runtime Lifecycle Design
+# Historical: Windows Local Startup and Runtime Lifecycle Design
 
 **Date:** 2026-07-06
 **Scope:** Windows local launcher + backend-owned desktop Runtime shutdown/prewarm lifecycle
-**Status:** Draft for user review
+**Status:** Historical design draft, superseded by the Runtime self-generated-token handshake protocol. This document is retained for design history only and is not current operational guidance.
 
 ## 1. Goal
 
@@ -19,7 +19,7 @@ This design does **not**:
 
 - add a public or unauthenticated HTTP shutdown endpoint;
 - let the launcher start, inspect, or stop `LangBot Desktop RPA Runtime.exe` directly;
-- let the launcher generate or store `LANGBOT_RPA_TOKEN`;
+- let the launcher generate or store a Runtime authentication token;
 - let the launcher read Runtime handshake data or Runtime random ports;
 - add a second Runtime process manager, Windows Service, login bypass, or debug backdoor;
 - modify Broadcast business logic, paste-only state machine, attachment logic, or send safety lock.
@@ -65,7 +65,7 @@ start-local.ps1
 
 - Runtime executable selection;
 - stale Runtime replacement logic;
-- `LANGBOT_RPA_TOKEN` generation;
+- Runtime authentication-token generation;
 - Runtime spawn;
 - stdout handshake parsing;
 - Runtime client creation;
@@ -499,7 +499,7 @@ The launcher forcibly sets:
 
 The launcher must **not** set:
 
-- `LANGBOT_RPA_TOKEN`
+- the Runtime authentication token
 
 ## 9.5 Dynamic config and URL resolution
 
@@ -843,7 +843,7 @@ Likely tests:
 7. unknown occupied backend port without provable ownership aborts startup;
 8. unknown occupied Dev port without provable ownership aborts startup;
 9. safe-send env vars are forced;
-10. launcher does not set `LANGBOT_RPA_TOKEN`;
+10. launcher does not set a Runtime authentication token;
 11. provisional `state.json` is written with `status=starting`;
 12. `state.json` writes use atomic replace;
 13. successful health check updates state to `status=running`;

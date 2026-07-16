@@ -1,9 +1,8 @@
 import type { App } from 'electron'
+import { randomBytes } from 'node:crypto'
 import { bootstrapRuntimeApp } from './runtime-app'
 import { ensureSingleInstance } from './single-instance'
 import type { RuntimeBootstrapConfig } from '../domain/runtime-types'
-
-export const MANAGED_START_REQUIRED_ERROR_CODE = 'RUNTIME_MANAGED_START_REQUIRED'
 
 type RuntimeEnvironment = Record<string, string | undefined>
 
@@ -31,53 +30,20 @@ export function resolveBroadcastSendBootstrapConfig(env: RuntimeEnvironment) {
   }
 }
 
-export type ManagedRuntimeEnvironmentValidationResult =
-  | {
-    ok: true
-    token: string
-  }
-  | {
-    ok: false
-    errorCode: typeof MANAGED_START_REQUIRED_ERROR_CODE
-  }
-
-export function validateManagedRuntimeEnvironment(
-  env: RuntimeEnvironment,
-): ManagedRuntimeEnvironmentValidationResult {
-  const managed = String(env.LANGBOT_RPA_MANAGED ?? '').trim()
-  const token = String(env.LANGBOT_RPA_TOKEN ?? '').trim()
-  if (managed !== '1' || !token) {
-    return {
-      ok: false,
-      errorCode: MANAGED_START_REQUIRED_ERROR_CODE,
-    }
-  }
-  return {
-    ok: true,
-    token,
-  }
+export function createEphemeralRuntimeToken(): string {
+  return randomBytes(32).toString('hex')
 }
 
 export async function runRuntimeMain(
   dependencies: RuntimeEntryDependencies,
 ): Promise<{ started: boolean; errorCode?: string }> {
   const env = dependencies.env ?? (process.env as RuntimeEnvironment)
-  const validation = validateManagedRuntimeEnvironment(env)
   const writeStderr = dependencies.writeStderr ?? ((text: string) => {
     process.stderr.write(text)
   })
   const exit = dependencies.exit ?? ((code: number) => {
     dependencies.app.exit(code)
   })
-
-  if (!validation.ok) {
-    writeStderr(`${validation.errorCode}\n`)
-    exit(1)
-    return {
-      started: false,
-      errorCode: validation.errorCode,
-    }
-  }
 
   const ensureLock = dependencies.ensureSingleInstance ?? (() => {
     ensureSingleInstance()
@@ -96,7 +62,7 @@ export async function runRuntimeMain(
     await dependencies.app.whenReady()
     const broadcastSendConfig = resolveBroadcastSendBootstrapConfig(env)
     await bootstrap(dependencies.app as App, {
-      token: validation.token,
+      token: createEphemeralRuntimeToken(),
       protocolVersion: dependencies.protocolVersion,
       runtimeVersion: dependencies.runtimeVersion,
       ...broadcastSendConfig,

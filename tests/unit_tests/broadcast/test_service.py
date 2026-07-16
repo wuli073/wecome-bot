@@ -125,7 +125,7 @@ class _FakeRuntimeClient:
         self.requests: list[dict[str, object]] = []
 
     async def health(self):
-        return {'status': 'ready', 'protocolVersion': '1'}
+        return {'status': 'ready', 'protocolVersion': '2'}
 
     async def capabilities(self):
         return {
@@ -1001,7 +1001,7 @@ async def test_create_send_batch_executes_and_marks_draft_sent(service_fixture, 
             self.requests: list[dict[str, object]] = []
 
         async def health(self):
-            return {'status': 'ready', 'protocolVersion': '1'}
+            return {'status': 'ready', 'protocolVersion': '2'}
 
         async def capabilities(self):
             return {'supportsPaste': True, 'supportsSend': True}
@@ -1072,7 +1072,7 @@ async def test_create_send_batch_marks_unknown_after_enter_and_blocks_resend(ser
 
     class _UnknownSendRuntimeClient:
         async def health(self):
-            return {'status': 'ready', 'protocolVersion': '1'}
+            return {'status': 'ready', 'protocolVersion': '2'}
 
         async def capabilities(self):
             return {'supportsPaste': True, 'supportsSend': True}
@@ -1149,7 +1149,7 @@ async def test_create_paste_only_batch_accepts_unverified_terminal_success(
 
     class _PasteOnlyRuntimeClient:
         async def health(self):
-            return {'status': 'ready', 'protocolVersion': '1'}
+            return {'status': 'ready', 'protocolVersion': '2'}
 
         async def capabilities(self):
             return {'supportsPaste': True, 'supportsSend': True}
@@ -1230,7 +1230,7 @@ async def test_create_send_batch_waits_for_terminal_failed_task(service_fixture,
             self.get_task_calls: list[str] = []
 
         async def health(self):
-            return {'status': 'ready', 'protocolVersion': '1'}
+            return {'status': 'ready', 'protocolVersion': '2'}
 
         async def capabilities(self):
             return {'supportsPaste': True, 'supportsSend': True}
@@ -1330,7 +1330,7 @@ async def test_create_send_batch_waits_for_terminal_success_task(service_fixture
             self.get_task_calls: list[str] = []
 
         async def health(self):
-            return {'status': 'ready', 'protocolVersion': '1'}
+            return {'status': 'ready', 'protocolVersion': '2'}
 
         async def capabilities(self):
             return {'supportsPaste': True, 'supportsSend': True}
@@ -1410,7 +1410,7 @@ async def test_create_send_batch_marks_unknown_when_terminal_state_cannot_be_con
             self.cancel_task_calls: list[str] = []
 
         async def health(self):
-            return {'status': 'ready', 'protocolVersion': '1'}
+            return {'status': 'ready', 'protocolVersion': '2'}
 
         async def capabilities(self):
             return {'supportsPaste': True, 'supportsSend': True}
@@ -1532,7 +1532,7 @@ async def test_create_send_batch_allows_duplicate_target_conversations_and_keeps
             self.requests: list[str] = []
 
         async def health(self):
-            return {'status': 'ready', 'protocolVersion': '1'}
+            return {'status': 'ready', 'protocolVersion': '2'}
 
         async def capabilities(self):
             return {'supportsPaste': True, 'supportsSend': True}

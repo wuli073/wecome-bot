@@ -3,6 +3,7 @@
 export interface RuntimeHandshake {
   pid: number
   port: number
+  token: string
   protocolVersion: string
   runtimeVersion: string
 }

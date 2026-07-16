@@ -32,12 +32,50 @@ function request(port: number, method: string, path: string, body?: Record<strin
   })
 }
 
+test('local runtime HTTP server accepts the handshake token', async () => {
+  const server = await createLocalHttpServer({
+    host: '127.0.0.1',
+    port: 0,
+    token: 'a'.repeat(64),
+    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    runtimeHost: new RuntimeHost(),
+  })
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/healthz`, {
+      headers: { Authorization: `Bearer ${'a'.repeat(64)}` },
+    })
+    assert.equal(response.status, 200)
+  } finally {
+    await server.close()
+  }
+})
+
+test('local runtime HTTP server rejects missing and wrong tokens', async () => {
+  const server = await createLocalHttpServer({
+    host: '127.0.0.1',
+    port: 0,
+    token: 'a'.repeat(64),
+    stateStore: new RuntimeStateStore('2', '0.1.1'),
+    runtimeHost: new RuntimeHost(),
+  })
+  try {
+    const missing = await fetch(`http://127.0.0.1:${server.port}/healthz`)
+    const wrong = await fetch(`http://127.0.0.1:${server.port}/healthz`, {
+      headers: { Authorization: 'Bearer wrong' },
+    })
+    assert.equal(missing.status, 401)
+    assert.equal(wrong.status, 401)
+  } finally {
+    await server.close()
+  }
+})
+
 test('runtime calibration and context-confirmation routes are removed', async () => {
   const server = await createLocalHttpServer({
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('1', '0.1.0'),
+    stateStore: new RuntimeStateStore('2', '0.1.1'),
     runtimeHost: new RuntimeHost(),
   })
   try {
@@ -55,7 +93,7 @@ test('runtime status returns broadcast send diagnostics without enabling auto-se
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('1', '0.1.0', {
+    stateStore: new RuntimeStateStore('2', '0.1.1', {
       broadcastSendEnabled: true,
       allowedConnectorCount: 1,
       allowedConnectors: ['wxwork-local'],
@@ -70,6 +108,7 @@ test('runtime status returns broadcast send diagnostics without enabling auto-se
     assert.equal(response.payload.allowedConnectorCount, 1)
     assert.deepEqual(response.payload.allowedConnectors, ['wxwork-local'])
     assert.equal(response.payload.sendErrorCode, null)
+    assert.equal('token' in response.payload, false)
   } finally {
     await server.close()
   }
@@ -80,7 +119,7 @@ test('runtime paste-draft rejects forbidden calibration and confirmation fields'
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('1', '0.1.0'),
+    stateStore: new RuntimeStateStore('2', '0.1.1'),
     runtimeHost: new RuntimeHost(),
   })
   try {
@@ -113,7 +152,7 @@ test('runtime POST creates a task envelope immediately and GET returns the final
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('1', '0.1.0'),
+    stateStore: new RuntimeStateStore('2', '0.1.1'),
     runtimeHost,
   })
   try {
@@ -148,7 +187,7 @@ test('runtime returns idempotency conflict when the same key is reused with a di
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('1', '0.1.0'),
+    stateStore: new RuntimeStateStore('2', '0.1.1'),
     runtimeHost,
   })
   try {
@@ -182,7 +221,7 @@ test('runtime returns idempotency conflict when the same key is reused with a di
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('1', '0.1.0'),
+    stateStore: new RuntimeStateStore('2', '0.1.1'),
     runtimeHost,
   })
   try {
@@ -230,7 +269,7 @@ test('server close rejects concurrent task POSTs with 503 and no task residue', 
     host: '127.0.0.1',
     port: 0,
     token: 'token',
-    stateStore: new RuntimeStateStore('1', '0.1.0'),
+    stateStore: new RuntimeStateStore('2', '0.1.1'),
     runtimeHost,
   })
 

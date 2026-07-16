@@ -4150,7 +4150,7 @@ class TestBroadcastApi:
             async def health(self):
                 return {
                     'status': 'ready',
-                    'protocolVersion': '1',
+                    'protocolVersion': '2',
                     'runtimeVersion': '0.1.0-test',
                 }
 
@@ -4280,7 +4280,7 @@ class TestBroadcastApi:
             async def health(self):
                 return {
                     'status': 'ready',
-                    'protocolVersion': '1',
+                    'protocolVersion': '2',
                     'runtimeVersion': '0.1.0-test',
                 }
 
@@ -4596,7 +4596,7 @@ class TestBroadcastApi:
             async def health(self):
                 return {
                     'status': 'ready',
-                    'protocolVersion': '1',
+                    'protocolVersion': '2',
                     'runtimeVersion': '0.1.0-test',
                 }
 

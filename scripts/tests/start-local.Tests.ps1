@@ -94,10 +94,10 @@ Describe 'start-local core helpers' {
 
         $config = Resolve-ApiConfiguration -RepoRoot $repoRoot
         $config.Host | Should Be '127.0.0.1'
-        $config.Port | Should Be 5302
+        $config.Port | Should Be 5300
     }
 
-    It 'forces safe-send environment variables in backend launch command without setting runtime token' {
+    It 'forces safe-send environment variables without injecting legacy Runtime startup variables' {
         Test-Path -LiteralPath $scriptPath | Should Be $true
         . $scriptPath
 
@@ -107,6 +107,7 @@ Describe 'start-local core helpers' {
         $command.Environment.LANGBOT_RPA_ALLOW_AUTO_SEND | Should Be '0'
         $command.Environment.LANGBOT_BROADCAST_SEND_ENABLED | Should Be '0'
         $command.Environment.PYTHONPATH | Should Be (Join-Path $repoRoot 'src')
+        ($command.Environment.ContainsKey('LANGBOT_RPA_MANAGED')) | Should Be $false
         ($command.Environment.ContainsKey('LANGBOT_RPA_TOKEN')) | Should Be $false
     }
 
@@ -858,7 +859,7 @@ Describe 'start-local ownership and fail-closed behavior' {
 
             function Get-NetTCPConnection {
                 param([string]$State, [int[]]$LocalPort, $ErrorAction)
-                if ($LocalPort -contains 5302) {
+                if ($LocalPort -contains (Resolve-ApiConfiguration -RepoRoot $repoRoot).Port) {
                     return [pscustomobject]@{ OwningProcess = 202 }
                 }
                 return $null
@@ -904,7 +905,7 @@ Describe 'start-local ownership and fail-closed behavior' {
 
             function Get-NetTCPConnection {
                 param([string]$State, [int[]]$LocalPort, $ErrorAction)
-                if ($LocalPort -contains 5302) {
+                if ($LocalPort -contains (Resolve-ApiConfiguration -RepoRoot $repoRoot).Port) {
                     return [pscustomobject]@{ OwningProcess = 202 }
                 }
                 return $null
@@ -947,7 +948,7 @@ Describe 'start-local ownership and fail-closed behavior' {
 
             function Get-NetTCPConnection {
                 param([string]$State, [int[]]$LocalPort, $ErrorAction)
-                if ($LocalPort -contains 5302) {
+                if ($LocalPort -contains (Resolve-ApiConfiguration -RepoRoot $repoRoot).Port) {
                     return [pscustomobject]@{ OwningProcess = 202 }
                 }
                 return $null
@@ -977,7 +978,7 @@ Describe 'start-local ownership and fail-closed behavior' {
         }
     }
 
-    It 'fails repeated Bundled Start closed when backend is only process-up' {
+    It 'fails repeated Bundled Start closed when bundled assets are missing before backend-only recovery' {
         $tmpRoot = New-TestStackRoot
         try {
             $state = [ordered]@{
@@ -1002,7 +1003,7 @@ Describe 'start-local ownership and fail-closed behavior' {
             function Invoke-WebRequest { throw 'health failed' }
             Mock Start-ManagedProcess { throw 'must not spawn second backend' }
 
-            { Start-BackendStack -WebModeValue 'Bundled' } | Should Throw 'STACK_NOT_HEALTHY'
+            { Start-BackendStack -WebModeValue 'Bundled' } | Should Throw 'Bundled frontend entry is missing'
             Assert-MockCalled Start-ManagedProcess -Times 0 -Exactly
             ((Read-JsonFile -Path $script:StatePath).sessionId) | Should Be 'session-process-up'
         }
@@ -1116,7 +1117,7 @@ Describe 'start-local ownership and fail-closed behavior' {
         try {
             function Get-NetTCPConnection {
                 param([string]$State, [int[]]$LocalPort, $ErrorAction)
-                if ($LocalPort -contains 5302) {
+                if ($LocalPort -contains (Resolve-ApiConfiguration -RepoRoot $repoRoot).Port) {
                     return [pscustomobject]@{ OwningProcess = 333 }
                 }
                 return $null
@@ -1218,7 +1219,7 @@ Describe 'start-local ownership and fail-closed behavior' {
 
             function Get-NetTCPConnection {
                 param([string]$State, [int[]]$LocalPort, $ErrorAction)
-                if ($LocalPort -contains 5302) {
+                if ($LocalPort -contains (Resolve-ApiConfiguration -RepoRoot $repoRoot).Port) {
                     return [pscustomobject]@{ OwningProcess = 101 }
                 }
                 return $null
@@ -1248,7 +1249,7 @@ Describe 'start-local ownership and fail-closed behavior' {
         try {
             function Get-NetTCPConnection {
                 param([string]$State, [int[]]$LocalPort, $ErrorAction)
-                if ($LocalPort -contains 5302) {
+                if ($LocalPort -contains (Resolve-ApiConfiguration -RepoRoot $repoRoot).Port) {
                     return [pscustomobject]@{ OwningProcess = 333 }
                 }
                 return $null

@@ -33,7 +33,7 @@ class DesktopRuntimeClient:
         *,
         base_url: str,
         token: str,
-        expected_protocol_version: str = '1',
+        expected_protocol_version: str = '2',
         transport=None,
         timeout: aiohttp.ClientTimeout | None = None,
     ) -> None:

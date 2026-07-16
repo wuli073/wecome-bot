@@ -83,7 +83,7 @@ class _RuntimeProcessManager:
             'pid': 4321,
             'host': '127.0.0.1',
             'port': 55123,
-            'protocolVersion': '1',
+            'protocolVersion': '2',
             'runtimeVersion': '0.1.0',
             'token': 'redacted-token',
         }

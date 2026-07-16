@@ -11,7 +11,7 @@ class _FakeRuntimeClient:
         self.cancelled_task_ids: list[str] = []
 
     async def health(self):
-        return {'status': 'ready', 'protocolVersion': '1'}
+        return {'status': 'ready', 'protocolVersion': '2'}
 
     async def capabilities(self):
         return {'supportsPaste': True, 'supportsSend': False}
@@ -34,7 +34,7 @@ class _FakeDesktopAutomationService:
         self.cancelled_task_ids: list[str] = []
 
     async def runtime_health(self):
-        return {'status': 'ready', 'protocolVersion': '1', 'runtimeVersion': '0.1.0'}
+        return {'status': 'ready', 'protocolVersion': '2', 'runtimeVersion': '0.1.0'}
 
     async def runtime_capabilities(self):
         return {'supportsPaste': True, 'supportsSend': False}

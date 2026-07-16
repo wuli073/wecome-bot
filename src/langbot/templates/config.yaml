@@ -154,7 +154,7 @@ desktop_automation:
     startup_timeout_seconds: 30
     task_timeout_seconds: 120
     stale_run_seconds: 300
-    expected_protocol_version: '1'
+    expected_protocol_version: '2'
 space:
     # Space service URL for OAuth and API
     url: 'https://space.langbot.app'

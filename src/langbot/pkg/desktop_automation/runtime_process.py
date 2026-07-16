@@ -20,6 +20,7 @@ from .errors import (
     DesktopAutomationError,
     RPA_RUNTIME_NOT_AVAILABLE,
     RUNTIME_DISABLED,
+    RUNTIME_HANDSHAKE_TOKEN_INVALID,
     RUNTIME_OWNERSHIP_CONFLICT,
     RUNTIME_PROTOCOL_MISMATCH,
     RUNTIME_START_FAILED,
@@ -241,8 +242,8 @@ def apply_local_desktop_automation_defaults(config: dict[str, Any] | None) -> di
     normalized.setdefault('startup_timeout_seconds', 30)
     normalized.setdefault('task_timeout_seconds', 120)
     normalized.setdefault('stale_run_seconds', 300)
-    normalized.setdefault('expected_protocol_version', '1')
-    normalized.setdefault('runtime_version', '0.1.0')
+    normalized.setdefault('expected_protocol_version', '2')
+    normalized.setdefault('runtime_version', '0.1.1')
     return normalized
 
 
@@ -311,11 +312,8 @@ class DesktopRuntimeProcessManager:
             self._replace_stale_runtime_processes(target_runtime)
 
             logger.info('Selected desktop runtime: %s', str(target_runtime))
-            token = secrets.token_urlsafe(48)
             env = dict(os.environ)
             send_gate = self._resolve_send_gate(env=env)
-            env['LANGBOT_RPA_MANAGED'] = '1'
-            env['LANGBOT_RPA_TOKEN'] = token
             env.update(send_gate.to_runtime_environment())
             env['LANGBOT_RPA_ALLOW_AUTO_SEND'] = '1' if send_gate.send_enabled else '0'
             env['LANGBOT_RPA_FORCE_DISABLE_SEND'] = '0' if send_gate.send_enabled else '1'
@@ -338,11 +336,17 @@ class DesktopRuntimeProcessManager:
                 spawn_pid = int(getattr(self.process, 'pid'))
                 if int(handshake['pid']) != spawn_pid:
                     raise DesktopAutomationError(RUNTIME_START_FAILED, 'Desktop runtime handshake pid mismatch')
-                expected_protocol_version = str(self.config.get('expected_protocol_version') or '1')
+                expected_protocol_version = str(self.config.get('expected_protocol_version') or '2')
                 if str(handshake['protocolVersion']) != expected_protocol_version:
                     raise DesktopAutomationError(
                         RUNTIME_PROTOCOL_MISMATCH,
                         f'Runtime protocol mismatch: expected {expected_protocol_version}, got {handshake["protocolVersion"]}',
+                    )
+                expected_runtime_version = str(self.config.get('runtime_version') or '0.1.1')
+                if str(handshake['runtimeVersion']) != expected_runtime_version:
+                    raise DesktopAutomationError(
+                        RUNTIME_PROTOCOL_MISMATCH,
+                        f'Runtime version mismatch: expected {expected_runtime_version}, got {handshake["runtimeVersion"]}',
                     )
 
                 runtime_info = {
@@ -352,7 +356,7 @@ class DesktopRuntimeProcessManager:
                     'port': int(handshake['port']),
                     'protocolVersion': str(handshake['protocolVersion']),
                     'runtimeVersion': str(handshake['runtimeVersion']),
-                    'token': token,
+                    'token': str(handshake['token']),
                     'executablePath': str(target_runtime),
                 }
                 self.client = self.client_factory(runtime_info)
@@ -449,16 +453,11 @@ class DesktopRuntimeProcessManager:
             health = await self.client.health()
             status_payload = await self.client.capabilities()
         except Exception:
-            return {
-                'status': 'failed',
-                'errorCode': RUNTIME_UNAVAILABLE,
-                'runtime_configured': True,
-                'runtime_startable': True,
-                'runtime_reachable': False,
-                'send_enabled': False,
-                'allowed_connector_count': send_gate.allowed_connector_count,
-                'send_error_code': send_gate.error_code,
-            }
+            # A Runtime process may disappear between status polls. Clear its
+            # process/client snapshot before retrying so the next bootstrap
+            # reads a fresh handshake and uses its newly generated token.
+            await self.stop()
+            return await self.get_status()
 
         return {
             'status': health.get('status', 'ready'),
@@ -490,7 +489,7 @@ class DesktopRuntimeProcessManager:
         return DesktopRuntimeClient(
             base_url=f'http://{runtime_info["host"]}:{runtime_info["port"]}',
             token=str(runtime_info['token']),
-            expected_protocol_version=str(self.config.get('expected_protocol_version') or '1'),
+            expected_protocol_version=str(self.config.get('expected_protocol_version') or '2'),
         )
 
     async def _can_reuse_running_runtime(self, target_runtime: Path) -> bool:
@@ -734,9 +733,19 @@ class DesktopRuntimeProcessManager:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise DesktopAutomationError(RUNTIME_START_FAILED, 'Desktop runtime handshake is not valid JSON') from exc
 
-        required_keys = {'pid', 'port', 'protocolVersion', 'runtimeVersion'}
+        if not isinstance(payload, dict):
+            raise DesktopAutomationError(RUNTIME_START_FAILED, 'Desktop runtime handshake shape is invalid')
+        if 'token' not in payload:
+            raise DesktopAutomationError(RUNTIME_HANDSHAKE_TOKEN_INVALID, 'Desktop runtime handshake token is invalid')
+        required_keys = {'pid', 'port', 'token', 'protocolVersion', 'runtimeVersion'}
         if set(payload.keys()) != required_keys:
             raise DesktopAutomationError(RUNTIME_START_FAILED, 'Desktop runtime handshake shape is invalid')
+        token = payload.get('token')
+        if not isinstance(token, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43,}', token):
+            raise DesktopAutomationError(RUNTIME_HANDSHAKE_TOKEN_INVALID, 'Desktop runtime handshake token is invalid')
+        port = payload.get('port')
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise DesktopAutomationError(RUNTIME_START_FAILED, 'Desktop runtime handshake port is invalid')
         return payload
 
     async def _spawn_runtime(self, runtime_executable: Path, *, env: dict[str, str], cwd: Path):

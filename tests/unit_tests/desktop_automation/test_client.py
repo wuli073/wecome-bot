@@ -16,7 +16,7 @@ async def test_runtime_client_health_and_status_use_bearer_auth():
         if path == '/healthz':
             return 200, {
                 'status': 'ready',
-                'protocolVersion': '1',
+                'protocolVersion': '2',
                 'runtimeVersion': '0.1.0',
                 'uptimeMs': 10,
             }

@@ -23,7 +23,7 @@ export async function bootstrapRuntimeApp(_app: App, config: RuntimeBootstrapCon
     pasteVerificationProvider,
   })
   stateStore.markReady()
-  process.stdout.write(`${serializeHandshake(createHandshake(server.port, config.protocolVersion, config.runtimeVersion))}\n`)
+  process.stdout.write(`${serializeHandshake(createHandshake(server.port, config.token, config.protocolVersion, config.runtimeVersion))}\n`)
 
   const shutdown = async () => {
     stateStore.markStopping()

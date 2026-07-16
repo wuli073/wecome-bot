@@ -281,7 +281,7 @@ class BuildAppStage(stage.BootingStage):
             runtime_client_factory=lambda runtime_info: DesktopRuntimeClient(
                 base_url=f"http://{runtime_info['host']}:{runtime_info['port']}",
                 token=str(runtime_info['token']),
-                expected_protocol_version=str(desktop_automation_config.get('expected_protocol_version') or '1'),
+                expected_protocol_version=str(desktop_automation_config.get('expected_protocol_version') or '2'),
             ),
         )
         await ap.desktop_automation_service.reconcile_stale_runs()
