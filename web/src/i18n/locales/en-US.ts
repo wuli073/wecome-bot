@@ -2127,6 +2127,18 @@ const enUS = {
       ruleCoverageDescription:
         'Quick overview of how many customer-group rules are currently enabled.',
       enabledRules: 'Enabled Rules',
+      groupNameDirectory: 'Group name directory',
+      groupNameDirectoryDescription:
+        'Maintain reusable target group names with their stable ID and matchability state in one place.',
+      groupNamesMaintained: 'Managed group names ({{count}})',
+      noGroupNames:
+        'No group names yet. Added names appear in the target selector immediately.',
+      groupNameSourceManual: 'Manual',
+      groupNameSourceSynced: 'Synced',
+      groupNameStableIdReady: 'Stable ID ready',
+      groupNameStableIdPending: 'No stable ID',
+      groupNameSelectableResolved: 'Ready to match',
+      groupNameSelectableDeferred: 'Match by name',
       groupBuckets: 'Status Groups',
       groupBucketsDescription:
         'Status grouping mirrors the future operator workflow and queue triage.',
@@ -2587,6 +2599,11 @@ const enUS = {
       groupRuleSaved: 'Group rule saved',
       groupRuleDeleted: 'Group rule deleted',
       groupNamesSaved: 'Group names saved',
+      groupNameAdded: 'Added group name: {{name}}',
+      groupNameExists: 'Group name "{{name}}" already exists',
+      groupNameRequired: 'Please enter a group name',
+      groupNameReloadMissing:
+        'Group name "{{name}}" was saved, but the refreshed list did not include it. Please try again.',
       groupNamesSynced:
         'Group list refreshed: scanned {{scanned}}, inserted {{inserted}}, updated {{updated}}, unchanged {{unchanged}}',
       groupNameDeleted: 'Group name deleted',
@@ -2705,7 +2722,7 @@ deepMergeLocale(enUS.broadcast as Record<string, unknown>, {
       'Select a target conversation from the candidate list first.',
     targetConversationNameRequired: 'Enter a target conversation name.',
     targetResolution: {
-      deferred: 'Resolved when sending',
+      deferred: 'Match by name',
       resolved: 'Conversation resolved',
       unresolved: 'Conversation not resolved',
       ambiguous: 'Multiple conversations share this name. Select one from the list.',
@@ -2713,7 +2730,7 @@ deepMergeLocale(enUS.broadcast as Record<string, unknown>, {
     targetConversationLegacyReselect:
       'This legacy rule is missing a stable target conversation ID. Please reselect it.',
     targetConversationMissingStableId:
-      'This conversation is missing a stable externalConversationId and cannot be selected yet.',
+      'No stable ID ? use group name.',
     preview: {
       empty: 'Enter a customer name and run the match preview.',
       matchedBadge: 'Matched',

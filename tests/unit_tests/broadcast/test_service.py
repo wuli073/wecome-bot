@@ -19,6 +19,7 @@ from langbot.pkg.broadcast.errors import (
     BATCH_VALIDATION_FAILED,
     BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED,
     BROADCAST_RETRY_SEND_RESULT_UNKNOWN,
+    BROADCAST_GROUP_NAME_DUPLICATE,
     BROADCAST_GROUP_NAME_NOT_FOUND,
     BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED,
     BROADCAST_IMPORT_GROUP_FIELD_OVERRIDE_INVALID,
@@ -2842,6 +2843,100 @@ async def test_bulk_assign_import_group_rules_uses_legacy_fallback_without_persi
     assert batch.group_field_source is None
 
 
+
+
+async def test_sync_group_names_merges_manual_group_and_rule_reload_prefers_stable_id(service_fixture):
+    service, persistence_mgr = service_fixture
+
+    created = await service.create_group_names(
+        _scope(),
+        {
+            'group_name': 'Manual Group',
+        },
+    )
+    await service.create_group_rule(
+        _scope(),
+        {
+            'source_value': 'Manual Customer',
+            'match_type': 'exact',
+            'match_expression': 'Manual Customer',
+            'target_conversation_name': 'Manual Group',
+            'target_conversation_id': '',
+            'priority': 1,
+            'enabled': True,
+        },
+    )
+
+    async with persistence_mgr.engine.begin() as conn:
+        await conn.execute(
+            sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                {
+                    'connector_id': 'wxwork-local',
+                    'source': 'wxwork',
+                    'external_conversation_id': 'group-manual-1',
+                    'conversation_name': 'Manual Group',
+                    'conversation_type': 'group',
+                }
+            )
+        )
+
+    result = await service.sync_group_names_from_conversations(_scope())
+    assert result == {
+        'scanned': 1,
+        'inserted': 0,
+        'updated': 1,
+        'unchanged': 0,
+        'skipped': 0,
+        'errors': [],
+    }
+
+    listed = await service.list_group_names(_scope())
+    assert len([item for item in listed if item['name'] == 'Manual Group']) == 1
+    assert listed[0]['id'] == created['group']['id']
+    assert listed[0]['external_conversation_id'] == 'group-manual-1'
+
+    rules = await service.list_group_rules(_scope())
+    assert rules[0]['target_conversation_name'] == 'Manual Group'
+    assert rules[0]['target_conversation_id'] == 'group-manual-1'
+    assert rules[0]['target_resolution_status'] == 'resolved'
+
+
+async def test_group_names_legacy_payloads_do_not_duplicate_existing_synced_name(service_fixture):
+    service, persistence_mgr = service_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        await conn.execute(
+            sqlalchemy.insert(persistence_broadcast.BroadcastGroupName).values(
+                {
+                    'bot_uuid': 'bot-1',
+                    'connector_id': 'wxwork-local',
+                    'name': 'Synced Group',
+                    'external_conversation_id': 'group-synced-1',
+                }
+            )
+        )
+
+    with pytest.raises(BroadcastError) as exc_info:
+        await service.create_group_names(
+            _scope(),
+            {
+                'name': 'Synced Group',
+            },
+        )
+    assert exc_info.value.code == BROADCAST_GROUP_NAME_DUPLICATE
+
+    result = await service.create_group_names(
+        _scope(),
+        {
+            'names': ['Synced Group', 'Northwind Group'],
+        },
+    )
+
+    assert [item['name'] for item in result['group_names']] == [
+        'Northwind Group',
+        'Synced Group',
+    ]
+    assert len([item for item in result['group_names'] if item['name'] == 'Synced Group']) == 1
 async def test_save_variable_profile_returns_actionable_chinese_error_details(service_fixture):
     service, _ = service_fixture
 

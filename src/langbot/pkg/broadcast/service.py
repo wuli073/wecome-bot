@@ -341,7 +341,8 @@ class BroadcastService:
     async def list_group_rules(self, scope: dict[str, Any]) -> list[dict[str, Any]]:
         validated_scope = await self.validate_scope(scope)
         rows = await self.repository.list_group_rules(**validated_scope)
-        return [self._serialize_group_rule(row) for row in rows]
+        group_names = await self._load_group_name_rows(validated_scope)
+        return [self._serialize_group_rule(row, group_names=group_names) for row in rows]
 
     async def create_group_rule(self, scope: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         validated_scope = await self.validate_scope(scope)
@@ -363,7 +364,8 @@ class BroadcastService:
         except IntegrityError as exc:
             raise self._map_integrity_error(exc) from exc
         rule = await self.repository.get_group_rule(rule_id, **validated_scope)
-        return self._serialize_group_rule(rule)
+        group_names = await self._load_group_name_rows(validated_scope)
+        return self._serialize_group_rule(rule, group_names=group_names)
 
     async def update_group_rule(
         self,
@@ -401,7 +403,8 @@ class BroadcastService:
             raise self._map_integrity_error(exc) from exc
         if updated is None:
             raise BroadcastError(BROADCAST_GROUP_RULE_NOT_FOUND)
-        return self._serialize_group_rule(updated)
+        group_names = await self._load_group_name_rows(validated_scope)
+        return self._serialize_group_rule(updated, group_names=group_names)
 
     async def delete_group_rule(self, rule_id: int, scope: dict[str, Any]) -> dict[str, bool]:
         validated_scope = await self.validate_scope(scope)
@@ -433,7 +436,11 @@ class BroadcastService:
                 source_value,
             )
         ]
-        candidate_rules = [self._serialize_group_rule(row) for row in candidate_rows]
+        group_names = await self._load_group_name_rows(validated_scope)
+        candidate_rules = [
+            self._serialize_group_rule(row, group_names=group_names)
+            for row in candidate_rows
+        ]
         return self._build_group_rule_match_preview(
             source_value=source_value,
             candidate_rules=candidate_rules,
@@ -441,7 +448,7 @@ class BroadcastService:
 
     async def list_group_names(self, scope: dict[str, Any]) -> list[dict[str, Any]]:
         validated_scope = await self.validate_scope(scope)
-        rows = await self.repository.list_group_names(**validated_scope)
+        rows = await self._load_group_name_rows(validated_scope)
         return [
             self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastGroupName, row)
             for row in rows
@@ -449,6 +456,59 @@ class BroadcastService:
 
     async def create_group_names(self, scope: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         validated_scope = await self.validate_scope(scope)
+        if 'group_name' in payload:
+            name = str(payload.get('group_name') or '').strip()
+            if not name:
+                raise BroadcastError(BATCH_VALIDATION_FAILED, '??????')
+
+            existing_rows = await self.repository.list_group_names_by_name(
+                bot_uuid=validated_scope['bot_uuid'],
+                connector_id=validated_scope['connector_id'],
+                name=name,
+            )
+            existing = self._pick_preferred_group_name_row(existing_rows)
+            if existing is not None:
+                return {
+                    'status': 'already_exists',
+                    'group': self.ap.persistence_mgr.serialize_model(
+                        persistence_broadcast.BroadcastGroupName,
+                        existing,
+                    ),
+                }
+
+            try:
+                async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+                    created_id = await self.repository.create_group_name(
+                        conn,
+                        {
+                            **validated_scope,
+                            'name': name,
+                            'external_conversation_id': None,
+                        },
+                    )
+                    created = await self.repository.get_group_name(
+                        created_id,
+                        bot_uuid=validated_scope['bot_uuid'],
+                        connector_id=validated_scope['connector_id'],
+                        conn=conn,
+                    )
+            except IntegrityError as exc:
+                raise self._map_integrity_error(exc) from exc
+
+            if created is None:
+                raise BroadcastError(
+                    BATCH_VALIDATION_FAILED,
+                    f'????{name}????????????????',
+                )
+
+            return {
+                'status': 'created',
+                'group': self.ap.persistence_mgr.serialize_model(
+                    persistence_broadcast.BroadcastGroupName,
+                    created,
+                ),
+            }
+
         raw_names = payload.get('names')
         if raw_names is None:
             raw_names = [payload.get('name')]
@@ -476,11 +536,10 @@ class BroadcastService:
                         name=name,
                         conn=conn,
                     )
-                    if any(
-                        not str(row.external_conversation_id or '').strip()
-                        for row in existing_rows
-                    ):
-                        raise BroadcastError(BROADCAST_GROUP_NAME_DUPLICATE)
+                    if existing_rows:
+                        if payload.get('name') is not None:
+                            raise BroadcastError(BROADCAST_GROUP_NAME_DUPLICATE)
+                        continue
                     await self.repository.create_group_name(
                         conn,
                         {
@@ -530,15 +589,42 @@ class BroadcastService:
                     conn=conn,
                 )
                 if existing is None:
-                    await self.repository.create_group_name(
-                        conn,
-                        {
-                            **validated_scope,
-                            'name': conversation_name,
-                            'external_conversation_id': external_conversation_id,
-                        },
+                    existing_by_name = await self.repository.list_group_names_by_name(
+                        bot_uuid=validated_scope['bot_uuid'],
+                        connector_id=validated_scope['connector_id'],
+                        name=conversation_name,
+                        conn=conn,
                     )
-                    stats['inserted'] += 1
+                    manual_match = next(
+                        (
+                            row
+                            for row in existing_by_name
+                            if not str(row.external_conversation_id or '').strip()
+                        ),
+                        None,
+                    )
+                    if manual_match is not None:
+                        await self.repository.update_group_name(
+                            int(manual_match.id),
+                            bot_uuid=validated_scope['bot_uuid'],
+                            connector_id=validated_scope['connector_id'],
+                            updates={
+                                'external_conversation_id': external_conversation_id,
+                                'name': conversation_name,
+                            },
+                            conn=conn,
+                        )
+                        stats['updated'] += 1
+                    else:
+                        await self.repository.create_group_name(
+                            conn,
+                            {
+                                **validated_scope,
+                                'name': conversation_name,
+                                'external_conversation_id': external_conversation_id,
+                            },
+                        )
+                        stats['inserted'] += 1
                     continue
 
                 if str(existing.name) != conversation_name:
@@ -4175,10 +4261,67 @@ class BroadcastService:
             target_conversation_name=str(row.target_conversation_name or ''),
         )
         payload['invalid_legacy'] = invalid_legacy
-        payload['invalid_reason'] = '无效历史规则，不参与匹配。' if invalid_legacy else None
-        del group_names
-        payload['target_resolution_status'] = 'deferred'
+        payload['invalid_reason'] = '?????????????' if invalid_legacy else None
+
+        resolved_target_conversation_id = str(payload.get('target_conversation_id') or '').strip()
+        resolved_target_conversation_name = str(payload.get('target_conversation_name') or '').strip()
+        if not resolved_target_conversation_id and group_names:
+            matched_group_name = self._pick_preferred_group_name_row(
+                [
+                    item
+                    for item in group_names
+                    if self._normalize_group_name_key(getattr(item, 'name', ''))
+                    == self._normalize_group_name_key(resolved_target_conversation_name)
+                ]
+            )
+            resolved_target_conversation_id = (
+                str(getattr(matched_group_name, 'external_conversation_id', '') or '').strip()
+                if matched_group_name is not None
+                else ''
+            )
+
+        payload['target_conversation_id'] = resolved_target_conversation_id or None
+        payload['target_resolution_status'] = (
+            'resolved' if resolved_target_conversation_id else 'deferred'
+        )
         return payload
+
+    async def _load_group_name_rows(self, scope: dict[str, Any]) -> list[Any]:
+        rows = await self.repository.list_group_names(**scope)
+        return self._dedupe_group_name_rows(rows)
+
+    def _dedupe_group_name_rows(self, rows: list[Any]) -> list[Any]:
+        deduped: dict[str, Any] = {}
+        for row in rows:
+            key = self._normalize_group_name_key(getattr(row, 'name', ''))
+            if not key:
+                continue
+            current = deduped.get(key)
+            if current is None:
+                deduped[key] = row
+                continue
+            deduped[key] = self._pick_preferred_group_name_row([current, row])
+        return sorted(
+            deduped.values(),
+            key=lambda item: (
+                self._normalize_group_name_key(getattr(item, 'name', '')),
+                int(getattr(item, 'id', 0) or 0),
+            ),
+        )
+
+    def _pick_preferred_group_name_row(self, rows: list[Any]) -> Any | None:
+        if not rows:
+            return None
+        return min(
+            rows,
+            key=lambda row: (
+                0 if str(getattr(row, 'external_conversation_id', '') or '').strip() else 1,
+                int(getattr(row, 'id', 0) or 0),
+            ),
+        )
+
+    def _normalize_group_name_key(self, name: str) -> str:
+        return str(name or '').strip()
 
     def _is_placeholder_group_rule(self, *, source_value: str, target_conversation_name: str) -> bool:
         normalized_source = str(source_value or '').strip()

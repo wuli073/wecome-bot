@@ -2037,6 +2037,18 @@ const zhHans = {
       ruleCoverage: '规则覆盖',
       ruleCoverageDescription: '快速查看当前群聊匹配规则是否覆盖主要客户。',
       enabledRules: '已启用规则',
+      groupNameDirectory: '?????',
+      groupNameDirectoryDescription:
+        '??????????????????? ID ??????',
+      groupNamesMaintained: '???????{{count}}?',
+      noGroupNames:
+        '???????????????????????????',
+      groupNameSourceManual: '????',
+      groupNameSourceSynced: '????',
+      groupNameStableIdReady: '?? ID ???',
+      groupNameStableIdPending: '??? ID',
+      groupNameSelectableResolved: '?????',
+      groupNameSelectableDeferred: '??????',
       groupBuckets: '群聊名单',
       groupBucketsDescription: '集中维护可选群聊，方便规则配置时直接复用。',
       variableMapping: {
@@ -2445,8 +2457,13 @@ const zhHans = {
       groupRuleSaved: '群匹配规则已保存',
       groupRuleDeleted: '群匹配规则已删除',
       groupNamesSaved: '群名称已保存',
+      groupNameAdded: '???????{{name}}',
+      groupNameExists: '????{{name}}????',
+      groupNameRequired: '??????',
+      groupNameReloadMissing:
+        '????{{name}}?????????????????????',
       groupNamesSynced:
-        '群列表已刷新：扫描 {{scanned}}，新增 {{inserted}}，更新 {{updated}}，未变更 {{unchanged}}',
+        '????????? {{scanned}}??? {{inserted}}??? {{updated}}???? {{unchanged}}',
       groupNameDeleted: '群名称已删除',
     },
   },
@@ -2748,7 +2765,7 @@ deepMergeLocale(zhHans.broadcast as Record<string, unknown>, {
       '\u8bf7\u5148\u4ece\u5019\u9009\u5217\u8868\u4e2d\u9009\u62e9\u76ee\u6807\u7fa4\u804a',
     targetConversationNameRequired: '\u8bf7\u8f93\u5165\u76ee\u6807\u7fa4\u804a\u540d\u79f0',
     targetResolution: {
-      deferred: '\u7fa4\u804a\u5c06\u5728\u53d1\u9001\u65f6\u67e5\u627e',
+      deferred: '??????',
       resolved: '\u5df2\u5339\u914d\u7fa4\u804a',
       unresolved: '\u5c1a\u672a\u5339\u914d\u5230\u5b9e\u9645\u7fa4\u804a',
       ambiguous: '\u5b58\u5728\u591a\u4e2a\u540c\u540d\u7fa4\u804a\uff0c\u8bf7\u4ece\u5019\u9009\u5217\u8868\u9009\u62e9',
@@ -2756,7 +2773,7 @@ deepMergeLocale(zhHans.broadcast as Record<string, unknown>, {
     targetConversationLegacyReselect:
       '\u8be5\u5386\u53f2\u89c4\u5219\u7f3a\u5c11\u7a33\u5b9a\u76ee\u6807\u7fa4\u804a ID\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9\u3002',
     targetConversationMissingStableId:
-      '\u8be5\u7fa4\u804a\u7f3a\u5c11\u7a33\u5b9a externalConversationId\uff0c\u6682\u65f6\u4e0d\u53ef\u9009\u62e9\u3002',
+      '??? ID?????????',
     preview: {
       empty:
         '\u8f93\u5165\u5ba2\u6237\u540d\u79f0\u5e76\u6267\u884c\u5339\u914d\u9884\u89c8\u3002',

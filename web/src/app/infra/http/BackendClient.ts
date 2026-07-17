@@ -63,6 +63,7 @@ import {
   ApiRespDatabaseModeMessages,
   ApiBroadcastGroupMatchResult,
   ApiBroadcastGroupName,
+  ApiBroadcastGroupNameCreateResult,
   ApiBroadcastGroupNamesResponse,
   ApiBroadcastGroupNameSyncResult,
   ApiBroadcastGroupRule,
@@ -2091,16 +2092,16 @@ export class BackendClient extends BaseHttpClient {
     return this.get('/api/v1/broadcast/group-names', scope);
   }
 
-  public createBroadcastGroupNames(
+  public createBroadcastGroupName(
     scope: ApiBroadcastScope,
-    names: string[],
-  ): Promise<ApiBroadcastGroupNamesResponse> {
-    return this.requestBroadcast<ApiBroadcastGroupNamesResponse>({
+    groupName: string,
+  ): Promise<ApiBroadcastGroupNameCreateResult> {
+    return this.requestBroadcast<ApiBroadcastGroupNameCreateResult>({
       method: 'post',
       url: '/api/v1/broadcast/group-names',
       data: {
         ...scope,
-        names,
+        group_name: groupName,
       },
     });
   }

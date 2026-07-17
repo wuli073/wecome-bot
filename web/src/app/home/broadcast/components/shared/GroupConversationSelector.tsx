@@ -53,6 +53,8 @@ export default function GroupConversationSelector({
     });
   }, [groupNames, keyword]);
 
+  const normalizedSelectionName = keyword.trim();
+
   return (
     <div className="space-y-2">
       <div className="text-sm font-medium">{searchLabel}</div>
@@ -74,8 +76,12 @@ export default function GroupConversationSelector({
         data-testid={listTestId}
       >
         {filteredGroupNames.map((groupName) => {
-          const selectable = Boolean(groupName.externalConversationId?.trim());
-          const selected = groupName.externalConversationId === value;
+          const hasStableExternalId = Boolean(
+            groupName.externalConversationId?.trim(),
+          );
+          const selected = hasStableExternalId
+            ? groupName.externalConversationId === value
+            : !value.trim() && groupName.name === normalizedSelectionName;
           return (
             <button
               key={groupName.id}
@@ -83,15 +89,15 @@ export default function GroupConversationSelector({
               className={`w-full rounded-lg border px-3 py-2 text-left text-sm ${
                 selected ? 'border-blue-500 bg-blue-50' : 'bg-background'
               }`}
-              disabled={disabled || !selectable}
-              onClick={() => onChange(selectable ? groupName : null)}
+              disabled={disabled}
+              onClick={() => onChange(groupName)}
             >
               <div className="font-medium">{groupName.name}</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                {selectable
+                {hasStableExternalId
                   ? groupName.externalConversationId
                   : (missingStableIdLabel ??
-                    t('broadcast.import.inlineMatch.missingStableId'))}
+                    t('broadcast.groupRule.targetConversationMissingStableId'))}
               </div>
             </button>
           );

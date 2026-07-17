@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -28,6 +29,7 @@ import type {
   BroadcastGroupMatchResult,
   BroadcastGroupMatchType,
   BroadcastGroupName,
+  BroadcastGroupNameCreateResult,
   BroadcastGroupRule,
   BroadcastGroupRuleCandidateList,
   BroadcastGroupRuleDraft,
@@ -60,7 +62,7 @@ interface GroupMatchingPanelProps {
   ) => Promise<void>;
   onDeleteRule: (ruleId: number) => Promise<void>;
   onMatchRule: (sourceValue: string) => Promise<BroadcastGroupMatchResult>;
-  onCreateGroupNames: (names: string[]) => Promise<void>;
+  onCreateGroupName: (name: string) => Promise<BroadcastGroupNameCreateResult>;
   onSyncGroupNames: () => Promise<void>;
   onDeleteGroupName: (groupNameId: number) => Promise<void>;
 }
@@ -91,7 +93,7 @@ function toRuleDraft(rule: BroadcastGroupRule | null): BroadcastGroupRuleDraft {
 }
 
 export default function GroupMatchingPanel({
-  scope: _scope,
+  scope,
   rules,
   groupNames,
   batches,
@@ -109,7 +111,7 @@ export default function GroupMatchingPanel({
   onUpdateRule,
   onDeleteRule,
   onMatchRule,
-  onCreateGroupNames,
+  onCreateGroupName,
   onSyncGroupNames,
   onDeleteGroupName,
 }: GroupMatchingPanelProps) {
@@ -124,6 +126,7 @@ export default function GroupMatchingPanel({
   const [matchResult, setMatchResult] =
     useState<BroadcastGroupMatchResult | null>(null);
   const [groupNamesInput, setGroupNamesInput] = useState('');
+  const [groupNameSubmitting, setGroupNameSubmitting] = useState(false);
   const [targetConversationKeyword, setTargetConversationKeyword] = useState(
     rules[0]?.targetConversationName ?? '',
   );
@@ -145,10 +148,14 @@ export default function GroupMatchingPanel({
   }, [activeRuleId, rules]);
 
   useEffect(() => {
+    setGroupNamesInput('');
+  }, [scope.botUuid, scope.connectorId]);
+
+  useEffect(() => {
     setDraft(toRuleDraft(activeRule));
     setTargetConversationKeyword(activeRule?.targetConversationName ?? '');
     setSelectionError(null);
-  }, [activeRule]);
+  }, [activeRuleId, scope.botUuid, scope.connectorId]);
 
   const enabledRules = rules.filter((rule) => rule.enabled);
   const pendingCustomerStats = groupRuleCandidates?.stats ?? null;
@@ -170,6 +177,35 @@ export default function GroupMatchingPanel({
     ],
     [t],
   );
+
+  const groupNameDirectoryBusy = saving || groupNameSubmitting;
+
+  const handleCreateGroupName = async () => {
+    const normalizedName = groupNamesInput.trim();
+    if (!normalizedName) {
+      toast.error(t('broadcast.toasts.groupNameRequired'));
+      return;
+    }
+    if (groupNames.some((groupName) => groupName.name.trim() === normalizedName)) {
+      toast.error(
+        t('broadcast.toasts.groupNameExists', {
+          name: normalizedName,
+        }),
+      );
+      return;
+    }
+
+    setGroupNameSubmitting(true);
+    try {
+      const result = await onCreateGroupName(normalizedName);
+      if (result.status === 'created') {
+        setGroupNamesInput('');
+      }
+    } catch {
+    } finally {
+      setGroupNameSubmitting(false);
+    }
+  };
 
   const handleSaveRule = async () => {
     const normalizedTargetName = draft.targetConversationName.trim();
@@ -647,74 +683,130 @@ export default function GroupMatchingPanel({
               </div>
             </CardContent>
           </Card>
-
-          <Card className="gap-4">
-            <CardHeader>
-              <CardTitle>{t('broadcast.rules.groupBuckets')}</CardTitle>
-              <CardDescription>
-                {t('broadcast.rules.groupBucketsDescription')}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-2">
-                <div className="text-sm font-medium">
-                  {t('broadcast.fields.groupNames')}
-                </div>
-                <div className="flex gap-2">
-                  <Input
-                    id="broadcast-group-names-input"
-                    value={groupNamesInput}
-                    onChange={(event) => setGroupNamesInput(event.target.value)}
-                    placeholder={t('broadcast.placeholders.groupNames')}
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => {
-                      const names = groupNamesInput
-                        .split('\n')
-                        .map((item) => item.trim())
-                        .filter(Boolean);
-                      void onCreateGroupNames(names).then(() => {
-                        setGroupNamesInput('');
-                      });
-                    }}
-                  >
-                    {t('broadcast.actions.addGroupNames')}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    disabled={saving}
-                    onClick={() => void onSyncGroupNames()}
-                  >
-                    {t('broadcast.actions.refreshGroupNames')}
-                  </Button>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                {groupNames.map((groupName) => (
-                  <div
-                    key={groupName.id}
-                    className="flex items-center justify-between rounded-lg border p-3"
-                  >
-                    <span className="text-sm">{groupName.name}</span>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => void onDeleteGroupName(groupName.id)}
-                    >
-                      {t('common.delete')}
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
         </div>
       </div>
+
+      <Card className="gap-4" data-testid="broadcast-group-name-directory">
+        <CardHeader className="gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-1">
+            <CardTitle>{t('broadcast.rules.groupNameDirectory')}</CardTitle>
+            <CardDescription>
+              {t('broadcast.rules.groupNameDirectoryDescription')}
+            </CardDescription>
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={groupNameDirectoryBusy}
+            onClick={() => void onSyncGroupNames()}
+          >
+            {t('broadcast.actions.refreshGroupNames')}
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_220px]">
+            <div className="space-y-2">
+              <div className="text-sm font-medium">
+                {t('broadcast.fields.groupNames')}
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Input
+                  id="broadcast-group-names-input"
+                  value={groupNamesInput}
+                  onChange={(event) => setGroupNamesInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      void handleCreateGroupName();
+                    }
+                  }}
+                  placeholder={t('broadcast.placeholders.groupNames')}
+                  disabled={groupNameDirectoryBusy}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={groupNameDirectoryBusy}
+                  onClick={() => void handleCreateGroupName()}
+                >
+                  {t('broadcast.actions.addGroupNames')}
+                </Button>
+              </div>
+            </div>
+
+            <div className="rounded-xl border bg-muted/20 p-4">
+              <div className="text-sm text-muted-foreground">
+                {t('broadcast.rules.groupNamesMaintained', {
+                  count: groupNames.length,
+                })}
+              </div>
+              <div className="mt-2 text-2xl font-semibold">
+                {groupNames.length}
+              </div>
+            </div>
+          </div>
+
+          {groupNames.length === 0 ? (
+            <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+              {t('broadcast.rules.noGroupNames')}
+            </div>
+          ) : (
+            <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+              {groupNames.map((groupName) => {
+                const hasStableExternalId = Boolean(
+                  groupName.externalConversationId?.trim(),
+                );
+                return (
+                  <div
+                    key={groupName.id}
+                    className="rounded-xl border p-4"
+                    data-testid={`broadcast-group-name-card-${groupName.id}`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 space-y-1">
+                        <div className="break-all font-medium">
+                          {groupName.name}
+                        </div>
+                        <div className="break-all text-xs text-muted-foreground">
+                          {hasStableExternalId
+                            ? groupName.externalConversationId
+                            : t('broadcast.groupRule.targetResolution.deferred')}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={groupNameDirectoryBusy}
+                        onClick={() => void onDeleteGroupName(groupName.id)}
+                      >
+                        {t('common.delete')}
+                      </Button>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Badge variant="secondary">
+                        {groupName.source === 'synced'
+                          ? t('broadcast.rules.groupNameSourceSynced')
+                          : t('broadcast.rules.groupNameSourceManual')}
+                      </Badge>
+                      <Badge variant={hasStableExternalId ? 'secondary' : 'outline'}>
+                        {hasStableExternalId
+                          ? t('broadcast.rules.groupNameStableIdReady')
+                          : t('broadcast.rules.groupNameStableIdPending')}
+                      </Badge>
+                      <Badge variant={hasStableExternalId ? 'secondary' : 'outline'}>
+                        {hasStableExternalId
+                          ? t('broadcast.rules.groupNameSelectableResolved')
+                          : t('broadcast.rules.groupNameSelectableDeferred')}
+                      </Badge>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <BulkGroupAssignmentDialog
         open={bulkAssignDialogOpen}

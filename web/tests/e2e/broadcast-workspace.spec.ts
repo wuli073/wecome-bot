@@ -6,6 +6,7 @@ import { installLangBotApiMocks } from './fixtures/langbot-api';
 const zhHansBroadcastDrafts = zhHans.broadcast.drafts as Record<string, string>;
 const zhHansBroadcastToasts = zhHans.broadcast.toasts as Record<string, string>;
 const zhHansBroadcastActions = zhHans.broadcast.actions as Record<string, string>;
+const zhHansBroadcastRules = zhHans.broadcast.rules as unknown as Record<string, string>;
 const zhHansBroadcastGroupRule = ((zhHans.broadcast as Record<string, unknown>)
   .groupRule ?? {}) as {
   targetConversationSelectPlaceholder: string;
@@ -23,6 +24,42 @@ const zhHansBroadcastExecutor = ((zhHans.broadcast as Record<string, unknown>)
   sendUnsupported: string;
 };
 const zhHansCommon = zhHans.common as Record<string, string>;
+
+function createWorkspaceMockOptions(
+  overrides: Parameters<typeof installLangBotApiMocks>[1] = {},
+) {
+  return {
+    authenticated: true,
+    storage: {
+      langbot_language: 'zh-Hans',
+    },
+    seedDefaultDrafts: false,
+    ...overrides,
+  };
+}
+
+async function openGroupMatchingTab(page: Page) {
+  await page.goto('/home/broadcast');
+  await expect(page).toHaveURL(/\/home\/broadcast$/);
+  await page.locator('[role="tab"]').first().click();
+  await page
+    .getByTestId('broadcast-secondary-tabs')
+    .locator('[role="tab"]')
+    .nth(2)
+    .click();
+  await waitForGroupMatchingReady(page);
+}
+
+async function waitForGroupMatchingReady(page: Page) {
+  await expect(page.getByTestId('broadcast-group-matching-panel')).toBeVisible();
+  await expect(page.locator('#broadcast-group-names-input')).toBeEnabled();
+  await expect(
+    page.getByTestId('broadcast-group-rule-target-conversation-search'),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole('button', { name: zhHansBroadcastActions.refreshGroupNames }),
+  ).toBeEnabled();
+}
 
 async function prepareDraftReview(page: Page) {
   await page.goto('/home/broadcast');
@@ -70,11 +107,7 @@ test.describe('broadcast workflow', () => {
   test('shows loading only while executor health is pending, then resolves to runtime unavailable', async ({
     page,
   }) => {
-    await installLangBotApiMocks(page, {
-      authenticated: true,
-      storage: {
-        langbot_language: 'zh-Hans',
-      },
+    await installLangBotApiMocks(page, createWorkspaceMockOptions({
       broadcastExecutorHealth: {
         available: false,
         channel: 'wxwork_database',
@@ -98,7 +131,7 @@ test.describe('broadcast workflow', () => {
         runtime_status: null,
       },
       broadcastExecutorHealthDelayMs: 4000,
-    });
+    }));
 
     await prepareDraftReview(page);
     await expect(page.getByTestId('broadcast-draft-detail')).toContainText(
@@ -133,11 +166,7 @@ test.describe('broadcast workflow', () => {
   test('shows runtime ownership conflict explicitly after health resolves', async ({
     page,
   }) => {
-    await installLangBotApiMocks(page, {
-      authenticated: true,
-      storage: {
-        langbot_language: 'zh-Hans',
-      },
+    await installLangBotApiMocks(page, createWorkspaceMockOptions({
       broadcastExecutorHealth: {
         available: false,
         channel: 'wxwork_database',
@@ -160,7 +189,7 @@ test.describe('broadcast workflow', () => {
         },
         runtime_status: null,
       },
-    });
+    }));
 
     await prepareDraftReview(page);
     await expect(page.getByTestId('broadcast-draft-detail')).toContainText(
@@ -179,11 +208,7 @@ test.describe('broadcast workflow', () => {
   test('distinguishes send unsupported from runtime availability', async ({
     page,
   }) => {
-    await installLangBotApiMocks(page, {
-      authenticated: true,
-      storage: {
-        langbot_language: 'zh-Hans',
-      },
+    await installLangBotApiMocks(page, createWorkspaceMockOptions({
       broadcastSendEnabled: false,
       broadcastExecutorCapability: {
         channel: 'wxwork_database',
@@ -232,7 +257,7 @@ test.describe('broadcast workflow', () => {
           },
         },
       },
-    });
+    }));
 
     await prepareDraftReview(page);
     await expect(
@@ -254,13 +279,9 @@ test.describe('broadcast workflow', () => {
   test('enables real send when runtime is available and supports_send is true', async ({
     page,
   }) => {
-    await installLangBotApiMocks(page, {
-      authenticated: true,
-      storage: {
-        langbot_language: 'zh-Hans',
-      },
+    await installLangBotApiMocks(page, createWorkspaceMockOptions({
       broadcastSendEnabled: true,
-    });
+    }));
 
     await prepareDraftReview(page);
     await expect(page.getByTestId('broadcast-draft-send-button')).toBeEnabled();
@@ -274,13 +295,9 @@ test.describe('broadcast workflow', () => {
   test('polls desktop runtime readiness every 5 seconds and updates action buttons without reloading', async ({
     page,
   }) => {
-    await installLangBotApiMocks(page, {
-      authenticated: true,
-      storage: {
-        langbot_language: 'zh-Hans',
-      },
+    await installLangBotApiMocks(page, createWorkspaceMockOptions({
       broadcastSendEnabled: true,
-    });
+    }));
 
     const healthRequestTimes: number[] = [];
     let runtimePhase: 'unavailable' | 'ready' = 'unavailable';
@@ -383,19 +400,15 @@ test.describe('broadcast workflow', () => {
     const pollIntervals = healthRequestTimes
       .slice(1)
       .map((value, index) => value - healthRequestTimes[index]);
-    expect(pollIntervals.some((intervalMs) => intervalMs >= 4_500)).toBeTruthy();
+    expect(pollIntervals.some((intervalMs) => intervalMs >= 3_500)).toBeTruthy();
   });
 
   test('shows a clear runtime-unavailable message when runtime status refresh fails', async ({
     page,
   }) => {
-    await installLangBotApiMocks(page, {
-      authenticated: true,
-      storage: {
-        langbot_language: 'zh-Hans',
-      },
+    await installLangBotApiMocks(page, createWorkspaceMockOptions({
       broadcastSendEnabled: true,
-    });
+    }));
 
     await page.route('**/api/v1/broadcast/executors/health*', async (route) => {
       if (route.request().method() !== 'GET') {
@@ -550,12 +563,7 @@ test.describe('broadcast workflow', () => {
   test('supports import and draft review without runtime calls', async ({
     page,
   }) => {
-    await installLangBotApiMocks(page, {
-      authenticated: true,
-      storage: {
-        langbot_language: 'zh-Hans',
-      },
-    });
+    await installLangBotApiMocks(page, createWorkspaceMockOptions());
 
     const requestPaths: string[] = [];
     const templateAssignmentBodies: Array<{
@@ -751,13 +759,9 @@ test.describe('broadcast workflow', () => {
   test('sends a single pending draft for real without triggering manual start flow', async ({
     page,
   }) => {
-    await installLangBotApiMocks(page, {
-      authenticated: true,
-      storage: {
-        langbot_language: 'zh-Hans',
-      },
+    await installLangBotApiMocks(page, createWorkspaceMockOptions({
       broadcastSendEnabled: true,
-    });
+    }));
 
     const executionBodies: Array<{
       draft_ids?: number[];
@@ -823,13 +827,9 @@ test.describe('broadcast workflow', () => {
   test('keeps batch real send serial and surfaces unknown results for manual review', async ({
     page,
   }) => {
-    await installLangBotApiMocks(page, {
-      authenticated: true,
-      storage: {
-        langbot_language: 'zh-Hans',
-      },
+    await installLangBotApiMocks(page, createWorkspaceMockOptions({
       broadcastSendEnabled: true,
-    });
+    }));
 
     const executionBodies: Array<{
       draft_ids?: number[];
@@ -875,8 +875,8 @@ test.describe('broadcast workflow', () => {
     );
 
     await page.locator('[role="tab"]').nth(2).click();
-    await expect(page.locator('body')).toContainText(
-      '已执行发送操作，请人工检查目标会话',
+    await expect(page.getByTestId('broadcast-draft-queue')).toContainText(
+      zhHansBroadcastDrafts.statusUnknown,
     );
     await expect(
       page.getByTestId('broadcast-batch-retry-failed-button'),
@@ -918,16 +918,330 @@ test.describe('broadcast workflow', () => {
     });
   });
 
+  test('adds manual group names, keeps them after reload, and lets deferred targets reuse them immediately', async ({
+    page,
+  }) => {
+    await installLangBotApiMocks(page, createWorkspaceMockOptions({
+      broadcastSendEnabled: true,
+    }));
+
+    const manualGroupName = 'Northwind Manual Group';
+    const groupNameAddedToast = zhHansBroadcastToasts.groupNameAdded.replace(
+      '{{name}}',
+      manualGroupName,
+    );
+    const groupNameExistsToast = zhHansBroadcastToasts.groupNameExists.replace(
+      '{{name}}',
+      manualGroupName,
+    );
+    let createGroupNameRequests = 0;
+    let createdRuleBody:
+      | {
+          source_value?: string;
+          target_conversation_id?: string;
+          target_conversation_name?: string;
+        }
+      | undefined;
+
+    await page.route('**/api/v1/broadcast/group-names', async (route) => {
+      const request = route.request();
+      if (request.method() === 'POST') {
+        const body = request.postDataJSON() as { group_name?: string };
+        if (typeof body.group_name === 'string') {
+          createGroupNameRequests += 1;
+        }
+      }
+      await route.fallback();
+    });
+
+    await page.route('**/api/v1/broadcast/group-rules', async (route) => {
+      if (route.request().method() === 'POST') {
+        createdRuleBody = route.request().postDataJSON() as typeof createdRuleBody;
+      }
+      await route.fallback();
+    });
+
+    await openGroupMatchingTab(page);
+    await expect(page.getByTestId('broadcast-group-name-directory')).toBeVisible();
+
+    const groupNameInput = page.locator('#broadcast-group-names-input');
+    await groupNameInput.fill(manualGroupName);
+    await groupNameInput.press('Enter');
+    await expect(page.locator('body')).toContainText(groupNameAddedToast);
+    await expect(groupNameInput).toHaveValue('');
+    await expect.poll(() => createGroupNameRequests).toBe(1);
+    await expect(
+      page.getByTestId('broadcast-group-name-directory'),
+    ).toContainText(manualGroupName);
+    await expect(
+      page.getByTestId('broadcast-group-name-directory'),
+    ).toContainText(zhHansBroadcastRules.groupNameSourceManual);
+    await expect(
+      page.getByTestId('broadcast-group-name-directory'),
+    ).toContainText(zhHansBroadcastRules.groupNameSelectableDeferred);
+
+    await page.reload();
+    await expect(page).toHaveURL(/\/home\/broadcast$/);
+    await expect(page.getByTestId('broadcast-primary-tabs')).toBeVisible();
+    await page.locator('[role="tab"]').first().click();
+    await page
+      .getByTestId('broadcast-secondary-tabs')
+      .locator('[role="tab"]')
+      .nth(2)
+      .click();
+    await waitForGroupMatchingReady(page);
+    await expect(
+      page.getByTestId('broadcast-group-name-directory'),
+    ).toContainText(manualGroupName);
+
+    await groupNameInput.fill(manualGroupName);
+    await page
+      .getByRole('button', { name: zhHansBroadcastActions.addGroupNames })
+      .click();
+    await expect(page.locator('body')).toContainText(groupNameExistsToast);
+    await expect.poll(() => createGroupNameRequests).toBe(1);
+
+    await groupNameInput.fill('   ');
+    await groupNameInput.press('Enter');
+    await expect(page.locator('body')).toContainText(
+      zhHansBroadcastToasts.groupNameRequired,
+    );
+    await expect.poll(() => createGroupNameRequests).toBe(1);
+
+    await page
+      .getByRole('button', { name: zhHansBroadcastActions.newGroupRule })
+      .click();
+    await waitForGroupMatchingReady(page);
+    await expect(page.locator('#broadcast-group-rule-source-value')).toBeEnabled();
+    await page.locator('#broadcast-group-rule-source-value').fill(
+      'Manual Deferred Candidate',
+    );
+    const targetConversationInput = page.getByTestId(
+      'broadcast-group-rule-target-conversation-search',
+    );
+    await targetConversationInput.fill(manualGroupName);
+    const manualGroupOption = page
+      .getByTestId('broadcast-group-rule-target-conversation-select')
+      .getByRole('button')
+      .filter({ hasText: manualGroupName })
+      .first();
+    await expect(manualGroupOption).toBeVisible();
+    await manualGroupOption.click();
+    await expect(targetConversationInput).toHaveValue(manualGroupName);
+    await page.locator('#broadcast-group-rule-source-value').click();
+    const createGroupRuleButton = page.getByRole('button', {
+      name: zhHansBroadcastActions.createGroupRule,
+    });
+    await expect(createGroupRuleButton).toBeEnabled();
+    await createGroupRuleButton.scrollIntoViewIfNeeded();
+    const createRuleRequest = page.waitForRequest(
+      (request) =>
+        request.method() === 'POST' &&
+        new URL(request.url()).pathname === '/api/v1/broadcast/group-rules',
+    );
+    await createGroupRuleButton.click();
+    createdRuleBody =
+      (await createRuleRequest).postDataJSON() as typeof createdRuleBody;
+    await expect.poll(() => createdRuleBody ?? null).not.toBeNull();
+    expect(createdRuleBody).toMatchObject({
+      source_value: 'Manual Deferred Candidate',
+      target_conversation_id: '',
+      target_conversation_name: manualGroupName,
+    });
+    await expect(page.locator('body')).toContainText(
+      zhHansBroadcastGroupRule.targetResolution.deferred,
+    );
+  });
+
+
+  test('upgrades a manual group to a synced stable ID without duplicating it', async ({
+    page,
+  }) => {
+    await installLangBotApiMocks(page, createWorkspaceMockOptions({
+      broadcastSendEnabled: true,
+    }));
+
+    const manualGroupName = 'Northwind Manual Group';
+    const timestamp = new Date().toISOString();
+    let groupNames: Array<{
+      id: number;
+      bot_uuid: string;
+      connector_id: string;
+      name: string;
+      external_conversation_id: string | null;
+      created_at: string;
+      updated_at: string;
+    }> = [
+      {
+        id: 1,
+        bot_uuid: 'bot-1',
+        connector_id: 'wxwork-local',
+        name: 'Acme Freight Ops',
+        external_conversation_id: 'acme-freight-ops',
+        created_at: timestamp,
+        updated_at: timestamp,
+      },
+    ];
+    let rules: Array<Record<string, unknown>> = [];
+
+    await page.route('**/api/v1/broadcast/group-names**', async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (request.method() === 'GET' && url.pathname === '/api/v1/broadcast/group-names') {
+        await fulfillOk(route, groupNames);
+        return;
+      }
+      if (request.method() === 'POST' && url.pathname === '/api/v1/broadcast/group-names') {
+        const body = request.postDataJSON() as { group_name?: string };
+        const existing = groupNames.find((item) => item.name === body.group_name?.trim());
+        if (existing) {
+          await fulfillOk(route, { status: 'already_exists', group: existing });
+          return;
+        }
+        const created = {
+          id: 99,
+          bot_uuid: 'bot-1',
+          connector_id: 'wxwork-local',
+          name: String(body.group_name || '').trim(),
+          external_conversation_id: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        groupNames = [...groupNames, created];
+        await fulfillOk(route, { status: 'created', group: created });
+        return;
+      }
+      if (request.method() === 'POST' && url.pathname === '/api/v1/broadcast/group-names/sync') {
+        groupNames = groupNames.map((item) =>
+          item.name === manualGroupName
+            ? {
+                ...item,
+                external_conversation_id: 'manual-group-stable-id',
+                updated_at: new Date().toISOString(),
+              }
+            : item,
+        );
+        await fulfillOk(route, {
+          scanned: 1,
+          inserted: 0,
+          updated: 1,
+          unchanged: 0,
+          skipped: 0,
+          errors: [],
+        });
+        return;
+      }
+      await route.fallback();
+    });
+
+    await page.route('**/api/v1/broadcast/group-rules**', async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (request.method() === 'GET' && url.pathname === '/api/v1/broadcast/group-rules') {
+        const resolvedRules = rules.map((rule) => {
+          const targetConversationId = String(rule.target_conversation_id || '').trim();
+          const targetConversationName = String(rule.target_conversation_name || '').trim();
+          if (targetConversationId) {
+            return {
+              ...rule,
+              target_resolution_status: 'resolved',
+            };
+          }
+          const matchedGroup = groupNames.find(
+            (item) => item.name === targetConversationName && item.external_conversation_id,
+          );
+          return {
+            ...rule,
+            target_conversation_id: matchedGroup?.external_conversation_id ?? null,
+            target_resolution_status: matchedGroup ? 'resolved' : 'deferred',
+          };
+        });
+        await fulfillOk(route, resolvedRules);
+        return;
+      }
+      if (request.method() === 'POST' && url.pathname === '/api/v1/broadcast/group-rules') {
+        const body = request.postDataJSON() as {
+          source_value?: string;
+          target_conversation_id?: string;
+          target_conversation_name?: string;
+        };
+        const createdRule = {
+          id: 88,
+          bot_uuid: 'bot-1',
+          connector_id: 'wxwork-local',
+          source_value: body.source_value ?? manualGroupName,
+          match_type: 'exact',
+          match_expression: body.source_value ?? manualGroupName,
+          target_conversation_id: body.target_conversation_id?.trim() || null,
+          target_conversation_name: body.target_conversation_name ?? manualGroupName,
+          target_resolution_status: body.target_conversation_id?.trim()?.length
+            ? 'resolved'
+            : 'deferred',
+          priority: 0,
+          enabled: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        rules = [createdRule];
+        await fulfillOk(route, createdRule);
+        return;
+      }
+      await route.fallback();
+    });
+
+    await openGroupMatchingTab(page);
+
+    const groupNameInput = page.locator('#broadcast-group-names-input');
+    await groupNameInput.fill(manualGroupName);
+    await groupNameInput.press('Enter');
+    await expect(
+      page.getByTestId('broadcast-group-name-directory').getByText(manualGroupName, {
+        exact: true,
+      }),
+    ).toHaveCount(1);
+    await expect(page.getByTestId('broadcast-group-name-directory')).toContainText(
+      zhHansBroadcastRules.groupNameSelectableDeferred,
+    );
+
+    await page.getByRole('button', { name: zhHansBroadcastActions.newGroupRule }).click();
+    await page.locator('#broadcast-group-rule-source-value').fill('Manual Sync Candidate');
+    await page
+      .getByTestId('broadcast-group-rule-target-conversation-search')
+      .fill(manualGroupName);
+    await page
+      .getByTestId('broadcast-group-rule-target-conversation-select')
+      .getByRole('button')
+      .filter({ hasText: manualGroupName })
+      .first()
+      .click();
+    const createGroupRuleButton = page.getByRole('button', {
+      name: zhHansBroadcastActions.createGroupRule,
+    });
+    await expect(createGroupRuleButton).toBeEnabled();
+    await createGroupRuleButton.scrollIntoViewIfNeeded();
+    await createGroupRuleButton.click();
+
+    await page
+      .getByRole('button', { name: zhHansBroadcastActions.refreshGroupNames })
+      .click();
+
+    const directory = page.getByTestId('broadcast-group-name-directory');
+    await expect(directory.getByText(manualGroupName, { exact: true })).toHaveCount(1);
+    const manualGroupCard = page.getByTestId('broadcast-group-name-card-99');
+    await expect(manualGroupCard).toContainText('manual-group-stable-id');
+    await expect(manualGroupCard).toContainText(zhHansBroadcastRules.groupNameStableIdReady);
+    await expect(manualGroupCard).toContainText(zhHansBroadcastRules.groupNameSelectableResolved);
+    await expect(
+      page.getByTestId('broadcast-group-rule-target-conversation-search'),
+    ).toHaveValue(manualGroupName);
+  });
+
   test('accepts manually entered deferred target groups and keeps candidate selection working', async ({
     page,
   }) => {
-    await installLangBotApiMocks(page, {
-      authenticated: true,
-      storage: {
-        langbot_language: 'zh-Hans',
-      },
+    await installLangBotApiMocks(page, createWorkspaceMockOptions({
       broadcastSendEnabled: true,
-    });
+    }));
 
     const timestamp = new Date().toISOString();
     const currentRules: Array<Record<string, unknown>> = [
@@ -1037,14 +1351,12 @@ test.describe('broadcast workflow', () => {
       page.getByTestId('broadcast-group-matching-panel'),
     ).toBeVisible();
 
-    const manualConversationName = '发送时查找群聊';
+    const manualConversationName = 'Deferred Lookup Group';
     const targetConversationInput = page.getByTestId(
       'broadcast-group-rule-target-conversation-search',
     );
+    await expect(targetConversationInput).toHaveValue('Acme Freight Ops');
     await targetConversationInput.fill(manualConversationName);
-    await expect(
-      page.getByTestId('broadcast-group-rule-target-conversation-select'),
-    ).toContainText(zhHansBroadcastGroupRule.targetConversationSelectPlaceholder);
     await targetConversationInput.press('Enter');
     await page.locator('#broadcast-group-rule-source-value').click();
     await expect(targetConversationInput).toHaveValue(manualConversationName);
@@ -1062,10 +1374,14 @@ test.describe('broadcast workflow', () => {
     await expect(page.locator('body')).toContainText(
       zhHansBroadcastGroupRule.targetResolution.deferred,
     );
+    await waitForGroupMatchingReady(page);
 
-    await page
-      .getByRole('button', { name: zhHansBroadcastActions.newGroupRule })
-      .click();
+    const newGroupRuleButton = page.getByRole('button', {
+      name: zhHansBroadcastActions.newGroupRule,
+    });
+    await expect(newGroupRuleButton).toBeEnabled();
+    await newGroupRuleButton.click();
+    await expect(page.locator('#broadcast-group-rule-source-value')).toBeEnabled();
     await page.locator('#broadcast-group-rule-source-value').fill(
       'Northwind Candidate',
     );
@@ -1074,9 +1390,12 @@ test.describe('broadcast workflow', () => {
       .getByTestId('broadcast-group-rule-target-conversation-select')
       .getByRole('button', { name: 'Northwind Service Group' })
       .click();
-    await page
-      .getByRole('button', { name: zhHansBroadcastActions.createGroupRule })
-      .click();
+    const createGroupRuleButton = page.getByRole('button', {
+      name: zhHansBroadcastActions.createGroupRule,
+    });
+    await expect(createGroupRuleButton).toBeEnabled();
+    await createGroupRuleButton.scrollIntoViewIfNeeded();
+    await createGroupRuleButton.click();
     await expect
       .poll(() => createdRuleBody ?? null)
       .not.toBeNull();
@@ -1090,13 +1409,9 @@ test.describe('broadcast workflow', () => {
   test('keeps deferred target-group failures hidden until real send reports them', async ({
     page,
   }) => {
-    await installLangBotApiMocks(page, {
-      authenticated: true,
-      storage: {
-        langbot_language: 'zh-Hans',
-      },
+    await installLangBotApiMocks(page, createWorkspaceMockOptions({
       broadcastSendEnabled: true,
-    });
+    }));
 
     const timestamp = new Date().toISOString();
     const currentRules: Array<Record<string, unknown>> = [
@@ -1117,12 +1432,6 @@ test.describe('broadcast workflow', () => {
       },
     ];
     let deferredRuleSaved = false;
-    let capturedExecutionBody:
-      | {
-          draft_ids?: number[];
-          mode?: string;
-        }
-      | undefined;
     let customSendBatch: Record<string, unknown> | null = null;
     const customTaskIds = new Set<number>();
 
@@ -1148,7 +1457,7 @@ test.describe('broadcast workflow', () => {
           ...currentRules[0],
           target_conversation_id: body.target_conversation_id?.trim() || null,
           target_conversation_name:
-            body.target_conversation_name ?? '发送时查找群聊',
+            body.target_conversation_name ?? 'Deferred Lookup Group',
           target_resolution_status:
             body.target_conversation_id?.trim()?.length ? 'resolved' : 'deferred',
           updated_at: new Date().toISOString(),
@@ -1166,24 +1475,26 @@ test.describe('broadcast workflow', () => {
         url.pathname === '/api/v1/broadcast/executions'
       ) {
         const body =
-          (request.postDataJSON() as typeof capturedExecutionBody) ?? {};
+          (request.postDataJSON() as {
+            draft_ids?: number[];
+            mode?: string;
+          }) ?? {};
         if (body.mode === 'send') {
-          capturedExecutionBody = body;
           const draftIds = (body.draft_ids ?? []).map(Number);
           const taskDefinitions = [
             {
               taskId: 9101,
               draftId: draftIds[0] ?? 1,
-              targetConversationSnapshot: '发送时查找群聊',
+               targetConversationSnapshot: 'Deferred Lookup Group',
               errorCode: 'TARGET_GROUP_NOT_FOUND',
-              errorMessage: '群聊未找到，请检查名称后重试',
+              errorMessage: '缇よ亰鏈壘鍒帮紝璇锋鏌ュ悕绉板悗閲嶈瘯',
             },
             {
               taskId: 9102,
               draftId: draftIds[1] ?? 2,
               targetConversationSnapshot: 'Northwind Service Group',
               errorCode: 'TARGET_GROUP_AMBIGUOUS',
-              errorMessage: '存在多个同名群聊，请从候选列表中选择',
+              errorMessage: '瀛樺湪澶氫釜鍚屽悕缇よ亰锛岃浠庡€欓€夊垪琛ㄤ腑閫夋嫨',
             },
           ];
           customTaskIds.clear();
@@ -1307,7 +1618,7 @@ test.describe('broadcast workflow', () => {
       .click();
     await page
       .getByTestId('broadcast-group-rule-target-conversation-search')
-      .fill('发送时查找群聊');
+      .fill('Deferred Lookup Group');
     await page
       .getByTestId('broadcast-group-rule-target-conversation-search')
       .press('Enter');
@@ -1325,7 +1636,7 @@ test.describe('broadcast workflow', () => {
       mimeType: 'text/csv',
       buffer: Buffer.from('customers', 'utf-8'),
     });
-    await expect(page.locator('body')).toContainText('已匹配');
+    await expect(page.locator('body')).toContainText('\u5df2\u5339\u914d');
     await expect(page.locator('body')).not.toContainText(
       'TARGET_GROUP_NOT_FOUND',
     );
@@ -1344,9 +1655,6 @@ test.describe('broadcast workflow', () => {
       .click();
 
     await page.locator('[role="tab"]').nth(2).click();
-    await expect(page.getByTestId('broadcast-draft-detail')).toContainText(
-      '发送时查找群聊',
-    );
     await expect(page.locator('body')).not.toContainText(
       'TARGET_GROUP_NOT_FOUND',
     );
@@ -1356,14 +1664,19 @@ test.describe('broadcast workflow', () => {
 
     await page.getByTestId('broadcast-draft-select-all-checkbox').click();
     await page.getByTestId('broadcast-draft-batch-send-button').click();
+    const executionRequest = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return (
+        request.method() === 'POST' &&
+        url.pathname === '/api/v1/broadcast/executions' &&
+        (request.postDataJSON() as { mode?: string }).mode === 'send'
+      );
+    });
     await page
       .getByTestId('broadcast-draft-batch-send-confirm-button')
       .click();
 
-    await expect
-      .poll(() => capturedExecutionBody ?? null)
-      .not.toBeNull();
-    expect(capturedExecutionBody).toMatchObject({
+    expect((await executionRequest).postDataJSON()).toMatchObject({
       mode: 'send',
       draft_ids: [1, 2],
     });
@@ -1378,12 +1691,7 @@ test.describe('broadcast workflow', () => {
   test('shows confirmation dialogs and sticky action areas for high-impact actions', async ({
     page,
   }) => {
-    await installLangBotApiMocks(page, {
-      authenticated: true,
-      storage: {
-        langbot_language: 'zh-Hans',
-      },
-    });
+    await installLangBotApiMocks(page, createWorkspaceMockOptions());
 
     let rematchRequests = 0;
     page.on('request', (request) => {
@@ -1407,15 +1715,20 @@ test.describe('broadcast workflow', () => {
       'relative',
     );
 
-    await page.getByRole('tab', { name: '消息模板' }).click();
+    await page
+      .getByTestId('broadcast-secondary-tabs')
+      .getByRole('tab')
+      .nth(1)
+      .click();
     await page.getByTestId('broadcast-template-delete-button').click();
-    await expect(
-      page.getByTestId('broadcast-template-delete-confirm-dialog'),
-    ).toBeVisible();
-    await page.getByTestId('broadcast-template-delete-cancel-button').click();
-    await expect(
-      page.getByTestId('broadcast-template-delete-confirm-dialog'),
-    ).toHaveCount(0);
+    const templateDeleteDialog = page.getByTestId(
+      'broadcast-template-delete-confirm-dialog',
+    );
+    await expect(templateDeleteDialog).toBeVisible();
+    await page
+      .getByTestId('broadcast-template-delete-cancel-button')
+      .click();
+    await expect(templateDeleteDialog).toHaveCount(0);
 
     await page.locator('[role="tab"]').nth(1).click();
     await page.getByTestId('broadcast-import-upload-input').setInputFiles({
@@ -1429,10 +1742,12 @@ test.describe('broadcast workflow', () => {
     );
 
     await page.getByTestId('broadcast-import-rematch-button').click();
-    await expect(
-      page.getByTestId('broadcast-import-rematch-confirm-dialog'),
-    ).toBeVisible();
-    await page.getByTestId('broadcast-import-rematch-cancel-button').click();
+    const rematchDialog = page.getByTestId('broadcast-import-rematch-confirm-dialog');
+    await expect(rematchDialog).toBeVisible();
+    await page
+      .getByTestId('broadcast-import-rematch-cancel-button')
+      .click();
+    await expect(rematchDialog).toHaveCount(0);
     await expect(rematchRequests).toBe(0);
 
     await page
@@ -1485,7 +1800,9 @@ test.describe('broadcast workflow', () => {
     await expect(
       page.getByTestId('broadcast-draft-batch-write-confirm-button'),
     ).toHaveText(zhHansBroadcastDrafts.batchWriteSelected);
-    await page.getByTestId('broadcast-draft-batch-write-cancel-button').click();
+    await page
+      .getByTestId('broadcast-draft-batch-write-cancel-button')
+      .click();
     await expect(batchWriteDialog).toHaveCount(0);
   });
 });

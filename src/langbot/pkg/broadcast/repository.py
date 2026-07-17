@@ -412,6 +412,24 @@ class BroadcastRepository:
         )
         return self._all_models(result)
 
+    async def get_group_name(
+        self,
+        group_name_id: int,
+        *,
+        bot_uuid: str,
+        connector_id: str,
+        conn=None,
+    ):
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(persistence_broadcast.BroadcastGroupName).where(
+                persistence_broadcast.BroadcastGroupName.id == group_name_id,
+                persistence_broadcast.BroadcastGroupName.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastGroupName.connector_id == connector_id,
+            ),
+            conn=conn,
+        )
+        return self._first_model(result)
+
     async def get_group_name_by_external_conversation_id(
         self,
         *,

@@ -129,11 +129,19 @@ export interface BroadcastGroupMatchResult {
 
 export type BroadcastGroupRuleSummary = BroadcastGroupRule;
 
+export type BroadcastGroupNameSource = 'manual' | 'synced';
+
 export interface BroadcastGroupName {
   id: number;
   name: string;
   externalConversationId?: string | null;
+  source: BroadcastGroupNameSource;
   updatedAt: string;
+}
+
+export interface BroadcastGroupNameCreateResult {
+  status: 'created' | 'already_exists';
+  group: BroadcastGroupName;
 }
 
 export interface BroadcastGroupNameSyncResult {

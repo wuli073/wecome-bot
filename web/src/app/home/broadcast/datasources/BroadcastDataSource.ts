@@ -9,6 +9,7 @@ import type {
   ApiBroadcastExecutionTask,
   ApiBroadcastGroupMatchResult,
   ApiBroadcastGroupName,
+  ApiBroadcastGroupNameCreateResult,
   ApiBroadcastGroupRule,
   ApiBroadcastImportBatch,
   ApiBroadcastImportDetail,
@@ -45,6 +46,7 @@ import type {
   BroadcastDraftStatusUpdateResult,
   BroadcastGroupMatchResult,
   BroadcastGroupName,
+  BroadcastGroupNameCreateResult,
   BroadcastGroupNameSyncResult,
   BroadcastGroupRule,
   BroadcastGroupRuleDraft,
@@ -189,11 +191,23 @@ function fromApiGroupMatchResult(
 function fromApiGroupName(
   groupName: ApiBroadcastGroupName,
 ): BroadcastGroupName {
+  const externalConversationId =
+    groupName.external_conversation_id?.trim() ?? null;
   return {
     id: groupName.id,
     name: groupName.name,
-    externalConversationId: groupName.external_conversation_id ?? null,
+    externalConversationId,
+    source: externalConversationId ? 'synced' : 'manual',
     updatedAt: groupName.updated_at,
+  };
+}
+
+function fromApiGroupNameCreateResult(
+  result: ApiBroadcastGroupNameCreateResult,
+): BroadcastGroupNameCreateResult {
+  return {
+    status: result.status,
+    group: fromApiGroupName(result.group),
   };
 }
 
@@ -735,10 +749,10 @@ export interface BroadcastDataSource {
     scope: BroadcastScope,
     sourceValue: string,
   ) => Promise<BroadcastGroupMatchResult>;
-  createGroupNames: (
+  createGroupName: (
     scope: BroadcastScope,
-    names: string[],
-  ) => Promise<BroadcastGroupName[]>;
+    groupName: string,
+  ) => Promise<BroadcastGroupNameCreateResult>;
   syncGroupNames: (
     scope: BroadcastScope,
   ) => Promise<BroadcastGroupNameSyncResult>;
@@ -1104,13 +1118,13 @@ export function createBroadcastDataSource(): BroadcastDataSource {
           sourceValue,
         ),
       ),
-    createGroupNames: async (scope, names) => {
-      const response = await backendClient.createBroadcastGroupNames(
-        toApiScope(scope),
-        names,
-      );
-      return response.group_names.map(fromApiGroupName);
-    },
+    createGroupName: async (scope, groupName) =>
+      fromApiGroupNameCreateResult(
+        await backendClient.createBroadcastGroupName(
+          toApiScope(scope),
+          groupName,
+        ),
+      ),
     syncGroupNames: async (scope) =>
       await backendClient.syncBroadcastGroupNames(toApiScope(scope)),
     deleteGroupName: async (scope, groupNameId) => {

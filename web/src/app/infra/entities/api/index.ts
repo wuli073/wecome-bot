@@ -826,6 +826,11 @@ export interface ApiBroadcastGroupNamesResponse {
   group_names: ApiBroadcastGroupName[];
 }
 
+export interface ApiBroadcastGroupNameCreateResult {
+  status: 'created' | 'already_exists';
+  group: ApiBroadcastGroupName;
+}
+
 export interface ApiBroadcastGroupNameSyncResult {
   scanned: number;
   inserted: number;

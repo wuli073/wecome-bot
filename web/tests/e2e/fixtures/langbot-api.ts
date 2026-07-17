@@ -1947,7 +1947,11 @@ function mockAdapters() {
   ];
 }
 
-async function handleBackendApi(route: Route, state: LangBotApiMockState) {
+async function handleBackendApi(
+  route: Route,
+  state: LangBotApiMockState,
+  seedDefaultDrafts: boolean,
+) {
   const request = route.request();
   const url = new URL(request.url());
   const path = url.pathname;
@@ -2325,6 +2329,36 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
       const body = parseJsonBody(route);
       const bot_uuid = String(body.bot_uuid || '');
       const connector_id = String(body.connector_id || '');
+      const singleGroupName = String(body.group_name || '').trim();
+      if (singleGroupName) {
+        const existing =
+          state.broadcastGroupNames.find(
+            (item) =>
+              item.bot_uuid === bot_uuid &&
+              item.connector_id === connector_id &&
+              item.name === singleGroupName,
+          ) ?? null;
+        if (existing) {
+          return fulfillJson(route, {
+            status: 'already_exists',
+            group: existing,
+          });
+        }
+        const created = {
+          id: Number(nextId(state, 'broadcast-group-name').split('-').pop()),
+          bot_uuid,
+          connector_id,
+          name: singleGroupName,
+          external_conversation_id: null,
+          created_at: now(),
+          updated_at: now(),
+        };
+        state.broadcastGroupNames = [...state.broadcastGroupNames, created];
+        return fulfillJson(route, {
+          status: 'created',
+          group: created,
+        });
+      }
       const rawNames = Array.isArray(body.names)
         ? body.names
         : body.name
@@ -2332,6 +2366,14 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
           : [];
       const uniqueNames = Array.from(
         new Set(rawNames.map((item) => String(item).trim()).filter(Boolean)),
+      ).filter(
+        (name) =>
+          !state.broadcastGroupNames.some(
+            (item) =>
+              item.bot_uuid === bot_uuid &&
+              item.connector_id === connector_id &&
+              item.name === name,
+          ),
       );
       const created = uniqueNames.map((name) => ({
         id: Number(nextId(state, 'broadcast-group-name').split('-').pop()),
@@ -3859,7 +3901,8 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
     const seededDrafts =
       state.broadcastDrafts.length > 0
         ? state.broadcastDrafts
-        : [
+        : seedDefaultDrafts
+          ? [
             {
               id: 1,
               bot_uuid: 'bot-1',
@@ -3924,11 +3967,14 @@ async function handleBackendApi(route: Route, state: LangBotApiMockState) {
               created_at: now(),
               updated_at: now(),
             },
-          ];
-    if (state.broadcastDrafts.length === 0) {
+          ]
+          : [];
+    if (state.broadcastDrafts.length === 0 && seedDefaultDrafts) {
       state.broadcastDrafts = seededDrafts;
     }
-    const drafts = state.broadcastDrafts.filter((item) => {
+    const draftSource =
+      state.broadcastDrafts.length > 0 ? state.broadcastDrafts : seededDrafts;
+    const drafts = draftSource.filter((item) => {
       if (importBatchId && item.import_batch_id !== importBatchId) {
         return false;
       }
@@ -4535,6 +4581,7 @@ export async function installLangBotApiMocks(
     authenticated?: boolean;
     storage?: JsonRecord;
     bots?: InstallLangBotApiMockBot[];
+    seedDefaultDrafts?: boolean;
     broadcastSendEnabled?: boolean;
     broadcastExecutorCapability?: Record<string, unknown>;
     broadcastExecutorHealth?: Record<string, unknown>;
@@ -4546,6 +4593,7 @@ export async function installLangBotApiMocks(
     authenticated = false,
     storage = {},
     bots = [],
+    seedDefaultDrafts = true,
     broadcastSendEnabled = false,
     broadcastExecutorCapability,
     broadcastExecutorHealth,
@@ -4626,6 +4674,8 @@ export async function installLangBotApiMocks(
     { authenticated, storage },
   );
 
-  await page.route('**/api/v1/**', (route) => handleBackendApi(route, state));
+  await page.route('**/api/v1/**', (route) =>
+    handleBackendApi(route, state, seedDefaultDrafts),
+  );
   await page.route('https://space.langbot.app/**', handleCloudApi);
 }

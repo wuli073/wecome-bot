@@ -40,6 +40,7 @@ import type {
   BroadcastImportGroupFieldConfirmationDetails,
   BroadcastImportGroupList,
   BroadcastImportGroupRowsPage,
+  BroadcastRulesData,
   BroadcastRulesTab,
   BroadcastScope,
   BroadcastStatusFilter,
@@ -142,6 +143,10 @@ function getConnectorId(adapterConfig: object): string | null {
   return typeof connectorId === 'string' && connectorId.trim()
     ? connectorId.trim()
     : null;
+}
+
+function isSameScope(left: BroadcastScope, right: BroadcastScope): boolean {
+  return left.botUuid === right.botUuid && left.connectorId === right.connectorId;
 }
 
 function isBroadcastDatabaseBot(bot: Bot): boolean {
@@ -331,6 +336,7 @@ export default function BroadcastWorkspace() {
   const bootstrapRequestGenerationRef = useRef(0);
   const isMountedRef = useRef(true);
   const scopeRef = useRef(scope);
+  const executorHealthRef = useRef<BroadcastExecutorHealth | null>(null);
   const latestRulesRef = useRef({
     variableProfile: initialSnapshot.variableProfile,
     templates: initialSnapshot.templates,
@@ -838,21 +844,29 @@ export default function BroadcastWorkspace() {
     isMountedRef.current && generation === importRequestGenerationRef.current;
 
   const refreshExecutorState = useCallback(
-    async (nextScope?: BroadcastScope) => {
+    async (
+      nextScope?: BroadcastScope,
+      options: { showLoading?: boolean } = {},
+    ) => {
       const resolvedScope = nextScope ?? scopeRef.current;
-      setExecutorStateLoading(true);
+      const showLoading = options.showLoading ?? executorHealthRef.current == null;
+      if (showLoading) {
+        setExecutorStateLoading(true);
+      }
       try {
         const [capability, health] = await Promise.all([
           dataSource.getExecutorCapabilities(resolvedScope),
           dataSource.getExecutorHealth(resolvedScope),
         ]);
         setExecutorCapability(capability);
+        executorHealthRef.current = health;
         setExecutorHealth(health);
       } catch {
         setExecutorCapability(null);
+        executorHealthRef.current = null;
         setExecutorHealth(null);
       } finally {
-        if (isMountedRef.current) {
+        if (isMountedRef.current && showLoading) {
           setExecutorStateLoading(false);
         }
       }
@@ -860,8 +874,13 @@ export default function BroadcastWorkspace() {
     [dataSource],
   );
 
-  const refreshRules = async (nextScope: BroadcastScope = scope) => {
+  const refreshRules = async (
+    nextScope: BroadcastScope = scopeRef.current,
+  ): Promise<BroadcastRulesData> => {
     const rulesData = await dataSource.loadRulesData(nextScope);
+    if (!isMountedRef.current || !isSameScope(scopeRef.current, nextScope)) {
+      return rulesData;
+    }
     setScope(nextScope);
     setSnapshot((current) =>
       applyRulesDataToSnapshot(
@@ -870,6 +889,7 @@ export default function BroadcastWorkspace() {
         selectedImportDetailRef.current,
       ),
     );
+    return rulesData;
   };
 
   const refreshImports = async (
@@ -1367,7 +1387,7 @@ export default function BroadcastWorkspace() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      void refreshExecutorState(scope);
+      void refreshExecutorState(scope, { showLoading: false });
     }, 5000);
 
     return () => {
@@ -1675,17 +1695,30 @@ export default function BroadcastWorkspace() {
     }
   };
 
-  const runRulesMutation = async (
-    action: () => Promise<void>,
-    successMessage: string,
-  ) => {
+  const runRulesMutation = async <T,>(
+    action: () => Promise<T>,
+    options: {
+      successMessage?: string;
+      refreshScope?: BroadcastScope;
+      afterRefresh?: (result: T, rulesData: BroadcastRulesData) => void;
+    } = {},
+  ): Promise<T> => {
+    const refreshScope = options.refreshScope ?? {
+      botUuid: scope.botUuid,
+      connectorId: scope.connectorId,
+    };
+
     setRulesSaving(true);
     setRulesError(null);
 
     try {
-      await action();
-      await refreshRules();
-      toast.success(successMessage);
+      const result = await action();
+      const rulesData = await refreshRules(refreshScope);
+      options.afterRefresh?.(result, rulesData);
+      if (options.successMessage) {
+        toast.success(options.successMessage);
+      }
+      return result;
     } catch (error) {
       const message = getErrorMessage(error, t('common.error'));
       setRulesError(message);
@@ -1818,6 +1851,13 @@ export default function BroadcastWorkspace() {
       return;
     }
 
+    const resolvedNextScope: BroadcastScope = {
+      botUuid: nextScope.botUuid,
+      connectorId: nextScope.connectorId,
+    };
+    scopeRef.current = resolvedNextScope;
+    setScope(resolvedNextScope);
+
     setSelectedDraftIds([]);
     setEditingDraftId(null);
     setDraftEditorText('');
@@ -1833,11 +1873,11 @@ export default function BroadcastWorkspace() {
     setRulesLoading(true);
     setRulesError(null);
     try {
-      await refreshRules(nextScope);
-      await refreshImports(nextScope);
-      await refreshDrafts(nextScope);
-      await refreshExecutionState(nextScope);
-      await refreshExecutorState(nextScope);
+      await refreshRules(resolvedNextScope);
+      await refreshImports(resolvedNextScope);
+      await refreshDrafts(resolvedNextScope);
+      await refreshExecutionState(resolvedNextScope);
+      await refreshExecutorState(resolvedNextScope);
     } catch (error) {
       const message = getErrorMessage(error, t('common.error'));
       setRulesError(message);
@@ -1898,7 +1938,7 @@ export default function BroadcastWorkspace() {
                 onSave={(profile) =>
                   runRulesMutation(async () => {
                     await dataSource.saveVariableProfile(scope, profile);
-                  }, t('broadcast.toasts.rulesSaved'))
+                  }, { successMessage: t('broadcast.toasts.rulesSaved') })
                 }
               />
             </TabsContent>
@@ -1912,17 +1952,17 @@ export default function BroadcastWorkspace() {
                 onCreate={(draft) =>
                   runRulesMutation(async () => {
                     await dataSource.createTemplate(scope, draft);
-                  }, t('broadcast.toasts.templateSaved'))
+                  }, { successMessage: t('broadcast.toasts.templateSaved') })
                 }
                 onUpdate={(templateId, draft) =>
                   runRulesMutation(async () => {
                     await dataSource.updateTemplate(scope, templateId, draft);
-                  }, t('broadcast.toasts.templateSaved'))
+                  }, { successMessage: t('broadcast.toasts.templateSaved') })
                 }
                 onDelete={(templateId) =>
                   runRulesMutation(async () => {
                     await dataSource.deleteTemplate(scope, templateId);
-                  }, t('broadcast.toasts.templateDeleted'))
+                  }, { successMessage: t('broadcast.toasts.templateDeleted') })
                 }
                 onRenderPreview={async (payload) => {
                   const variables = snapshot.variableMappings.reduce<
@@ -2072,43 +2112,92 @@ export default function BroadcastWorkspace() {
                 onCreateRule={(draft) =>
                   runRulesMutation(async () => {
                     await dataSource.createGroupRule(scope, draft);
-                  }, t('broadcast.toasts.groupRuleSaved'))
+                  }, { successMessage: t('broadcast.toasts.groupRuleSaved') })
                 }
                 onUpdateRule={(ruleId, draft) =>
                   runRulesMutation(async () => {
                     await dataSource.updateGroupRule(scope, ruleId, draft);
-                  }, t('broadcast.toasts.groupRuleSaved'))
+                  }, { successMessage: t('broadcast.toasts.groupRuleSaved') })
                 }
                 onDeleteRule={(ruleId) =>
                   runRulesMutation(async () => {
                     await dataSource.deleteGroupRule(scope, ruleId);
-                  }, t('broadcast.toasts.groupRuleDeleted'))
+                  }, { successMessage: t('broadcast.toasts.groupRuleDeleted') })
                 }
                 onMatchRule={(sourceValue) =>
                   dataSource.matchGroupRule(scope, sourceValue)
                 }
-                onCreateGroupNames={(names) =>
-                  runRulesMutation(async () => {
-                    await dataSource.createGroupNames(scope, names);
-                  }, t('broadcast.toasts.groupNamesSaved'))
-                }
-                onSyncGroupNames={() =>
-                  runRulesMutation(async () => {
-                    const result = await dataSource.syncGroupNames(scope);
-                    toast.success(
-                      t('broadcast.toasts.groupNamesSynced', {
-                        scanned: result.scanned,
-                        inserted: result.inserted,
-                        updated: result.updated,
-                        unchanged: result.unchanged,
-                      }),
-                    );
-                  }, t('broadcast.toasts.groupNamesSaved'))
-                }
+                onCreateGroupName={(groupName) => {
+                  const mutationScope: BroadcastScope = {
+                    botUuid: scope.botUuid,
+                    connectorId: scope.connectorId,
+                  };
+                  return runRulesMutation(
+                    async () =>
+                      await dataSource.createGroupName(mutationScope, groupName),
+                    {
+                      refreshScope: mutationScope,
+                      afterRefresh: (result, rulesData) => {
+                        if (!isSameScope(scopeRef.current, mutationScope)) {
+                          return;
+                        }
+                        const persistedGroup =
+                          rulesData.groupNames.find(
+                            (item) => item.id === result.group.id,
+                          ) ?? null;
+                        if (!persistedGroup) {
+                          throw new Error(
+                            t('broadcast.toasts.groupNameReloadMissing', {
+                              name: result.group.name,
+                            }),
+                          );
+                        }
+                        if (result.status === 'created') {
+                          toast.success(
+                            t('broadcast.toasts.groupNameAdded', {
+                              name: persistedGroup.name,
+                            }),
+                          );
+                          return;
+                        }
+                        toast.error(
+                          t('broadcast.toasts.groupNameExists', {
+                            name: persistedGroup.name,
+                          }),
+                        );
+                      },
+                    },
+                  );
+                }}
+                onSyncGroupNames={async () => {
+                  const mutationScope: BroadcastScope = {
+                    botUuid: scope.botUuid,
+                    connectorId: scope.connectorId,
+                  };
+                  await runRulesMutation(
+                    async () => await dataSource.syncGroupNames(mutationScope),
+                    {
+                      refreshScope: mutationScope,
+                      afterRefresh: (result) => {
+                        if (!isSameScope(scopeRef.current, mutationScope)) {
+                          return;
+                        }
+                        toast.success(
+                          t('broadcast.toasts.groupNamesSynced', {
+                            scanned: result.scanned,
+                            inserted: result.inserted,
+                            updated: result.updated,
+                            unchanged: result.unchanged,
+                          }),
+                        );
+                      },
+                    },
+                  );
+                }}
                 onDeleteGroupName={(groupNameId) =>
                   runRulesMutation(async () => {
                     await dataSource.deleteGroupName(scope, groupNameId);
-                  }, t('broadcast.toasts.groupNameDeleted'))
+                  }, { successMessage: t('broadcast.toasts.groupNameDeleted') })
                 }
               />
             </TabsContent>

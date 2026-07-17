@@ -680,8 +680,8 @@ class TestBroadcastApi:
 
         assert response.status_code == 200
         assert payload['data']['target_conversation_name'] == 'Acme Manual Group'
-        assert payload['data']['target_conversation_id'] is None
-        assert payload['data']['target_resolution_status'] == 'deferred'
+        assert payload['data']['target_conversation_id'] == 'group-acme-manual'
+        assert payload['data']['target_resolution_status'] == 'resolved'
 
     @pytest.mark.asyncio
     async def test_group_rule_marks_a_manual_target_name_as_ambiguous_when_multiple_groups_share_it(
@@ -719,8 +719,99 @@ class TestBroadcastApi:
 
         assert response.status_code == 200
         assert payload['data']['target_conversation_name'] == 'Acme Manual Group'
-        assert payload['data']['target_conversation_id'] is None
-        assert payload['data']['target_resolution_status'] == 'deferred'
+        assert payload['data']['target_conversation_id'] == 'group-acme-1'
+        assert payload['data']['target_resolution_status'] == 'resolved'
+
+
+    @pytest.mark.asyncio
+    async def test_manual_group_sync_merges_into_one_row_and_rule_reload_uses_stable_id(
+        self,
+        quart_test_client,
+        fake_broadcast_app,
+    ):
+        from langbot.pkg.entity.persistence import database_mode as persistence_database_mode
+        async with fake_broadcast_app.persistence_mgr.get_db_engine().begin() as conn:
+            await fake_broadcast_app.persistence_mgr.execute_async(
+                sqlalchemy.insert(persistence_database_mode.DatabaseConversation).values(
+                    {
+                        'connector_id': 'wxwork-local',
+                        'source': 'wxwork',
+                        'external_conversation_id': 'group-manual-1',
+                        'conversation_name': 'Xiaoman Manual Group',
+                        'conversation_type': 'group',
+                    }
+                ),
+                conn=conn,
+            )
+        create_group_response = await quart_test_client.post(
+            '/api/v1/broadcast/group-names',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_name': 'Xiaoman Manual Group',
+            },
+        )
+        create_group_payload = (await create_group_response.get_json())['data']
+        assert create_group_response.status_code == 200
+        assert create_group_payload['status'] == 'created'
+        manual_group_id = create_group_payload['group']['id']
+
+        create_rule_response = await quart_test_client.post(
+            '/api/v1/broadcast/group-rules',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'source_value': 'Manual Customer',
+                'match_type': 'exact',
+                'match_expression': 'Manual Customer',
+                'target_conversation_name': 'Xiaoman Manual Group',
+                'target_conversation_id': '',
+                'priority': 10,
+                'enabled': True,
+            },
+        )
+        create_rule_payload = (await create_rule_response.get_json())['data']
+        assert create_rule_response.status_code == 200
+        assert create_rule_payload['target_conversation_id'] is None
+        assert create_rule_payload['target_resolution_status'] == 'deferred'
+
+        sync_response = await quart_test_client.post(
+            f'/api/v1/broadcast/group-names/sync?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        sync_payload = (await sync_response.get_json())['data']
+        assert sync_response.status_code == 200
+        assert sync_payload == {
+            'scanned': 2,
+            'inserted': 1,
+            'updated': 1,
+            'unchanged': 0,
+            'skipped': 1,
+            'errors': [],
+        }
+
+        list_names_response = await quart_test_client.get(
+            f'/api/v1/broadcast/group-names?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        list_names_payload = (await list_names_response.get_json())['data']
+        xiaoman_names = [item for item in list_names_payload if item['name'] == 'Xiaoman Manual Group']
+        assert list_names_response.status_code == 200
+        assert len(xiaoman_names) == 1
+        assert xiaoman_names[0]['id'] == manual_group_id
+        assert xiaoman_names[0]['external_conversation_id'] == 'group-manual-1'
+
+        list_rules_response = await quart_test_client.get(
+            f'/api/v1/broadcast/group-rules?{_query_scope()}',
+            headers=_auth_headers(),
+        )
+        list_rules_payload = (await list_rules_response.get_json())['data']
+        assert list_rules_response.status_code == 200
+        assert list_rules_payload[0]['target_conversation_name'] == 'Xiaoman Manual Group'
+        assert list_rules_payload[0]['target_conversation_id'] == 'group-manual-1'
+        assert list_rules_payload[0]['target_resolution_status'] == 'resolved'
 
     @pytest.mark.asyncio
     async def test_generate_selected_group_drafts_rejects_unresolved_manual_target_name(
@@ -2238,13 +2329,73 @@ class TestBroadcastApi:
         updated_rule = (await update_rule_response.get_json())['data']
         assert updated_rule['enabled'] is False
 
+        create_single_name_response = await quart_test_client.post(
+            '/api/v1/broadcast/group-names',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_name': '  Acme Group  ',
+            },
+        )
+        create_single_name_payload = (await create_single_name_response.get_json())['data']
+        assert create_single_name_response.status_code == 200
+        assert create_single_name_payload['status'] == 'created'
+        assert create_single_name_payload['group']['name'] == 'Acme Group'
+        manual_group_id = create_single_name_payload['group']['id']
+
+        create_single_name_duplicate_response = await quart_test_client.post(
+            '/api/v1/broadcast/group-names',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_name': 'Acme Group',
+            },
+        )
+        create_single_name_duplicate_payload = (
+            await create_single_name_duplicate_response.get_json()
+        )['data']
+        assert create_single_name_duplicate_response.status_code == 200
+        assert create_single_name_duplicate_payload['status'] == 'already_exists'
+        assert create_single_name_duplicate_payload['group']['id'] == manual_group_id
+
+        blank_group_name_response = await quart_test_client.post(
+            '/api/v1/broadcast/group-names',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_name': '   ',
+            },
+        )
+        blank_group_name_payload = await blank_group_name_response.get_json()
+        assert blank_group_name_response.status_code == 400
+        assert blank_group_name_payload['msg'] == 'BATCH_VALIDATION_FAILED'
+
+        other_scope_group_name_response = await quart_test_client.post(
+            '/api/v1/broadcast/group-names',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-2',
+                'connector_id': 'wxwork-other',
+                'group_name': 'Acme Group',
+            },
+        )
+        other_scope_group_name_payload = (
+            await other_scope_group_name_response.get_json()
+        )['data']
+        assert other_scope_group_name_response.status_code == 200
+        assert other_scope_group_name_payload['status'] == 'created'
+        assert other_scope_group_name_payload['group']['name'] == 'Acme Group'
+
         create_names_response = await quart_test_client.post(
             '/api/v1/broadcast/group-names',
             headers=_auth_headers(),
             json={
                 'bot_uuid': 'bot-1',
                 'connector_id': 'wxwork-local',
-                'names': [' Acme Group ', 'Acme Group', 'Northwind Group'],
+                'names': [' Northwind Group ', 'Northwind Group'],
             },
         )
         create_names_payload = (await create_names_response.get_json())['data']
@@ -2259,7 +2410,7 @@ class TestBroadcastApi:
             json={
                 'bot_uuid': 'bot-1',
                 'connector_id': 'wxwork-local',
-                'name': 'Acme Group',
+                'name': 'Northwind Group',
             },
         )
         duplicate_name_payload = await duplicate_name_response.get_json()
@@ -2291,9 +2442,26 @@ class TestBroadcastApi:
             'Northwind Group',
             '小满',
         ]
-        assert next(
+        synced_group = next(
             item for item in synced_names_payload if item['name'] == '小满'
-        )['external_conversation_id'] == 'group-1'
+        )
+        assert synced_group['external_conversation_id'] == 'group-1'
+
+        create_synced_name_duplicate_response = await quart_test_client.post(
+            '/api/v1/broadcast/group-names',
+            headers=_auth_headers(),
+            json={
+                'bot_uuid': 'bot-1',
+                'connector_id': 'wxwork-local',
+                'group_name': '小满',
+            },
+        )
+        create_synced_name_duplicate_payload = (
+            await create_synced_name_duplicate_response.get_json()
+        )['data']
+        assert create_synced_name_duplicate_response.status_code == 200
+        assert create_synced_name_duplicate_payload['status'] == 'already_exists'
+        assert create_synced_name_duplicate_payload['group']['id'] == synced_group['id']
 
         list_names_response = await quart_test_client.get(
             f'/api/v1/broadcast/group-names?{_query_scope()}',
