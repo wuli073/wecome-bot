@@ -72,6 +72,13 @@ Add-Result 'health' $(if ($health -and $health.code -eq 0) {'pass'} else {'fail'
 Add-Result 'runtime' $(if ($runtime -and $runtime.state -in @('CORE_READY', 'READY', 'DEGRADED')) {'pass'} else {'fail'}) $(if ($runtime) { "state=$($runtime.state)" } else { 'endpoint unavailable' })
 Add-Result 'ready' $(if ($ready -and $ready.state -in @('CORE_READY', 'READY', 'DEGRADED')) {'pass'} else {'fail'}) $(if ($ready) { "state=$($ready.state)" } else { 'endpoint unavailable' })
 
+$broadcastWorker = Get-ManagedSourceStateProperty -Object $runtime -Name 'broadcast'
+$broadcastSchemaReady = (Get-ManagedSourceStateProperty -Object $broadcastWorker -Name 'broadcast_schema_ready') -eq $true
+$broadcastRecoveryReady = (Get-ManagedSourceStateProperty -Object $broadcastWorker -Name 'broadcast_recovery_completed') -eq $true
+$broadcastWorkerRunning = (Get-ManagedSourceStateProperty -Object $broadcastWorker -Name 'broadcast_worker_running') -eq $true
+$broadcastWorkerState = Get-ManagedSourceStateProperty -Object $broadcastWorker -Name 'broadcast_worker_state'
+$broadcastWorkerReady = $broadcastSchemaReady -and $broadcastRecoveryReady -and $broadcastWorkerRunning
+Add-Result 'broadcast-worker' $(if ($broadcastWorkerReady) {'pass'} else {'fail'}) $(if ($broadcastWorker) { "state=$broadcastWorkerState; schema=$broadcastSchemaReady; recovery=$broadcastRecoveryReady; running=$broadcastWorkerRunning" } else { 'runtime status does not include broadcast worker readiness' })
 $desktopRuntimeResponse = Test-HttpJson '/api/v1/desktop-automation/runtime/status'
 $runtimeData = Get-ManagedSourceStateProperty -Object $desktopRuntimeResponse -Name 'data'
 $desktopRuntime = if ($null -ne $runtimeData) { $runtimeData } else { $desktopRuntimeResponse }

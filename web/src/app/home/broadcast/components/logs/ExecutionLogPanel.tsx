@@ -320,7 +320,7 @@ export default function ExecutionLogPanel({
 
   const canRunLatestPasteBatch =
     latestBatch?.mode === 'paste_only' ? pasteExecutionAvailable : true;
-  const batchActions = getExecutionBatchActionVisibility(latestBatch);
+  const batchActions = latestBatch?.allowedActions ?? getExecutionBatchActionVisibility(latestBatch);
   const retryableTasks = getRetryableExecutionTasks(latestBatch);
   const canStart =
     Boolean(onStartBatch) && batchActions.start && canRunLatestPasteBatch;
@@ -477,10 +477,13 @@ export default function ExecutionLogPanel({
                   {t('broadcast.logs.batchSummary', {
                     status: t(getExecutionBatchStatusKey(latestBatch.status)),
                     mode: latestBatch.mode,
+                    total: latestBatch.totalTasks,
                     pending: latestBatch.pendingTasks,
                     running: latestBatch.runningTasks,
                     succeeded: latestBatch.succeededTasks,
+                    warning: latestBatch.warningTasks ?? 0,
                     failed: latestBatch.failedTasks,
+                    unknown: latestBatch.unknownTasks ?? 0,
                     cancelled: latestBatch.cancelledTasks,
                     interrupted: latestBatch.interruptedTasks,
                   })}

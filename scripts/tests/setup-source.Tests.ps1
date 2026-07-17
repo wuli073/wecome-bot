@@ -261,3 +261,14 @@ Describe 'source setup Desktop Runtime contract' {
         $formattedFailure | Should Match 'C:\\fixture\\backup'
     }
 }
+
+Describe 'managed backend update guard' {
+    It 'checks the current user-data root before setup changes dependencies or runtime files' {
+        $content = [IO.File]::ReadAllText($scriptPath)
+        $content | Should Match '\[string\]\$UserDataRoot'
+        $content | Should Match 'LANGBOT_DATA_ROOT'
+        $content | Should Match 'function Assert-ManagedSourceBackendStopped'
+        $content | Should Match 'SETUP_SOURCE_BACKEND_RUNNING'
+        $content | Should Match 'Assert-ManagedSourceBackendStopped\s*\r?\n\s*\$script:setupStage = ''source-prerequisites'''
+    }
+}

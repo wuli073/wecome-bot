@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -184,6 +185,30 @@ async def test_application_shutdown_does_not_touch_worker_private_runner_task():
 
     assert stop_calls == ['stop']
     assert ap.broadcast_execution_worker._runner_task is private_runner
+
+
+async def test_application_initialize_starts_broadcast_worker_once_after_runtime_service_exists():
+    ap = _make_application()
+    worker = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+    ap.broadcast_execution_worker = worker
+    ap.desktop_automation_service = SimpleNamespace()
+
+    await ap.initialize()
+    await ap.initialize()
+
+    worker.start.assert_awaited_once()
+
+
+async def test_application_initialize_explicitly_disables_broadcast_worker(monkeypatch):
+    ap = _make_application()
+    worker = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+    ap.broadcast_execution_worker = worker
+    ap.desktop_automation_service = SimpleNamespace()
+    monkeypatch.setenv('LANGBOT_DISABLE_BROADCAST_WORKER', '1')
+
+    await ap.initialize()
+
+    worker.start.assert_not_awaited()
 
 
 async def test_runtime_prewarm_is_scheduled_as_application_task_when_enabled():

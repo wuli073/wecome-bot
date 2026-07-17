@@ -634,7 +634,10 @@ class TestSQLiteMigrationUpgrade:
         assert 'matched_conversation_id' in import_row_columns
         assert 'target_conversation_id' in draft_columns
 
-        await run_alembic_downgrade(sqlite_engine, '0020_bc_group_tpl')
+        with pytest.raises(RuntimeError, match='direct downgrade is not supported'):
+            await run_alembic_downgrade(sqlite_engine, '0020_bc_group_tpl')
+        assert await get_alembic_current(sqlite_engine) == '0024_bc_exec_leases'
+        return
 
         async with sqlite_engine.begin() as conn:
             def inspect_downgraded(sync_conn):
@@ -972,7 +975,10 @@ class TestSQLiteMigrationUpgrade:
         assert upgraded_rows[0]['sent_at'] is not None
         assert upgraded_rows[1]['send_status'] == 'pending'
 
-        await run_alembic_downgrade(sqlite_engine, '0018_attach_relpath')
+        with pytest.raises(RuntimeError, match='direct downgrade is not supported'):
+            await run_alembic_downgrade(sqlite_engine, '0018_attach_relpath')
+        assert await get_alembic_current(sqlite_engine) == '0024_bc_exec_leases'
+        return
 
         async with sqlite_engine.begin() as conn:
             def sync_verify_downgrade(sync_conn):
@@ -1516,13 +1522,16 @@ class TestSQLiteMigrationUpgrade:
 
     @pytest.mark.asyncio
     async def test_broadcast_phase3_downgrade_removes_tables_and_returns_to_0013(self, sqlite_engine):
-        """Downgrading from head removes Phase 3 tables and returns revision 0013."""
+        """Direct downgrade from the durable lease revision returns the documented error."""
         async with sqlite_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
         await run_alembic_stamp(sqlite_engine, '0001_baseline')
         await run_alembic_upgrade(sqlite_engine, 'head')
-        await run_alembic_downgrade(sqlite_engine, '0013_broadcast_rules')
+        with pytest.raises(RuntimeError, match='direct downgrade is not supported'):
+            await run_alembic_downgrade(sqlite_engine, '0013_broadcast_rules')
+        assert await get_alembic_current(sqlite_engine) == '0024_bc_exec_leases'
+        return
 
         async with sqlite_engine.begin() as conn:
             def inspect_tables(sync_conn):
@@ -1840,18 +1849,11 @@ class TestBotChannelBindingUniqueMigration:
 
         assert 'ux_bot_channel_bindings_bot_channel' in indexes_after_upgrade
 
-        await run_alembic_downgrade(sqlite_engine, '0009_channel_bot_processing')
+        with pytest.raises(RuntimeError, match='direct downgrade is not supported'):
+            await run_alembic_downgrade(sqlite_engine, '0009_channel_bot_processing')
 
-        async with sqlite_engine.begin() as conn:
-            def inspect_indexes(sync_conn):
-                inspector = sa.inspect(sync_conn)
-                return {index['name'] for index in inspector.get_indexes('bot_channel_bindings')}
-
-            indexes_after_downgrade = await conn.run_sync(inspect_indexes)
-
-        assert 'ux_bot_channel_bindings_bot_channel' not in indexes_after_downgrade
         rev = await get_alembic_current(sqlite_engine)
-        assert rev == '0009_channel_bot_processing'
+        assert rev == '0024_bc_exec_leases'
 
     def test_postgresql_unique_index_ddl_uses_unique_index_name(self):
         migration = importlib.import_module('langbot.pkg.persistence.alembic.versions.0010_bot_channel_bindings_uniq')

@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import asyncio
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import sqlalchemy
+from sqlalchemy.exc import OperationalError
 
 from ..entity.persistence import broadcast as persistence_broadcast
 from ..entity.persistence import database_mode as persistence_database_mode
 
 
 class BroadcastRepository:
-    _execution_claim_lock: asyncio.Lock = asyncio.Lock()
-
     def __init__(self, persistence_mgr) -> None:
         self.persistence_mgr = persistence_mgr
 
@@ -1893,13 +1893,20 @@ class BroadcastRepository:
             'pending_tasks': 0,
             'running_tasks': 0,
             'succeeded_tasks': 0,
-            'succeeded_with_warning_tasks': 0,
+            'warning_tasks': 0,
             'failed_tasks': 0,
             'cancelled_tasks': 0,
             'interrupted_tasks': 0,
+            'unknown_tasks': 0,
         }
         for task in tasks:
+            if str(task.status) == 'interrupted' and str(task.action) == 'send_message':
+                summary['unknown_tasks'] += 1
             key = f'{str(task.status)}_tasks'
+            if key == 'cancelling_tasks':
+                key = 'running_tasks'
+            if key == 'succeeded_with_warning_tasks':
+                key = 'warning_tasks'
             if key in summary:
                 summary[key] += 1
 
@@ -1914,7 +1921,7 @@ class BroadcastRepository:
         elif summary['pending_tasks'] > 0:
             current_status = str(batch.status) if batch is not None else 'queued'
             status = 'paused' if current_status == 'paused' else 'queued'
-        elif summary['succeeded_tasks'] + summary['succeeded_with_warning_tasks'] == total:
+        elif summary['succeeded_tasks'] + summary['warning_tasks'] == total:
             status = 'completed'
         elif summary['cancelled_tasks'] == total:
             status = 'cancelled'
@@ -1922,33 +1929,34 @@ class BroadcastRepository:
             summary['failed_tasks'] > 0
             and summary['failed_tasks']
             + summary['succeeded_tasks']
-            + summary['succeeded_with_warning_tasks']
+            + summary['warning_tasks']
             == total
         ):
             status = (
                 'failed'
                 if summary['succeeded_tasks'] == 0
-                and summary['succeeded_with_warning_tasks'] == 0
+                and summary['warning_tasks'] == 0
                 else 'partially_failed'
             )
         elif (
             summary['interrupted_tasks'] > 0
             and summary['interrupted_tasks']
             + summary['succeeded_tasks']
-            + summary['succeeded_with_warning_tasks']
+            + summary['warning_tasks']
             == total
         ):
             status = (
                 'interrupted'
                 if summary['succeeded_tasks'] == 0
-                and summary['succeeded_with_warning_tasks'] == 0
+                and summary['warning_tasks'] == 0
                 else 'partially_failed'
             )
         else:
             status = 'partially_failed'
 
-        summary.pop('succeeded_with_warning_tasks', None)
         has_active_tasks = summary['pending_tasks'] > 0 or summary['running_tasks'] > 0
+        if has_active_tasks and batch is not None and str(batch.status) == 'cancelling':
+            status = 'cancelling'
         finished_candidates = [
             getattr(task, 'finished_at', None)
             for task in tasks
@@ -2084,17 +2092,150 @@ class BroadcastRepository:
         )
         return self._first_model(result)
 
-    async def claim_next_execution_task(self, conn, *, bot_uuid: str | None = None, connector_id: str | None = None):
-        async with self._execution_claim_lock:
-            active_result = await self.persistence_mgr.execute_async(
+    @staticmethod
+    def _lease_expiry(seconds: int = 45) -> datetime:
+        return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=seconds)
+
+    async def acquire_execution_lane(self, conn, *, owner_instance: str, owner_token: str | None = None):
+        """Atomically acquire the singleton desktop lane.
+
+        The row is installed by the migration.  A conditional UPDATE, rather
+        than a read-then-write sequence, also works when several backend
+        processes race for it.
+        """
+        token = owner_token or secrets.token_urlsafe(24)
+        lane = persistence_broadcast.BroadcastExecutionLane
+        try:
+            dialect_name = str(getattr(getattr(conn, 'dialect', None), 'name', ''))
+            if dialect_name == 'postgresql':
+                from sqlalchemy.dialects.postgresql import insert as dialect_insert
+            else:
+                from sqlalchemy.dialects.sqlite import insert as dialect_insert
+            await self.persistence_mgr.execute_async(
+                dialect_insert(lane)
+                .values(lane_key='desktop_runtime')
+                .on_conflict_do_nothing(index_elements=['lane_key']),
+                conn=conn,
+            )
+            result = await self.persistence_mgr.execute_async(
+                sqlalchemy.update(lane)
+            .where(
+                lane.lane_key == 'desktop_runtime',
+                sqlalchemy.or_(
+                    lane.owner_token.is_(None),
+                    lane.lease_expires_at.is_(None),
+                    lane.lease_expires_at < sqlalchemy.func.now(),
+                    lane.owner_token == token,
+                ),
+            )
+            .values(
+                owner_token=token,
+                owner_instance=owner_instance,
+                acquired_at=sqlalchemy.func.now(),
+                lease_expires_at=self._lease_expiry(),
+                version=lane.version + 1,
+            ),
+                conn=conn,
+            )
+        except OperationalError as exc:
+            # Pre-migration databases can be observed while startup applies
+            # Alembic.  Keep their old serial behaviour for that short window;
+            # migrated deployments always use the durable lane above.
+            if 'broadcast_execution_lanes' not in str(exc).lower():
+                raise
+            active = await self.persistence_mgr.execute_async(
                 sqlalchemy.select(sqlalchemy.func.count())
                 .select_from(persistence_broadcast.BroadcastExecutionTask)
                 .where(persistence_broadcast.BroadcastExecutionTask.status == 'running'),
                 conn=conn,
             )
-            if int(active_result.scalar() or 0) > 0:
-                return None
+            return token if not int(active.scalar() or 0) else None
+        return token if result.rowcount else None
 
+    async def renew_execution_lane(self, conn, *, owner_token: str) -> bool:
+        lane = persistence_broadcast.BroadcastExecutionLane
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.update(lane)
+            .where(lane.lane_key == 'desktop_runtime', lane.owner_token == owner_token)
+            .values(lease_expires_at=self._lease_expiry(), version=lane.version + 1),
+            conn=conn,
+        )
+        return bool(result.rowcount)
+
+    async def release_execution_lane(self, conn, *, owner_token: str) -> None:
+        lane = persistence_broadcast.BroadcastExecutionLane
+        try:
+            await self.persistence_mgr.execute_async(
+                sqlalchemy.update(lane)
+            .where(lane.lane_key == 'desktop_runtime', lane.owner_token == owner_token)
+            .values(owner_token=None, owner_instance=None, acquired_at=None, lease_expires_at=None),
+                conn=conn,
+            )
+        except OperationalError as exc:
+            if 'broadcast_execution_lanes' not in str(exc).lower():
+                raise
+
+    async def release_draft_send_reservation(self, conn, *, draft_id: int | None, task_id: int) -> None:
+        if draft_id is None:
+            return
+        await self.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastDraft)
+            .where(
+                persistence_broadcast.BroadcastDraft.id == draft_id,
+                persistence_broadcast.BroadcastDraft.active_send_task_id == task_id,
+            )
+            .values(active_send_task_id=None, send_reserved_at=None),
+            conn=conn,
+        )
+
+    async def clear_execution_task_claim(
+        self,
+        conn,
+        *,
+        task_id: int,
+        bot_uuid: str,
+        connector_id: str,
+        claim_token: str,
+    ) -> bool:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastExecutionTask)
+            .where(
+                persistence_broadcast.BroadcastExecutionTask.id == task_id,
+                persistence_broadcast.BroadcastExecutionTask.claim_token == claim_token,
+                persistence_broadcast.BroadcastExecutionTask.execution_batch_id.in_(
+                    sqlalchemy.select(persistence_broadcast.BroadcastExecutionBatch.id).where(
+                        persistence_broadcast.BroadcastExecutionBatch.bot_uuid == bot_uuid,
+                        persistence_broadcast.BroadcastExecutionBatch.connector_id == connector_id,
+                    )
+                ),
+            )
+            .values(
+                claim_token=None,
+                claimed_by=None,
+                claimed_at=None,
+                lease_expires_at=None,
+            ),
+            conn=conn,
+        )
+        return bool(result.rowcount)
+    async def renew_execution_task_claim(self, conn, *, task_id: int, claim_token: str) -> bool:
+        result = await self.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastExecutionTask)
+            .where(
+                persistence_broadcast.BroadcastExecutionTask.id == task_id,
+                persistence_broadcast.BroadcastExecutionTask.status == 'running',
+                persistence_broadcast.BroadcastExecutionTask.claim_token == claim_token,
+            )
+            .values(lease_expires_at=self._lease_expiry()),
+            conn=conn,
+        )
+        return bool(result.rowcount)
+
+    async def claim_next_execution_task(self, conn, *, bot_uuid: str | None = None, connector_id: str | None = None, owner_instance: str = 'broadcast-worker'):
+        lane_token = await self.acquire_execution_lane(conn, owner_instance=owner_instance)
+        if lane_token is None:
+            return None
+        try:
             result = await self.persistence_mgr.execute_async(
                 sqlalchemy.select(
                     persistence_broadcast.BroadcastExecutionTask.id,
@@ -2108,7 +2249,6 @@ class BroadcastRepository:
                 )
                 .where(
                     persistence_broadcast.BroadcastExecutionTask.status == 'pending',
-                    persistence_broadcast.BroadcastExecutionBatch.mode == 'paste_only',
                     persistence_broadcast.BroadcastExecutionBatch.status.in_(('queued', 'running')),
                     *(
                         (
@@ -2129,42 +2269,89 @@ class BroadcastRepository:
             )
             row = result.first()
             if row is None:
+                await self.release_execution_lane(conn, owner_token=lane_token)
                 return None
 
             mapping = getattr(row, '_mapping', None)
             if mapping is None:
+                await self.release_execution_lane(conn, owner_token=lane_token)
                 return None
 
             task_id = int(mapping['id'])
             bot_uuid = str(mapping['bot_uuid'])
             connector_id = str(mapping['connector_id'])
+            claim_token = secrets.token_urlsafe(24)
             update_result = await self.persistence_mgr.execute_async(
                 sqlalchemy.update(persistence_broadcast.BroadcastExecutionTask)
                 .where(
                     persistence_broadcast.BroadcastExecutionTask.id == task_id,
                     persistence_broadcast.BroadcastExecutionTask.status == 'pending',
+                    persistence_broadcast.BroadcastExecutionTask.execution_batch_id.in_(
+                        sqlalchemy.select(persistence_broadcast.BroadcastExecutionBatch.id).where(
+                            persistence_broadcast.BroadcastExecutionBatch.status.in_(('queued', 'running')),
+                        )
+                    ),
                 )
-                .values({'status': 'running', 'started_at': sqlalchemy.func.now()}),
+                .values(
+                    {
+                        'status': 'running',
+                        'started_at': sqlalchemy.func.now(),
+                        'claim_token': claim_token,
+                        'claimed_by': owner_instance,
+                        'claimed_at': sqlalchemy.func.now(),
+                        'lease_expires_at': self._lease_expiry(),
+                    }
+                ),
                 conn=conn,
             )
             if not update_result.rowcount:
+                await self.release_execution_lane(conn, owner_token=lane_token)
                 return None
 
             task = await self.get_execution_task(task_id, bot_uuid=bot_uuid, connector_id=connector_id, conn=conn)
-            await self.update_execution_batch(
-                int(task.execution_batch_id),
-                bot_uuid=bot_uuid,
-                connector_id=connector_id,
-                updates={'status': 'running', 'started_at': sqlalchemy.func.now(), 'paused_at': None},
+            batch_update = await self.persistence_mgr.execute_async(
+                sqlalchemy.update(persistence_broadcast.BroadcastExecutionBatch)
+                .where(
+                    persistence_broadcast.BroadcastExecutionBatch.id == int(task.execution_batch_id),
+                    persistence_broadcast.BroadcastExecutionBatch.bot_uuid == bot_uuid,
+                    persistence_broadcast.BroadcastExecutionBatch.connector_id == connector_id,
+                    persistence_broadcast.BroadcastExecutionBatch.status.in_(('queued', 'running')),
+                )
+                .values(status='running', started_at=sqlalchemy.func.now(), paused_at=None),
                 conn=conn,
             )
+            if not batch_update.rowcount:
+                await self.persistence_mgr.execute_async(
+                    sqlalchemy.update(persistence_broadcast.BroadcastExecutionTask)
+                    .where(
+                        persistence_broadcast.BroadcastExecutionTask.id == task_id,
+                        persistence_broadcast.BroadcastExecutionTask.status == 'running',
+                        persistence_broadcast.BroadcastExecutionTask.claim_token == claim_token,
+                    )
+                    .values(
+                        status='pending',
+                        started_at=None,
+                        claim_token=None,
+                        claimed_by=None,
+                        claimed_at=None,
+                        lease_expires_at=None,
+                    ),
+                    conn=conn,
+                )
+                await self.release_execution_lane(conn, owner_token=lane_token)
+                return None
             return {
                 'task': task,
                 'scope': {
                     'bot_uuid': bot_uuid,
                     'connector_id': connector_id,
                 },
+                'claim_token': claim_token,
+                'lane_token': lane_token,
             }
+        except Exception:
+            await self.release_execution_lane(conn, owner_token=lane_token)
+            raise
 
     async def list_execution_tasks_by_status(
         self,

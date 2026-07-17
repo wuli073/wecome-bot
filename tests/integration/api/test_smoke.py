@@ -264,6 +264,13 @@ class TestHealthEndpoint:
         fake_api_app.session_id = 'test-session'
         fake_api_app.build_id = 'test-build'
         fake_api_app.runtime_failure_code = 'optional-service'
+        fake_api_app.broadcast_execution_worker = Mock()
+        fake_api_app.broadcast_execution_worker.health_snapshot.return_value = {
+            'broadcast_schema_ready': True,
+            'broadcast_recovery_completed': True,
+            'broadcast_worker_state': 'running',
+            'broadcast_worker_running': True,
+        }
 
         health = await quart_test_client.get('/healthz')
         runtime = await quart_test_client.get('/api/v1/system/runtime/status')
@@ -279,6 +286,7 @@ class TestHealthEndpoint:
             'buildId': 'test-build',
         }
         assert runtime.status_code == 200
+        assert (await runtime.get_json())['broadcast']['broadcast_worker_state'] == 'running'
         assert await runtime.get_json() == {
             'state': 'DEGRADED',
             'phase': 'DEGRADED',
@@ -288,6 +296,12 @@ class TestHealthEndpoint:
             'failureCode': 'optional-service',
             'sessionId': 'test-session',
             'buildId': 'test-build',
+            'broadcast': {
+                'broadcast_schema_ready': True,
+                'broadcast_recovery_completed': True,
+                'broadcast_worker_state': 'running',
+                'broadcast_worker_running': True,
+            },
         }
         assert ready.status_code == 200
         assert (await ready.get_json())['state'] == 'DEGRADED'

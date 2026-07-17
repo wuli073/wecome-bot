@@ -384,6 +384,21 @@ class _QueuedRuntimeClient:
         return self.responses.pop(0)
 
 
+async def _run_broadcast_worker_until_idle(fake_broadcast_app) -> None:
+    while await fake_broadcast_app.broadcast_service.run_next_execution_task():
+        continue
+
+
+async def _get_execution_batch_detail(quart_test_client, batch_id: int) -> dict[str, object]:
+    response = await quart_test_client.get(
+        f'/api/v1/broadcast/executions/{batch_id}?{_query_scope()}',
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 200
+    payload = await response.get_json()
+    return payload['data']
+
+
 async def _create_ready_drafts(
     quart_test_client,
     *,
@@ -4413,7 +4428,7 @@ class TestBroadcastApi:
         start_payload = await start_response.get_json()
 
         assert start_response.status_code == 200
-        assert start_payload['data']['status'] == 'succeeded'
+        assert start_payload['data']['status'] == 'succeeded_with_warning'
         assert start_payload['data']['retry_allowed'] is False
 
         attempts_response = await quart_test_client.get(
@@ -4421,7 +4436,7 @@ class TestBroadcastApi:
             headers=_auth_headers(),
         )
         attempts_payload = await attempts_response.get_json()
-        assert attempts_payload['data'][0]['status'] == 'succeeded'
+        assert attempts_payload['data'][0]['status'] == 'succeeded_with_warning'
 
         evidence_response = await quart_test_client.get(
             f"/api/v1/broadcast/execution-attempts/{attempts_payload['data'][0]['id']}/evidence?{_query_scope()}",
@@ -4803,10 +4818,19 @@ class TestBroadcastApi:
 
         assert response.status_code == 200
         assert payload['data']['mode'] == 'send'
-        assert payload['data']['sent_count'] == 1
+        assert payload['data']['status'] == 'queued'
+        assert payload['data']['sent_count'] == 0
         assert payload['data']['failed_count'] == 0
-        assert payload['data']['unknown_count'] == 0
-        assert payload['data']['items'][0]['outcome'] == 'sent'
+        assert payload['data']['unknown_count'] == 1
+
+        await _run_broadcast_worker_until_idle(fake_broadcast_app)
+        detail = await _get_execution_batch_detail(quart_test_client, int(payload['data']['id']))
+
+        assert detail['status'] == 'completed'
+        assert detail['sent_count'] == 1
+        assert detail['failed_count'] == 0
+        assert detail['unknown_count'] == 0
+        assert detail['items'][0]['outcome'] == 'sent'
         assert runtime_client.requests == [
             {
                 'action': 'send_draft',
@@ -5017,9 +5041,14 @@ class TestBroadcastApi:
         payload = await response.get_json()
 
         assert response.status_code == 200
-        assert payload['data']['failed_count'] == 1
-        assert payload['data']['sent_count'] == 1
-        assert [item['outcome'] for item in payload['data']['items']] == ['failed', 'sent']
+        assert payload['data']['status'] == 'queued'
+
+        await _run_broadcast_worker_until_idle(fake_broadcast_app)
+        detail = await _get_execution_batch_detail(quart_test_client, int(payload['data']['id']))
+
+        assert detail['failed_count'] == 1
+        assert detail['sent_count'] == 1
+        assert [item['outcome'] for item in detail['items']] == ['failed', 'sent']
         assert len(runtime_client.requests) == 2
 
     @pytest.mark.asyncio
@@ -5075,11 +5104,16 @@ class TestBroadcastApi:
         payload = await response.get_json()
 
         assert response.status_code == 200
-        assert payload['data']['unknown_count'] == 1
-        assert payload['data']['sent_count'] == 1
-        assert [item['outcome'] for item in payload['data']['items']] == ['unknown', 'sent']
-        assert payload['data']['items'][0]['enter_dispatched'] is True
-        assert payload['data']['items'][0]['message_sent'] is None
+        assert payload['data']['status'] == 'queued'
+
+        await _run_broadcast_worker_until_idle(fake_broadcast_app)
+        detail = await _get_execution_batch_detail(quart_test_client, int(payload['data']['id']))
+
+        assert detail['unknown_count'] == 1
+        assert detail['sent_count'] == 1
+        assert [item['outcome'] for item in detail['items']] == ['unknown', 'sent']
+        assert detail['items'][0]['enter_dispatched'] is True
+        assert detail['items'][0]['message_sent'] is None
         assert len(runtime_client.requests) == 2
 
     @pytest.mark.asyncio
@@ -5131,8 +5165,13 @@ class TestBroadcastApi:
         payload = await response.get_json()
 
         assert response.status_code == 200
-        assert payload['data']['duplicate_target_count'] == 1
-        assert len(payload['data']['items']) == 2
+        assert payload['data']['status'] == 'queued'
+
+        await _run_broadcast_worker_until_idle(fake_broadcast_app)
+        detail = await _get_execution_batch_detail(quart_test_client, int(payload['data']['id']))
+
+        assert detail['duplicate_target_count'] == 1
+        assert len(detail['items']) == 2
         assert len(runtime_client.requests) == 2
 
     @pytest.mark.asyncio
@@ -5380,7 +5419,7 @@ class TestBroadcastApi:
         )
 
         unknown_draft = (await _create_ready_drafts(quart_test_client, group_values=['Northwind']))[0]
-        await quart_test_client.post(
+        initial_unknown_response = await quart_test_client.post(
             '/api/v1/broadcast/executions',
             headers=_auth_headers(),
             json={
@@ -5391,6 +5430,8 @@ class TestBroadcastApi:
                 'operator': 'tester@example.com',
             },
         )
+        assert initial_unknown_response.status_code == 200
+        await _run_broadcast_worker_until_idle(fake_broadcast_app)
 
         sending_draft = (await _create_ready_drafts(quart_test_client, group_values=['Contoso']))[0]
         async with fake_broadcast_app.persistence_mgr.get_db_engine().begin() as conn:
@@ -5527,6 +5568,7 @@ class TestBroadcastApi:
         first_send_payload = await first_send_response.get_json()
         assert first_send_response.status_code == 200
         assert first_send_payload['data']['unknown_count'] == 1
+        await _run_broadcast_worker_until_idle(fake_broadcast_app)
 
         blocked_retry_response = await quart_test_client.post(
             '/api/v1/broadcast/executions',
@@ -5573,7 +5615,12 @@ class TestBroadcastApi:
         )
         resend_payload = await resend_response.get_json()
         assert resend_response.status_code == 200
-        assert resend_payload['data']['sent_count'] == 1
+        await _run_broadcast_worker_until_idle(fake_broadcast_app)
+        resend_detail = await _get_execution_batch_detail(
+            quart_test_client,
+            int(resend_payload['data']['id']),
+        )
+        assert resend_detail['sent_count'] == 1
         assert len(runtime_client.requests) == 2
 
     @pytest.mark.asyncio

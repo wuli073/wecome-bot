@@ -342,7 +342,19 @@ class HTTPController:
 
         @self.quart_app.route('/api/v1/system/runtime/status')
         async def runtime_status():
-            return lifecycle_payload()
+            payload = lifecycle_payload()
+            worker = getattr(self.ap, 'broadcast_execution_worker', None)
+            health_snapshot = getattr(worker, 'health_snapshot', None)
+            if callable(health_snapshot):
+                payload['broadcast'] = health_snapshot()
+            else:
+                payload['broadcast'] = {
+                    'broadcast_schema_ready': False,
+                    'broadcast_recovery_completed': False,
+                    'broadcast_worker_state': 'not_configured',
+                    'broadcast_worker_running': False,
+                }
+            return payload
 
         @self.quart_app.route('/readyz')
         async def readyz():

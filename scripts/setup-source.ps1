@@ -3,7 +3,8 @@
 param(
     [switch]$BuildDesktopRuntimeFromSource,
     [string]$DesktopRuntimeArchivePath,
-    [string]$DesktopRuntimeManifestPath
+    [string]$DesktopRuntimeManifestPath,
+    [string]$UserDataRoot
 )
 
 Set-StrictMode -Version Latest
@@ -12,6 +13,11 @@ $ErrorActionPreference = 'Stop'
 Disable-ConsoleQuickEdit | Out-Null
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+if (-not $UserDataRoot) {
+    $UserDataRoot = if ($env:LANGBOT_DATA_ROOT) { $env:LANGBOT_DATA_ROOT } else { Join-Path $repoRoot '.tmp\source-runtime\user-data' }
+}
+$sourceUserDataRoot = [IO.Path]::GetFullPath($UserDataRoot)
+. (Join-Path $PSScriptRoot 'source-state.ps1')
 $webRoot = Join-Path $repoRoot 'web'
 $desktopRuntimeRoot = Join-Path $repoRoot 'apps\desktop-rpa-runtime'
 $desktopRuntimePackagePath = Join-Path $desktopRuntimeRoot 'package.json'
@@ -26,6 +32,26 @@ $venvPath = [IO.Path]::GetFullPath((Join-Path $repoRoot '.venv'))
 $setupLogPath = Join-Path $repoRoot 'runtime\logs\setup-source.log'
 $script:setupStage = 'initializing'
 
+function Assert-ManagedSourceBackendStopped {
+    $statePath = Join-Path $sourceUserDataRoot 'runtime\source-stack-state.json'
+    $state = Read-ManagedSourceState -Path $statePath -Quiet
+    if ($null -eq $state) { return }
+
+    $stateRepoRoot = [string](Get-ManagedSourceStateProperty -Object $state -Name 'repoRoot')
+    if (-not [string]::Equals([IO.Path]::GetFullPath($stateRepoRoot), $repoRoot, [StringComparison]::OrdinalIgnoreCase)) { return }
+    $backend = Get-ManagedSourceStateProperty -Object $state -Name 'backend'
+    $processId = Get-ManagedSourceStateProperty -Object $backend -Name 'pid'
+    if ($null -eq $processId) { return }
+    try {
+        $process = Get-Process -Id ([int]$processId) -ErrorAction Stop
+        $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $($process.Id)" -ErrorAction Stop
+        if ([string]$cim.CommandLine -like "*$repoRoot*") {
+            throw "SETUP_SOURCE_BACKEND_RUNNING: stop the managed source backend before setup: .\scripts\start-source.ps1 -Action Stop -UserDataRoot '$sourceUserDataRoot'"
+        }
+    }
+    catch [System.Management.Automation.RuntimeException] { throw }
+    catch { return }
+}
 function Write-SetupLog([string]$Message) {
     try {
         New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($setupLogPath)) -Force | Out-Null
@@ -749,6 +775,7 @@ function Install-DesktopRuntimeFromSource([string]$NpmPath, [object]$ManagedPyth
 }
 
 function Invoke-SetupSource {
+    Assert-ManagedSourceBackendStopped
     $script:setupStage = 'source-prerequisites'
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) { throw 'This source distribution supports Windows x64 only.' }
     Write-Host '[1/6] Checking source prerequisites...'

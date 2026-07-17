@@ -2404,7 +2404,7 @@ const enUS = {
       protocolVersion: 'Protocol version',
       latestBatchTitle: 'Latest batch #{{id}}',
       batchSummary:
-        'Status {{status}} · Mode {{mode}} · Pending {{pending}} · Running {{running}} · Succeeded {{succeeded}} · Failed {{failed}} · Cancelled {{cancelled}} · Interrupted {{interrupted}}',
+        'Status {{status}} · Mode {{mode}} · Total {{total}} · Pending {{pending}} · Running {{running}} · Succeeded {{succeeded}} · Warning {{warning}} · Failed {{failed}} · Unknown {{unknown}} · Cancelled {{cancelled}} · Interrupted {{interrupted}}',
       startBatch: 'Start',
       pauseBatch: 'Pause',
       resumeBatch: 'Resume',

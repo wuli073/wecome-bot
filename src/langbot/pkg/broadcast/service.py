@@ -1,8 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
 import hashlib
+import logging
 import math
 import mimetypes
 import os
@@ -158,6 +159,8 @@ RUNTIME_TASK_TERMINAL_STATUSES = {
     'interrupted',
     'timed_out',
 }
+
+logger = logging.getLogger(__name__)
 RUNTIME_TASK_POLL_INTERVAL_SECONDS = 0.05
 RUNTIME_TASK_CANCEL_GRACE_POLLS = 10
 SEND_TERMINAL_STATE_UNKNOWN_MESSAGE = '已执行发送操作，请人工检查目标会话'
@@ -187,6 +190,27 @@ class BroadcastService:
     def __init__(self, ap) -> None:
         self.ap = ap
         self.repository = BroadcastRepository(ap.persistence_mgr)
+
+    async def verify_execution_schema(self) -> None:
+        """Verify the durable execution columns and lane are queryable before work is claimed."""
+        checks = (
+            sqlalchemy.select(persistence_broadcast.BroadcastExecutionLane.lane_key).limit(1),
+            sqlalchemy.select(
+                persistence_broadcast.BroadcastExecutionTask.claim_token,
+                persistence_broadcast.BroadcastExecutionTask.claimed_by,
+                persistence_broadcast.BroadcastExecutionTask.lease_expires_at,
+            ).limit(1),
+            sqlalchemy.select(
+                persistence_broadcast.BroadcastDraft.active_send_task_id,
+                persistence_broadcast.BroadcastDraft.send_reserved_at,
+            ).limit(1),
+            sqlalchemy.select(
+                persistence_broadcast.BroadcastExecutionBatch.warning_tasks,
+                persistence_broadcast.BroadcastExecutionBatch.unknown_tasks,
+            ).limit(1),
+        )
+        for statement in checks:
+            await self.ap.persistence_mgr.execute_async(statement)
 
     async def validate_scope(self, scope: dict[str, Any]) -> dict[str, str]:
         bot_uuid = str(scope.get('bot_uuid') or '').strip()
@@ -2096,14 +2120,16 @@ class BroadcastService:
                     'connector_id': validated_scope['connector_id'],
                     'channel': 'wxwork_database',
                     'mode': mode,
-                    'status': 'created',
+                    'status': 'queued' if mode == 'send' else 'created',
                     'total_tasks': len(drafts),
                     'pending_tasks': len(drafts),
                     'running_tasks': 0,
                     'succeeded_tasks': 0,
+                    'warning_tasks': 0,
                     'failed_tasks': 0,
                     'cancelled_tasks': 0,
                     'interrupted_tasks': 0,
+                    'unknown_tasks': 0,
                     'created_by': operator,
                     'last_action_by': operator,
                     'error_message': None,
@@ -2146,6 +2172,13 @@ class BroadcastService:
                     updates={'idempotency_key': f'broadcast:{task_id}:1'},
                     conn=conn,
                 )
+                if mode == 'send':
+                    await self._reserve_draft_send_task(
+                        conn=conn,
+                        draft_id=int(draft.id),
+                        task_id=int(task_id),
+                        scope=validated_scope,
+                    )
                 draft_attachments = draft_attachments_by_id.get(int(draft.id), [])
                 for attachment in draft_attachments:
                     await self.repository.create_execution_task_attachment(
@@ -2160,7 +2193,7 @@ class BroadcastService:
                         },
                     )
         if mode == 'send':
-            return await self._execute_send_batch(batch_id, validated_scope, operator=operator)
+            self._wake_worker()
         return await self.get_execution_batch_detail(batch_id, validated_scope)
 
     async def list_execution_batches(self, scope: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2176,6 +2209,10 @@ class BroadcastService:
         tasks = await self.repository.list_execution_tasks(batch_id, **validated_scope)
         data = self._serialize_execution_batch(batch)
         data['tasks'] = [await self._serialize_execution_task(row) for row in tasks]
+        data['allowed_actions']['retry_failed'] = bool(
+            data['status'] not in {'queued', 'running', 'paused', 'cancelling'}
+            and any(bool(task.get('retry_allowed')) for task in data['tasks'])
+        )
         if str(batch.mode) == 'send':
             data.update(await self._build_send_batch_result(validated_scope, data['tasks']))
         return data
@@ -2239,31 +2276,41 @@ class BroadcastService:
         batch = await self.repository.get_execution_batch(batch_id, **validated_scope)
         if batch is None:
             raise BroadcastError(BROADCAST_EXECUTION_BATCH_NOT_FOUND, '执行批次不存在或已被删除')
-        if str(batch.status) not in {'created', 'queued', 'running', 'paused', 'interrupted', 'partially_failed', 'failed'}:
+        if str(batch.status) not in {'created', 'queued', 'running', 'paused', 'interrupted', 'partially_failed', 'failed', 'cancelling'}:
             raise BroadcastError(BROADCAST_EXECUTION_BATCH_STATUS_INVALID, '当前批次状态不允许取消')
 
         async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
             tasks = await self.repository.list_execution_tasks(batch_id, **validated_scope, conn=conn)
-            for task in tasks:
-                if str(task.status) != 'pending':
-                    continue
-                await self.repository.update_execution_task(
-                    int(task.id),
-                    bot_uuid=validated_scope['bot_uuid'],
-                    connector_id=validated_scope['connector_id'],
-                    updates={
-                        'status': 'cancelled',
-                        'cancelled_at': sqlalchemy.func.now(),
-                        'finished_at': sqlalchemy.func.now(),
-                    },
-                    conn=conn,
+            await self.ap.persistence_mgr.execute_async(
+                sqlalchemy.update(persistence_broadcast.BroadcastExecutionTask)
+                .where(
+                    persistence_broadcast.BroadcastExecutionTask.execution_batch_id == batch_id,
+                    persistence_broadcast.BroadcastExecutionTask.status == 'pending',
                 )
+                .values(status='cancelled', cancelled_at=sqlalchemy.func.now(), finished_at=sqlalchemy.func.now()),
+                conn=conn,
+            )
+            for task in tasks:
+                if str(task.status) == 'pending' and str(task.action) == 'send_message':
+                    await self.repository.release_draft_send_reservation(
+                        conn,
+                        draft_id=int(task.draft_id) if task.draft_id else None,
+                        task_id=int(task.id),
+                    )
+                if str(task.status) == 'running':
+                    await self.repository.update_execution_task(
+                        int(task.id),
+                        bot_uuid=validated_scope['bot_uuid'],
+                        connector_id=validated_scope['connector_id'],
+                        updates={'status': 'cancelling'},
+                        conn=conn,
+                    )
             updated = await self.repository.update_execution_batch(
                 batch_id,
                 bot_uuid=validated_scope['bot_uuid'],
                 connector_id=validated_scope['connector_id'],
                 updates={
-                    'status': 'cancelled',
+                    'status': 'cancelling',
                     'cancelled_at': sqlalchemy.func.now(),
                     'last_action_by': str(payload.get('operator') or '').strip() or 'unknown',
                 },
@@ -2275,6 +2322,15 @@ class BroadcastService:
                 connector_id=validated_scope['connector_id'],
                 conn=conn,
             )
+        for task in tasks:
+            if str(task.status) != 'running' or not str(task.runtime_task_id or '').strip():
+                continue
+            try:
+                executor = build_executor(str(task.channel), self._get_runtime_gateway())
+                await executor.cancel(str(task.runtime_task_id))
+            except Exception:
+                pass
+        self._wake_worker()
         return self._serialize_execution_batch(updated)
 
     async def run_next_execution_task(self) -> bool:
@@ -2282,12 +2338,52 @@ class BroadcastService:
             claimed = await self.repository.claim_next_execution_task(conn)
         if claimed is None:
             return False
-        await self._execute_execution_task(
-            int(claimed['task'].id),
-            claimed['scope'],
-            {'operator': 'broadcast-worker'},
-            claimed=True,
-        )
+        task = claimed['task']
+        async def renew_leases() -> None:
+            while True:
+                await asyncio.sleep(15)
+                async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+                    lane_ok = await self.repository.renew_execution_lane(
+                        conn,
+                        owner_token=claimed['lane_token'],
+                    )
+                    task_ok = await self.repository.renew_execution_task_claim(
+                        conn,
+                        task_id=int(task.id),
+                        claim_token=claimed['claim_token'],
+                    )
+                if not lane_ok or not task_ok:
+                    return
+
+        lease_renewal_task = asyncio.create_task(renew_leases())
+        try:
+            if str(task.action) == 'send_message':
+                await self._execute_send_task(
+                    task,
+                    claimed['scope'],
+                    operator='broadcast-worker',
+                    claim_token=claimed['claim_token'],
+                )
+            else:
+                await self._execute_execution_task(
+                    int(task.id),
+                    claimed['scope'],
+                    {'operator': 'broadcast-worker'},
+                    claimed=True,
+                    claim_token=claimed['claim_token'],
+                )
+        finally:
+            lease_renewal_task.cancel()
+            await asyncio.gather(lease_renewal_task, return_exceptions=True)
+            async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+                await self.repository.release_execution_lane(conn, owner_token=claimed['lane_token'])
+                await self.repository.clear_execution_task_claim(
+                    conn,
+                    task_id=int(task.id),
+                    bot_uuid=claimed['scope']['bot_uuid'],
+                    connector_id=claimed['scope']['connector_id'],
+                    claim_token=claimed['claim_token'],
+                )
         return True
 
     async def start_execution_task(
@@ -2305,6 +2401,7 @@ class BroadcastService:
         payload: dict[str, Any],
         *,
         claimed: bool,
+        claim_token: str | None = None,
     ) -> dict[str, Any]:
         validated_scope = await self.validate_scope(scope)
         task = await self.repository.get_execution_task(task_id, **validated_scope)
@@ -2452,7 +2549,12 @@ class BroadcastService:
                 evidence,
                 terminal_result,
             ):
-                task_status = 'succeeded'
+                runtime_status = str(decoded_runtime_result.get('status') or '').strip().lower()
+                task_status = (
+                    'succeeded_with_warning'
+                    if runtime_status == 'succeeded_with_warning'
+                    else 'succeeded'
+                )
                 error_code = None
                 error_message = None
             elif runtime_error_code in FAILED_RUNTIME_PASTE_ERROR_CODES:
@@ -2522,113 +2624,35 @@ class BroadcastService:
         persisted_runtime_task_id = None if persistence_error_code else runtime_task_id
 
         sanitized_runtime_result = self._sanitize_runtime_result(runtime_result)
-        sanitized_evidence = None
+        evidence_payload = None
         if runtime_result is not None:
             evidence = executor.normalize_evidence(runtime_result)
             technical_details = dict(evidence.get('technical_details') or {})
             if persistence_error_code:
                 technical_details['persistence_error_code'] = persistence_error_code
                 technical_details['persistence_error_message'] = persistence_error_message
-            sanitized_evidence = {
-                **evidence,
-                'technical_details': self._sanitize_technical_details(technical_details),
-            }
+            evidence_payload = self._build_execution_evidence_payload(
+                attempt_id=int(attempt_id),
+                action=str(task.action),
+                evidence=evidence,
+                technical_details=technical_details,
+            )
 
-        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
-            try:
-                await self.repository.update_execution_attempt(
-                    int(attempt_id),
-                    bot_uuid=validated_scope['bot_uuid'],
-                    connector_id=validated_scope['connector_id'],
-                    updates={
-                        'status': task_status,
-                        'runtime_task_id': persisted_runtime_task_id,
-                        'response_summary': json.dumps(sanitized_runtime_result, ensure_ascii=False)
-                        if sanitized_runtime_result is not None
-                        else None,
-                        'error_code': error_code,
-                        'error_message': error_message,
-                        'finished_at': sqlalchemy.func.now(),
-                    },
-                    conn=conn,
-                )
-                if sanitized_evidence is not None:
-                    await self.repository.create_execution_evidence(
-                        conn,
-                        {
-                            'execution_attempt_id': int(attempt_id),
-                            'window_title': sanitized_evidence.get('window_title'),
-                            'target_conversation': sanitized_evidence.get('target_conversation'),
-                            'action': sanitized_evidence.get('action') or str(task.action),
-                            'input_located': bool(sanitized_evidence.get('input_located', False)),
-                            'draft_written': bool(sanitized_evidence.get('draft_written', False)),
-                            'send_triggered': bool(sanitized_evidence.get('send_triggered', False)),
-                            'clipboard_restored': bool(sanitized_evidence.get('clipboard_restored', False)),
-                            'runtime_state': sanitized_evidence.get('runtime_state'),
-                            'evidence_summary': sanitized_evidence.get('evidence_summary'),
-                            'technical_details': json.dumps(
-                                sanitized_evidence.get('technical_details'),
-                                ensure_ascii=False,
-                            )
-                            if sanitized_evidence.get('technical_details') is not None
-                            else None,
-                        },
-                    )
-                updated = await self.repository.update_execution_task(
-                    task_id,
-                    bot_uuid=validated_scope['bot_uuid'],
-                    connector_id=validated_scope['connector_id'],
-                    updates={
-                        'status': task_status,
-                        'runtime_task_id': persisted_runtime_task_id,
-                        'error_code': error_code,
-                        'error_message': error_message,
-                        'finished_at': sqlalchemy.func.now(),
-                    },
-                    conn=conn,
-                )
-                await self.repository.recompute_execution_batch_counts(
-                    int(task.execution_batch_id),
-                    bot_uuid=validated_scope['bot_uuid'],
-                    connector_id=validated_scope['connector_id'],
-                    conn=conn,
-                )
-            except Exception:
-                updated = await self.repository.update_execution_task(
-                    task_id,
-                    bot_uuid=validated_scope['bot_uuid'],
-                    connector_id=validated_scope['connector_id'],
-                    updates={
-                        'status': 'interrupted',
-                        'runtime_task_id': persisted_runtime_task_id,
-                        'error_code': BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED,
-                        'error_message': 'Runtime 已返回，但结果落库失败',
-                        'finished_at': sqlalchemy.func.now(),
-                    },
-                    conn=conn,
-                )
-                await self.repository.update_execution_attempt(
-                    int(attempt_id),
-                    bot_uuid=validated_scope['bot_uuid'],
-                    connector_id=validated_scope['connector_id'],
-                    updates={
-                        'status': 'interrupted',
-                        'runtime_task_id': persisted_runtime_task_id,
-                        'response_summary': json.dumps(sanitized_runtime_result, ensure_ascii=False)
-                        if sanitized_runtime_result is not None
-                        else None,
-                        'error_code': BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED,
-                        'error_message': 'Runtime 已返回，但结果落库失败',
-                        'finished_at': sqlalchemy.func.now(),
-                    },
-                    conn=conn,
-                )
-                await self.repository.recompute_execution_batch_counts(
-                    int(task.execution_batch_id),
-                    bot_uuid=validated_scope['bot_uuid'],
-                    connector_id=validated_scope['connector_id'],
-                    conn=conn,
-                )
+        updated = await self._persist_execution_result(
+            task_id=int(task_id),
+            attempt_id=int(attempt_id),
+            batch_id=int(task.execution_batch_id),
+            scope=validated_scope,
+            action=str(task.action),
+            task_status=task_status,
+            error_code=error_code,
+            error_message=error_message,
+            runtime_task_id=persisted_runtime_task_id,
+            sanitized_runtime_result=sanitized_runtime_result,
+            evidence_payload=evidence_payload,
+            original_error_message=error_message,
+            claim_token=claim_token,
+        )
         return await self._serialize_execution_task(updated)
 
     async def cancel_execution_task(
@@ -2656,6 +2680,12 @@ class BroadcastService:
                 },
                 conn=conn,
             )
+            if str(task.action) == 'send_message':
+                await self.repository.release_draft_send_reservation(
+                    conn,
+                    draft_id=int(task.draft_id) if task.draft_id else None,
+                    task_id=int(task.id),
+                )
             await self.repository.recompute_execution_batch_counts(
                 int(task.execution_batch_id),
                 bot_uuid=validated_scope['bot_uuid'],
@@ -2699,9 +2729,20 @@ class BroadcastService:
                     'finished_at': None,
                     'cancelled_at': None,
                     'idempotency_key': f'broadcast:{task_id}:{next_attempt_no}',
+                    'claim_token': None,
+                    'claimed_by': None,
+                    'claimed_at': None,
+                    'lease_expires_at': None,
                 },
                 conn=conn,
             )
+            if str(task.action) == 'send_message' and task.draft_id:
+                await self._reserve_draft_send_task(
+                    conn=conn,
+                    draft_id=int(task.draft_id),
+                    task_id=int(task.id),
+                    scope=validated_scope,
+                )
             await self.repository.update_execution_batch(
                 int(task.execution_batch_id),
                 bot_uuid=validated_scope['bot_uuid'],
@@ -2730,6 +2771,134 @@ class BroadcastService:
         attempts = await self.repository.list_execution_attempts(task_id, **validated_scope)
         return [self._serialize_execution_attempt(row) for row in attempts]
 
+    @staticmethod
+    def _load_json_dict(raw_value: Any) -> dict[str, Any] | None:
+        if isinstance(raw_value, dict):
+            return dict(raw_value)
+        if isinstance(raw_value, str) and raw_value.strip():
+            try:
+                loaded = json.loads(raw_value)
+            except Exception:
+                return None
+            if isinstance(loaded, dict):
+                return loaded
+        return None
+
+    def _rebuild_existing_execution_evidence_payload(
+        self,
+        *,
+        attempt_id: int,
+        action: str,
+        evidence_row,
+    ) -> dict[str, Any] | None:
+        if evidence_row is None:
+            return None
+        evidence_data = (
+            dict(evidence_row)
+            if isinstance(evidence_row, dict)
+            else self._serialize_execution_evidence(evidence_row)
+        )
+        technical_details = self._load_json_dict(evidence_data.get('technical_details'))
+        normalized_evidence = {
+            'window_title': evidence_data.get('window_title'),
+            'target_conversation': evidence_data.get('target_conversation'),
+            'action': evidence_data.get('action') or action,
+            'input_located': evidence_data.get('input_located'),
+            'draft_written': evidence_data.get('draft_written'),
+            'send_triggered': evidence_data.get('send_triggered'),
+            'clipboard_restored': evidence_data.get('clipboard_restored'),
+            'runtime_state': evidence_data.get('runtime_state'),
+            'evidence_summary': evidence_data.get('evidence_summary'),
+            'technical_details': technical_details,
+        }
+        return self._build_execution_evidence_payload(
+            attempt_id=attempt_id,
+            action=action,
+            evidence=normalized_evidence,
+            technical_details=technical_details,
+            evidence_summary=str(evidence_data.get('evidence_summary') or '').strip() or None,
+            draft_written=evidence_data.get('draft_written'),
+            send_triggered=evidence_data.get('send_triggered'),
+        )
+
+    async def _wait_for_runtime_task_terminal(
+        self,
+        *,
+        executor,
+        initial_task: dict[str, Any],
+    ) -> dict[str, Any]:
+        current_task = dict(initial_task or {})
+        action = str(current_task.get('action') or 'paste_draft')
+        current_task = self._with_runtime_task_action(current_task, action)
+        decoded = decode_runtime_task(current_task)
+        if self._is_terminal_runtime_task_status(decoded.get('status')):
+            return current_task
+
+        runtime_task_id = str(decoded.get('id') or '').strip()
+        if not runtime_task_id:
+            return current_task
+
+        timeout_seconds = max(
+            0,
+            int(self.ap.instance_config.data.get('desktop_automation', {}).get('task_timeout_seconds', 120)),
+        )
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        while timeout_seconds > 0 and asyncio.get_running_loop().time() <= deadline:
+            await asyncio.sleep(RUNTIME_TASK_POLL_INTERVAL_SECONDS)
+            polled = await executor.query_status(runtime_task_id)
+            current_task = self._with_runtime_task_action(polled, action)
+            if self._is_terminal_runtime_task_status(decode_runtime_task(current_task).get('status')):
+                return current_task
+        return current_task
+
+    async def _recover_execution_task_without_attempt(
+        self,
+        *,
+        task,
+        scope: dict[str, Any],
+        task_status: str,
+        error_code: str | None,
+        error_message: str | None,
+    ) -> dict[str, Any]:
+        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            updated = await self.repository.update_execution_task(
+                int(task.id),
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
+                updates={
+                    'status': task_status,
+                    'runtime_task_id': str(task.runtime_task_id or '').strip() or None,
+                    'error_code': error_code,
+                    'error_message': error_message,
+                    'finished_at': sqlalchemy.func.now(),
+                    'claim_token': None,
+                    'claimed_by': None,
+                    'claimed_at': None,
+                    'lease_expires_at': None,
+                },
+                conn=conn,
+            )
+            if str(task.action) == 'send_message' and task.draft_id is not None:
+                await self.repository.update_draft(
+                    int(task.draft_id),
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                    updates=self._build_send_status_updates(task_status, error_message),
+                    conn=conn,
+                )
+                await self.repository.release_draft_send_reservation(
+                    conn,
+                    draft_id=int(task.draft_id),
+                    task_id=int(task.id),
+                )
+            await self.repository.recompute_execution_batch_counts(
+                int(task.execution_batch_id),
+                bot_uuid=scope['bot_uuid'],
+                connector_id=scope['connector_id'],
+                conn=conn,
+            )
+            return updated
+
     async def reconcile_running_executions(self) -> int:
         running_scopes_result = await self.ap.persistence_mgr.execute_async(
             sqlalchemy.select(
@@ -2741,7 +2910,9 @@ class BroadcastService:
                 persistence_broadcast.BroadcastExecutionTask.execution_batch_id
                 == persistence_broadcast.BroadcastExecutionBatch.id,
             )
-            .where(persistence_broadcast.BroadcastExecutionTask.status == 'running')
+            .where(
+                persistence_broadcast.BroadcastExecutionTask.status.in_(['running', 'cancelling'])
+            )
             .distinct()
         )
         running_scopes = list(running_scopes_result.all())
@@ -2750,57 +2921,293 @@ class BroadcastService:
         for scope_row in running_scopes:
             bot_uuid = str(scope_row[0])
             connector_id = str(scope_row[1])
-            async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
-                tasks = await self.repository.list_execution_tasks_by_status(
+            scope = {
+                'bot_uuid': bot_uuid,
+                'connector_id': connector_id,
+            }
+            tasks = [
+                *await self.repository.list_execution_tasks_by_status(
                     bot_uuid=bot_uuid,
                     connector_id=connector_id,
                     status='running',
+                ),
+                *await self.repository.list_execution_tasks_by_status(
+                    bot_uuid=bot_uuid,
+                    connector_id=connector_id,
+                    status='cancelling',
+                ),
+            ]
+            for task in tasks:
+                attempts = await self.repository.list_execution_attempts(
+                    int(task.id),
+                    bot_uuid=bot_uuid,
+                    connector_id=connector_id,
+                )
+                latest_attempt = attempts[-1] if attempts else None
+                persisted_summary = self._load_json_dict(
+                    getattr(latest_attempt, 'response_summary', None) if latest_attempt is not None else None
+                )
+                persisted_evidence_row = (
+                    await self.repository.get_execution_evidence(
+                        int(latest_attempt.id),
+                        bot_uuid=bot_uuid,
+                        connector_id=connector_id,
+                    )
+                    if latest_attempt is not None
+                    else None
+                )
+                runtime_result = None
+                runtime_error: Exception | None = None
+                runtime_evidence_payload = None
+                action = str(task.action)
+                runtime_task_id = str(task.runtime_task_id or '').strip() or None
+
+                if runtime_task_id:
+                    try:
+                        executor = build_executor(str(task.channel), self._get_runtime_gateway())
+                        capability = executor.validate_capability(action)
+                        runtime_result = await executor.query_status(runtime_task_id)
+                        runtime_result = self._with_runtime_task_action(runtime_result, action)
+                        runtime_status = str(
+                            decode_runtime_task(runtime_result).get('status') or ''
+                        ).strip().lower()
+                        if runtime_status in {'running', 'queued'}:
+                            if action == 'send_message':
+                                runtime_result = await self._wait_for_send_task_terminal(
+                                    executor=executor,
+                                    capability=capability,
+                                    initial_task=runtime_result,
+                                )
+                            elif bool(capability.get('supports_status_query', False)):
+                                runtime_result = await self._wait_for_runtime_task_terminal(
+                                    executor=executor,
+                                    initial_task=runtime_result,
+                                )
+                        runtime_result = self._with_runtime_task_action(runtime_result, action)
+                        runtime_evidence_payload = self._build_execution_evidence_payload(
+                            attempt_id=int(latest_attempt.id) if latest_attempt is not None else 0,
+                            action=action,
+                            evidence=executor.normalize_evidence(runtime_result),
+                        )
+                    except Exception as exc:
+                        runtime_result = None
+                        runtime_error = exc
+
+                persisted_evidence_payload = (
+                    self._rebuild_existing_execution_evidence_payload(
+                        attempt_id=int(latest_attempt.id),
+                        action=action,
+                        evidence_row=persisted_evidence_row,
+                    )
+                    if latest_attempt is not None
+                    else None
+                )
+                effective_summary = self._sanitize_runtime_result(runtime_result) or persisted_summary
+                effective_evidence_payload = runtime_evidence_payload or persisted_evidence_payload
+                effective_result = runtime_result or effective_summary
+                runtime_status = str(
+                    decode_runtime_task(effective_result).get('status') if effective_result else ''
+                ).strip().lower()
+                runtime_error_code = self._extract_runtime_error_code(effective_result)
+                runtime_error_message = self._extract_runtime_error_message(effective_result)
+
+                if action == 'send_message':
+                    send_result = self._extract_send_terminal_result(
+                        effective_result,
+                        effective_evidence_payload,
+                    )
+                    if send_result['message_sent'] is True and bool(send_result['terminal_confirmed']):
+                        recovery_status = 'succeeded'
+                        recovery_error_code = None
+                        recovery_error_message = None
+                    elif (
+                        runtime_status == 'cancelled'
+                        and send_result['enter_dispatched'] is False
+                        and send_result['message_sent'] is not True
+                    ):
+                        recovery_status = 'cancelled'
+                        recovery_error_code = None
+                        recovery_error_message = None
+                    elif send_result['enter_dispatched'] is False:
+                        recovery_status = 'failed'
+                        recovery_error_code = runtime_error_code or 'RECOVERED_ON_STARTUP'
+                        recovery_error_message = (
+                            runtime_error_message
+                            or (
+                                f'应用重启恢复期间 Runtime 不可达: {runtime_error.__class__.__name__}'
+                                if runtime_error is not None
+                                else '应用重启前未完成发送，可安全重试'
+                            )
+                        )
+                    else:
+                        recovery_status = 'interrupted'
+                        recovery_error_code = runtime_error_code or BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN
+                        recovery_error_message = (
+                            runtime_error_message
+                            or (
+                                f'应用重启恢复期间 Runtime 不可达: {runtime_error.__class__.__name__}'
+                                if runtime_error is not None
+                                else '应用重启后无法确认真实发送结果，请人工检查目标会话'
+                            )
+                        )
+                    runtime_summary = self._merge_send_result_into_runtime_summary(
+                        effective_summary,
+                        runtime_task_id=runtime_task_id,
+                        task_status=recovery_status,
+                        error_code=recovery_error_code,
+                        error_message=recovery_error_message,
+                        send_result=send_result,
+                    )
+                    if runtime_summary is not None and str(runtime_summary.get('status') or '').strip().lower() in {
+                        '',
+                        'running',
+                        'queued',
+                    }:
+                        runtime_summary['status'] = (
+                            'unknown' if recovery_status == 'interrupted' else recovery_status
+                        )
+                    if latest_attempt is None:
+                        await self._recover_execution_task_without_attempt(
+                            task=task,
+                            scope=scope,
+                            task_status=recovery_status,
+                            error_code=recovery_error_code,
+                            error_message=recovery_error_message,
+                        )
+                    else:
+                        await self._persist_execution_result(
+                            task_id=int(task.id),
+                            attempt_id=int(latest_attempt.id),
+                            batch_id=int(task.execution_batch_id),
+                            scope=scope,
+                            action=action,
+                            task_status=recovery_status,
+                            error_code=recovery_error_code,
+                            error_message=recovery_error_message,
+                            runtime_task_id=runtime_task_id,
+                            sanitized_runtime_result=runtime_summary,
+                            evidence_payload=effective_evidence_payload,
+                            draft_id=int(task.draft_id) if task.draft_id is not None else None,
+                            send_status_updates=self._build_send_status_updates(
+                                recovery_status,
+                                recovery_error_message,
+                            ),
+                            fallback_send_result=send_result,
+                            original_error_message=recovery_error_message,
+                        )
+                else:
+                    terminal_result = self._extract_send_terminal_result(
+                        effective_result,
+                        effective_evidence_payload,
+                    )
+                    if self._is_successful_paste_only_terminal_result(
+                        runtime_status,
+                        effective_evidence_payload,
+                        terminal_result,
+                    ):
+                        recovery_status = (
+                            'succeeded_with_warning'
+                            if runtime_status == 'succeeded_with_warning'
+                            else 'succeeded'
+                        )
+                        recovery_error_code = None
+                        recovery_error_message = None
+                    elif runtime_status == 'cancelled' and terminal_result['enter_dispatched'] is False:
+                        recovery_status = 'cancelled'
+                        recovery_error_code = None
+                        recovery_error_message = None
+                    elif bool((effective_evidence_payload or {}).get('draft_written', False)) and terminal_result[
+                        'enter_dispatched'
+                    ] is False:
+                        recovery_status = (
+                            'succeeded_with_warning'
+                            if runtime_status == 'succeeded_with_warning'
+                            else 'succeeded'
+                        )
+                        recovery_error_code = None
+                        recovery_error_message = None
+                    elif terminal_result['enter_dispatched'] is False:
+                        recovery_status = 'failed'
+                        recovery_error_code = runtime_error_code or 'RECOVERED_ON_STARTUP'
+                        recovery_error_message = (
+                            runtime_error_message
+                            or (
+                                f'应用重启恢复期间 Runtime 不可达: {runtime_error.__class__.__name__}'
+                                if runtime_error is not None
+                                else '应用重启前未完成粘贴，可重试'
+                            )
+                        )
+                    else:
+                        recovery_status = 'interrupted'
+                        recovery_error_code = runtime_error_code or 'RECOVERED_ON_STARTUP'
+                        recovery_error_message = (
+                            runtime_error_message
+                            or (
+                                f'应用重启恢复期间 Runtime 不可达: {runtime_error.__class__.__name__}'
+                                if runtime_error is not None
+                                else '应用重启后无法确认粘贴结果'
+                            )
+                        )
+                    runtime_summary = dict(effective_summary or {})
+                    if runtime_task_id and not str(runtime_summary.get('id') or '').strip():
+                        runtime_summary['id'] = runtime_task_id
+                    if action and not str(runtime_summary.get('action') or '').strip():
+                        runtime_summary['action'] = action
+                    if str(runtime_summary.get('status') or '').strip().lower() in {'', 'running', 'queued'}:
+                        runtime_summary['status'] = recovery_status
+                    if recovery_error_code and 'errorCode' not in runtime_summary and 'error_code' not in runtime_summary:
+                        runtime_summary['errorCode'] = recovery_error_code
+                    if (
+                        recovery_error_message
+                        and 'errorMessage' not in runtime_summary
+                        and 'error_message' not in runtime_summary
+                    ):
+                        runtime_summary['errorMessage'] = recovery_error_message
+                    if latest_attempt is None:
+                        await self._recover_execution_task_without_attempt(
+                            task=task,
+                            scope=scope,
+                            task_status=recovery_status,
+                            error_code=recovery_error_code,
+                            error_message=recovery_error_message,
+                        )
+                    else:
+                        await self._persist_execution_result(
+                            task_id=int(task.id),
+                            attempt_id=int(latest_attempt.id),
+                            batch_id=int(task.execution_batch_id),
+                            scope=scope,
+                            action=action,
+                            task_status=recovery_status,
+                            error_code=recovery_error_code,
+                            error_message=recovery_error_message,
+                            runtime_task_id=runtime_task_id,
+                            sanitized_runtime_result=runtime_summary or None,
+                            evidence_payload=effective_evidence_payload,
+                            original_error_message=recovery_error_message,
+                        )
+                updated_count += 1
+
+        try:
+            async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+                await self.ap.persistence_mgr.execute_async(
+                    sqlalchemy.update(persistence_broadcast.BroadcastExecutionLane)
+                    .where(
+                        persistence_broadcast.BroadcastExecutionLane.lane_key == 'desktop_runtime',
+                        persistence_broadcast.BroadcastExecutionLane.lease_expires_at.is_not(None),
+                        persistence_broadcast.BroadcastExecutionLane.lease_expires_at < sqlalchemy.func.now(),
+                    )
+                    .values(
+                        owner_token=None,
+                        owner_instance=None,
+                        acquired_at=None,
+                        lease_expires_at=None,
+                    ),
                     conn=conn,
                 )
-                touched_batch_ids: set[int] = set()
-                for task in tasks:
-                    attempts = await self.repository.list_execution_attempts(
-                        int(task.id),
-                        bot_uuid=bot_uuid,
-                        connector_id=connector_id,
-                        conn=conn,
-                    )
-                    if attempts:
-                        latest_attempt = attempts[-1]
-                        if str(latest_attempt.status) == 'running':
-                            await self.repository.update_execution_attempt(
-                                int(latest_attempt.id),
-                                bot_uuid=bot_uuid,
-                                connector_id=connector_id,
-                                updates={
-                                    'status': 'interrupted',
-                                    'error_code': 'RECOVERED_ON_STARTUP',
-                                    'error_message': '应用重启后中断，需人工重试',
-                                    'finished_at': sqlalchemy.func.now(),
-                                },
-                                conn=conn,
-                            )
-                    await self.repository.update_execution_task(
-                        int(task.id),
-                        bot_uuid=bot_uuid,
-                        connector_id=connector_id,
-                        updates={
-                            'status': 'interrupted',
-                            'error_code': 'RECOVERED_ON_STARTUP',
-                            'error_message': '应用重启后中断，需人工重试',
-                            'finished_at': sqlalchemy.func.now(),
-                        },
-                        conn=conn,
-                    )
-                    touched_batch_ids.add(int(task.execution_batch_id))
-                    updated_count += 1
-                for batch_id in touched_batch_ids:
-                    await self.repository.recompute_execution_batch_counts(
-                        batch_id,
-                        bot_uuid=bot_uuid,
-                        connector_id=connector_id,
-                        conn=conn,
-                    )
+        except OperationalError as exc:
+            if 'broadcast_execution_lanes' not in str(exc).lower():
+                raise
 
         return updated_count
 
@@ -2881,6 +3288,7 @@ class BroadcastService:
         scope: dict[str, Any],
         *,
         operator: str,
+        claim_token: str | None = None,
     ) -> dict[str, Any]:
         batch = await self.repository.get_execution_batch(batch_id, **scope)
         if batch is None:
@@ -2921,7 +3329,39 @@ class BroadcastService:
         scope: dict[str, Any],
         *,
         operator: str,
+        claim_token: str | None = None,
     ) -> dict[str, Any]:
+        current_task = await self.repository.get_execution_task(
+            int(task.id),
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+        )
+        if current_task is None:
+            raise BroadcastError(BROADCAST_EXECUTION_TASK_NOT_FOUND, '执行任务不存在或已被删除')
+        if str(current_task.status) == 'cancelling':
+            async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+                updated = await self.repository.update_execution_task(
+                    int(task.id),
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                    updates={'status': 'cancelled', 'cancelled_at': sqlalchemy.func.now(), 'finished_at': sqlalchemy.func.now()},
+                    conn=conn,
+                )
+                await self.repository.release_draft_send_reservation(
+                    conn,
+                    draft_id=int(current_task.draft_id) if current_task.draft_id else None,
+                    task_id=int(task.id),
+                )
+                await self.repository.recompute_execution_batch_counts(
+                    int(current_task.execution_batch_id),
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                    conn=conn,
+                )
+            return await self._serialize_execution_task(updated)
+        if str(current_task.status) != 'running':
+            return await self._serialize_execution_task(current_task)
+        task = current_task
         gateway = self._get_runtime_gateway()
         executor = build_executor(str(task.channel), gateway)
         capability = executor.validate_capability('send_message')
@@ -3002,6 +3442,7 @@ class BroadcastService:
 
         runtime_result = None
         evidence = None
+        send_result = None
         task_status = 'interrupted'
         error_code = None
         error_message = None
@@ -3091,73 +3532,29 @@ class BroadcastService:
             else None
         )
         sanitized_runtime_result = self._sanitize_runtime_result(runtime_result)
-        evidence_payload = None
-        if evidence is not None:
-            evidence_payload = {
-                'execution_attempt_id': int(attempt_id),
-                'window_title': evidence.get('window_title'),
-                'target_conversation': evidence.get('target_conversation'),
-                'action': evidence.get('action') or 'send_message',
-                'input_located': bool(evidence.get('input_located', False)),
-                'draft_written': bool(evidence.get('draft_written', False)),
-                'send_triggered': bool(evidence.get('send_triggered', False)),
-                'clipboard_restored': bool(evidence.get('clipboard_restored', False)),
-                'runtime_state': evidence.get('runtime_state'),
-                'evidence_summary': evidence.get('evidence_summary'),
-                'technical_details': json.dumps(
-                    self._sanitize_technical_details(evidence.get('technical_details')),
-                    ensure_ascii=False,
-                )
-                if evidence.get('technical_details') is not None
-                else None,
-            }
-
-        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
-            await self.repository.update_execution_attempt(
-                int(attempt_id),
-                bot_uuid=scope['bot_uuid'],
-                connector_id=scope['connector_id'],
-                updates={
-                    'status': task_status,
-                    'runtime_task_id': runtime_task_id,
-                    'response_summary': json.dumps(sanitized_runtime_result, ensure_ascii=False)
-                    if sanitized_runtime_result is not None
-                    else None,
-                    'error_code': error_code,
-                    'error_message': error_message,
-                    'finished_at': sqlalchemy.func.now(),
-                },
-                conn=conn,
-            )
-            if evidence_payload is not None:
-                await self.repository.create_execution_evidence(conn, evidence_payload)
-            updated = await self.repository.update_execution_task(
-                int(task.id),
-                bot_uuid=scope['bot_uuid'],
-                connector_id=scope['connector_id'],
-                updates={
-                    'status': task_status,
-                    'runtime_task_id': runtime_task_id,
-                    'error_code': error_code,
-                    'error_message': error_message,
-                    'finished_at': sqlalchemy.func.now(),
-                },
-                conn=conn,
-            )
-            if getattr(task, 'draft_id', None):
-                await self.repository.update_draft(
-                    int(task.draft_id),
-                    bot_uuid=scope['bot_uuid'],
-                    connector_id=scope['connector_id'],
-                    updates=self._build_send_status_updates(task_status, error_message),
-                    conn=conn,
-                )
-            await self.repository.recompute_execution_batch_counts(
-                int(task.execution_batch_id),
-                bot_uuid=scope['bot_uuid'],
-                connector_id=scope['connector_id'],
-                conn=conn,
-            )
+        evidence_payload = self._build_execution_evidence_payload(
+            attempt_id=int(attempt_id),
+            action='send_message',
+            evidence=evidence,
+        )
+        updated = await self._persist_execution_result(
+            task_id=int(task.id),
+            attempt_id=int(attempt_id),
+            batch_id=int(task.execution_batch_id),
+            scope=scope,
+            action='send_message',
+            task_status=task_status,
+            error_code=error_code,
+            error_message=error_message,
+            runtime_task_id=runtime_task_id,
+            sanitized_runtime_result=sanitized_runtime_result,
+            evidence_payload=evidence_payload,
+            draft_id=int(task.draft_id) if getattr(task, 'draft_id', None) else None,
+            send_status_updates=self._build_send_status_updates(task_status, error_message),
+            fallback_send_result=send_result if runtime_result is not None else None,
+            original_error_message=error_message,
+            claim_token=claim_token,
+        )
         return await self._serialize_execution_task(updated)
 
     async def _wait_for_send_task_terminal(
@@ -4426,6 +4823,442 @@ class BroadcastService:
             'error_message': error_message,
         }
 
+    async def _reserve_draft_send_task(
+        self,
+        *,
+        conn,
+        draft_id: int,
+        task_id: int,
+        scope: dict[str, Any],
+    ) -> None:
+        reservation = await self.ap.persistence_mgr.execute_async(
+            sqlalchemy.update(persistence_broadcast.BroadcastDraft)
+            .where(
+                persistence_broadcast.BroadcastDraft.id == int(draft_id),
+                persistence_broadcast.BroadcastDraft.bot_uuid == scope['bot_uuid'],
+                persistence_broadcast.BroadcastDraft.connector_id == scope['connector_id'],
+                persistence_broadcast.BroadcastDraft.active_send_task_id.is_(None),
+                sqlalchemy.func.coalesce(
+                    persistence_broadcast.BroadcastDraft.send_status,
+                    'pending',
+                ) == 'pending',
+            )
+            .values(
+                active_send_task_id=int(task_id),
+                send_reserved_at=sqlalchemy.func.now(),
+            ),
+            conn=conn,
+        )
+        if reservation.rowcount:
+            return
+
+        current_draft = await self.repository.get_draft(
+            int(draft_id),
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            conn=conn,
+        )
+        if current_draft is None:
+            raise BroadcastError(
+                BROADCAST_EXECUTION_SCOPE_MISMATCH,
+                '所选草稿不属于当前 bot / connector 作用域',
+            )
+        current_send_status = self._normalize_draft_send_status(current_draft)
+        if current_send_status == 'sent':
+            raise BroadcastError(BROADCAST_DRAFT_ALREADY_SENT, '该草稿已标记为已发送，不能再次真实发送')
+        if current_send_status == 'unknown':
+            raise BroadcastError(
+                BROADCAST_SEND_RESULT_UNKNOWN_REQUIRES_REVIEW,
+                '该草稿最近一次发送结果待确认，请先人工处理',
+            )
+        active_send_task = await self.repository.get_active_send_task_for_draft(
+            int(draft_id),
+            bot_uuid=scope['bot_uuid'],
+            connector_id=scope['connector_id'],
+            conn=conn,
+        )
+        if active_send_task is not None:
+            raise BroadcastError(
+                BROADCAST_DRAFT_SEND_IN_PROGRESS,
+                '该草稿已有真实发送任务进行中，不能直接再次发送',
+            )
+        raise BroadcastError(
+            BATCH_VALIDATION_FAILED,
+            '草稿状态在提交期间已发生变化，请刷新后重试',
+        )
+
+    def _build_execution_evidence_payload(
+        self,
+        *,
+        attempt_id: int,
+        action: str,
+        evidence: dict[str, Any] | None,
+        technical_details: dict[str, Any] | None = None,
+        evidence_summary: str | None = None,
+        draft_written: bool | None = None,
+        send_triggered: bool | None = None,
+    ) -> dict[str, Any] | None:
+        loaded_evidence_technical_details = None
+        if evidence is not None:
+            raw_evidence_technical_details = (evidence or {}).get('technical_details')
+            if isinstance(raw_evidence_technical_details, dict):
+                loaded_evidence_technical_details = dict(raw_evidence_technical_details)
+            elif isinstance(raw_evidence_technical_details, str) and raw_evidence_technical_details.strip():
+                try:
+                    parsed_evidence_technical_details = json.loads(raw_evidence_technical_details)
+                    if isinstance(parsed_evidence_technical_details, dict):
+                        loaded_evidence_technical_details = parsed_evidence_technical_details
+                except Exception:
+                    loaded_evidence_technical_details = None
+        raw_technical_details = (
+            technical_details
+            if technical_details is not None
+            else loaded_evidence_technical_details
+        )
+        sanitized_technical_details = self._sanitize_technical_details(raw_technical_details)
+        payload = {
+            'execution_attempt_id': int(attempt_id),
+            'window_title': (evidence or {}).get('window_title') if evidence is not None else None,
+            'target_conversation': (evidence or {}).get('target_conversation') if evidence is not None else None,
+            'action': (evidence or {}).get('action') or action,
+            'input_located': (
+                bool((evidence or {}).get('input_located', False))
+                if evidence is not None
+                else False
+            ),
+            'draft_written': (
+                bool((evidence or {}).get('draft_written', False))
+                if draft_written is None
+                else draft_written
+            ),
+            'send_triggered': (
+                bool((evidence or {}).get('send_triggered', False))
+                if send_triggered is None
+                else send_triggered
+            ),
+            'clipboard_restored': (
+                bool((evidence or {}).get('clipboard_restored', False))
+                if evidence is not None
+                else False
+            ),
+            'runtime_state': (evidence or {}).get('runtime_state') if evidence is not None else None,
+            'evidence_summary': (
+                evidence_summary
+                or ((evidence or {}).get('evidence_summary') if evidence is not None else None)
+            ),
+            'technical_details': json.dumps(sanitized_technical_details, ensure_ascii=False)
+            if sanitized_technical_details is not None
+            else None,
+        }
+        has_content = any(
+            value not in (None, False, '')
+            for key, value in payload.items()
+            if key not in {'execution_attempt_id', 'action'}
+        )
+        return payload if has_content else None
+
+    def _merge_send_result_into_runtime_summary(
+        self,
+        runtime_summary: dict[str, Any] | None,
+        *,
+        runtime_task_id: str | None,
+        task_status: str,
+        error_code: str | None,
+        error_message: str | None,
+        send_result: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        payload = dict(runtime_summary or {})
+        if runtime_task_id and not str(payload.get('id') or '').strip():
+            payload['id'] = runtime_task_id
+        payload.setdefault('status', task_status)
+        payload.setdefault('action', 'send_message')
+        result_payload = dict(payload.get('result') or {})
+        if send_result is not None:
+            if send_result.get('enter_dispatched') is not None:
+                result_payload.setdefault('enterDispatched', send_result['enter_dispatched'])
+            if send_result.get('message_sent') is not None:
+                result_payload.setdefault('messageSent', send_result['message_sent'])
+            if send_result.get('terminal_confirmed') is not None:
+                result_payload.setdefault('terminalConfirmed', send_result['terminal_confirmed'])
+            if send_result.get('terminal_source'):
+                result_payload.setdefault('terminalSource', send_result['terminal_source'])
+        if error_code and 'errorCode' not in payload and 'error_code' not in payload:
+            payload['errorCode'] = error_code
+        if error_message and 'errorMessage' not in payload and 'error_message' not in payload:
+            payload['errorMessage'] = error_message
+        if result_payload:
+            payload['result'] = result_payload
+        return payload or None
+
+    async def _persist_execution_result(
+        self,
+        *,
+        task_id: int,
+        attempt_id: int,
+        batch_id: int,
+        scope: dict[str, Any],
+        action: str,
+        task_status: str,
+        error_code: str | None,
+        error_message: str | None,
+        runtime_task_id: str | None,
+        sanitized_runtime_result: dict[str, Any] | None,
+        evidence_payload: dict[str, Any] | None,
+        draft_id: int | None = None,
+        send_status_updates: dict[str, Any] | None = None,
+        fallback_send_result: dict[str, Any] | None = None,
+        original_error_message: str | None = None,
+        claim_token: str | None = None,
+    ):
+        try:
+            async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+                if claim_token is not None:
+                    current_task = await self.repository.get_execution_task(
+                        int(task_id),
+                        bot_uuid=scope['bot_uuid'],
+                        connector_id=scope['connector_id'],
+                        conn=conn,
+                    )
+                    if current_task is None or str(current_task.claim_token or '') != claim_token:
+                        return current_task
+                await self.repository.update_execution_attempt(
+                    int(attempt_id),
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                    updates={
+                        'status': task_status,
+                        'runtime_task_id': runtime_task_id,
+                        'response_summary': json.dumps(sanitized_runtime_result, ensure_ascii=False)
+                        if sanitized_runtime_result is not None
+                        else None,
+                        'error_code': error_code,
+                        'error_message': error_message,
+                        'finished_at': sqlalchemy.func.now(),
+                    },
+                    conn=conn,
+                )
+                if evidence_payload is not None:
+                    await self.repository.create_execution_evidence(conn, evidence_payload)
+                updated = await self.repository.update_execution_task(
+                    int(task_id),
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                    updates={
+                        'status': task_status,
+                        'runtime_task_id': runtime_task_id,
+                        'error_code': error_code,
+                        'error_message': error_message,
+                        'finished_at': sqlalchemy.func.now(),
+                        'claim_token': None,
+                        'claimed_by': None,
+                        'claimed_at': None,
+                        'lease_expires_at': None,
+                    },
+                    conn=conn,
+                )
+                if draft_id is not None and send_status_updates is not None:
+                    await self.repository.update_draft(
+                        int(draft_id),
+                        bot_uuid=scope['bot_uuid'],
+                        connector_id=scope['connector_id'],
+                        updates=send_status_updates,
+                        conn=conn,
+                    )
+                    await self.repository.release_draft_send_reservation(
+                        conn,
+                        draft_id=int(draft_id),
+                        task_id=int(task_id),
+                    )
+                await self.repository.recompute_execution_batch_counts(
+                    int(batch_id),
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                    conn=conn,
+                )
+                return updated
+        except Exception as exc:
+            return await self._persist_execution_result_fallback(
+                task_id=task_id,
+                attempt_id=attempt_id,
+                batch_id=batch_id,
+                scope=scope,
+                action=action,
+                runtime_task_id=runtime_task_id,
+                sanitized_runtime_result=sanitized_runtime_result,
+                evidence_payload=evidence_payload,
+                draft_id=draft_id,
+                original_task_status=task_status,
+                fallback_send_result=fallback_send_result,
+                original_error_message=original_error_message or error_message,
+                persistence_exc=exc,
+                claim_token=claim_token,
+            )
+
+    async def _persist_execution_result_fallback(
+        self,
+        *,
+        task_id: int,
+        attempt_id: int,
+        batch_id: int,
+        scope: dict[str, Any],
+        action: str,
+        runtime_task_id: str | None,
+        sanitized_runtime_result: dict[str, Any] | None,
+        evidence_payload: dict[str, Any] | None,
+        draft_id: int | None,
+        original_task_status: str,
+        fallback_send_result: dict[str, Any] | None,
+        original_error_message: str | None,
+        persistence_exc: Exception,
+        claim_token: str | None = None,
+    ):
+        fallback_error_message = (
+            f'Runtime 已返回，但结果落库失败: {persistence_exc.__class__.__name__}'
+        )
+        fallback_summary = self._merge_send_result_into_runtime_summary(
+            sanitized_runtime_result,
+            runtime_task_id=runtime_task_id,
+            task_status=original_task_status,
+            error_code=BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED,
+            error_message=fallback_error_message,
+            send_result=fallback_send_result,
+        )
+        fallback_technical_details = None
+        if evidence_payload is not None and str(evidence_payload.get('technical_details') or '').strip():
+            try:
+                loaded_details = json.loads(str(evidence_payload['technical_details']))
+                if isinstance(loaded_details, dict):
+                    fallback_technical_details = dict(loaded_details)
+            except Exception:
+                fallback_technical_details = None
+        if fallback_technical_details is None:
+            fallback_technical_details = {}
+        fallback_technical_details['persistence_error_code'] = BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED
+        fallback_technical_details['persistence_error_message'] = fallback_error_message
+        if runtime_task_id:
+            fallback_technical_details['runtime_task_id'] = runtime_task_id
+        if fallback_send_result is not None:
+            if fallback_send_result.get('enter_dispatched') is not None:
+                fallback_technical_details['enter_dispatched'] = fallback_send_result['enter_dispatched']
+            if fallback_send_result.get('message_sent') is not None:
+                fallback_technical_details['message_sent'] = fallback_send_result['message_sent']
+            if fallback_send_result.get('terminal_confirmed') is not None:
+                fallback_technical_details['terminal_confirmed'] = fallback_send_result['terminal_confirmed']
+        fallback_evidence_payload = self._build_execution_evidence_payload(
+            attempt_id=attempt_id,
+            action=action,
+            evidence=None,
+            technical_details=fallback_technical_details,
+            evidence_summary='Recovered minimal runtime result after persistence failure',
+            draft_written=bool((evidence_payload or {}).get('draft_written', False))
+            if evidence_payload is not None
+            else fallback_send_result is not None and fallback_send_result.get('enter_dispatched') is not False,
+            send_triggered=bool((evidence_payload or {}).get('send_triggered', False))
+            if evidence_payload is not None
+            else fallback_send_result is not None and fallback_send_result.get('enter_dispatched') is True,
+        )
+        draft_updates = None
+        if draft_id is not None:
+            if fallback_send_result is not None and fallback_send_result.get('message_sent') is True:
+                draft_updates = {
+                    'send_status': 'sent',
+                    'sent_at': datetime.now(timezone.utc).replace(tzinfo=None),
+                    'error_message': None,
+                }
+            elif fallback_send_result is not None and fallback_send_result.get('enter_dispatched') is False:
+                draft_updates = {
+                    'send_status': 'pending',
+                    'sent_at': None,
+                    'error_message': original_error_message or fallback_error_message,
+                }
+            else:
+                draft_updates = {
+                    'send_status': 'unknown',
+                    'sent_at': None,
+                    'error_message': fallback_error_message,
+                }
+        try:
+            async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+                if claim_token is not None:
+                    current_task = await self.repository.get_execution_task(
+                        int(task_id),
+                        bot_uuid=scope['bot_uuid'],
+                        connector_id=scope['connector_id'],
+                        conn=conn,
+                    )
+                    if current_task is None or str(current_task.claim_token or '') != claim_token:
+                        return current_task
+                await self.repository.update_execution_attempt(
+                    int(attempt_id),
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                    updates={
+                        'status': 'interrupted',
+                        'runtime_task_id': runtime_task_id,
+                        'response_summary': json.dumps(fallback_summary, ensure_ascii=False)
+                        if fallback_summary is not None
+                        else None,
+                        'error_code': BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED,
+                        'error_message': fallback_error_message,
+                        'finished_at': sqlalchemy.func.now(),
+                    },
+                    conn=conn,
+                )
+                if fallback_evidence_payload is not None:
+                    await self.repository.create_execution_evidence(conn, fallback_evidence_payload)
+                updated = await self.repository.update_execution_task(
+                    int(task_id),
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                    updates={
+                        'status': 'interrupted',
+                        'runtime_task_id': runtime_task_id,
+                        'error_code': BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED,
+                        'error_message': fallback_error_message,
+                        'finished_at': sqlalchemy.func.now(),
+                        'claim_token': None,
+                        'claimed_by': None,
+                        'claimed_at': None,
+                        'lease_expires_at': None,
+                    },
+                    conn=conn,
+                )
+                if draft_id is not None and draft_updates is not None:
+                    await self.repository.update_draft(
+                        int(draft_id),
+                        bot_uuid=scope['bot_uuid'],
+                        connector_id=scope['connector_id'],
+                        updates=draft_updates,
+                        conn=conn,
+                    )
+                    await self.repository.release_draft_send_reservation(
+                        conn,
+                        draft_id=int(draft_id),
+                        task_id=int(task_id),
+                    )
+                await self.repository.recompute_execution_batch_counts(
+                    int(batch_id),
+                    bot_uuid=scope['bot_uuid'],
+                    connector_id=scope['connector_id'],
+                    conn=conn,
+                )
+                return updated
+        except Exception as fallback_exc:
+            logger.error(
+                'Broadcast execution result fallback persistence failed',
+                extra={
+                    'task_id': int(task_id),
+                    'attempt_id': int(attempt_id),
+                    'runtime_task_id': runtime_task_id,
+                    'error_code': BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED,
+                    'primary_error_type': persistence_exc.__class__.__name__,
+                    'fallback_error_type': fallback_exc.__class__.__name__,
+                    'action': action,
+                    'request_digest': str(scope.get('request_digest') or ''),
+                },
+            )
+            raise fallback_exc
+
     async def _get_send_task_retry_state(
         self,
         task_row: dict[str, Any] | Any,
@@ -4763,7 +5596,18 @@ class BroadcastService:
         }
 
     def _serialize_execution_batch(self, row) -> dict[str, Any]:
-        return self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastExecutionBatch, row)
+        data = self.ap.persistence_mgr.serialize_model(persistence_broadcast.BroadcastExecutionBatch, row)
+        status = str(data.get('status') or '')
+        mode = str(data.get('mode') or '')
+        terminal = status in {'completed', 'partially_failed', 'failed', 'cancelled', 'interrupted'}
+        data['allowed_actions'] = {
+            'start': mode == 'paste_only' and status in {'created', 'interrupted'},
+            'pause': status in {'queued', 'running'},
+            'resume': status == 'paused',
+            'cancel': not terminal and status != 'cancelling',
+            'retry_failed': False,
+        }
+        return data
 
     async def _build_send_batch_result(
         self,

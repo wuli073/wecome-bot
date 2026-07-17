@@ -1110,9 +1110,11 @@ export interface ApiBroadcastExecutionBatch {
   pending_tasks: number;
   running_tasks: number;
   succeeded_tasks: number;
+  warning_tasks?: number;
   failed_tasks: number;
   cancelled_tasks: number;
   interrupted_tasks: number;
+  unknown_tasks?: number;
   created_by: string;
   last_action_by: string | null;
   error_message: string | null;
@@ -1122,6 +1124,13 @@ export interface ApiBroadcastExecutionBatch {
   paused_at: string | null;
   finished_at: string | null;
   cancelled_at: string | null;
+  allowed_actions?: {
+    start: boolean;
+    pause: boolean;
+    resume: boolean;
+    cancel: boolean;
+    retry_failed: boolean;
+  };
   tasks?: ApiBroadcastExecutionTask[];
   total_count?: number;
   sent_count?: number;

@@ -455,9 +455,11 @@ export interface BroadcastExecutionBatchSummary {
   pendingTasks: number;
   runningTasks: number;
   succeededTasks: number;
+  warningTasks?: number;
   failedTasks: number;
   cancelledTasks: number;
   interruptedTasks: number;
+  unknownTasks?: number;
   createdBy: string;
   lastActionBy: string | null;
   createdAt: string;
@@ -471,6 +473,13 @@ export interface BroadcastExecutionBatchSummary {
   skippedCount?: number;
   duplicateTargetCount?: number;
   items?: BroadcastSendBatchItem[];
+  allowedActions?: {
+    start: boolean;
+    pause: boolean;
+    resume: boolean;
+    cancel: boolean;
+    retryFailed: boolean;
+  };
 }
 
 export interface BroadcastExecutorCapability {

@@ -354,6 +354,7 @@ export default function BroadcastWorkspace() {
     new Map<number, ApiBroadcastExecutionEvidence | null>(),
   );
   const executionLogsHydratedRef = useRef(false);
+  const completedExecutionBatchIdsRef = useRef(new Set<number>());
   const importBusy = importBusyCount > 0;
 
   const pasteVerificationState =
@@ -1394,6 +1395,28 @@ export default function BroadcastWorkspace() {
     };
   }, [latestExecutionBatch, refreshExecutionState, scope, topTab]);
 
+  useEffect(() => {
+    if (
+      !latestExecutionBatch ||
+      latestExecutionBatch.mode !== 'send' ||
+      !EXECUTION_TERMINAL_STATUSES.has(latestExecutionBatch.status) ||
+      completedExecutionBatchIdsRef.current.has(latestExecutionBatch.id)
+    ) {
+      return;
+    }
+    completedExecutionBatchIdsRef.current.add(latestExecutionBatch.id);
+    const sentCount = latestExecutionBatch.sentCount ?? latestExecutionBatch.succeededTasks;
+    const failedCount = latestExecutionBatch.failedCount ?? latestExecutionBatch.failedTasks;
+    const unknownCount = latestExecutionBatch.unknownCount ?? latestExecutionBatch.unknownTasks ?? 0;
+    if (unknownCount > 0) {
+      toast.warning(t('broadcast.toasts.realSendCompletedWithUnknown', { sentCount, failedCount, unknownCount }));
+    } else if (failedCount > 0) {
+      toast.warning(t('broadcast.toasts.realSendCompletedWithFailures', { sentCount, failedCount }));
+    } else {
+      toast.success(t('broadcast.toasts.realSendCompleted', { sentCount }));
+    }
+  }, [latestExecutionBatch, t]);
+
   const resolveTargetDrafts = useCallback(() => {
     if (selectedDrafts.length > 0) {
       return selectedDrafts;
@@ -1478,32 +1501,7 @@ export default function BroadcastWorkspace() {
       setLatestExecutionBatch(batch);
       await refreshDrafts();
       await refreshExecutionState(scope, { refreshAllLogs: true });
-
-      const sentCount = batch.sentCount ?? 0;
-      const failedCount = batch.failedCount ?? 0;
-      const unknownCount = batch.unknownCount ?? 0;
-      if (unknownCount > 0) {
-        toast.warning(
-          t('broadcast.toasts.realSendCompletedWithUnknown', {
-            sentCount,
-            failedCount,
-            unknownCount,
-          }),
-        );
-      } else if (failedCount > 0) {
-        toast.warning(
-          t('broadcast.toasts.realSendCompletedWithFailures', {
-            sentCount,
-            failedCount,
-          }),
-        );
-      } else {
-        toast.success(
-          t('broadcast.toasts.realSendCompleted', {
-            sentCount,
-          }),
-        );
-      }
+      toast.success(t('broadcast.toasts.executionBatchStarted'));
     } catch (error) {
       toast.error(getErrorMessage(error, t('common.error')));
     } finally {

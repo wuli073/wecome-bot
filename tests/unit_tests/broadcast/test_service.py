@@ -17,6 +17,7 @@ from langbot.pkg.entity.persistence import broadcast as persistence_broadcast
 from langbot.pkg.entity.persistence import database_mode as persistence_database_mode
 from langbot.pkg.broadcast.errors import (
     BATCH_VALIDATION_FAILED,
+    BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED,
     BROADCAST_RETRY_SEND_RESULT_UNKNOWN,
     BROADCAST_GROUP_NAME_NOT_FOUND,
     BROADCAST_IMPORT_GROUP_FIELD_CONFIRMATION_REQUIRED,
@@ -92,6 +93,7 @@ class _MiniPersistenceManager:
             await conn.run_sync(persistence_broadcast.BroadcastExecutionTaskAttachment.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastExecutionAttempt.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastExecutionEvidence.__table__.create)
+            await conn.run_sync(persistence_broadcast.BroadcastExecutionLane.__table__.create)
             await conn.run_sync(persistence_broadcast.BroadcastSendConfirmation.__table__.create)
 
     async def dispose(self) -> None:
@@ -885,6 +887,126 @@ async def _create_send_execution_record(
     return batch_id, task_id
 
 
+async def _create_running_send_execution_with_draft(
+    service,
+    persistence_mgr,
+    *,
+    response_summary: dict[str, object] | None,
+    technical_details: dict[str, object] | None = None,
+    runtime_task_id: str = 'runtime-recovery',
+) -> dict[str, object]:
+    prepared = await _prepare_ready_draft_for_execution(service)
+    draft = prepared['draft']
+    repository = service.repository
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id = await repository.create_execution_batch(
+            conn,
+            {
+                **_scope(),
+                'channel': 'wxwork_database',
+                'mode': 'send',
+                'status': 'running',
+                'total_tasks': 1,
+                'pending_tasks': 0,
+                'running_tasks': 1,
+                'succeeded_tasks': 0,
+                'warning_tasks': 0,
+                'failed_tasks': 0,
+                'cancelled_tasks': 0,
+                'interrupted_tasks': 0,
+                'unknown_tasks': 0,
+                'created_by': 'tester@example.com',
+                'last_action_by': 'tester@example.com',
+                'error_message': None,
+                'version': 1,
+            },
+        )
+        task_id = await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': batch_id,
+                'draft_id': draft['id'],
+                'draft_text_snapshot': draft['draft_text'],
+                'target_conversation_snapshot': draft['conversation_name'],
+                'channel': 'wxwork_database',
+                'action': 'send_message',
+                'status': 'running',
+                'sequence_no': 1,
+                'attempt_count': 1,
+                'max_attempts': 3,
+                'idempotency_key': f'broadcast:{batch_id}:1',
+                'request_digest': 'fixture-digest',
+                'runtime_task_id': runtime_task_id,
+                'claim_token': 'claim-token',
+                'claimed_by': 'broadcast-worker',
+                'claimed_at': sqlalchemy.func.now(),
+                'lease_expires_at': sqlalchemy.func.now(),
+                'error_code': None,
+                'error_message': None,
+                'operator_note': None,
+                'finished_at': None,
+            },
+        )
+        await repository.update_draft(
+            draft['id'],
+            **_scope(),
+            updates={
+                'active_send_task_id': task_id,
+                'send_reserved_at': sqlalchemy.func.now(),
+                'send_status': 'pending',
+            },
+            conn=conn,
+        )
+        attempt_id = await repository.create_execution_attempt(
+            conn,
+            {
+                'execution_task_id': task_id,
+                'attempt_no': 1,
+                'idempotency_key': f'broadcast:{task_id}:1',
+                'request_digest': 'fixture-digest',
+                'runtime_task_id': runtime_task_id,
+                'request_summary': json.dumps({'action': 'send_message'}, ensure_ascii=False),
+                'response_summary': json.dumps(response_summary, ensure_ascii=False)
+                if response_summary is not None
+                else None,
+                'status': 'running',
+                'error_code': None,
+                'error_message': None,
+                'finished_at': None,
+            },
+        )
+        await repository.create_execution_evidence(
+            conn,
+            {
+                'execution_attempt_id': attempt_id,
+                'window_title': 'Enterprise WeChat',
+                'target_conversation': draft['conversation_name'],
+                'action': 'send_message',
+                'input_located': True,
+                'draft_written': True,
+                'send_triggered': bool((technical_details or {}).get('enter_dispatched')),
+                'clipboard_restored': True,
+                'runtime_state': str((response_summary or {}).get('status') or 'running'),
+                'evidence_summary': 'fixture',
+                'technical_details': json.dumps(technical_details, ensure_ascii=False)
+                if technical_details is not None
+                else None,
+            },
+        )
+        await repository.recompute_execution_batch_counts(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+    return {
+        'draft_id': draft['id'],
+        'batch_id': batch_id,
+        'task_id': task_id,
+        'attempt_id': attempt_id,
+    }
+
+
 async def _create_paste_execution_record(
     service,
     persistence_mgr,
@@ -1036,6 +1158,9 @@ async def test_create_send_batch_executes_and_marks_draft_sent(service_fixture, 
         },
     )
 
+    assert batch['status'] == 'queued'
+    await service.run_next_execution_task()
+    batch = await service.get_execution_batch_detail(batch['id'], _scope())
     assert batch['mode'] == 'send'
     assert batch['status'] == 'completed'
     assert batch['sent_count'] == 1
@@ -1110,6 +1235,9 @@ async def test_create_send_batch_marks_unknown_after_enter_and_blocks_resend(ser
         },
     )
 
+    assert batch['status'] == 'queued'
+    await service.run_next_execution_task()
+    batch = await service.get_execution_batch_detail(batch['id'], _scope())
     assert batch['unknown_count'] == 1
     assert batch['items'][0]['outcome'] == 'unknown'
     assert batch['items'][0]['enter_dispatched'] is True
@@ -1280,6 +1408,9 @@ async def test_create_send_batch_waits_for_terminal_failed_task(service_fixture,
         },
     )
 
+    assert batch['status'] == 'queued'
+    await service.run_next_execution_task()
+    batch = await service.get_execution_batch_detail(batch['id'], _scope())
     assert runtime_client.get_task_calls == ['runtime-send-terminal-failed']
     assert batch['status'] == 'failed'
     assert batch['finished_at'] is not None
@@ -1378,6 +1509,9 @@ async def test_create_send_batch_waits_for_terminal_success_task(service_fixture
         },
     )
 
+    assert batch['status'] == 'queued'
+    await service.run_next_execution_task()
+    batch = await service.get_execution_batch_detail(batch['id'], _scope())
     assert runtime_client.get_task_calls == ['runtime-send-terminal-succeeded']
     assert batch['status'] == 'completed'
     assert batch['sent_count'] == 1
@@ -1447,6 +1581,9 @@ async def test_create_send_batch_marks_unknown_when_terminal_state_cannot_be_con
         },
     )
 
+    assert batch['status'] == 'queued'
+    await service.run_next_execution_task()
+    batch = await service.get_execution_batch_detail(batch['id'], _scope())
     assert runtime_client.get_task_calls == ['runtime-send-terminal-unknown']
     assert runtime_client.cancel_task_calls == ['runtime-send-terminal-unknown']
     assert batch['status'] == 'interrupted'
@@ -1578,6 +1715,10 @@ async def test_create_send_batch_allows_duplicate_target_conversations_and_keeps
         },
     )
 
+    assert batch['status'] == 'queued'
+    await service.run_next_execution_task()
+    await service.run_next_execution_task()
+    batch = await service.get_execution_batch_detail(batch['id'], _scope())
     assert batch['total_count'] == 2
     assert batch['sent_count'] == 2
     assert batch['duplicate_target_count'] == 1
@@ -1586,6 +1727,343 @@ async def test_create_send_batch_allows_duplicate_target_conversations_and_keeps
         drafts[1]['id'],
     ]
     assert runtime_client.requests == ['Shared Group', 'Shared Group']
+
+
+async def test_reconcile_running_send_task_recovers_runtime_success_and_releases_reservation(
+    service_fixture,
+):
+    service, persistence_mgr = service_fixture
+    record = await _create_running_send_execution_with_draft(
+        service,
+        persistence_mgr,
+        response_summary={
+            'id': 'runtime-recovery',
+            'status': 'running',
+            'stage': 'message_sent',
+            'action': 'send_message',
+        },
+        technical_details={
+            'enter_dispatched': True,
+            'message_sent': None,
+            'terminal_confirmed': False,
+            'send_key_count': 1,
+        },
+        runtime_task_id='runtime-recovery',
+    )
+
+    class _RecoveryRuntimeClient:
+        def __init__(self) -> None:
+            self.get_task_calls: list[str] = []
+
+        async def get_task(self, runtime_task_id: str):
+            self.get_task_calls.append(runtime_task_id)
+            return {
+                'id': runtime_task_id,
+                'status': 'succeeded',
+                'stage': 'message_sent',
+                'action': 'send_message',
+                'result': {
+                    'messageSent': True,
+                    'enterDispatched': True,
+                    'terminalConfirmed': True,
+                    'draftWritten': True,
+                    'inputLocated': True,
+                    'sendKeyCount': 1,
+                },
+            }
+
+    runtime_client = _RecoveryRuntimeClient()
+    service.ap.desktop_automation_service = SimpleNamespace(runtime_client=runtime_client)
+
+    updated = await service.reconcile_running_executions()
+
+    assert updated == 1
+    assert runtime_client.get_task_calls == ['runtime-recovery']
+
+    batch = await service.get_execution_batch_detail(record['batch_id'], _scope())
+    assert batch['status'] == 'completed'
+    assert batch['sent_count'] == 1
+    assert batch['unknown_count'] == 0
+    assert batch['tasks'][0]['status'] == 'succeeded'
+    assert batch['tasks'][0]['claim_token'] is None
+
+    draft = await service.get_draft_detail(record['draft_id'], _scope())
+    assert draft['send_status'] == 'sent'
+
+    attempts = await service.list_execution_attempts(record['task_id'], _scope())
+    response_summary = json.loads(attempts[0]['response_summary'])
+    assert response_summary['status'] == 'succeeded'
+    assert response_summary['result']['messageSent'] is True
+
+
+async def test_reconcile_running_send_task_uses_persisted_evidence_when_runtime_unavailable(
+    service_fixture,
+):
+    service, persistence_mgr = service_fixture
+    record = await _create_running_send_execution_with_draft(
+        service,
+        persistence_mgr,
+        response_summary={
+            'id': 'runtime-unavailable',
+            'status': 'running',
+            'stage': 'post_send_verification',
+            'action': 'send_message',
+        },
+        technical_details={
+            'enter_dispatched': True,
+            'message_sent': None,
+            'terminal_confirmed': False,
+            'send_key_count': 1,
+        },
+        runtime_task_id='runtime-unavailable',
+    )
+
+    class _UnavailableRuntimeClient:
+        def __init__(self) -> None:
+            self.get_task_calls: list[str] = []
+
+        async def get_task(self, runtime_task_id: str):
+            self.get_task_calls.append(runtime_task_id)
+            raise RuntimeError('runtime unavailable')
+
+    runtime_client = _UnavailableRuntimeClient()
+    service.ap.desktop_automation_service = SimpleNamespace(runtime_client=runtime_client)
+
+    updated = await service.reconcile_running_executions()
+
+    assert updated == 1
+    assert runtime_client.get_task_calls == ['runtime-unavailable']
+
+    batch = await service.get_execution_batch_detail(record['batch_id'], _scope())
+    assert batch['status'] == 'interrupted'
+    assert batch['unknown_count'] == 1
+    assert batch['tasks'][0]['status'] == 'interrupted'
+    assert batch['tasks'][0]['retry_allowed'] is False
+
+    draft = await service.get_draft_detail(record['draft_id'], _scope())
+    assert draft['send_status'] == 'unknown'
+
+    attempts = await service.list_execution_attempts(record['task_id'], _scope())
+    response_summary = json.loads(attempts[0]['response_summary'])
+    assert response_summary['status'] == 'unknown'
+    assert response_summary['errorCode'] == 'BROADCAST_RUNTIME_TERMINAL_STATE_UNKNOWN'
+    assert response_summary['result']['enterDispatched'] is True
+    assert response_summary['result']['terminalConfirmed'] is False
+
+
+async def test_persist_execution_result_fallback_uses_new_transaction_and_keeps_runtime_task_id(
+    service_fixture,
+    monkeypatch,
+):
+    service, persistence_mgr = service_fixture
+    record = await _create_running_send_execution_with_draft(
+        service,
+        persistence_mgr,
+        response_summary=None,
+        technical_details=None,
+        runtime_task_id='runtime-persist-fallback',
+    )
+
+    original_update_execution_task = service.repository.update_execution_task
+    failure_state = {'raised': False}
+
+    async def _flaky_update_execution_task(task_id, *, bot_uuid, connector_id, updates, conn=None):
+        if not failure_state['raised'] and updates.get('status') == 'succeeded':
+            failure_state['raised'] = True
+            raise RuntimeError('primary persistence failed')
+        return await original_update_execution_task(
+            task_id,
+            bot_uuid=bot_uuid,
+            connector_id=connector_id,
+            updates=updates,
+            conn=conn,
+        )
+
+    monkeypatch.setattr(service.repository, 'update_execution_task', _flaky_update_execution_task)
+
+    evidence_payload = service._build_execution_evidence_payload(
+        attempt_id=int(record['attempt_id']),
+        action='send_message',
+        evidence={
+            'window_title': 'Enterprise WeChat',
+            'target_conversation': 'Acme Group',
+            'action': 'send_message',
+            'input_located': True,
+            'draft_written': True,
+            'send_triggered': True,
+            'clipboard_restored': True,
+            'runtime_state': 'message_sent',
+            'evidence_summary': 'fixture',
+            'technical_details': {
+                'enter_dispatched': True,
+                'message_sent': True,
+                'terminal_confirmed': True,
+            },
+        },
+    )
+
+    await service._persist_execution_result(
+        task_id=int(record['task_id']),
+        attempt_id=int(record['attempt_id']),
+        batch_id=int(record['batch_id']),
+        scope=_scope(),
+        action='send_message',
+        task_status='succeeded',
+        error_code=None,
+        error_message=None,
+        runtime_task_id='runtime-persist-fallback',
+        sanitized_runtime_result={
+            'id': 'runtime-persist-fallback',
+            'status': 'succeeded',
+            'action': 'send_message',
+            'result': {
+                'messageSent': True,
+                'enterDispatched': True,
+                'terminalConfirmed': True,
+            },
+        },
+        evidence_payload=evidence_payload,
+        draft_id=int(record['draft_id']),
+        send_status_updates=service._build_send_status_updates('succeeded', None),
+        fallback_send_result={
+            'enter_dispatched': True,
+            'message_sent': True,
+            'terminal_confirmed': True,
+            'terminal_source': 'runtime',
+        },
+    )
+
+    assert failure_state['raised'] is True
+
+    batch = await service.get_execution_batch_detail(record['batch_id'], _scope())
+    assert batch['status'] == 'interrupted'
+    assert batch['unknown_count'] == 1
+    assert batch['tasks'][0]['status'] == 'interrupted'
+    assert batch['tasks'][0]['error_code'] == BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED
+    assert batch['tasks'][0]['runtime_task_id'] == 'runtime-persist-fallback'
+
+    draft = await service.get_draft_detail(record['draft_id'], _scope())
+    assert draft['send_status'] == 'sent'
+
+    attempts = await service.list_execution_attempts(record['task_id'], _scope())
+    response_summary = json.loads(attempts[0]['response_summary'])
+    assert response_summary['id'] == 'runtime-persist-fallback'
+    assert response_summary['errorCode'] == BROADCAST_EXECUTION_RESULT_PERSISTENCE_FAILED
+    assert response_summary['result']['messageSent'] is True
+
+
+async def test_execution_batch_detail_reports_warning_counts_and_backend_allowed_actions(
+    service_fixture,
+):
+    service, persistence_mgr = service_fixture
+    repository = service.repository
+    async with persistence_mgr.engine.begin() as conn:
+        batch_id = await repository.create_execution_batch(
+            conn,
+            {
+                **_scope(),
+                'channel': 'wxwork_database',
+                'mode': 'paste_only',
+                'status': 'completed',
+                'total_tasks': 1,
+                'pending_tasks': 0,
+                'running_tasks': 0,
+                'succeeded_tasks': 0,
+                'warning_tasks': 1,
+                'failed_tasks': 0,
+                'cancelled_tasks': 0,
+                'interrupted_tasks': 0,
+                'unknown_tasks': 0,
+                'created_by': 'tester@example.com',
+                'last_action_by': 'tester@example.com',
+                'error_message': None,
+                'version': 1,
+            },
+        )
+        task_id = await repository.create_execution_task(
+            conn,
+            {
+                'execution_batch_id': batch_id,
+                'draft_id': None,
+                'draft_text_snapshot': 'Hello Acme',
+                'target_conversation_snapshot': 'Acme Group',
+                'channel': 'wxwork_database',
+                'action': 'paste_draft',
+                'status': 'succeeded_with_warning',
+                'sequence_no': 1,
+                'attempt_count': 1,
+                'max_attempts': 3,
+                'idempotency_key': f'broadcast:{batch_id}:1',
+                'request_digest': 'fixture-digest',
+                'runtime_task_id': 'runtime-warning',
+                'error_code': None,
+                'error_message': None,
+                'operator_note': None,
+                'finished_at': sqlalchemy.func.now(),
+            },
+        )
+        attempt_id = await repository.create_execution_attempt(
+            conn,
+            {
+                'execution_task_id': task_id,
+                'attempt_no': 1,
+                'idempotency_key': f'broadcast:{task_id}:1',
+                'request_digest': 'fixture-digest',
+                'runtime_task_id': 'runtime-warning',
+                'request_summary': json.dumps({'action': 'paste_draft'}, ensure_ascii=False),
+                'response_summary': json.dumps(
+                    {
+                        'id': 'runtime-warning',
+                        'status': 'succeeded_with_warning',
+                        'action': 'paste_draft',
+                        'result': {
+                            'terminalConfirmed': True,
+                            'enterDispatched': False,
+                            'draftWritten': True,
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                'status': 'succeeded_with_warning',
+                'error_code': None,
+                'error_message': None,
+                'finished_at': sqlalchemy.func.now(),
+            },
+        )
+        await repository.create_execution_evidence(
+            conn,
+            {
+                'execution_attempt_id': attempt_id,
+                'window_title': 'Enterprise WeChat',
+                'target_conversation': 'Acme Group',
+                'action': 'paste_draft',
+                'input_located': True,
+                'draft_written': True,
+                'send_triggered': False,
+                'clipboard_restored': True,
+                'runtime_state': 'succeeded_with_warning',
+                'evidence_summary': 'fixture',
+                'technical_details': json.dumps({'enter_dispatched': False}, ensure_ascii=False),
+            },
+        )
+        await repository.recompute_execution_batch_counts(
+            batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+
+    detail = await service.get_execution_batch_detail(batch_id, _scope())
+    assert detail['status'] == 'completed'
+    assert detail['warning_tasks'] == 1
+    assert detail['unknown_tasks'] == 0
+    assert detail['allowed_actions'] == {
+        'start': False,
+        'pause': False,
+        'resume': False,
+        'cancel': False,
+        'retry_failed': False,
+    }
 
 async def test_render_template_requires_exactly_one_of_template_id_or_content(service_fixture):
     service, _ = service_fixture
@@ -3189,3 +3667,49 @@ async def test_upload_import_rejects_invalid_group_field_override_with_structure
     assert details['group_field_override'] == '\u7528\u6237\u540d'
     assert details['headers'] == ['\u5ba2\u6237\u540d\u79f0', '\u8ba2\u5355\u53f7']
     assert details['original_file_name'] == 'customers.csv'
+
+
+async def test_verify_execution_schema_accepts_current_execution_schema(service_fixture):
+    service, _ = service_fixture
+
+    await service.verify_execution_schema()
+
+async def test_persist_execution_result_does_not_finalize_a_task_after_claim_is_lost(
+    service_fixture,
+):
+    service, persistence_mgr = service_fixture
+    record = await _create_running_send_execution_with_draft(
+        service,
+        persistence_mgr,
+        response_summary={'id': 'runtime-claim-loss', 'status': 'running'},
+        runtime_task_id='runtime-claim-loss',
+    )
+
+    task = await service.repository.get_execution_task(record['task_id'], **_scope())
+    attempt = await service.repository.get_execution_attempt_by_runtime_task_id(
+        'runtime-claim-loss',
+        **_scope(),
+    )
+    updated = await service._persist_execution_result(
+        task_id=record['task_id'],
+        attempt_id=int(attempt.id),
+        batch_id=record['batch_id'],
+        scope=_scope(),
+        action='send_message',
+        task_status='succeeded',
+        error_code=None,
+        error_message=None,
+        runtime_task_id='runtime-claim-loss',
+        sanitized_runtime_result={'id': 'runtime-claim-loss', 'status': 'succeeded'},
+        evidence_payload=None,
+        draft_id=record['draft_id'],
+        send_status_updates={'send_status': 'sent'},
+        fallback_send_result=None,
+        original_error_message=None,
+        claim_token='different-worker-claim',
+    )
+
+    assert updated.id == task.id
+    refreshed = await service.repository.get_execution_task(record['task_id'], **_scope())
+    assert refreshed.status == 'running'
+    assert refreshed.claim_token == 'claim-token'

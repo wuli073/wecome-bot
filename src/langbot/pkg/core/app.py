@@ -207,6 +207,7 @@ class Application:
         self.startup_task: asyncio.Task[None] | None = None
         self.http_task_wrapper: taskmgr.TaskWrapper | None = None
         self._boot_started_at = time.monotonic()
+        self._broadcast_worker_started = False
 
     def set_startup_phase(self, stage: str, *, error: str | None = None) -> None:
         """Record a non-sensitive packaged startup transition."""
@@ -240,28 +241,45 @@ class Application:
         self.set_startup_phase(state.value, error=failure_code)
 
     async def initialize(self):
-        if self.desktop_automation_service is None:
-            return
-
-        desktop_automation_cfg = self.instance_config.data.get('desktop_automation', {})
-        if not desktop_automation_cfg.get('enabled', False):
-            if self.logger is not None:
-                self.logger.info('Desktop runtime disabled.')
-            return
-
-        async def prewarm_runtime():
-            try:
-                await self.desktop_automation_service.ensure_runtime_client()
+        if self.desktop_automation_service is not None:
+            desktop_automation_cfg = self.instance_config.data.get('desktop_automation', {})
+            if not desktop_automation_cfg.get('enabled', False):
                 if self.logger is not None:
-                    self.logger.info('Desktop runtime ready (prewarm).')
-            except Exception as exc:
-                self.report_optional_failure('desktop-runtime-prewarm', exc)
+                    self.logger.info('Desktop runtime disabled.')
+            else:
+                async def prewarm_runtime():
+                    try:
+                        await self.desktop_automation_service.ensure_runtime_client()
+                        if self.logger is not None:
+                            self.logger.info('Desktop runtime ready (prewarm).')
+                    except Exception as exc:
+                        self.report_optional_failure('desktop-runtime-prewarm', exc)
 
-        self.task_mgr.create_task(
-            prewarm_runtime(),
-            name='desktop-runtime-prewarm',
-            scopes=[core_entities.LifecycleControlScope.APPLICATION],
-        )
+                self.task_mgr.create_task(
+                    prewarm_runtime(),
+                    name='desktop-runtime-prewarm',
+                    scopes=[core_entities.LifecycleControlScope.APPLICATION],
+                )
+
+        await self._start_broadcast_execution_worker()
+
+    async def _start_broadcast_execution_worker(self) -> None:
+        if self._broadcast_worker_started:
+            return
+        if os.environ.get('LANGBOT_DISABLE_BROADCAST_WORKER') == '1':
+            if self.logger is not None:
+                self.logger.info('Broadcast worker disabled by LANGBOT_DISABLE_BROADCAST_WORKER.')
+            return
+        if os.environ.get('WERKZEUG_RUN_MAIN') == 'false':
+            if self.logger is not None:
+                self.logger.info('Broadcast worker skipped in development reload parent process.')
+            return
+
+        worker = self.broadcast_execution_worker
+        if worker is None:
+            return
+        await worker.start()
+        self._broadcast_worker_started = True
 
     def request_shutdown(self, reason: str | None = None) -> None:
         if reason is not None and self._shutdown_reason is None:

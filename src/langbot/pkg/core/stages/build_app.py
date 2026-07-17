@@ -282,8 +282,6 @@ class BuildAppStage(stage.BootingStage):
         ap.broadcast_execution_worker = BroadcastExecutionWorker(
             service=ap.broadcast_service,
         )
-        quart_app = ap.http_ctrl.quart_app
-
         repo_root_text = paths.get_repo_root()
         repo_root = Path(repo_root_text).resolve() if repo_root_text else None
         watcher = build_local_shutdown_watcher_from_env(
@@ -297,15 +295,6 @@ class BuildAppStage(stage.BootingStage):
                 name='local-shutdown-control-watcher',
                 scopes=[core_entities.LifecycleControlScope.APPLICATION],
             )
-
-        @quart_app.before_serving
-        async def _start_broadcast_execution_worker() -> None:
-            await ap.broadcast_execution_worker.start()
-
-        @quart_app.after_serving
-        async def _stop_broadcast_execution_worker() -> None:
-            await ap.broadcast_execution_worker.stop()
-
         maintenance_service_inst = maintenance_service.MaintenanceService(ap)
         ap.maintenance_service = maintenance_service_inst
 

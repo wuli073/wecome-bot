@@ -2303,7 +2303,7 @@ const jaJP = {
       protocolVersion: 'プロトコルバージョン',
       latestBatchTitle: '最新バッチ #{{id}}',
       batchSummary:
-        '状態 {{status}} · モード {{mode}} · 保留 {{pending}} · 実行中 {{running}} · 成功 {{succeeded}} · 失敗 {{failed}} · キャンセル {{cancelled}} · 中断 {{interrupted}}',
+        '状態 {{status}} · モード {{mode}} · 合計 {{total}} · 保留 {{pending}} · 実行中 {{running}} · 成功 {{succeeded}} · 警告 {{warning}} · 失敗 {{failed}} · 結果不明 {{unknown}} · キャンセル {{cancelled}} · 中断 {{interrupted}}',
       startBatch: '開始',
       pauseBatch: '一時停止',
       resumeBatch: '再開',

@@ -254,6 +254,10 @@ class BroadcastDraft(Base):
     status = sqlalchemy.Column(sqlalchemy.String(32), nullable=False, index=True)
     send_status = sqlalchemy.Column(sqlalchemy.String(32), nullable=True, index=True)
     sent_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
+    # A send reservation is deliberately stored on the draft so concurrent API
+    # requests cannot both create a real-send task for the same message.
+    active_send_task_id = sqlalchemy.Column(sqlalchemy.Integer, nullable=True, index=True)
+    send_reserved_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
     error_message = sqlalchemy.Column(sqlalchemy.Text, nullable=True)
     attachments_stale = sqlalchemy.Column(
         sqlalchemy.Boolean,
@@ -287,9 +291,11 @@ class BroadcastExecutionBatch(Base):
     pending_tasks = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, server_default='0', default=0)
     running_tasks = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, server_default='0', default=0)
     succeeded_tasks = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, server_default='0', default=0)
+    warning_tasks = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, server_default='0', default=0)
     failed_tasks = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, server_default='0', default=0)
     cancelled_tasks = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, server_default='0', default=0)
     interrupted_tasks = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, server_default='0', default=0)
+    unknown_tasks = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, server_default='0', default=0)
     created_by = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
     last_action_by = sqlalchemy.Column(sqlalchemy.String(255), nullable=True)
     error_message = sqlalchemy.Column(sqlalchemy.Text, nullable=True)
@@ -334,6 +340,10 @@ class BroadcastExecutionTask(Base):
     idempotency_key = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
     request_digest = sqlalchemy.Column(sqlalchemy.String(64), nullable=False)
     runtime_task_id = sqlalchemy.Column(sqlalchemy.String(255), nullable=True)
+    claim_token = sqlalchemy.Column(sqlalchemy.String(64), nullable=True, index=True)
+    claimed_by = sqlalchemy.Column(sqlalchemy.String(255), nullable=True)
+    claimed_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
+    lease_expires_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True, index=True)
     error_code = sqlalchemy.Column(sqlalchemy.String(255), nullable=True)
     error_message = sqlalchemy.Column(sqlalchemy.Text, nullable=True)
     operator_note = sqlalchemy.Column(sqlalchemy.Text, nullable=True)
@@ -347,6 +357,17 @@ class BroadcastExecutionTask(Base):
         server_default=sqlalchemy.func.now(),
         onupdate=sqlalchemy.func.now(),
     )
+
+
+class BroadcastExecutionLane(Base):
+    __tablename__ = 'broadcast_execution_lanes'
+
+    lane_key = sqlalchemy.Column(sqlalchemy.String(64), primary_key=True)
+    owner_token = sqlalchemy.Column(sqlalchemy.String(64), nullable=True, index=True)
+    owner_instance = sqlalchemy.Column(sqlalchemy.String(255), nullable=True)
+    acquired_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
+    lease_expires_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True, index=True)
+    version = sqlalchemy.Column(sqlalchemy.Integer, nullable=False, server_default='1', default=1)
 
 
 class BroadcastExecutionAttempt(Base):

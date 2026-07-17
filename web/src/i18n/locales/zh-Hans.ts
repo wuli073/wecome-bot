@@ -2298,7 +2298,7 @@ const zhHans = {
       protocolVersion: '协议版本',
       latestBatchTitle: '最新批次 #{{id}}',
       batchSummary:
-        '状态 {{status}} · 模式 {{mode}} · 待执行 {{pending}} · 运行中 {{running}} · 成功 {{succeeded}} · 失败 {{failed}} · 已取消 {{cancelled}} · 已中断 {{interrupted}}',
+        '状态 {{status}} · 模式 {{mode}} · 总数 {{total}} · 待执行 {{pending}} · 运行中 {{running}} · 成功 {{succeeded}} · 警告 {{warning}} · 失败 {{failed}} · 结果未知 {{unknown}} · 已取消 {{cancelled}} · 已中断 {{interrupted}}',
       startBatch: '启动',
       pauseBatch: '暂停',
       resumeBatch: '继续',

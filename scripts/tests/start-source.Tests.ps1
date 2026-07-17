@@ -306,3 +306,13 @@ Describe 'source listener ownership recovery' {
         }
     }
 }
+
+Describe 'broadcast worker startup readiness' {
+    It 'waits for schema verification, recovery, and a single running worker before launching web' {
+        $content = [IO.File]::ReadAllText($scriptPath)
+        $content | Should Match 'broadcast_schema_ready'
+        $content | Should Match 'broadcast_recovery_completed'
+        $content | Should Match 'broadcast_worker_running'
+        $content | Should Match 'Wait-ForBackend'
+    }
+}

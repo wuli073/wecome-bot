@@ -153,7 +153,7 @@ function Test-BackendHealthy {
     try {
         $health = Invoke-JsonGet "$script:BaseUrl/healthz"
         $runtime = Invoke-JsonGet "$script:BaseUrl/api/v1/system/runtime/status"
-        $ready = Invoke-JsonGet "$script:BaseUrl/readyz"
+            $ready = Invoke-JsonGet "$script:BaseUrl/readyz"
         return $health.code -eq 0 -and $runtime.state -in @('CORE_READY', 'READY', 'DEGRADED') -and $ready.state -in @('CORE_READY', 'READY', 'DEGRADED')
     }
     catch { return $false }
@@ -287,10 +287,16 @@ function Wait-ForBackend([string]$Path, [int]$Timeout) {
             $health = Invoke-JsonGet "$script:BaseUrl/healthz"
             $runtime = Invoke-JsonGet "$script:BaseUrl/api/v1/system/runtime/status"
             $ready = Invoke-JsonGet "$script:BaseUrl/readyz"
-            if ($health.code -eq 0 -and $runtime.state -in @('CORE_READY', 'READY', 'DEGRADED') -and $ready.state -in @('CORE_READY', 'READY', 'DEGRADED')) {
-                return [ordered]@{ health=$health; runtime=$runtime; ready=$ready }
+            $broadcast = Get-ManagedSourceStateProperty -Object $runtime -Name 'broadcast'
+            $broadcastState = Get-ManagedSourceStateProperty -Object $broadcast -Name 'broadcast_worker_state'
+            $broadcastReady = $broadcast -and `
+                (Get-ManagedSourceStateProperty -Object $broadcast -Name 'broadcast_schema_ready') -eq $true -and `
+                (Get-ManagedSourceStateProperty -Object $broadcast -Name 'broadcast_recovery_completed') -eq $true -and `
+                (Get-ManagedSourceStateProperty -Object $broadcast -Name 'broadcast_worker_running') -eq $true
+            if ($health.code -eq 0 -and $runtime.state -in @('CORE_READY', 'READY', 'DEGRADED') -and $ready.state -in @('CORE_READY', 'READY', 'DEGRADED') -and $broadcastReady) {
+                return [ordered]@{ health=$health; runtime=$runtime; ready=$ready; broadcast=$broadcast }
             }
-            $lastError = "health=$($health.state); runtime=$($runtime.state); ready=$($ready.state)"
+            $lastError = "health=$($health.state); runtime=$($runtime.state); ready=$($ready.state); broadcast=$broadcastState"
         }
         catch { $lastError = $_.Exception.Message }
         Start-Sleep -Milliseconds 500

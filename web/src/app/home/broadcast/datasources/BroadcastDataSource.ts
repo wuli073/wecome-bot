@@ -490,9 +490,11 @@ function fromApiExecutionBatch(
     pendingTasks: batch.pending_tasks,
     runningTasks: batch.running_tasks,
     succeededTasks: batch.succeeded_tasks,
+    warningTasks: batch.warning_tasks,
     failedTasks: batch.failed_tasks,
     cancelledTasks: batch.cancelled_tasks,
     interruptedTasks: batch.interrupted_tasks,
+    unknownTasks: batch.unknown_tasks,
     createdBy: batch.created_by,
     lastActionBy: batch.last_action_by,
     createdAt: batch.created_at,
@@ -505,6 +507,15 @@ function fromApiExecutionBatch(
     unknownCount: batch.unknown_count,
     skippedCount: batch.skipped_count,
     duplicateTargetCount: batch.duplicate_target_count,
+    allowedActions: batch.allowed_actions
+      ? {
+          start: batch.allowed_actions.start,
+          pause: batch.allowed_actions.pause,
+          resume: batch.allowed_actions.resume,
+          cancel: batch.allowed_actions.cancel,
+          retryFailed: batch.allowed_actions.retry_failed,
+        }
+      : undefined,
     items: (batch.items || []).map(
       (item): BroadcastSendBatchItem => ({
         draftId: item.draft_id,
