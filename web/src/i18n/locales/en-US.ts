@@ -2129,7 +2129,7 @@ const enUS = {
       enabledRules: 'Enabled Rules',
       groupNameDirectory: 'Group name directory',
       groupNameDirectoryDescription:
-        'Maintain reusable target group names with their stable ID and matchability state in one place.',
+        'Maintain target group names available to matching rules. Manual groups without a stable ID will be matched by name.',
       groupNamesMaintained: 'Managed group names ({{count}})',
       noGroupNames:
         'No group names yet. Added names appear in the target selector immediately.',

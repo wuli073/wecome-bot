@@ -925,7 +925,7 @@ test.describe('broadcast workflow', () => {
       broadcastSendEnabled: true,
     }));
 
-    const manualGroupName = 'Northwind Manual Group';
+    const manualGroupName = '\u5c0f\u6ee1';
     const groupNameAddedToast = zhHansBroadcastToasts.groupNameAdded.replace(
       '{{name}}',
       manualGroupName,
@@ -963,6 +963,9 @@ test.describe('broadcast workflow', () => {
 
     await openGroupMatchingTab(page);
     await expect(page.getByTestId('broadcast-group-name-directory')).toBeVisible();
+    await expect(page.getByText('\u7fa4\u540d\u79f0\u7ba1\u7406', { exact: true })).toBeVisible();
+    await expect(page.getByText('\u6309\u7fa4\u540d\u79f0\u5339\u914d').first()).toBeVisible();
+    await expect(page.getByText(/^\u5df2\u7ef4\u62a4\u7fa4\u540d\u79f0\uff08\d+\uff09$/)).toBeVisible();
 
     const groupNameInput = page.locator('#broadcast-group-names-input');
     await groupNameInput.fill(manualGroupName);
@@ -979,6 +982,8 @@ test.describe('broadcast workflow', () => {
     await expect(
       page.getByTestId('broadcast-group-name-directory'),
     ).toContainText(zhHansBroadcastRules.groupNameSelectableDeferred);
+    await expect(page.getByTestId('broadcast-group-name-directory')).not.toContainText('????');
+    await expect(page.getByTestId('broadcast-group-matching-panel')).not.toContainText('????');
 
     await page.reload();
     await expect(page).toHaveURL(/\/home\/broadcast$/);

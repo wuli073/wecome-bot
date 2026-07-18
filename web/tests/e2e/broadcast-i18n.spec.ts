@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 import enUS from '../../src/i18n/locales/en-US';
+import jaJP from '../../src/i18n/locales/ja-JP';
 import zhHans from '../../src/i18n/locales/zh-Hans';
 
 function flattenKeys(
@@ -40,6 +41,54 @@ function flattenStringValues(
 
   return output;
 }
+const groupNameActionKeys = ['addGroupNames', 'refreshGroupNames'];
+const groupNameRuleKeys = [
+  'groupNameDirectory',
+  'groupNameDirectoryDescription',
+  'groupNamesMaintained',
+  'noGroupNames',
+  'groupNameSourceManual',
+  'groupNameSourceSynced',
+  'groupNameStableIdReady',
+  'groupNameStableIdPending',
+  'groupNameSelectableResolved',
+  'groupNameSelectableDeferred',
+];
+const groupNameToastKeys = [
+  'groupNamesSaved',
+  'groupNameAdded',
+  'groupNameExists',
+  'groupNameRequired',
+  'groupNameReloadMissing',
+  'groupNamesSynced',
+  'groupNameDeleted',
+];
+
+function pickGroupNameTranslations(locale: any) {
+  const broadcast = locale.broadcast as Record<string, any>;
+  return {
+    actions: Object.fromEntries(
+      groupNameActionKeys.map((key) => [key, broadcast.actions[key]]),
+    ),
+    rules: Object.fromEntries(
+      groupNameRuleKeys.map((key) => [key, broadcast.rules[key]]),
+    ),
+    toasts: Object.fromEntries(
+      groupNameToastKeys.map((key) => [key, broadcast.toasts[key]]),
+    ),
+    groupRule: {
+      targetResolution: {
+        deferred: broadcast.groupRule.targetResolution.deferred,
+      },
+    },
+  };
+}
+
+function placeholders(value: string): string[] {
+  return [...value.matchAll(/{{\s*([^{}]+?)\s*}}/g)]
+    .map((match) => match[1])
+    .sort();
+}
 
 test.describe('broadcast i18n', () => {
   test('keeps broadcast locale trees aligned and free of placeholder corruption', () => {
@@ -53,19 +102,33 @@ test.describe('broadcast i18n', () => {
       flattenKeys(enBroadcast.drafts).sort(),
     );
 
-    const allStrings = [
-      ...flattenStringValues(zhBroadcast),
-      ...flattenStringValues(enBroadcast),
-    ];
-    for (const entry of allStrings) {
-      expect(
-        entry.value,
-        `${entry.key} should not contain raw fallback keys`,
-      ).not.toContain('broadcast.');
-      expect(
-        entry.value,
-        `${entry.key} should not contain repeated ASCII question marks`,
-      ).not.toMatch(/\?{2,}/);
+    const zhGroupNames = pickGroupNameTranslations(zhHans);
+    const enGroupNames = pickGroupNameTranslations(enUS);
+    const jaGroupNames = pickGroupNameTranslations(jaJP);
+
+    expect(flattenKeys(zhGroupNames).sort()).toEqual(
+      flattenKeys(enGroupNames).sort(),
+    );
+    expect(flattenKeys(zhGroupNames).sort()).toEqual(
+      flattenKeys(jaGroupNames).sort(),
+    );
+
+    for (const locale of [zhGroupNames, enGroupNames, jaGroupNames]) {
+      expect(JSON.stringify(locale)).not.toMatch(/\?{3,}/);
+    }
+
+    const zhStrings = Object.fromEntries(
+      flattenStringValues(zhGroupNames).map(({ key, value }) => [key, value]),
+    );
+    const enStrings = Object.fromEntries(
+      flattenStringValues(enGroupNames).map(({ key, value }) => [key, value]),
+    );
+    const jaStrings = Object.fromEntries(
+      flattenStringValues(jaGroupNames).map(({ key, value }) => [key, value]),
+    );
+    for (const [key, value] of Object.entries(zhStrings)) {
+      expect(placeholders(value)).toEqual(placeholders(enStrings[key]));
+      expect(placeholders(value)).toEqual(placeholders(jaStrings[key]));
     }
 
     expect(zhBroadcast.scope.selectBot).toBe('选择 Bot');
