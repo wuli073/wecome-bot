@@ -2170,6 +2170,11 @@ const jaJP = {
       groupNameStableIdPending: '安定 ID なし',
       groupNameSelectableResolved: '照合可能',
       groupNameSelectableDeferred: 'グループ名で照合',
+      groupTargetStates: {
+        stableIdReady: '同期済みグループ · 安定 ID を取得済み',
+        nameMatch: '手動グループ · グループ名で照合',
+        invalid: '対象グループ情報が不完全です',
+      },
       groupBuckets: '状態グループ',
       groupBucketsDescription:
         '将来のオペレーター確認フローに合わせて状態別に整理します。',

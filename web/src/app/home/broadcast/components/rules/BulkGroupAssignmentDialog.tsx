@@ -32,6 +32,7 @@ import {
 } from '@/components/ui/table';
 
 import GroupConversationSelector from '../shared/GroupConversationSelector';
+import { getGroupTargetState } from '../../groupTargetState';
 import type {
   BroadcastGroupName,
   BroadcastGroupRuleCandidateList,
@@ -367,16 +368,14 @@ export default function BulkGroupAssignmentDialog({
                                   )}
                                 </option>
                                 {groupNames.map((groupName) => {
-                                  const stableId =
-                                    groupName.externalConversationId?.trim();
+                                  const targetState = getGroupTargetState(groupName);
                                   return (
                                     <option
                                       key={groupName.id}
                                       value={String(groupName.id)}
+                                      disabled={!targetState.selectable}
                                     >
-                                      {stableId
-                                        ? groupName.name
-                                        : `${groupName.name} · ${t('broadcast.groupRule.targetResolution.deferred')}`}
+                                      {`${groupName.name} · ${t(`broadcast.rules.groupTargetStates.${targetState.labelKey}`)}`}
                                     </option>
                                   );
                                 })}

@@ -5943,3 +5943,62 @@ class TestBroadcastApi:
         assert response.status_code == 200
         assert payload['data']['updated_count'] == 1
         assert runtime_client.requests == []
+
+async def test_pdf_and_xlsx_draft_attachments_upload_persist_and_delete(quart_test_client):
+    draft = (await _create_ready_drafts(quart_test_client, group_values=['Acme']))[0]
+    draft_id = draft['id']
+
+    pdf_response = await quart_test_client.post(
+        f'/api/v1/broadcast/drafts/{draft_id}/attachments',
+        headers=_auth_headers(),
+        form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        files={
+            'files': FileStorage(
+                stream=BytesIO(b'%PDF-1.4\n% broadcast test\n'),
+                filename='test-document.pdf',
+                content_type='application/pdf',
+            ),
+        },
+    )
+    assert pdf_response.status_code == 200
+    pdf_payload = await pdf_response.get_json()
+    assert pdf_payload['data']['attachments'][0]['original_name'] == 'test-document.pdf'
+    assert pdf_payload['data']['attachments'][0]['mime_type'] == 'application/pdf'
+
+    detail_response = await quart_test_client.get(
+        f'/api/v1/broadcast/drafts/{draft_id}?{_query_scope()}',
+        headers=_auth_headers(),
+    )
+    assert detail_response.status_code == 200
+    detail_payload = await detail_response.get_json()
+    assert detail_payload['data']['attachments'][0]['original_name'] == 'test-document.pdf'
+
+    xlsx_response = await quart_test_client.post(
+        f'/api/v1/broadcast/drafts/{draft_id}/attachments',
+        headers=_auth_headers(),
+        form={'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
+        files={
+            'files': FileStorage(
+                stream=BytesIO(b'PK\x03\x04xlsx fixture'),
+                filename='test-book.xlsx',
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            ),
+        },
+    )
+    assert xlsx_response.status_code == 200
+    xlsx_payload = await xlsx_response.get_json()
+    assert {item['original_name'] for item in xlsx_payload['data']['attachments']} == {
+        'test-document.pdf',
+        'test-book.xlsx',
+    }
+
+    pdf_attachment_id = pdf_payload['data']['attachments'][0]['id']
+    delete_response = await quart_test_client.delete(
+        f'/api/v1/broadcast/drafts/{draft_id}/attachments/{pdf_attachment_id}?{_query_scope()}',
+        headers=_auth_headers(),
+    )
+    assert delete_response.status_code == 200
+    delete_payload = await delete_response.get_json()
+    assert [item['original_name'] for item in delete_payload['data']['attachments']] == [
+        'test-book.xlsx',
+    ]

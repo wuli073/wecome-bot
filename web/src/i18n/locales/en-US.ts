@@ -2139,6 +2139,11 @@ const enUS = {
       groupNameStableIdPending: 'No stable ID',
       groupNameSelectableResolved: 'Ready to match',
       groupNameSelectableDeferred: 'Match by name',
+      groupTargetStates: {
+        stableIdReady: 'Synced group · Stable ID ready',
+        nameMatch: 'Manual group · Match by name',
+        invalid: 'Target group information is incomplete',
+      },
       groupBuckets: 'Status Groups',
       groupBucketsDescription:
         'Status grouping mirrors the future operator workflow and queue triage.',

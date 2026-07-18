@@ -279,6 +279,7 @@ export default function DraftDetail({
             <input
               ref={attachmentUploadRef}
               type="file"
+              accept=".pdf,.xlsx,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
               multiple
               className="hidden"
               onChange={(event) => {

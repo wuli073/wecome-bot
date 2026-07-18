@@ -141,6 +141,7 @@ test.describe('broadcast group summary and attachments', () => {
       ],
     };
 
+    let attachmentUploadContentType: string | undefined;
     let currentGroupAttachments: Array<{
       id: number;
       attachment_asset_id: number;
@@ -251,6 +252,7 @@ test.describe('broadcast group summary and attachments', () => {
         url.pathname ===
           '/api/v1/broadcast/imports/77/groups/group-xiaoman/attachments'
       ) {
+        attachmentUploadContentType = request.headers()['content-type'];
         currentGroupAttachments = [
           {
             id: 1,
@@ -424,10 +426,11 @@ test.describe('broadcast group summary and attachments', () => {
     await attachmentInput.setInputFiles({
       name: 'proof.pdf',
       mimeType: 'application/pdf',
-      buffer: Buffer.from('fixture-pdf', 'utf-8'),
+      buffer: Buffer.from('%PDF-1.4\n% test pdf\n', 'utf-8'),
     });
 
     await expect(page.locator('body')).toContainText('proof.pdf');
+    expect(attachmentUploadContentType).toMatch(/multipart\/form-data; boundary=/);
 
     await page.locator('[role="tab"]').nth(2).click();
     await expect(

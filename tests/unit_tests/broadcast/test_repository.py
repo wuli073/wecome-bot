@@ -1722,6 +1722,108 @@ async def test_clear_terminal_execution_batches_is_scoped_and_preserves_active_b
         other_scope_batch_id, **_scope(bot_uuid='bot-2')
     ) is not None
 
+async def test_clear_terminal_execution_batches_explicitly_removes_relations_without_foreign_keys(
+    repository_without_foreign_keys_fixture,
+):
+    repository, persistence_mgr = repository_without_foreign_keys_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        pragma_result = await conn.execute(sqlalchemy.text('PRAGMA foreign_keys'))
+        assert pragma_result.scalar_one() == 0
+        batch_id, task_ids = await _create_execution_batch_with_tasks(
+            repository,
+            conn,
+            batch_status='completed',
+            task_specs=[{'status': 'completed'}],
+        )
+        task_id = task_ids[0]
+        attempt_id = await repository.create_execution_attempt(
+            conn,
+            {
+                'execution_task_id': task_id,
+                'attempt_no': 1,
+                'idempotency_key': 'broadcast:cleanup:attempt:1',
+                'request_digest': 'cleanup-digest',
+                'runtime_task_id': 'cleanup-runtime-task',
+                'request_summary': 'request-summary',
+                'response_summary': 'response-summary',
+                'status': 'completed',
+                'error_code': None,
+                'error_message': None,
+            },
+        )
+        await repository.create_execution_evidence(
+            conn,
+            {
+                'execution_attempt_id': attempt_id,
+                'window_title': 'WeCom',
+                'target_conversation': 'Acme Group',
+                'action': 'send_message',
+                'input_located': True,
+                'draft_written': True,
+                'send_triggered': True,
+                'clipboard_restored': True,
+                'runtime_state': 'completed',
+                'evidence_summary': 'summary',
+                'technical_details': 'details',
+            },
+        )
+        result = await repository.clear_terminal_execution_batches(
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+        assert result['deleted_batches'] == 1
+        assert result['deleted_tasks'] == 1
+
+        orphan_task_count = await conn.scalar(
+            sqlalchemy.select(sqlalchemy.func.count())
+            .select_from(persistence_broadcast.BroadcastExecutionTask)
+            .outerjoin(
+                persistence_broadcast.BroadcastExecutionBatch,
+                persistence_broadcast.BroadcastExecutionBatch.id
+                == persistence_broadcast.BroadcastExecutionTask.execution_batch_id,
+            )
+            .where(persistence_broadcast.BroadcastExecutionBatch.id.is_(None)),
+        )
+        orphan_attempt_count = await conn.scalar(
+            sqlalchemy.select(sqlalchemy.func.count())
+            .select_from(persistence_broadcast.BroadcastExecutionAttempt)
+            .outerjoin(
+                persistence_broadcast.BroadcastExecutionTask,
+                persistence_broadcast.BroadcastExecutionTask.id
+                == persistence_broadcast.BroadcastExecutionAttempt.execution_task_id,
+            )
+            .where(persistence_broadcast.BroadcastExecutionTask.id.is_(None)),
+        )
+        orphan_evidence_count = await conn.scalar(
+            sqlalchemy.select(sqlalchemy.func.count())
+            .select_from(persistence_broadcast.BroadcastExecutionEvidence)
+            .outerjoin(
+                persistence_broadcast.BroadcastExecutionAttempt,
+                persistence_broadcast.BroadcastExecutionAttempt.id
+                == persistence_broadcast.BroadcastExecutionEvidence.execution_attempt_id,
+            )
+            .where(persistence_broadcast.BroadcastExecutionAttempt.id.is_(None)),
+        )
+        assert orphan_task_count == 0
+        assert orphan_attempt_count == 0
+        assert orphan_evidence_count == 0
+
+        replacement_batch_id, replacement_task_ids = await _create_execution_batch_with_tasks(
+            repository,
+            conn,
+            batch_status='created',
+            task_specs=[{'status': 'pending'}],
+        )
+        assert replacement_batch_id > 0
+        replacement_task = await repository.get_execution_task(
+            replacement_task_ids[0],
+            **_scope(),
+            conn=conn,
+        )
+        assert replacement_task.sequence_no == 1
+
 async def test_execution_attempt_runtime_task_id_is_unique(repository_fixture):
     repository, persistence_mgr = repository_fixture
 

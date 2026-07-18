@@ -126,6 +126,12 @@ export class BackendClient extends BaseHttpClient {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
 
+    if (
+      typeof FormData !== 'undefined' &&
+      config.data instanceof FormData
+    ) {
+      delete headers['Content-Type'];
+    }
     try {
       const response = await axios.request<{
         code: number;

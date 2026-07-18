@@ -2048,6 +2048,11 @@ const zhHans = {
       groupNameStableIdPending: '无稳定 ID',
       groupNameSelectableResolved: '可直接匹配',
       groupNameSelectableDeferred: '按群名称匹配',
+      groupTargetStates: {
+        stableIdReady: '同步群 · 稳定 ID 已就绪',
+        nameMatch: '手动群 · 按群名称匹配',
+        invalid: '目标群信息不完整，不可选择',
+      },
       groupBuckets: '群聊名单',
       groupBucketsDescription: '集中维护可选群聊，方便规则配置时直接复用。',
       variableMapping: {

@@ -333,6 +333,7 @@ export default function BroadcastWorkspace() {
     useState<BroadcastExecutorHealth | null>(null);
   const [pasteRequestInFlight, setPasteRequestInFlight] = useState(false);
   const importPageSize = 50;
+  const executionCreationInFlightRef = useRef(false);
   const importRequestGenerationRef = useRef(0);
   const importDetailGenerationRef = useRef(0);
   const bootstrapRequestGenerationRef = useRef(0);
@@ -1483,6 +1484,10 @@ export default function BroadcastWorkspace() {
       toast.error(t('broadcast.toasts.batchWritePendingOnly'));
       return;
     }
+    if (executionCreationInFlightRef.current) {
+      return;
+    }
+    executionCreationInFlightRef.current = true;
     setDraftBusy(true);
     try {
       const batch = await dataSource.createExecutionBatch(
@@ -1509,6 +1514,7 @@ export default function BroadcastWorkspace() {
     } catch (error) {
       toast.error(getErrorMessage(error, t('common.error')));
     } finally {
+      executionCreationInFlightRef.current = false;
       setDraftBusy(false);
     }
   };
@@ -1528,6 +1534,10 @@ export default function BroadcastWorkspace() {
       toast.error(t('broadcast.toasts.batchSendPendingOnly'));
       return;
     }
+    if (executionCreationInFlightRef.current) {
+      return;
+    }
+    executionCreationInFlightRef.current = true;
     setDraftBusy(true);
     try {
       const batch = await dataSource.createExecutionBatch(
@@ -1544,6 +1554,7 @@ export default function BroadcastWorkspace() {
     } catch (error) {
       toast.error(getErrorMessage(error, t('common.error')));
     } finally {
+      executionCreationInFlightRef.current = false;
       setDraftBusy(false);
     }
   };

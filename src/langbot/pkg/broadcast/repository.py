@@ -2428,6 +2428,55 @@ class BroadcastRepository:
             ),
             conn=conn,
         )
+        terminal_batch_ids = sqlalchemy.select(
+            persistence_broadcast.BroadcastExecutionBatch.id,
+        ).where(*batch_filter)
+        terminal_task_ids = sqlalchemy.select(
+            persistence_broadcast.BroadcastExecutionTask.id,
+        ).where(
+            persistence_broadcast.BroadcastExecutionTask.execution_batch_id.in_(
+                terminal_batch_ids,
+            ),
+        )
+        terminal_attempt_ids = sqlalchemy.select(
+            persistence_broadcast.BroadcastExecutionAttempt.id,
+        ).where(
+            persistence_broadcast.BroadcastExecutionAttempt.execution_task_id.in_(
+                terminal_task_ids,
+            ),
+        )
+        await self.persistence_mgr.execute_async(
+            sqlalchemy.delete(persistence_broadcast.BroadcastExecutionEvidence).where(
+                persistence_broadcast.BroadcastExecutionEvidence.execution_attempt_id.in_(
+                    terminal_attempt_ids,
+                ),
+            ),
+            conn=conn,
+        )
+        await self.persistence_mgr.execute_async(
+            sqlalchemy.delete(persistence_broadcast.BroadcastExecutionAttempt).where(
+                persistence_broadcast.BroadcastExecutionAttempt.execution_task_id.in_(
+                    terminal_task_ids,
+                ),
+            ),
+            conn=conn,
+        )
+        await self.persistence_mgr.execute_async(
+            sqlalchemy.delete(persistence_broadcast.BroadcastExecutionTaskAttachment).where(
+                persistence_broadcast.BroadcastExecutionTaskAttachment.execution_task_id.in_(
+                    terminal_task_ids,
+                ),
+            ),
+            conn=conn,
+        )
+        await self.persistence_mgr.execute_async(
+            sqlalchemy.delete(persistence_broadcast.BroadcastExecutionTask).where(
+                persistence_broadcast.BroadcastExecutionTask.execution_batch_id.in_(
+                    terminal_batch_ids,
+                ),
+            ),
+            conn=conn,
+        )
         deleted_result = await self.persistence_mgr.execute_async(
             sqlalchemy.delete(persistence_broadcast.BroadcastExecutionBatch).where(*batch_filter),
             conn=conn,

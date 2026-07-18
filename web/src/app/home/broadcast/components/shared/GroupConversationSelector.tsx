@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Input } from '@/components/ui/input';
 
+import { getGroupTargetState } from '../../groupTargetState';
 import type { BroadcastGroupName } from '../../types';
 
 interface GroupConversationSelectorProps {
@@ -76,9 +77,9 @@ export default function GroupConversationSelector({
         data-testid={listTestId}
       >
         {filteredGroupNames.map((groupName) => {
-          const hasStableExternalId = Boolean(
-            groupName.externalConversationId?.trim(),
-          );
+          const targetState = getGroupTargetState(groupName);
+          const hasStableExternalId =
+            targetState.resolutionMode === 'stable_id';
           const selected =
             String(groupName.id) === value ||
             (hasStableExternalId
@@ -91,15 +92,17 @@ export default function GroupConversationSelector({
               className={`w-full rounded-lg border px-3 py-2 text-left text-sm ${
                 selected ? 'border-blue-500 bg-blue-50' : 'bg-background'
               }`}
-              disabled={disabled}
+              disabled={disabled || !targetState.selectable}
               onClick={() => onChange(groupName)}
             >
               <div className="font-medium">{groupName.name}</div>
               <div className="mt-1 text-xs text-muted-foreground">
                 {hasStableExternalId
-                  ? groupName.externalConversationId
-                  : (missingStableIdLabel ??
-                    t('broadcast.groupRule.targetConversationMissingStableId'))}
+                  ? t('broadcast.rules.groupTargetStates.stableIdReady')
+                  : targetState.resolutionMode === 'name'
+                    ? t('broadcast.rules.groupTargetStates.nameMatch')
+                    : (missingStableIdLabel ??
+                      t('broadcast.rules.groupTargetStates.invalid'))}
               </div>
             </button>
           );

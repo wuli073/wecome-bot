@@ -25,6 +25,7 @@ import { Switch } from '@/components/ui/switch';
 import BulkGroupAssignmentDialog from './BulkGroupAssignmentDialog';
 import GroupConversationSelector from '../shared/GroupConversationSelector';
 import GroupMatchPreview from '../shared/GroupMatchPreview';
+import { getGroupTargetState } from '../../groupTargetState';
 import type {
   BroadcastGroupMatchResult,
   BroadcastGroupMatchType,
@@ -759,9 +760,9 @@ export default function GroupMatchingPanel({
           ) : (
             <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
               {groupNames.map((groupName) => {
-                const hasStableExternalId = Boolean(
-                  groupName.externalConversationId?.trim(),
-                );
+                const targetState = getGroupTargetState(groupName);
+                const hasStableExternalId =
+                  targetState.resolutionMode === 'stable_id';
                 return (
                   <div
                     key={groupName.id}
@@ -774,11 +775,9 @@ export default function GroupMatchingPanel({
                           {groupName.name}
                         </div>
                         <div className="break-all text-xs text-muted-foreground">
-                          {hasStableExternalId
-                            ? groupName.externalConversationId
-                            : t(
-                                'broadcast.groupRule.targetResolution.deferred',
-                              )}
+                          {t(
+                            `broadcast.rules.groupTargetStates.${targetState.labelKey}`,
+                          )}
                         </div>
                       </div>
                       <Button
@@ -805,11 +804,11 @@ export default function GroupMatchingPanel({
                           : t('broadcast.rules.groupNameStableIdPending')}
                       </Badge>
                       <Badge
-                        variant={hasStableExternalId ? 'secondary' : 'outline'}
+                        variant={targetState.selectable ? 'secondary' : 'outline'}
                       >
-                        {hasStableExternalId
-                          ? t('broadcast.rules.groupNameSelectableResolved')
-                          : t('broadcast.rules.groupNameSelectableDeferred')}
+                        {t(
+                          `broadcast.rules.groupTargetStates.${targetState.labelKey}`,
+                        )}
                       </Badge>
                     </div>
                   </div>
