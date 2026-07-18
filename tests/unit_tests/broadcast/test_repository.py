@@ -1669,6 +1669,59 @@ async def test_execution_batch_delete_cascades_children(repository_fixture):
     assert await repository.get_execution_evidence(attempt_id, bot_uuid='bot-1', connector_id='wxwork-local') is None
 
 
+async def test_clear_terminal_execution_batches_is_scoped_and_preserves_active_batches(
+    repository_fixture,
+):
+    repository, persistence_mgr = repository_fixture
+
+    async with persistence_mgr.engine.begin() as conn:
+        terminal_batch_id, terminal_task_ids = await _create_execution_batch_with_tasks(
+            repository,
+            conn,
+            batch_status='completed',
+            task_specs=[{'status': 'completed'}],
+        )
+        active_batch_id, _ = await _create_execution_batch_with_tasks(
+            repository,
+            conn,
+            batch_status='running',
+            task_specs=[{'status': 'running'}],
+        )
+        other_scope_batch_id, _ = await _create_execution_batch_with_tasks(
+            repository,
+            conn,
+            batch_status='failed',
+            task_specs=[{'status': 'failed'}],
+        )
+        await repository.update_execution_batch(
+            other_scope_batch_id,
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            updates={'bot_uuid': 'bot-2'},
+            conn=conn,
+        )
+        result = await repository.clear_terminal_execution_batches(
+            bot_uuid='bot-1',
+            connector_id='wxwork-local',
+            conn=conn,
+        )
+
+    assert result == {
+        'deleted_batches': 1,
+        'deleted_tasks': 1,
+        'preserved_active_batches': 1,
+    }
+    assert await repository.get_execution_batch(
+        terminal_batch_id, **_scope()
+    ) is None
+    assert await repository.get_execution_task(
+        terminal_task_ids[0], **_scope()
+    ) is None
+    assert await repository.get_execution_batch(active_batch_id, **_scope()) is not None
+    assert await repository.get_execution_batch(
+        other_scope_batch_id, **_scope(bot_uuid='bot-2')
+    ) is not None
+
 async def test_execution_attempt_runtime_task_id_is_unique(repository_fixture):
     repository, persistence_mgr = repository_fixture
 

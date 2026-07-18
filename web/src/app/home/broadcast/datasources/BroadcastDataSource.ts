@@ -839,7 +839,11 @@ export interface BroadcastDataSource {
   bulkAssignImportGroupRules: (
     scope: BroadcastScope,
     importId: number,
-    items: Array<{ groupKey: string; targetConversationId: string }>,
+    items: Array<{
+      groupKey: string;
+      targetConversationId: string;
+      targetConversationName?: string;
+    }>,
   ) => Promise<BroadcastBulkAssignResult>;
   generateImportDrafts: (
     scope: BroadcastScope,
@@ -910,6 +914,11 @@ export interface BroadcastDataSource {
   listExecutionBatches: (
     scope: BroadcastScope,
   ) => Promise<BroadcastExecutionBatchSummary[]>;
+  clearTerminalExecutionBatches: (scope: BroadcastScope) => Promise<{
+    deletedBatches: number;
+    deletedTasks: number;
+    preservedActiveBatches: number;
+  }>;
   startExecutionTask: (
     scope: BroadcastScope,
     taskId: number,
@@ -1277,6 +1286,7 @@ export function createBroadcastDataSource(): BroadcastDataSource {
           items.map((item) => ({
             group_key: item.groupKey,
             target_conversation_id: item.targetConversationId,
+            target_conversation_name: item.targetConversationName ?? '',
           })),
         ),
       ),
@@ -1397,6 +1407,16 @@ export function createBroadcastDataSource(): BroadcastDataSource {
           operator,
         ),
       ),
+    clearTerminalExecutionBatches: async (scope) => {
+      const result = await backendClient.clearBroadcastTerminalExecutionBatches(
+        toApiScope(scope),
+      );
+      return {
+        deletedBatches: result.deleted_batches,
+        deletedTasks: result.deleted_tasks,
+        preservedActiveBatches: result.preserved_active_batches,
+      };
+    },
     listExecutionBatches: async (scope) =>
       (await backendClient.getBroadcastExecutionBatches(toApiScope(scope))).map(
         fromApiExecutionBatch,

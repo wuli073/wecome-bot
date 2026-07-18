@@ -289,6 +289,13 @@ async def _make_client():
                 }
             ),
             list_execution_batches=AsyncMock(return_value=[]),
+            clear_terminal_execution_batches=AsyncMock(
+                return_value={
+                    'deleted_batches': 2,
+                    'deleted_tasks': 3,
+                    'preserved_active_batches': 1,
+                }
+            ),
             get_execution_batch_detail=AsyncMock(return_value={'id': 301, 'tasks': []}),
             get_execution_task_detail=AsyncMock(return_value={'id': 401, 'status': 'pending'}),
             start_execution_task=AsyncMock(return_value={'id': 401, 'status': 'succeeded'}),
@@ -850,6 +857,25 @@ async def test_create_and_get_execution_routes_use_scope_and_payload():
         {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'},
     )
 
+
+async def test_clear_terminal_execution_batches_route_uses_query_scope():
+    client, ap = await _make_client()
+
+    response = await client.delete(
+        '/api/v1/broadcast/executions/terminal?bot_uuid=bot-1&connector_id=wxwork-local',
+        headers={'Authorization': 'Bearer valid-user-token'},
+    )
+
+    payload = await response.get_json()
+    assert response.status_code == 200
+    assert payload['data'] == {
+        'deleted_batches': 2,
+        'deleted_tasks': 3,
+        'preserved_active_batches': 1,
+    }
+    ap.broadcast_service.clear_terminal_execution_batches.assert_awaited_once_with(
+        {'bot_uuid': 'bot-1', 'connector_id': 'wxwork-local'}
+    )
 
 async def test_execution_task_routes_use_scope_and_map_service_calls():
     client, ap = await _make_client()

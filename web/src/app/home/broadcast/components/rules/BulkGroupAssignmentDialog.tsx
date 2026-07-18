@@ -45,7 +45,11 @@ interface BulkGroupAssignmentDialogProps {
   groupNames: BroadcastGroupName[];
   onOpenChange: (open: boolean) => void;
   onSubmit: (
-    items: Array<{ groupKey: string; targetConversationId: string }>,
+    items: Array<{
+      groupKey: string;
+      targetConversationId: string;
+      targetConversationName: string;
+    }>,
   ) => Promise<void>;
 }
 
@@ -93,7 +97,7 @@ export default function BulkGroupAssignmentDialog({
   const selectedBulkConversation = useMemo(
     () =>
       groupNames.find(
-        (groupName) => groupName.externalConversationId === bulkConversationId,
+        (groupName) => String(groupName.id) === bulkConversationId,
       ) ?? null,
     [bulkConversationId, groupNames],
   );
@@ -121,14 +125,14 @@ export default function BulkGroupAssignmentDialog({
   };
 
   const applyBulkConversationToSelected = () => {
-    if (!selectedBulkConversation?.externalConversationId) {
+    if (!selectedBulkConversation?.name.trim()) {
       setError(t('broadcast.bulkGroupAssignment.validationError'));
       return;
     }
     setAssignments((current) => {
       const next = { ...current };
       for (const groupKey of selectedGroupKeys) {
-        next[groupKey] = selectedBulkConversation.externalConversationId ?? '';
+        next[groupKey] = String(selectedBulkConversation.id);
       }
       return next;
     });
@@ -168,10 +172,17 @@ export default function BulkGroupAssignmentDialog({
 
   const confirmSubmit = async () => {
     await onSubmit(
-      selectedGroupKeys.map((groupKey) => ({
-        groupKey,
-        targetConversationId: assignments[groupKey],
-      })),
+      selectedGroupKeys.map((groupKey) => {
+        const selectedGroup = groupNames.find(
+          (groupName) => String(groupName.id) === assignments[groupKey],
+        );
+        return {
+          groupKey,
+          targetConversationId:
+            selectedGroup?.externalConversationId?.trim() ?? '',
+          targetConversationName: selectedGroup?.name ?? '',
+        };
+      }),
     );
     setConfirmOpen(false);
   };
@@ -209,7 +220,7 @@ export default function BulkGroupAssignmentDialog({
                 onKeywordChange={setBulkKeyword}
                 onChange={(conversation) => {
                   setBulkConversationId(
-                    conversation?.externalConversationId ?? '',
+                    conversation ? String(conversation.id) : '',
                   );
                   setError(null);
                 }}
@@ -235,7 +246,7 @@ export default function BulkGroupAssignmentDialog({
                   disabled={
                     loading ||
                     submitting ||
-                    !selectedBulkConversation?.externalConversationId ||
+                    !selectedBulkConversation?.name.trim() ||
                     selectedGroupKeys.length === 0
                   }
                   onClick={applyBulkConversationToSelected}
@@ -361,16 +372,11 @@ export default function BulkGroupAssignmentDialog({
                                   return (
                                     <option
                                       key={groupName.id}
-                                      value={
-                                        stableId
-                                          ? stableId
-                                          : `legacy:${groupName.id}`
-                                      }
-                                      disabled={!stableId}
+                                      value={String(groupName.id)}
                                     >
                                       {stableId
                                         ? groupName.name
-                                        : `${groupName.name} (${t('broadcast.bulkGroupAssignment.missingStableId')})`}
+                                        : `${groupName.name} · ${t('broadcast.groupRule.targetResolution.deferred')}`}
                                     </option>
                                   );
                                 })}

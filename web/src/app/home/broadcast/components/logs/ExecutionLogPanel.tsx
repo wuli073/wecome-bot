@@ -74,6 +74,7 @@ interface ExecutionLogPanelProps {
   pasteVerificationHint?: string | null;
   busy?: boolean;
   onRecheckExecutorHealth?: () => void;
+  onClearTerminalRecords?: () => void;
   onStartBatch?: () => void;
   onPauseBatch?: () => void;
   onResumeBatch?: () => void;
@@ -246,6 +247,7 @@ export default function ExecutionLogPanel({
   pasteVerificationHint = null,
   busy = false,
   onRecheckExecutorHealth,
+  onClearTerminalRecords,
   onStartBatch,
   onPauseBatch,
   onResumeBatch,
@@ -255,6 +257,7 @@ export default function ExecutionLogPanel({
 }: ExecutionLogPanelProps) {
   const { t } = useTranslation();
   const [retryFailedDialogOpen, setRetryFailedDialogOpen] = useState(false);
+  const [clearTerminalDialogOpen, setClearTerminalDialogOpen] = useState(false);
   const pasteVerificationMethodLabel =
     pasteVerificationMethod === 'windows_uia'
       ? t('broadcast.logs.pasteVerificationMethodWindowsUia')
@@ -320,7 +323,9 @@ export default function ExecutionLogPanel({
 
   const canRunLatestPasteBatch =
     latestBatch?.mode === 'paste_only' ? pasteExecutionAvailable : true;
-  const batchActions = latestBatch?.allowedActions ?? getExecutionBatchActionVisibility(latestBatch);
+  const batchActions =
+    latestBatch?.allowedActions ??
+    getExecutionBatchActionVisibility(latestBatch);
   const retryableTasks = getRetryableExecutionTasks(latestBatch);
   const canStart =
     Boolean(onStartBatch) && batchActions.start && canRunLatestPasteBatch;
@@ -335,7 +340,32 @@ export default function ExecutionLogPanel({
     <Card className="gap-4">
       <CardHeader>
         <CardTitle>{t('broadcast.logs.title')}</CardTitle>
-        <CardDescription>{t('broadcast.logs.description')}</CardDescription>
+        <CardDescription>
+          {t('broadcast.logs.description')}
+        </CardDescription>{' '}
+        <div className="flex flex-wrap gap-2">
+          {onRecheckExecutorHealth ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || executorHealthLoading}
+              onClick={onRecheckExecutorHealth}
+            >
+              {t('broadcast.executor.recheck')}
+            </Button>
+          ) : null}
+          {onClearTerminalRecords ? (
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="broadcast-clear-terminal-records-button"
+              disabled={busy}
+              onClick={() => setClearTerminalDialogOpen(true)}
+            >
+              {t('broadcast.logs.clearTerminal')}
+            </Button>
+          ) : null}
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         <div
@@ -687,6 +717,34 @@ export default function ExecutionLogPanel({
           </Table>
         </div>
       </CardContent>
+      <AlertDialog
+        open={clearTerminalDialogOpen}
+        onOpenChange={setClearTerminalDialogOpen}
+      >
+        <AlertDialogContent data-testid="broadcast-clear-terminal-records-confirm-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('broadcast.logs.clearTerminalConfirmTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('broadcast.logs.clearTerminalConfirmDescription')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="broadcast-clear-terminal-records-confirm-button"
+              onClick={(event) => {
+                event.preventDefault();
+                onClearTerminalRecords?.();
+                setClearTerminalDialogOpen(false);
+              }}
+            >
+              {t('broadcast.logs.clearTerminal')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>{' '}
       <AlertDialog
         open={retryFailedDialogOpen}
         onOpenChange={setRetryFailedDialogOpen}

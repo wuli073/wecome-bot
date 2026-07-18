@@ -79,9 +79,11 @@ export default function GroupConversationSelector({
           const hasStableExternalId = Boolean(
             groupName.externalConversationId?.trim(),
           );
-          const selected = hasStableExternalId
-            ? groupName.externalConversationId === value
-            : !value.trim() && groupName.name === normalizedSelectionName;
+          const selected =
+            String(groupName.id) === value ||
+            (hasStableExternalId
+              ? groupName.externalConversationId === value
+              : !value.trim() && groupName.name === normalizedSelectionName);
           return (
             <button
               key={groupName.id}

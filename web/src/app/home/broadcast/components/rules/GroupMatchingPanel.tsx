@@ -53,7 +53,11 @@ interface GroupMatchingPanelProps {
   onOpenBulkAssignDialog: () => Promise<void>;
   onBulkAssignGroupRules: (
     batchId: number,
-    items: Array<{ groupKey: string; targetConversationId: string }>,
+    items: Array<{
+      groupKey: string;
+      targetConversationId: string;
+      targetConversationName: string;
+    }>,
   ) => Promise<void>;
   onCreateRule: (draft: BroadcastGroupRuleDraft) => Promise<void>;
   onUpdateRule: (
@@ -186,7 +190,9 @@ export default function GroupMatchingPanel({
       toast.error(t('broadcast.toasts.groupNameRequired'));
       return;
     }
-    if (groupNames.some((groupName) => groupName.name.trim() === normalizedName)) {
+    if (
+      groupNames.some((groupName) => groupName.name.trim() === normalizedName)
+    ) {
       toast.error(
         t('broadcast.toasts.groupNameExists', {
           name: normalizedName,
@@ -770,7 +776,9 @@ export default function GroupMatchingPanel({
                         <div className="break-all text-xs text-muted-foreground">
                           {hasStableExternalId
                             ? groupName.externalConversationId
-                            : t('broadcast.groupRule.targetResolution.deferred')}
+                            : t(
+                                'broadcast.groupRule.targetResolution.deferred',
+                              )}
                         </div>
                       </div>
                       <Button
@@ -789,12 +797,16 @@ export default function GroupMatchingPanel({
                           ? t('broadcast.rules.groupNameSourceSynced')
                           : t('broadcast.rules.groupNameSourceManual')}
                       </Badge>
-                      <Badge variant={hasStableExternalId ? 'secondary' : 'outline'}>
+                      <Badge
+                        variant={hasStableExternalId ? 'secondary' : 'outline'}
+                      >
                         {hasStableExternalId
                           ? t('broadcast.rules.groupNameStableIdReady')
                           : t('broadcast.rules.groupNameStableIdPending')}
                       </Badge>
-                      <Badge variant={hasStableExternalId ? 'secondary' : 'outline'}>
+                      <Badge
+                        variant={hasStableExternalId ? 'secondary' : 'outline'}
+                      >
                         {hasStableExternalId
                           ? t('broadcast.rules.groupNameSelectableResolved')
                           : t('broadcast.rules.groupNameSelectableDeferred')}

@@ -2034,23 +2034,21 @@ const jaJP = {
         contains: 'Contains keyword',
         regex: 'Regex match',
       },
-      targetConversationSearchPlaceholder: '????????',
-      targetConversationSelectPlaceholder:
-        '?? ID ??????????',
+      targetConversationSearchPlaceholder: '対象グループ名を検索',
+      targetConversationSelectPlaceholder: '対象グループを選択',
       targetConversationSelectionRequired:
-        '??????????????????????',
-      targetConversationNameRequired: '???????????????',
+        '候補リストから対象グループを選択してください。',
+      targetConversationNameRequired: '対象グループ名を入力してください。',
       targetResolution: {
         deferred: 'グループ名で照合',
-        resolved: '???????',
-        unresolved: '??????',
-        ambiguous:
-          '??????????????????????????',
+        resolved: 'グループを照合済み',
+        unresolved: 'グループ未照合',
+        ambiguous: '同名のグループが複数あります。候補から選択してください。',
       },
       targetConversationLegacyReselect:
-        '???????????????? ID ?????????????????',
+        'この履歴ルールには安定 ID がありません。再選択してください。',
       targetConversationMissingStableId:
-        '?? ID ??????????????????',
+        '安定 ID がないため、グループ名で照合します',
       preview: {
         empty: 'Enter a customer name and run the match preview.',
         matchedBadge: 'Matched',
@@ -2327,6 +2325,14 @@ const jaJP = {
       emptyDetail: '左側のキューからドラフトを選択してください。',
     },
     logs: {
+      clearTerminal: '完了済み記録を消去',
+      clearTerminalConfirmTitle: '完了済み記録を消去',
+      clearTerminalConfirmDescription:
+        '現在のボットとコネクターの完了済み実行記録を消去します。実行中、待機中、一時停止中のタスクは削除されません。',
+      clearTerminalSuccess: '{{count}} 件の実行記録を消去しました',
+      clearTerminalSuccessWithActive:
+        '{{count}} 件の完了済み記録を消去し、{{active}} 件の実行中記録を保持しました',
+      clearTerminalEmpty: '消去できる完了済み実行記録はありません',
       title: '実行ログ',
       description: '将来の API / Runtime 連携に備えた Mock 実行ログ一覧です。',
       executorCapabilitiesTitle: '実行器の能力',

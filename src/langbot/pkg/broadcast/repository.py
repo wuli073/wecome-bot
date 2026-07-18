@@ -2400,6 +2400,43 @@ class BroadcastRepository:
         )
         return self._all_models(result)
 
+    async def clear_terminal_execution_batches(self, *, bot_uuid: str, connector_id: str, conn) -> dict[str, int]:
+        terminal_statuses = ('completed', 'partially_failed', 'failed', 'cancelled', 'interrupted')
+        batch_filter = (
+            persistence_broadcast.BroadcastExecutionBatch.bot_uuid == bot_uuid,
+            persistence_broadcast.BroadcastExecutionBatch.connector_id == connector_id,
+            persistence_broadcast.BroadcastExecutionBatch.status.in_(terminal_statuses),
+        )
+        task_count_result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(sqlalchemy.func.count())
+            .select_from(persistence_broadcast.BroadcastExecutionTask)
+            .join(
+                persistence_broadcast.BroadcastExecutionBatch,
+                persistence_broadcast.BroadcastExecutionBatch.id
+                == persistence_broadcast.BroadcastExecutionTask.execution_batch_id,
+            )
+            .where(*batch_filter),
+            conn=conn,
+        )
+        active_count_result = await self.persistence_mgr.execute_async(
+            sqlalchemy.select(sqlalchemy.func.count())
+            .select_from(persistence_broadcast.BroadcastExecutionBatch)
+            .where(
+                persistence_broadcast.BroadcastExecutionBatch.bot_uuid == bot_uuid,
+                persistence_broadcast.BroadcastExecutionBatch.connector_id == connector_id,
+                ~persistence_broadcast.BroadcastExecutionBatch.status.in_(terminal_statuses),
+            ),
+            conn=conn,
+        )
+        deleted_result = await self.persistence_mgr.execute_async(
+            sqlalchemy.delete(persistence_broadcast.BroadcastExecutionBatch).where(*batch_filter),
+            conn=conn,
+        )
+        return {
+            'deleted_batches': int(deleted_result.rowcount or 0),
+            'deleted_tasks': int(task_count_result.scalar_one() or 0),
+            'preserved_active_batches': int(active_count_result.scalar_one() or 0),
+        }
     async def delete_execution_batch(self, execution_batch_id: int, *, bot_uuid: str, connector_id: str, conn=None) -> bool:
         result = await self.persistence_mgr.execute_async(
             sqlalchemy.delete(persistence_broadcast.BroadcastExecutionBatch).where(

@@ -480,6 +480,14 @@ class BroadcastRouterGroup(group.RouterGroup):
             except BroadcastError as exc:
                 return self._broadcast_error_response(exc)
 
+        @self.route('/executions/terminal', methods=['DELETE'], auth_type=group.AuthType.USER_TOKEN)
+        async def execution_terminal_clear() -> str:
+            try:
+                scope = await self.validate_scope(from_query=True)
+                data = await self.ap.broadcast_service.clear_terminal_execution_batches(scope)
+                return self.success(data=data)
+            except BroadcastError as exc:
+                return self._broadcast_error_response(exc)
         @self.route('/executions/<int:batch_id>', methods=['GET'], auth_type=group.AuthType.USER_TOKEN)
         async def execution_detail(batch_id: int) -> str:
             try:

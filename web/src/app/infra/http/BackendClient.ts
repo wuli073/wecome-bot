@@ -2314,7 +2314,11 @@ export class BackendClient extends BaseHttpClient {
   public bulkAssignBroadcastImportGroupRules(
     scope: ApiBroadcastScope,
     importId: number,
-    items: Array<{ group_key: string; target_conversation_id: string }>,
+    items: Array<{
+      group_key: string;
+      target_conversation_id: string;
+      target_conversation_name: string;
+    }>,
   ): Promise<ApiBroadcastBulkAssignResult> {
     return this.requestBroadcast<ApiBroadcastBulkAssignResult>({
       method: 'post',
@@ -2453,6 +2457,20 @@ export class BackendClient extends BaseHttpClient {
     return this.get('/api/v1/broadcast/executions', scope);
   }
 
+  public clearBroadcastTerminalExecutionBatches(
+    scope: ApiBroadcastScope,
+  ): Promise<{
+    deleted_batches: number;
+    deleted_tasks: number;
+    preserved_active_batches: number;
+  }> {
+    return this.delete(
+      `/api/v1/broadcast/executions/terminal?${this.toSearchParams({
+        bot_uuid: scope.bot_uuid,
+        connector_id: scope.connector_id,
+      })}`,
+    );
+  }
   public getBroadcastExecutionBatchDetail(
     scope: ApiBroadcastScope,
     batchId: number,

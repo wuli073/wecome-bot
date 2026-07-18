@@ -2041,8 +2041,7 @@ const zhHans = {
       groupNameDirectoryDescription:
         '维护可供群匹配规则选择的目标群名称。无稳定 ID 的手动群将按群名称匹配。',
       groupNamesMaintained: '已维护群名称（{{count}}）',
-      noGroupNames:
-        '暂无群名称。手动添加或同步群列表后可在规则中选择。',
+      noGroupNames: '暂无群名称。手动添加或同步群列表后可在规则中选择。',
       groupNameSourceManual: '手动群',
       groupNameSourceSynced: '同步群',
       groupNameStableIdReady: '稳定 ID 已就绪',
@@ -2279,6 +2278,14 @@ const zhHans = {
       emptyDetail: '请先从左侧队列选择一条草稿查看详情。',
     },
     logs: {
+      clearTerminal: '清空已结束记录',
+      clearTerminalConfirmTitle: '清空已结束记录',
+      clearTerminalConfirmDescription:
+        '将清空当前机器人和连接器下的已结束执行记录。运行中、排队中和暂停中的任务不会删除。此操作不可撤销。',
+      clearTerminalSuccess: '已清空 {{count}} 条执行记录',
+      clearTerminalSuccessWithActive:
+        '已清空 {{count}} 条已结束记录，保留 {{active}} 条活动记录',
+      clearTerminalEmpty: '暂无可清空的已结束执行记录',
       title: '执行日志',
       description: '查看每条草稿的处理记录，方便回溯问题和确认状态。',
       executorCapabilitiesTitle: '执行器能力',
@@ -2763,17 +2770,18 @@ deepMergeLocale(zhHans.broadcast as Record<string, unknown>, {
       '\u8bf7\u9009\u62e9\u5e26\u7a33\u5b9a ID \u7684\u76ee\u6807\u7fa4\u804a',
     targetConversationSelectionRequired:
       '\u8bf7\u5148\u4ece\u5019\u9009\u5217\u8868\u4e2d\u9009\u62e9\u76ee\u6807\u7fa4\u804a',
-    targetConversationNameRequired: '\u8bf7\u8f93\u5165\u76ee\u6807\u7fa4\u804a\u540d\u79f0',
+    targetConversationNameRequired:
+      '\u8bf7\u8f93\u5165\u76ee\u6807\u7fa4\u804a\u540d\u79f0',
     targetResolution: {
       deferred: '按群名称匹配',
       resolved: '\u5df2\u5339\u914d\u7fa4\u804a',
       unresolved: '\u5c1a\u672a\u5339\u914d\u5230\u5b9e\u9645\u7fa4\u804a',
-      ambiguous: '\u5b58\u5728\u591a\u4e2a\u540c\u540d\u7fa4\u804a\uff0c\u8bf7\u4ece\u5019\u9009\u5217\u8868\u9009\u62e9',
+      ambiguous:
+        '\u5b58\u5728\u591a\u4e2a\u540c\u540d\u7fa4\u804a\uff0c\u8bf7\u4ece\u5019\u9009\u5217\u8868\u9009\u62e9',
     },
     targetConversationLegacyReselect:
       '\u8be5\u5386\u53f2\u89c4\u5219\u7f3a\u5c11\u7a33\u5b9a\u76ee\u6807\u7fa4\u804a ID\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9\u3002',
-    targetConversationMissingStableId:
-      '??? ID?????????',
+    targetConversationMissingStableId: '无稳定 ID，将按群名称匹配',
     preview: {
       empty:
         '\u8f93\u5165\u5ba2\u6237\u540d\u79f0\u5e76\u6267\u884c\u5339\u914d\u9884\u89c8\u3002',

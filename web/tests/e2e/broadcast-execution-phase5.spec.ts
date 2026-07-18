@@ -54,6 +54,40 @@ test.describe('broadcast execution phase 5', () => {
       page.getByTestId('broadcast-execution-logs-table'),
     ).toBeVisible();
 
+    let clearRequested = false;
+    await page.route(
+      '**/api/v1/broadcast/executions/terminal?**',
+      async (route) => {
+        if (route.request().method() !== 'DELETE') {
+          await route.fallback();
+          return;
+        }
+        clearRequested = true;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            code: 0,
+            message: 'ok',
+            data: {
+              deleted_batches: 1,
+              deleted_tasks: 2,
+              preserved_active_batches: 1,
+            },
+            timestamp: Date.now(),
+          }),
+        });
+      },
+    );
+    await page.getByTestId('broadcast-clear-terminal-records-button').click();
+    await expect(
+      page.getByTestId('broadcast-clear-terminal-records-confirm-dialog'),
+    ).toBeVisible();
+    await page
+      .getByTestId('broadcast-clear-terminal-records-confirm-button')
+      .click();
+    await expect.poll(() => clearRequested).toBeTruthy();
+
     expect(requestPaths).toContain('/api/v1/broadcast/executions');
     expect(
       requestPaths.some((path) =>

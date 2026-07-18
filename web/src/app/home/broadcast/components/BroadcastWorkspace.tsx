@@ -146,7 +146,9 @@ function getConnectorId(adapterConfig: object): string | null {
 }
 
 function isSameScope(left: BroadcastScope, right: BroadcastScope): boolean {
-  return left.botUuid === right.botUuid && left.connectorId === right.connectorId;
+  return (
+    left.botUuid === right.botUuid && left.connectorId === right.connectorId
+  );
 }
 
 function isBroadcastDatabaseBot(bot: Bot): boolean {
@@ -849,7 +851,8 @@ export default function BroadcastWorkspace() {
       options: { showLoading?: boolean } = {},
     ) => {
       const resolvedScope = nextScope ?? scopeRef.current;
-      const showLoading = options.showLoading ?? executorHealthRef.current == null;
+      const showLoading =
+        options.showLoading ?? executorHealthRef.current == null;
       if (showLoading) {
         setExecutorStateLoading(true);
       }
@@ -1425,13 +1428,29 @@ export default function BroadcastWorkspace() {
       return;
     }
     completedExecutionBatchIdsRef.current.add(latestExecutionBatch.id);
-    const sentCount = latestExecutionBatch.sentCount ?? latestExecutionBatch.succeededTasks;
-    const failedCount = latestExecutionBatch.failedCount ?? latestExecutionBatch.failedTasks;
-    const unknownCount = latestExecutionBatch.unknownCount ?? latestExecutionBatch.unknownTasks ?? 0;
+    const sentCount =
+      latestExecutionBatch.sentCount ?? latestExecutionBatch.succeededTasks;
+    const failedCount =
+      latestExecutionBatch.failedCount ?? latestExecutionBatch.failedTasks;
+    const unknownCount =
+      latestExecutionBatch.unknownCount ??
+      latestExecutionBatch.unknownTasks ??
+      0;
     if (unknownCount > 0) {
-      toast.warning(t('broadcast.toasts.realSendCompletedWithUnknown', { sentCount, failedCount, unknownCount }));
+      toast.warning(
+        t('broadcast.toasts.realSendCompletedWithUnknown', {
+          sentCount,
+          failedCount,
+          unknownCount,
+        }),
+      );
     } else if (failedCount > 0) {
-      toast.warning(t('broadcast.toasts.realSendCompletedWithFailures', { sentCount, failedCount }));
+      toast.warning(
+        t('broadcast.toasts.realSendCompletedWithFailures', {
+          sentCount,
+          failedCount,
+        }),
+      );
     } else {
       toast.success(t('broadcast.toasts.realSendCompleted', { sentCount }));
     }
@@ -1936,9 +1955,12 @@ export default function BroadcastWorkspace() {
                 saving={rulesSaving}
                 error={rulesError}
                 onSave={(profile) =>
-                  runRulesMutation(async () => {
-                    await dataSource.saveVariableProfile(scope, profile);
-                  }, { successMessage: t('broadcast.toasts.rulesSaved') })
+                  runRulesMutation(
+                    async () => {
+                      await dataSource.saveVariableProfile(scope, profile);
+                    },
+                    { successMessage: t('broadcast.toasts.rulesSaved') },
+                  )
                 }
               />
             </TabsContent>
@@ -1950,19 +1972,28 @@ export default function BroadcastWorkspace() {
                 saving={rulesSaving}
                 error={rulesError}
                 onCreate={(draft) =>
-                  runRulesMutation(async () => {
-                    await dataSource.createTemplate(scope, draft);
-                  }, { successMessage: t('broadcast.toasts.templateSaved') })
+                  runRulesMutation(
+                    async () => {
+                      await dataSource.createTemplate(scope, draft);
+                    },
+                    { successMessage: t('broadcast.toasts.templateSaved') },
+                  )
                 }
                 onUpdate={(templateId, draft) =>
-                  runRulesMutation(async () => {
-                    await dataSource.updateTemplate(scope, templateId, draft);
-                  }, { successMessage: t('broadcast.toasts.templateSaved') })
+                  runRulesMutation(
+                    async () => {
+                      await dataSource.updateTemplate(scope, templateId, draft);
+                    },
+                    { successMessage: t('broadcast.toasts.templateSaved') },
+                  )
                 }
                 onDelete={(templateId) =>
-                  runRulesMutation(async () => {
-                    await dataSource.deleteTemplate(scope, templateId);
-                  }, { successMessage: t('broadcast.toasts.templateDeleted') })
+                  runRulesMutation(
+                    async () => {
+                      await dataSource.deleteTemplate(scope, templateId);
+                    },
+                    { successMessage: t('broadcast.toasts.templateDeleted') },
+                  )
                 }
                 onRenderPreview={async (payload) => {
                   const variables = snapshot.variableMappings.reduce<
@@ -2110,19 +2141,28 @@ export default function BroadcastWorkspace() {
                   }
                 }}
                 onCreateRule={(draft) =>
-                  runRulesMutation(async () => {
-                    await dataSource.createGroupRule(scope, draft);
-                  }, { successMessage: t('broadcast.toasts.groupRuleSaved') })
+                  runRulesMutation(
+                    async () => {
+                      await dataSource.createGroupRule(scope, draft);
+                    },
+                    { successMessage: t('broadcast.toasts.groupRuleSaved') },
+                  )
                 }
                 onUpdateRule={(ruleId, draft) =>
-                  runRulesMutation(async () => {
-                    await dataSource.updateGroupRule(scope, ruleId, draft);
-                  }, { successMessage: t('broadcast.toasts.groupRuleSaved') })
+                  runRulesMutation(
+                    async () => {
+                      await dataSource.updateGroupRule(scope, ruleId, draft);
+                    },
+                    { successMessage: t('broadcast.toasts.groupRuleSaved') },
+                  )
                 }
                 onDeleteRule={(ruleId) =>
-                  runRulesMutation(async () => {
-                    await dataSource.deleteGroupRule(scope, ruleId);
-                  }, { successMessage: t('broadcast.toasts.groupRuleDeleted') })
+                  runRulesMutation(
+                    async () => {
+                      await dataSource.deleteGroupRule(scope, ruleId);
+                    },
+                    { successMessage: t('broadcast.toasts.groupRuleDeleted') },
+                  )
                 }
                 onMatchRule={(sourceValue) =>
                   dataSource.matchGroupRule(scope, sourceValue)
@@ -2134,7 +2174,10 @@ export default function BroadcastWorkspace() {
                   };
                   return runRulesMutation(
                     async () =>
-                      await dataSource.createGroupName(mutationScope, groupName),
+                      await dataSource.createGroupName(
+                        mutationScope,
+                        groupName,
+                      ),
                     {
                       refreshScope: mutationScope,
                       afterRefresh: (result, rulesData) => {
@@ -2195,9 +2238,12 @@ export default function BroadcastWorkspace() {
                   );
                 }}
                 onDeleteGroupName={(groupNameId) =>
-                  runRulesMutation(async () => {
-                    await dataSource.deleteGroupName(scope, groupNameId);
-                  }, { successMessage: t('broadcast.toasts.groupNameDeleted') })
+                  runRulesMutation(
+                    async () => {
+                      await dataSource.deleteGroupName(scope, groupNameId);
+                    },
+                    { successMessage: t('broadcast.toasts.groupNameDeleted') },
+                  )
                 }
               />
             </TabsContent>
@@ -2948,6 +2994,39 @@ export default function BroadcastWorkspace() {
             pasteVerificationHint={pasteVerificationHint}
             busy={draftBusy}
             onRecheckExecutorHealth={() => void refreshExecutorState(scope)}
+            onClearTerminalRecords={() =>
+              void (async () => {
+                try {
+                  setDraftBusy(true);
+                  const result =
+                    await dataSource.clearTerminalExecutionBatches(scope);
+                  executionBatchCacheRef.current.clear();
+                  executionLogCacheRef.current.clear();
+                  executionLogsHydratedRef.current = false;
+                  await refreshExecutionState(scope, { refreshAllLogs: true });
+                  if (result.deletedBatches === 0) {
+                    toast.success(t('broadcast.logs.clearTerminalEmpty'));
+                  } else if (result.preservedActiveBatches > 0) {
+                    toast.success(
+                      t('broadcast.logs.clearTerminalSuccessWithActive', {
+                        count: result.deletedBatches,
+                        active: result.preservedActiveBatches,
+                      }),
+                    );
+                  } else {
+                    toast.success(
+                      t('broadcast.logs.clearTerminalSuccess', {
+                        count: result.deletedBatches,
+                      }),
+                    );
+                  }
+                } catch (error) {
+                  toast.error(getErrorMessage(error, t('common.error')));
+                } finally {
+                  setDraftBusy(false);
+                }
+              })()
+            }
             onStartBatch={() => void handleBatchAction('start')}
             onPauseBatch={() => void handleBatchAction('pause')}
             onResumeBatch={() => void handleBatchAction('resume')}

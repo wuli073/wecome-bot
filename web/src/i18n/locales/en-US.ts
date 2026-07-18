@@ -2384,6 +2384,14 @@ const enUS = {
       emptyDetail: 'Select a draft from the queue to review the details.',
     },
     logs: {
+      clearTerminal: 'Clear finished records',
+      clearTerminalConfirmTitle: 'Clear finished records',
+      clearTerminalConfirmDescription:
+        'Finished execution records in the current bot and connector will be removed. Running, queued, and paused tasks stay intact. This cannot be undone.',
+      clearTerminalSuccess: 'Cleared {{count}} execution record(s)',
+      clearTerminalSuccessWithActive:
+        'Cleared {{count}} finished record(s); kept {{active}} active record(s)',
+      clearTerminalEmpty: 'No finished execution records to clear',
       title: 'Execution Logs',
       description:
         'A mock execution log list reserved for future API and Runtime integration.',
@@ -2725,12 +2733,12 @@ deepMergeLocale(enUS.broadcast as Record<string, unknown>, {
       deferred: 'Match by name',
       resolved: 'Conversation resolved',
       unresolved: 'Conversation not resolved',
-      ambiguous: 'Multiple conversations share this name. Select one from the list.',
+      ambiguous:
+        'Multiple conversations share this name. Select one from the list.',
     },
     targetConversationLegacyReselect:
       'This legacy rule is missing a stable target conversation ID. Please reselect it.',
-    targetConversationMissingStableId:
-      'No stable ID ? use group name.',
+    targetConversationMissingStableId: 'No stable ID · use group name',
     preview: {
       empty: 'Enter a customer name and run the match preview.',
       matchedBadge: 'Matched',
@@ -2777,7 +2785,7 @@ deepMergeLocale(enUS.broadcast as Record<string, unknown>, {
     submit: 'Create rules and rematch ({{count}})',
     submitting: 'Submitting?',
     noCandidates: 'There are no new customers available for bulk assignment.',
-    missingStableId: 'Missing stable ID, unavailable',
+    missingStableId: 'Manual group · Match by name',
     confirmTitle: 'Confirm bulk exact-rule creation',
     confirmDescription:
       'Create exact rules for {{count}} customer(s) and rematch the current import batch.',

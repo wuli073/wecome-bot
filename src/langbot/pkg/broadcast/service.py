@@ -999,6 +999,7 @@ class BroadcastService:
             item = raw_item if isinstance(raw_item, dict) else {}
             group_key = str(item.get('group_key') or '').strip()
             target_conversation_id = str(item.get('target_conversation_id') or '').strip()
+            target_conversation_name = str(item.get('target_conversation_name') or '').strip()
 
             if not group_key:
                 raise BroadcastError(BATCH_VALIDATION_FAILED, '请为每条设置提交有效的 group_key')
@@ -1042,7 +1043,7 @@ class BroadcastService:
                     )
                 )
                 continue
-            if not target_conversation_id:
+            if not target_conversation_id and not target_conversation_name:
                 error_items.append(
                     self._build_bulk_assign_error_item(
                         code=BROADCAST_GROUP_NAME_NOT_FOUND,
@@ -1053,22 +1054,26 @@ class BroadcastService:
                 )
                 continue
 
-            group_name = await self.repository.get_group_name_by_external_conversation_id(
-                bot_uuid=validated_scope['bot_uuid'],
-                connector_id=validated_scope['connector_id'],
-                external_conversation_id=target_conversation_id,
+            group_name = (
+                await self.repository.get_group_name_by_external_conversation_id(
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                    external_conversation_id=target_conversation_id,
+                )
+                if target_conversation_id
+                else await self.repository.get_group_name_by_name(
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                    name=target_conversation_name,
+                )
             )
-            target_conversation_name = (
-                str(group_name.name or '').strip()
-                if group_name is not None
-                else ''
-            )
+            target_conversation_name = str(group_name.name or '').strip() if group_name is not None else ''
             stable_target_conversation_id = (
                 str(group_name.external_conversation_id or '').strip()
                 if group_name is not None
                 else ''
             )
-            if not stable_target_conversation_id or not target_conversation_name:
+            if not target_conversation_name:
                 error_items.append(
                     self._build_bulk_assign_error_item(
                         code=BROADCAST_GROUP_NAME_NOT_FOUND,
@@ -1826,6 +1831,45 @@ class BroadcastService:
         self._validate_attachment_limits(existing_count=len(existing), existing_total_size=sum(int(item['size_bytes']) for item in existing), prepared_files=prepared)
 
         async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            draft = None
+            created_attachment_draft = False
+            if group_value is not None:
+                draft = await self.repository.get_draft_by_group_value(
+                    import_batch_id=import_id,
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                    group_value=self._display_group_value(group_value),
+                    conn=conn,
+                )
+                if draft is None:
+                    draft_id = await self.repository.create_draft(
+                        conn,
+                        {
+                            **validated_scope,
+                            'import_batch_id': import_id,
+                            'group_value': self._display_group_value(group_value),
+                            'target_conversation_id': None,
+                            'target_conversation_name': None,
+                            'template_id': None,
+                            'template_name_snapshot': '',
+                            'template_content_snapshot': '',
+                            'render_variables': {},
+                            'draft_text': '',
+                            'status': 'pending_review',
+                            'send_status': 'pending',
+                            'sent_at': None,
+                            'error_message': None,
+                            'attachments_stale': False,
+                        },
+                    )
+                    draft = await self.repository.get_draft(
+                        draft_id,
+                        bot_uuid=validated_scope['bot_uuid'],
+                        connector_id=validated_scope['connector_id'],
+                        conn=conn,
+                    )
+                    created_attachment_draft = True
+            draft_attachment_sort_order = 0
             next_sort_order = len(existing)
             for prepared_file in prepared:
                 asset_id = await self.repository.create_attachment_asset(
@@ -1846,7 +1890,20 @@ class BroadcastService:
                     },
                 )
                 next_sort_order += 1
-            if group_value is not None:
+                if created_attachment_draft and draft is not None:
+                    await self.repository.create_draft_attachment(
+                        conn,
+                        {
+                            'draft_id': int(draft.id),
+                            'attachment_asset_id': asset_id,
+                            'original_name_snapshot': prepared_file['asset_payload']['original_name'],
+                            'size_bytes_snapshot': prepared_file['asset_payload']['size_bytes'],
+                            'sha256_snapshot': prepared_file['asset_payload']['sha256'],
+                            'sort_order': draft_attachment_sort_order,
+                        },
+                    )
+                    draft_attachment_sort_order += 1
+            if group_value is not None and not created_attachment_draft:
                 await self.repository.update_drafts_attachment_stale(
                     import_batch_id=import_id,
                     group_value=self._display_group_value(group_value),
@@ -1888,6 +1945,28 @@ class BroadcastService:
             if deleted is None:
                 raise BroadcastError(ATTACHMENT_NOT_FOUND, '附件不存在或已被删除')
             if group_value is not None:
+                draft = await self.repository.get_draft_by_group_value(
+                    import_batch_id=import_id,
+                    bot_uuid=validated_scope['bot_uuid'],
+                    connector_id=validated_scope['connector_id'],
+                    group_value=self._display_group_value(group_value),
+                    conn=conn,
+                )
+                if draft is not None and draft.template_id is None:
+                    draft_attachments = await self.repository.list_draft_attachments(
+                        int(draft.id),
+                        bot_uuid=validated_scope['bot_uuid'],
+                        connector_id=validated_scope['connector_id'],
+                        conn=conn,
+                    )
+                    for draft_attachment in draft_attachments:
+                        if int(draft_attachment['asset_id']) == int(deleted['asset_id']):
+                            await self.repository.delete_draft_attachment(
+                                int(draft_attachment['relation_id']),
+                                bot_uuid=validated_scope['bot_uuid'],
+                                connector_id=validated_scope['connector_id'],
+                                conn=conn,
+                            )
                 await self.repository.update_drafts_attachment_stale(
                     import_batch_id=import_id,
                     group_value=self._display_group_value(group_value),
@@ -2287,6 +2366,14 @@ class BroadcastService:
         rows = await self.repository.list_execution_batches(**validated_scope)
         return [self._serialize_execution_batch(row) for row in rows]
 
+    async def clear_terminal_execution_batches(self, scope: dict[str, Any]) -> dict[str, int]:
+        validated_scope = await self.validate_scope(scope)
+        async with self.ap.persistence_mgr.get_db_engine().begin() as conn:
+            return await self.repository.clear_terminal_execution_batches(
+                bot_uuid=validated_scope['bot_uuid'],
+                connector_id=validated_scope['connector_id'],
+                conn=conn,
+            )
     async def get_execution_batch_detail(self, batch_id: int, scope: dict[str, Any]) -> dict[str, Any]:
         validated_scope = await self.validate_scope(scope)
         batch = await self.repository.get_execution_batch(batch_id, **validated_scope)

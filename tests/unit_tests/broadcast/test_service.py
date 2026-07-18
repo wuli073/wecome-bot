@@ -2553,6 +2553,41 @@ async def test_list_group_rule_candidates_rejects_legacy_batch_when_group_field_
     assert exc_info.value.code == BROADCAST_IMPORT_GROUP_FIELD_UNRESOLVABLE
 
 
+async def test_group_attachment_upload_creates_persisted_draft_when_missing(
+    service_fixture,
+):
+    service, _ = service_fixture
+    setup = await _prepare_bulk_assign_batch(service, rows=['Acme'])
+    group_key = setup['group_key_by_value']['Acme']
+
+    attachments = await service.add_import_group_attachments(
+        setup['import_id'],
+        group_key,
+        _scope(),
+        [
+            {
+                'filename': 'quote.txt',
+                'content_type': 'text/plain',
+                'body': b'quote',
+            }
+        ],
+    )
+
+    assert [item['original_name'] for item in attachments] == ['quote.txt']
+    drafts = await service.list_drafts(
+        _scope(), {'import_batch_id': setup['import_id']}
+    )
+    assert len(drafts) == 1
+    draft = await service.get_draft_detail(drafts[0]['id'], _scope())
+    assert draft['draft_text'] == ''
+    assert [item['original_name'] for item in draft['attachments']] == ['quote.txt']
+
+    remaining = await service.delete_import_group_attachment(
+        setup['import_id'], group_key, attachments[0]['id'], _scope()
+    )
+    assert remaining == []
+    refreshed_draft = await service.get_draft_detail(drafts[0]['id'], _scope())
+    assert refreshed_draft['attachments'] == []
 async def test_bulk_assign_import_group_rules_rejects_empty_items(service_fixture):
     service, _ = service_fixture
     setup = await _prepare_bulk_assign_batch(service)
@@ -2566,6 +2601,34 @@ async def test_bulk_assign_import_group_rules_rejects_empty_items(service_fixtur
 
     assert exc_info.value.code == BATCH_VALIDATION_FAILED
 
+
+async def test_bulk_assign_import_group_rules_accepts_manual_group_name(service_fixture):
+    service, _ = service_fixture
+    setup = await _prepare_bulk_assign_batch(
+        service,
+        rows=['Acme'],
+        target_groups=[('', 'Manual Group')],
+    )
+
+    result = await service.bulk_assign_import_group_rules(
+        setup['import_id'],
+        _scope(),
+        {
+            'items': [
+                {
+                    'group_key': setup['group_key_by_value']['Acme'],
+                    'target_conversation_id': '',
+                    'target_conversation_name': 'Manual Group',
+                }
+            ]
+        },
+    )
+
+    assert result['items'][0]['target_conversation_id'] == ''
+    assert result['items'][0]['target_conversation_name'] == 'Manual Group'
+    rules = await service.list_group_rules(_scope())
+    assert rules[0]['target_conversation_id'] is None
+    assert rules[0]['target_conversation_name'] == 'Manual Group'
 
 async def test_bulk_assign_import_group_rules_rejects_duplicate_group_keys(service_fixture):
     service, _ = service_fixture
