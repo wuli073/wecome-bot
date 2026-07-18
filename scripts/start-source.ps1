@@ -53,37 +53,31 @@ function Start-LoggedProcess([string]$FilePath, [string[]]$ArgumentList, [string
         (& $quote $StderrLogPath)
     return Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/s', '/c', $command) -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru
 }
+function Get-ManagedProcessDefinition([string]$Role) {
+    $main = Join-Path $script:RepoRoot 'main.py'; $vite = Join-Path $script:RepoRoot 'web\node_modules\vite\bin\vite.js'
+    if ($Role -in @('backend', 'backend-listener')) { $python = Join-Path $script:RepoRoot '.venv\Scripts\python.exe'; return [ordered]@{ executable=$python; commandLine=('"{0}" "{1}"' -f $python, $main) } }
+    if ($Role -eq 'backend-launcher') { return [ordered]@{ executable=$env:ComSpec; commandLine=('"{0}" "{1}"' -f $env:ComSpec, $main) } }
+    if ($Role -eq 'web') { $node = (Get-Command node.exe -ErrorAction Stop).Source; return [ordered]@{ executable=$node; commandLine=('"{0}" "{1}" --host 127.0.0.1 --port {2} --strictPort' -f $node, $vite, $WebPort) } }
+    return $null
+}
 function Get-ProcessRecord([int]$ProcessId, [string]$Role) {
-    $process = Get-Process -Id $ProcessId -ErrorAction Stop
-    $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
-    return [ordered]@{ role=$Role; pid=$ProcessId; startTicks=$process.StartTime.ToUniversalTime().Ticks; executable=[string]$cim.ExecutablePath; commandLine=[string]$cim.CommandLine }
+    try {
+        $process = Get-Process -Id $ProcessId -ErrorAction Stop; $definition = Get-ManagedProcessDefinition $Role
+        if ($null -eq $definition) { throw "Unsupported managed process role: $Role" }
+        $expectedName = [IO.Path]::GetFileNameWithoutExtension([string]$definition.executable)
+        if (-not $process.ProcessName.Equals($expectedName, [StringComparison]::OrdinalIgnoreCase)) { throw "Unexpected process name: $($process.ProcessName)" }
+        return [ordered]@{ role=$Role; pid=$ProcessId; startTicks=$process.StartTime.ToUniversalTime().Ticks; executable=[string]$definition.executable; commandLine=[string]$definition.commandLine }
+    }
+    catch { throw "Process record is unavailable. PID: $ProcessId; Role: $Role; Detail: $($_.Exception.Message)" }
 }
 function Test-ProcessRecord($Record) {
     if ($null -eq $Record) { return $false }
-    foreach ($name in @('pid', 'startTicks', 'executable', 'commandLine')) {
-        if (-not (Test-ManagedSourceStateProperty -Object $Record -Name $name)) { return $false }
-    }
-
-    $processId = 0
-    $startTicks = [int64]0
-    $pidValue = Get-ManagedSourceStateProperty -Object $Record -Name 'pid'
-    $startTicksValue = Get-ManagedSourceStateProperty -Object $Record -Name 'startTicks'
-    $executable = Get-ManagedSourceStateProperty -Object $Record -Name 'executable'
-    $commandLine = Get-ManagedSourceStateProperty -Object $Record -Name 'commandLine'
-    if ($null -eq $pidValue -or $null -eq $startTicksValue -or [string]::IsNullOrWhiteSpace([string]$executable) -or [string]::IsNullOrWhiteSpace([string]$commandLine)) { return $false }
-    if (-not [int]::TryParse([string]$pidValue, [ref]$processId) -or $processId -le 0) { return $false }
-    if (-not [int64]::TryParse([string]$startTicksValue, [ref]$startTicks) -or $startTicks -le 0) { return $false }
-
-    try {
-        $process = Get-Process -Id $processId -ErrorAction Stop
-        $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop
-        if ($process.StartTime.ToUniversalTime().Ticks -ne $startTicks) { return $false }
-        $marker = $script:RepoRoot.ToLowerInvariant()
-        return ([string]$cim.CommandLine).ToLowerInvariant().Contains($marker)
-    }
-    catch { return $false }
-}
-function Get-ProcessRecordId($Record) {
+    foreach ($name in @('pid', 'startTicks', 'executable', 'commandLine')) { if (-not (Test-ManagedSourceStateProperty -Object $Record -Name $name)) { return $false } }
+    $processId = 0; $startTicks = [int64]0; $pidValue = Get-ManagedSourceStateProperty -Object $Record -Name 'pid'; $startTicksValue = Get-ManagedSourceStateProperty -Object $Record -Name 'startTicks'; $executable = [string](Get-ManagedSourceStateProperty -Object $Record -Name 'executable'); $commandLine = [string](Get-ManagedSourceStateProperty -Object $Record -Name 'commandLine')
+    if ($null -eq $pidValue -or $null -eq $startTicksValue -or [string]::IsNullOrWhiteSpace($executable) -or [string]::IsNullOrWhiteSpace($commandLine)) { return $false }
+    if (-not [int]::TryParse([string]$pidValue, [ref]$processId) -or $processId -le 0 -or -not [int64]::TryParse([string]$startTicksValue, [ref]$startTicks) -or $startTicks -le 0) { return $false }
+    try { $process = Get-Process -Id $processId -ErrorAction Stop; $liveProcessName = [string](Get-ManagedSourceStateProperty -Object $process -Name 'ProcessName'); if ($process.StartTime.ToUniversalTime().Ticks -ne $startTicks) { return $false }; if (-not [string]::IsNullOrWhiteSpace($liveProcessName) -and -not $liveProcessName.Equals([IO.Path]::GetFileNameWithoutExtension($executable), [StringComparison]::OrdinalIgnoreCase)) { return $false }; return $commandLine.ToLowerInvariant().Contains($script:RepoRoot.ToLowerInvariant()) } catch { return $false }
+}function Get-ProcessRecordId($Record) {
     $processId = 0
     $pidValue = Get-ManagedSourceStateProperty -Object $Record -Name 'pid'
     if ($null -eq $pidValue -or -not [int]::TryParse([string]$pidValue, [ref]$processId) -or $processId -le 0) { return $null }
@@ -117,28 +111,33 @@ function Stop-VerifiedProcess($Record) {
     $processId = Get-ProcessRecordId $Record
     if ($null -eq $processId -or -not (Test-ProcessRecord $Record)) { return $false }
     # Terminate only a process that passed PID, start time, and repository command-line validation.
-    & taskkill.exe /PID $processId /T /F | Out-Null
+    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
     return $true
 }
 function Get-PortOwner([int]$Port) {
-    $listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -eq $listener) { return $null }
-    return [int]$listener.OwningProcess
+    $pattern = '^\s*TCP\s+\S+:' + [regex]::Escape([string]$Port) + '\s+\S+\s+LISTENING\s+(\d+)\s*$'
+    foreach ($line in @(netstat.exe -ano -p tcp 2>$null)) {
+        $match = [regex]::Match([string]$line, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if ($match.Success) { $owner = 0; if ([int]::TryParse($match.Groups[1].Value, [ref]$owner) -and $owner -gt 0) { return $owner } }
+    }
+    return $null
 }
 function Get-ListenerProcessRecord([int]$Port, [int]$ProcessId = 0) {
     $owner = if ($ProcessId -gt 0) { $ProcessId } else { Get-PortOwner $Port }
     if ($null -eq $owner -or $owner -le 0) { return $null }
-    try {
-        $record = Get-ProcessRecord $owner "listener-$Port"
-        $record.port = $Port
-        return $record
-    }
-    catch { return $null }
+    $role = if ($Port -eq $BackendPort) { 'backend-listener' } elseif ($Port -eq $WebPort) { 'web' } else { $null }
+    if ($null -eq $role) { return $null }
+    try { $record = Get-ProcessRecord $owner $role; $record.port = $Port; return $record } catch { return $null }
 }
 function Test-CurrentRepoListener($Record) {
-    return Test-ProcessRecord $Record
-}
-function Assert-PortFree([int]$Port) {
+    if (-not (Test-ProcessRecord $Record)) { return $false }
+    $port = 0; $portValue = Get-ManagedSourceStateProperty -Object $Record -Name 'port'
+    if ($null -eq $portValue -or -not [int]::TryParse([string]$portValue, [ref]$port)) { return $false }
+    $commandLine = [string](Get-ManagedSourceStateProperty -Object $Record -Name 'commandLine')
+    if ($port -eq $BackendPort) { return $commandLine.ToLowerInvariant().Contains((Join-Path $script:RepoRoot 'main.py').ToLowerInvariant()) }
+    if ($port -eq $WebPort) { return $commandLine.ToLowerInvariant().Contains((Join-Path $script:RepoRoot 'web\node_modules\vite\bin\vite.js').ToLowerInvariant()) }
+    return $false
+}function Assert-PortFree([int]$Port) {
     $owner = Get-PortOwner $Port
     if ($null -ne $owner) {
         $record = Get-ListenerProcessRecord -Port $Port -ProcessId $owner
@@ -185,28 +184,15 @@ function Test-DesktopRuntimeHealthy($RuntimeStatus) {
 }
 function Get-DesktopRuntimeProcessRecord($Status) {
     if (-not (Test-Path -LiteralPath $script:RuntimeExecutable -PathType Leaf)) { return $null }
-    $process = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.ExecutablePath -and
-        [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath([string]$_.ExecutablePath), $script:RuntimeExecutable) -and
-        ([string]$_.CommandLine) -notmatch '\s--type='
-    } | Select-Object -First 1
-    if ($null -eq $process) { return $null }
-    try {
-        $record = Get-ProcessRecord ([int]$process.ProcessId) 'desktop-runtime'
-        $record.repoRoot = $script:RepoRoot
-        $record.logPath = Join-Path $script:LogsRoot 'desktop-runtime.stderr.log'
-        $record.endpoint = "http://127.0.0.1:$([string](Get-ManagedSourceStateProperty -Object $Status -Name 'port'))"
-        $record.status = [string](Get-ManagedSourceStateProperty -Object $Status -Name 'status')
-        $record.capabilities = [ordered]@{
-            paste = (Get-ManagedSourceStateProperty -Object $Status -Name 'inputAvailable') -eq $true
-            send = (Get-ManagedSourceStateProperty -Object $Status -Name 'send_enabled') -eq $true
-            version = Get-ManagedSourceStateProperty -Object $Status -Name 'runtimeVersion'
+    $runtimeName = [IO.Path]::GetFileNameWithoutExtension($script:RuntimeExecutable)
+    foreach ($process in @(Get-Process -Name $runtimeName -ErrorAction SilentlyContinue)) {
+        try {
+            return [ordered]@{ role='desktop-runtime'; pid=$process.Id; startTicks=$process.StartTime.ToUniversalTime().Ticks; executable=$script:RuntimeExecutable; commandLine=''; repoRoot=$script:RepoRoot; logPath=(Join-Path $script:LogsRoot 'desktop-runtime.stderr.log'); endpoint=("http://127.0.0.1:{0}" -f [string](Get-ManagedSourceStateProperty -Object $Status -Name 'port')); status=[string](Get-ManagedSourceStateProperty -Object $Status -Name 'status'); capabilities=[ordered]@{ paste=((Get-ManagedSourceStateProperty -Object $Status -Name 'inputAvailable') -eq $true); send=((Get-ManagedSourceStateProperty -Object $Status -Name 'send_enabled') -eq $true); version=(Get-ManagedSourceStateProperty -Object $Status -Name 'runtimeVersion') } }
         }
-        return $record
+        catch { continue }
     }
-    catch { return $null }
-}
-function Test-DesktopRuntimeRecord($Record) {
+    return $null
+}function Test-DesktopRuntimeRecord($Record) {
     if ($null -eq $Record) { return $false }
     foreach ($name in @('pid', 'startTicks', 'executable')) {
         if (-not (Test-ManagedSourceStateProperty -Object $Record -Name $name)) { return $false }
@@ -222,6 +208,7 @@ function Test-DesktopRuntimeRecord($Record) {
     try {
         $process = Get-Process -Id $processId -ErrorAction Stop
         if ($process.StartTime.ToUniversalTime().Ticks -ne $startTicks) { return $false }
+        if (-not $process.ProcessName.Equals([IO.Path]::GetFileNameWithoutExtension($script:RuntimeExecutable), [StringComparison]::OrdinalIgnoreCase)) { return $false }
         if (-not [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($executable), $script:RuntimeExecutable)) { return $false }
         $repoRoot = [string](Get-ManagedSourceStateProperty -Object $Record -Name 'repoRoot')
         if (-not [string]::IsNullOrWhiteSpace($repoRoot)) {
@@ -364,7 +351,7 @@ function Start-Source {
     finally { foreach ($key in $environment.Keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key], 'Process') } }
     Set-Content -LiteralPath (Join-Path $script:LogsRoot 'desktop-runtime.stdout.log') -Value 'runtime launch managed by backend' -Encoding utf8
     if (-not (Test-Path -LiteralPath (Join-Path $script:LogsRoot 'desktop-runtime.stderr.log'))) { New-Item -ItemType File -Path (Join-Path $script:LogsRoot 'desktop-runtime.stderr.log') -Force | Out-Null }
-    $state = [ordered]@{ schema=2; sessionId=$sessionId; repoRoot=$script:RepoRoot; userDataRoot=$script:UserDataRoot; backendPort=$BackendPort; webPort=$WebPort; logsRoot=$script:LogsRoot; shutdownPath=$shutdownPath; backend=(Get-ProcessRecord $backend.Id 'backend'); backendListener=$null; web=$null; runtime=$null }
+    $state = [ordered]@{ schema=2; sessionId=$sessionId; repoRoot=$script:RepoRoot; userDataRoot=$script:UserDataRoot; backendPort=$BackendPort; webPort=$WebPort; logsRoot=$script:LogsRoot; shutdownPath=$shutdownPath; backend=(Get-ProcessRecord $backend.Id 'backend-launcher'); backendListener=$null; web=$null; runtime=$null }
     Write-ManagedSourceState $script:StatePath $state
     try {
         $readiness = Wait-ForBackend (Join-Path $script:LogsRoot 'backend.stderr.log') $StartupTimeoutSeconds
@@ -383,28 +370,69 @@ function Start-Source {
     }
     catch { Stop-Source | Out-Null; throw }
 }
+function Wait-PortReleased([int]$Port, [int]$TimeoutSeconds = 15) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ($null -eq (Get-PortOwner $Port)) { return $true }
+        Start-Sleep -Milliseconds 250
+    }
+    return $null -eq (Get-PortOwner $Port)
+}
+function Get-CurrentRepoPortOwnerRecord([int]$Port) {
+    $owner = Get-PortOwner $Port
+    if ($null -eq $owner) { return $null }
+    $record = Get-ListenerProcessRecord -Port $Port -ProcessId $owner
+    if ($null -eq $record -or -not (Test-CurrentRepoListener $record)) {
+        $executable = if ($null -ne $record) { [string](Get-ManagedSourceStateProperty -Object $record -Name 'executable') } else { '(unavailable)' }
+        throw "Port $Port is occupied by an unverified process. PID: $owner; Executable: $executable"
+    }
+    return $record
+}
+function Stop-CurrentRepoListener([int]$Port) {
+    $record = Get-CurrentRepoPortOwnerRecord $Port
+    if ($null -eq $record) { return $false }
+    [void](Stop-VerifiedProcess $record)
+    if (-not (Wait-PortReleased $Port)) { throw "Port $Port was not released after stopping verified process PID $($record.pid)." }
+    return $true
+}
+function Get-CurrentRepoRuntimeProcesses {
+    $records = @(); $runtimeName = [IO.Path]::GetFileNameWithoutExtension($script:RuntimeExecutable)
+    foreach ($process in @(Get-Process -Name $runtimeName -ErrorAction SilentlyContinue)) {
+        try { $records += [ordered]@{ role='desktop-runtime'; pid=$process.Id; startTicks=$process.StartTime.ToUniversalTime().Ticks; executable=$script:RuntimeExecutable; commandLine=''; repoRoot=$script:RepoRoot } } catch { continue }
+    }
+    return @($records)
+}function Stop-CurrentRepoRuntimeTree {
+    $records = @(Get-CurrentRepoRuntimeProcesses)
+    foreach ($record in $records) { Stop-Process -Id $record.pid -Force -ErrorAction SilentlyContinue }
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (@(Get-CurrentRepoRuntimeProcesses).Count -eq 0) { return $records.Count -gt 0 }
+        Start-Sleep -Milliseconds 250
+    }
+    $remaining = @(Get-CurrentRepoRuntimeProcesses | ForEach-Object { $_.pid }) -join ', '
+    throw "Desktop Runtime did not exit within 15 seconds. PIDs: $remaining; Executable: $script:RuntimeExecutable"
+}
 function Stop-Source {
+    $stateExists = Test-Path -LiteralPath $script:StatePath -PathType Leaf
     $state = Read-ManagedSourceState $script:StatePath
-    if ($null -eq $state) { return [ordered]@{ status='stopped'; detail='no-managed-source-state' } }
-    if (-not (Test-CurrentRepoState $state)) { throw 'Refusing to stop a source stack owned by a different repository.' }
-    $backend = Get-ManagedSourceStateProperty -Object $state -Name 'backend'
-    $web = Get-ManagedSourceStateProperty -Object $state -Name 'web'
-    $runtime = Get-ManagedSourceStateProperty -Object $state -Name 'runtime'
-    $backendListener = Get-ManagedSourceStateProperty -Object $state -Name 'backendListener'
-    $shutdownPath = Get-ManagedSourceStateProperty -Object $state -Name 'shutdownPath'
-    $sessionId = Get-ManagedSourceStateProperty -Object $state -Name 'sessionId'
+    if ($null -ne $state -and -not (Test-CurrentRepoState $state)) { throw 'Refusing to stop a source stack owned by a different repository.' }
+    $backendPort = if ($null -ne $state) { Get-StatePort $state 'backendPort' } else { $null }; if ($null -eq $backendPort) { $backendPort = $BackendPort }
+    $webPort = if ($null -ne $state) { Get-StatePort $state 'webPort' } else { $null }; if ($null -eq $webPort) { $webPort = $WebPort }
+    $backend = Get-ManagedSourceStateProperty -Object $state -Name 'backend'; $web = Get-ManagedSourceStateProperty -Object $state -Name 'web'; $runtime = Get-ManagedSourceStateProperty -Object $state -Name 'runtime'; $backendListener = Get-ManagedSourceStateProperty -Object $state -Name 'backendListener'; $shutdownPath = Get-ManagedSourceStateProperty -Object $state -Name 'shutdownPath'; $sessionId = Get-ManagedSourceStateProperty -Object $state -Name 'sessionId'
     if ((Test-ControlPath $shutdownPath) -and (Test-ProcessRecord $backend)) { Write-ManagedSourceState $shutdownPath ([ordered]@{ sessionId=$sessionId; action='shutdown'; reason='source-stop'; requestedAt=[DateTime]::UtcNow.ToString('o') }); Start-Sleep -Seconds 2 }
-    # Backend shutdown closes task admission and asks its owned runtime to exit.
-    # The explicit runtime fallback is limited to the exact packaged executable.
-    if (Test-DesktopRuntimeRecord $runtime) { [void](Stop-VerifiedProcess $runtime) }
-    foreach ($record in @($web, $backend, $backendListener)) { [void](Stop-VerifiedProcess $record) }
-    $backendPort = Get-StatePort $state 'backendPort'
-    $webPort = Get-StatePort $state 'webPort'
+    $backendStopped = $false; $webStopped = $false
+    foreach ($record in @($backend, $backendListener)) { if (Test-ProcessRecord $record) { $backendStopped = (Stop-VerifiedProcess $record) -or $backendStopped } }
+    if (Test-ProcessRecord $web) { $webStopped = (Stop-VerifiedProcess $web) -or $webStopped }
+    $backendStopped = (Stop-CurrentRepoListener $backendPort) -or $backendStopped
+    $webStopped = (Stop-CurrentRepoListener $webPort) -or $webStopped
+    $runtimeStopped = Stop-CurrentRepoRuntimeTree
+    if (-not (Wait-PortReleased $backendPort)) { throw "Port $backendPort was not released." }
+    if (-not (Wait-PortReleased $webPort)) { throw "Port $webPort was not released." }
     Remove-Item -LiteralPath $script:StatePath -Force -ErrorAction SilentlyContinue
     if (Test-ControlPath $shutdownPath) { Remove-Item -LiteralPath $shutdownPath -Force -ErrorAction SilentlyContinue }
-    return [ordered]@{ status='stopped'; backendPort=$backendPort; webPort=$webPort }
-}
-function Get-SourceStatus {
+    if ($stateExists) { return [ordered]@{ status='stopped'; recovered=$true; backendStopped=$backendStopped; webStopped=$webStopped; runtimeStopped=$runtimeStopped; backendPort=$backendPort; webPort=$webPort } }
+    return [ordered]@{ status='stopped'; detail='no-managed-processes'; backendPort=$backendPort; webPort=$webPort }
+}function Get-SourceStatus {
     $state = Read-ManagedSourceState $script:StatePath -Quiet
     if ($null -eq $state) { return [ordered]@{ status='stopped'; detail='no-managed-source-state'; backendPid=$null; webPid=$null; runtimePid=$null; userData=$script:UserDataRoot } }
     if (-not (Test-CurrentRepoState $state)) { return [ordered]@{ status='stopped'; detail='foreign-managed-source-state'; backendPid=$null; webPid=$null; runtimePid=$null; userData=$script:UserDataRoot } }

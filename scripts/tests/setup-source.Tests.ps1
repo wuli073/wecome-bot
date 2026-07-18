@@ -227,10 +227,20 @@ Describe 'source setup Desktop Runtime contract' {
     It 'matches only desktop runtime processes that belong to the current repository runtime' {
         $runtimeRoot = Join-Path $repoRoot 'apps\desktop-rpa-runtime'
         $runtimeExe = Join-Path $runtimeRoot 'dist-phase2-official\win-dir\win-unpacked\LangBot Desktop RPA Runtime.exe'
-        $owned = [pscustomobject]@{ Name = 'electron.exe'; ExecutablePath = (Join-Path $runtimeRoot 'node_modules\electron\dist\electron.exe'); CommandLine = 'owned' }
+        $owned = [pscustomobject]@{ Name = 'LangBot Desktop RPA Runtime.exe'; ExecutablePath = $runtimeExe; CommandLine = 'owned' }
         $foreign = [pscustomobject]@{ Name = 'electron.exe'; ExecutablePath = 'C:\Program Files\OtherApp\electron.exe'; CommandLine = 'foreign' }
         (Test-DesktopRuntimeProcess $owned $runtimeRoot $runtimeExe) | Should Be $true
         (Test-DesktopRuntimeProcess $foreign $runtimeRoot $runtimeExe) | Should Be $false
+    }
+
+    It 'waits for the exact packaged Runtime executable to exit before replacement' {
+        $runtimeRoot = Join-Path $repoRoot 'apps\desktop-rpa-runtime'
+        $runtimeExe = Join-Path $runtimeRoot 'dist-phase2-official\win-dir\win-unpacked\LangBot Desktop RPA Runtime.exe'
+        $content | Should Match 'function Wait-DesktopRuntimeExit'
+        $content | Should Match 'DESKTOP_RUNTIME_STOP_TIMEOUT'
+        $content | Should Match 'Get-SafeCimProperty'
+        $content | Should Match 'Wait-DesktopRuntimeExit \$RuntimeRoot \$RuntimeExecutable \$processIds'
+        (Test-DesktopRuntimeProcess ([pscustomobject]@{ Name='electron.exe' }) $runtimeRoot $runtimeExe) | Should Be $false
     }
 
     It 'builds a root-level zip and complete manifest from the packaged runtime' {

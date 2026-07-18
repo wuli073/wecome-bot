@@ -11,31 +11,6 @@ function Invoke-SourceStatusForTest([string]$UserDataRoot) {
     return ($output | Out-String | ConvertFrom-Json)
 }
 
-function New-CurrentRepoProcessRecord([string]$Role) {
-    $command = "Set-Location -LiteralPath '$($repoRoot.Replace("'", "''"))'; Start-Sleep -Seconds 30"
-    $process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', $command) -WindowStyle Hidden -PassThru
-    Start-Sleep -Milliseconds 100
-    $liveProcess = Get-Process -Id $process.Id -ErrorAction Stop
-    $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $($process.Id)" -ErrorAction Stop
-    return [ordered]@{
-        process = $process
-        record = [ordered]@{
-            role = $Role
-            pid = $process.Id
-            startTicks = $liveProcess.StartTime.ToUniversalTime().Ticks
-            executable = [string]$cim.ExecutablePath
-            commandLine = [string]$cim.CommandLine
-        }
-    }
-}
-
-function Stop-TestProcess($Process) {
-    if ($null -ne $Process -and -not $Process.HasExited) {
-        Stop-Process -Id $Process.Id -Force -ErrorAction Stop
-        [void]$Process.WaitForExit(5000)
-    }
-}
-
 Describe 'console selection mode handling' {
     It 'disables QuickEdit before startup and includes a timeout recovery hint' {
         $content = [IO.File]::ReadAllText($scriptPath)
@@ -60,47 +35,65 @@ Describe 'source startup state status' {
     }
 
     It 'returns degraded JSON for legacy state records without a runtime record' {
-        $backend = New-CurrentRepoProcessRecord 'backend'
-        $web = New-CurrentRepoProcessRecord 'web'
-        try {
-            $userDataRoot = Join-Path $TestDrive 'complete-state'
-            $statePath = Join-Path $userDataRoot 'runtime\source-stack-state.json'
-            Write-ManagedSourceState -Path $statePath -Value ([ordered]@{
-                schema = 1; repoRoot = $repoRoot; userDataRoot = $userDataRoot
-                backend = $backend.record; backendListener = $null; web = $web.record
-            })
+        $userDataRoot = Join-Path $TestDrive 'complete-state'
+        $statePath = Join-Path $userDataRoot 'runtime\source-stack-state.json'
+        $backendPid = 4101
+        $webPid = 4102
+        $backendStart = [DateTime]::Parse('2026-01-01T00:00:00Z')
+        $webStart = [DateTime]::Parse('2026-01-01T00:01:00Z')
+        $backendCommand = "powershell.exe -File fixture.ps1 -Marker $(Join-Path $repoRoot 'main.py')"
+        $webCommand = "node.exe $(Join-Path $repoRoot 'web\node_modules\vite\bin\vite.js')"
+        Write-ManagedSourceState -Path $statePath -Value ([ordered]@{
+            schema = 1; repoRoot = $repoRoot; userDataRoot = $userDataRoot
+            backend = [ordered]@{ role='backend'; pid=$backendPid; startTicks=$backendStart.ToUniversalTime().Ticks; executable='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; commandLine=$backendCommand }
+            backendListener = $null
+            web = [ordered]@{ role='web'; pid=$webPid; startTicks=$webStart.ToUniversalTime().Ticks; executable='C:\Program Files\nodejs\node.exe'; commandLine=$webCommand }
+        })
 
-            $status = Invoke-SourceStatusForTest -UserDataRoot $userDataRoot
-            $status.status | Should Be 'degraded'
-            $status.backendPid | Should Be $backend.process.Id
-            $status.webPid | Should Be $web.process.Id
-            $status.runtimePid | Should Be $null
+        Mock Get-Process {
+            switch ($Id) {
+                $backendPid { return [pscustomobject]@{ StartTime = $backendStart } }
+                $webPid { return [pscustomobject]@{ StartTime = $webStart } }
+                default { throw "unexpected process id $Id" }
+            }
         }
-        finally {
-            Stop-TestProcess $backend.process
-            Stop-TestProcess $web.process
+        Mock Get-CimInstance {
+            switch ($Filter) {
+                "ProcessId = $backendPid" { return [pscustomobject]@{ ExecutablePath='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; CommandLine=$backendCommand; ProcessId=$backendPid } }
+                "ProcessId = $webPid" { return [pscustomobject]@{ ExecutablePath='C:\Program Files\nodejs\node.exe'; CommandLine=$webCommand; ProcessId=$webPid } }
+                default { throw "unexpected filter $Filter" }
+            }
         }
+
+        $status = (. $scriptPath -Action Status -UserDataRoot $userDataRoot -NoBrowser | Out-String | ConvertFrom-Json)
+        $status.status | Should Be 'degraded'
+        $status.detail | Should Be 'partial-managed-source-state'
+        $status.backendPid | Should Be $backendPid
+        $status.webPid | Should Be $webPid
+        $status.runtimePid | Should Be $null
     }
 
     It 'returns degraded JSON when only the backend record is valid and web is null' {
-        $backend = New-CurrentRepoProcessRecord 'backend'
-        try {
-            $userDataRoot = Join-Path $TestDrive 'backend-only-state'
-            $statePath = Join-Path $userDataRoot 'runtime\source-stack-state.json'
-            Write-ManagedSourceState -Path $statePath -Value ([ordered]@{
-                schema = 1; repoRoot = $repoRoot; userDataRoot = $userDataRoot
-                backend = $backend.record; backendListener = $null; web = $null
-            })
+        $userDataRoot = Join-Path $TestDrive 'backend-only-state'
+        $statePath = Join-Path $userDataRoot 'runtime\source-stack-state.json'
+        $backendPid = 4201
+        $backendStart = [DateTime]::Parse('2026-01-01T00:02:00Z')
+        $backendCommand = "powershell.exe -File fixture.ps1 -Marker $(Join-Path $repoRoot 'main.py')"
+        Write-ManagedSourceState -Path $statePath -Value ([ordered]@{
+            schema = 1; repoRoot = $repoRoot; userDataRoot = $userDataRoot
+            backend = [ordered]@{ role='backend'; pid=$backendPid; startTicks=$backendStart.ToUniversalTime().Ticks; executable='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; commandLine=$backendCommand }
+            backendListener = $null
+            web = $null
+        })
 
-            $status = Invoke-SourceStatusForTest -UserDataRoot $userDataRoot
-            $status.status | Should Be 'degraded'
-            $status.detail | Should Be 'partial-managed-source-state'
-            $status.backendPid | Should Be $backend.process.Id
-            $status.webPid | Should Be $null
-        }
-        finally {
-            Stop-TestProcess $backend.process
-        }
+        Mock Get-Process { [pscustomobject]@{ StartTime = $backendStart } }
+        Mock Get-CimInstance { [pscustomobject]@{ ExecutablePath='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; CommandLine=$backendCommand; ProcessId=$backendPid } }
+
+        $status = (. $scriptPath -Action Status -UserDataRoot $userDataRoot -NoBrowser | Out-String | ConvertFrom-Json)
+        $status.status | Should Be 'degraded'
+        $status.detail | Should Be 'partial-managed-source-state'
+        $status.backendPid | Should Be $backendPid
+        $status.webPid | Should Be $null
     }
 
     It 'returns valid JSON instead of throwing for partial, missing, or invalid process records' {
@@ -159,55 +152,55 @@ Describe 'source startup state status' {
         $status.detail | Should Be 'no-managed-source-state'
     }
 
-    It 'stops partial state without a property exception or broad process cleanup' {
-        $userDataRoot = Join-Path $TestDrive 'partial-stop-state'
-        $statePath = Join-Path $userDataRoot 'runtime\source-stack-state.json'
-        Write-ManagedSourceState -Path $statePath -Value ([ordered]@{
-            schema = 1; repoRoot = $repoRoot; userDataRoot = $userDataRoot
-            backend = @{ startTicks=1; executable='x'; commandLine=$repoRoot }
-            backendListener = $null; web = $null
-        })
+    It 'reports occupied port details without property exceptions' {
+        $functionTestRoot = Join-Path $TestDrive 'assert-port-free'
+        . $scriptPath -Action Status -UserDataRoot $functionTestRoot -BackendPort 55393 -WebPort 55399 -NoBrowser | Out-Null
 
-        $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $scriptPath -Action Stop -UserDataRoot $userDataRoot
+        Mock Get-PortOwner { 7788 }
+        Mock Get-ListenerProcessRecord {
+            [ordered]@{
+                role = 'listener-55393'
+                pid = 7788
+                executable = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+                commandLine = 'powershell.exe -File foreign-fixture.ps1'
+                port = 55393
+            }
+        }
+
+        { Assert-PortFree 55393 } | Should Throw
+        try {
+            Assert-PortFree 55393
+            throw 'Assert-PortFree did not throw'
+        }
+        catch {
+            $message = $_.Exception.Message
+            $message | Should Match 'Port 55393 is already listening'
+            $message | Should Match 'PID 7788'
+            $message | Should Match 'process C:'
+            $message | Should Match 'powershell.exe -File foreign-fixture.ps1'
+            $message | Should Not Match "The property 'pid' cannot be found"
+        }
+    }
+}
+
+Describe 'source stop recovery' {
+    It 'recovers safely when the state file is missing and no managed ports are listening' {
+        $userDataRoot = Join-Path $TestDrive 'missing-state-stop'
+        $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $scriptPath -Action Stop -UserDataRoot $userDataRoot -BackendPort 55391 -WebPort 55392
         if ($LASTEXITCODE -ne 0) { throw "Stop failed: $($output -join [Environment]::NewLine)" }
         $stop = $output | Out-String | ConvertFrom-Json
-
         $stop.status | Should Be 'stopped'
-        Test-Path -LiteralPath $statePath | Should Be $false
+        $stop.detail | Should Be 'no-managed-processes'
     }
 
-    It 'rejects an occupied backend port after reading partial state' {
-        $userDataRoot = Join-Path $TestDrive 'partial-port-state'
-        $statePath = Join-Path $userDataRoot 'runtime\source-stack-state.json'
-        Write-ManagedSourceState -Path $statePath -Value ([ordered]@{
-            schema = 1; repoRoot = $repoRoot; userDataRoot = $userDataRoot
-            backend = $null; backendListener = $null; web = $null
-        })
-        $listener = $null
-        $createdListener = $false
-        try {
-            if (-not (Get-NetTCPConnection -State Listen -LocalPort 5300 -ErrorAction SilentlyContinue)) {
-                $listener = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Parse('127.0.0.1'), 5300)
-                $listener.Start()
-                $createdListener = $true
-            }
-
-            $previousErrorActionPreference = $ErrorActionPreference
-            $ErrorActionPreference = 'Continue'
-            try {
-                $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $scriptPath -Action Start -UserDataRoot $userDataRoot -BackendPort 5300 -WebPort 55399 -NoBrowser 2>&1
-                $exitCode = $LASTEXITCODE
-            }
-            finally {
-                $ErrorActionPreference = $previousErrorActionPreference
-            }
-            $exitCode | Should Not Be 0
-            (($output -join [Environment]::NewLine) -match 'Port 5300 is already listening \(PID \d+') | Should Be $true
-            (($output -join [Environment]::NewLine) -match "The property 'pid' cannot be found") | Should Be $false
-        }
-        finally {
-            if ($createdListener) { $listener.Stop() }
-        }
+    It 'uses stable process identity checks and verified listener recovery' {
+        $content = [IO.File]::ReadAllText($scriptPath)
+        $content | Should Match 'function Get-ManagedProcessDefinition'
+        $content | Should Match 'ProcessName.Equals'
+        $content | Should Not Match 'Get-CimInstance Win32_Process'
+        $content | Should Match 'function Get-CurrentRepoPortOwnerRecord'
+        $content | Should Match 'function Stop-CurrentRepoRuntimeTree'
+        $content | Should Match 'Port \$Port is occupied by an unverified process'
     }
 }
 
@@ -239,23 +232,22 @@ Describe 'source process record validation' {
     }
 
     It 'rejects a process record when start time or repository command line does not match' {
-        $current = New-CurrentRepoProcessRecord 'backend'
-        $foreign = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru
-        try {
-            (Test-ProcessRecord $current.record) | Should Be $true
-            $wrongStart = [ordered]@{} + $current.record
-            $wrongStart.startTicks = [int64]$wrongStart.startTicks + 1
-            (Test-ProcessRecord $wrongStart) | Should Be $false
+        $testPid = 5101
+        $start = [DateTime]::Parse('2026-01-01T01:00:00Z')
+        $matchingCommand = "powershell.exe -File fixture.ps1 -Marker $(Join-Path $repoRoot 'main.py')"
+        $foreignCommand = 'powershell.exe -File foreign-fixture.ps1'
+        $record = [ordered]@{ role='backend'; pid=$testPid; startTicks=$start.ToUniversalTime().Ticks; executable='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; commandLine=$matchingCommand }
 
-            $foreignProcess = Get-Process -Id $foreign.Id -ErrorAction Stop
-            $foreignCim = Get-CimInstance Win32_Process -Filter "ProcessId = $($foreign.Id)" -ErrorAction Stop
-            $foreignRecord = [ordered]@{ role='foreign'; pid=$foreign.Id; startTicks=$foreignProcess.StartTime.ToUniversalTime().Ticks; executable=[string]$foreignCim.ExecutablePath; commandLine=[string]$foreignCim.CommandLine }
-            (Test-ProcessRecord $foreignRecord) | Should Be $false
-        }
-        finally {
-            Stop-TestProcess $current.process
-            Stop-TestProcess $foreign
-        }
+        Mock Get-Process { [pscustomobject]@{ StartTime = $start } }
+        Mock Get-CimInstance { [pscustomobject]@{ ExecutablePath='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; CommandLine=$matchingCommand; ProcessId=$testPid } }
+
+        (Test-ProcessRecord $record) | Should Be $true
+        $wrongStart = [ordered]@{} + $record
+        $wrongStart.startTicks = [int64]$wrongStart.startTicks + 1
+        (Test-ProcessRecord $wrongStart) | Should Be $false
+        $foreignRecord = [ordered]@{} + $record
+        $foreignRecord.commandLine = $foreignCommand
+        (Test-ProcessRecord $foreignRecord) | Should Be $false
     }
 }
 
@@ -291,19 +283,32 @@ Describe 'source listener ownership recovery' {
     }
 
     It 'accepts a healthy listener only when its live process belongs to this repository' {
-        $current = New-CurrentRepoProcessRecord 'backend'
-        $foreign = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru
-        try {
-            $currentListener = Get-ListenerProcessRecord -Port 5300 -ProcessId $current.process.Id
-            $foreignListener = Get-ListenerProcessRecord -Port 5300 -ProcessId $foreign.Id
+        $currentPid = 6101
+        $foreignPid = 6102
+        $currentStart = [DateTime]::Parse('2026-01-01T02:00:00Z')
+        $foreignStart = [DateTime]::Parse('2026-01-01T02:01:00Z')
+        $currentCommand = "powershell.exe -File fixture.ps1 -Marker $(Join-Path $repoRoot 'main.py')"
+        $foreignCommand = 'powershell.exe -File foreign-fixture.ps1'
+        $currentListener = [ordered]@{ role='listener-5300'; pid=$currentPid; startTicks=$currentStart.ToUniversalTime().Ticks; executable='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; commandLine=$currentCommand; port=5300 }
+        $foreignListener = [ordered]@{ role='listener-5300'; pid=$foreignPid; startTicks=$foreignStart.ToUniversalTime().Ticks; executable='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; commandLine=$foreignCommand; port=5300 }
 
-            (Test-CurrentRepoListener $currentListener) | Should Be $true
-            (Test-CurrentRepoListener $foreignListener) | Should Be $false
+        Mock Get-Process {
+            switch ($Id) {
+                $currentPid { return [pscustomobject]@{ StartTime = $currentStart } }
+                $foreignPid { return [pscustomobject]@{ StartTime = $foreignStart } }
+                default { throw "unexpected process id $Id" }
+            }
         }
-        finally {
-            Stop-TestProcess $current.process
-            Stop-TestProcess $foreign
+        Mock Get-CimInstance {
+            switch ($Filter) {
+                "ProcessId = $currentPid" { return [pscustomobject]@{ ExecutablePath='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; CommandLine=$currentCommand; ProcessId=$currentPid } }
+                "ProcessId = $foreignPid" { return [pscustomobject]@{ ExecutablePath='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; CommandLine=$foreignCommand; ProcessId=$foreignPid } }
+                default { throw "unexpected filter $Filter" }
+            }
         }
+
+        (Test-CurrentRepoListener $currentListener) | Should Be $true
+        (Test-CurrentRepoListener $foreignListener) | Should Be $false
     }
 }
 

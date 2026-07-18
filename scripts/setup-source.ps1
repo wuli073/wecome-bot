@@ -45,7 +45,8 @@ function Assert-ManagedSourceBackendStopped {
     try {
         $process = Get-Process -Id ([int]$processId) -ErrorAction Stop
         $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $($process.Id)" -ErrorAction Stop
-        if ([string]$cim.CommandLine -like "*$repoRoot*") {
+        $commandLine = [string](Get-ManagedSourceStateProperty -Object $cim -Name 'CommandLine')
+        if (-not [string]::IsNullOrWhiteSpace($commandLine) -and $commandLine -like "*$repoRoot*") {
             throw "SETUP_SOURCE_BACKEND_RUNNING: stop the managed source backend before setup: .\scripts\start-source.ps1 -Action Stop -UserDataRoot '$sourceUserDataRoot'"
         }
     }
@@ -129,7 +130,7 @@ function Test-RetryableDesktopRuntimeCleanupException([Exception]$Exception) {
 }
 
 function Remove-SafeDesktopRuntimeDirectory([string]$Path, [string]$FailureCode = 'PREBUILT_RUNTIME_BACKUP_CLEANUP_FAILED', [switch]$RetryLockedFiles) {
-    $maxRetries = if ($RetryLockedFiles) { 3 } else { 0 }
+    $maxRetries = if ($RetryLockedFiles) { 59 } else { 0 }
     Remove-SafeCleanupDirectory $Path $repoRoot @($desktopRuntimeWinDir, $desktopRuntimeCacheRoot) '^(?:win-unpacked|\.desktop-runtime-(?:staging|backup)-[0-9a-f]{32})$' $FailureCode $maxRetries
 }
 
@@ -156,7 +157,7 @@ function Remove-SafeCleanupDirectory(
             if (-not (Test-RetryableDesktopRuntimeCleanupException $cleanupException) -or $attempt -eq $MaxRetries) {
                 throw "${FailureCode}: cleanup failed for $safePath after $attempt retries: $($cleanupException.Message)"
             }
-            Start-Sleep -Milliseconds (250 * ($attempt + 1))
+            Start-Sleep -Milliseconds 250
         }
     }
 }
@@ -262,17 +263,45 @@ function Test-PathWithinRoot([string]$CandidatePath, [string]$RootPath) {
     return [StringComparer]::OrdinalIgnoreCase.Equals($candidate, $root) -or $candidate.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Get-SafeCimProperty([object]$Object, [string]$Name, [object]$Default = $null) {
+    $value = Get-ManagedSourceStateProperty -Object $Object -Name $Name
+    if ($null -eq $value) { return $Default }
+    return $value
+}
 function Test-DesktopRuntimeProcess([object]$ProcessRecord, [string]$RuntimeRoot, [string]$RuntimeExecutable) {
     if ($null -eq $ProcessRecord) { return $false }
-    $name = [string]$ProcessRecord.Name; $exe = [string]$ProcessRecord.ExecutablePath; $commandLine = [string]$ProcessRecord.CommandLine
-    if (Test-PathWithinRoot $exe $RuntimeRoot) { return $true }
-    if ([StringComparer]::OrdinalIgnoreCase.Equals($exe, $RuntimeExecutable)) { return $true }
-    return @('node.exe', 'electron.exe', 'LangBot Desktop RPA Runtime.exe') -contains $name -and -not [string]::IsNullOrWhiteSpace($commandLine) -and $commandLine.IndexOf($RuntimeRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    $exe = [string](Get-SafeCimProperty $ProcessRecord 'ExecutablePath')
+    if ([string]::IsNullOrWhiteSpace($exe)) { $exe = [string](Get-SafeCimProperty $ProcessRecord 'Path') }
+    if ([string]::IsNullOrWhiteSpace($exe)) { return $false }
+    try { return [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($exe), [IO.Path]::GetFullPath($RuntimeExecutable)) }
+    catch { return $false }
 }
-
+function Get-ExistingDesktopRuntimeProcesses([string]$RuntimeRoot, [string]$RuntimeExecutable) {
+    $runtimeName = [IO.Path]::GetFileNameWithoutExtension($RuntimeExecutable)
+    return @(Get-Process -Name $runtimeName -ErrorAction SilentlyContinue | Where-Object { Test-DesktopRuntimeProcess $_ $RuntimeRoot $RuntimeExecutable })
+}
+function Wait-DesktopRuntimeExit([string]$RuntimeRoot, [string]$RuntimeExecutable, [int[]]$KnownProcessIds, [int]$TimeoutSeconds = 15) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (@(Get-ExistingDesktopRuntimeProcesses $RuntimeRoot $RuntimeExecutable).Count -eq 0) { return }
+        Start-Sleep -Milliseconds 250
+    }
+    $remaining = @(Get-ExistingDesktopRuntimeProcesses $RuntimeRoot $RuntimeExecutable | ForEach-Object { Get-SafeCimProperty $_ 'ProcessId' }) -join ', '
+    $known = @($KnownProcessIds) -join ', '
+    throw "DESKTOP_RUNTIME_STOP_TIMEOUT: Runtime did not exit. Executable: $RuntimeExecutable; Remaining PIDs: $remaining; Known PIDs: $known; Log: $setupLogPath"
+}
 function Stop-ExistingDesktopRuntimeProcesses([string]$RuntimeRoot, [string]$RuntimeExecutable) {
-    $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { Test-DesktopRuntimeProcess $_ $RuntimeRoot $RuntimeExecutable })
-    foreach ($process in $processes | Sort-Object -Property ProcessId -Unique) { Write-Host ("Stopping Desktop Runtime process {0} ({1})" -f $process.ProcessId, $process.Name); & taskkill.exe /PID $process.ProcessId /T /F | Out-Null }
+    $processes = @(Get-ExistingDesktopRuntimeProcesses $RuntimeRoot $RuntimeExecutable)
+    $processIds = @()
+    foreach ($process in $processes) {
+        $processId = 0
+        if (-not [int]::TryParse([string](Get-SafeCimProperty $process 'ProcessId'), [ref]$processId) -or $processId -le 0) { continue }
+        $processIds += $processId
+        Write-Host ("Stopping Desktop Runtime process {0}" -f $processId)
+        & taskkill.exe /PID $processId /T /F | Out-Null
+    }
+    if ($processIds.Count -gt 0) { Wait-DesktopRuntimeExit $RuntimeRoot $RuntimeExecutable $processIds }
+    return $processIds
 }
 
 function Assert-DesktopRuntimeReleaseField([object]$Object, [string]$Name, [string]$ErrorCode = 'DESKTOP_RUNTIME_RELEASE_DESCRIPTOR_INVALID') {
